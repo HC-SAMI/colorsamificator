@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en"> 
+<head> 
+ <meta charset="UTF-8"> 
+ <meta name="viewport" content="width=device-width, initial-scale=1.0"> 
+ <title>The COLORSAMIFICATOR - V99 Fixed</title> 
+ <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script> 
+ <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script> 
+ <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script> 
+ <script src="https://cdn.tailwindcss.com"></script> 
+ <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script> 
+ <style> 
+ ::-webkit-scrollbar { width: 8px; height: 8px; } 
+ ::-webkit-scrollbar-track { background: #f1f5f9; } 
+ ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; } 
+ ::-webkit-scrollbar-thumb:hover { background: #94a3b8; } 
+ 
+ .scroll-hide::-webkit-scrollbar { display: none; }
+ .scroll-hide { -ms-overflow-style: none; scrollbar-width: none; }
+ </style> 
+</head> 
+<body class="bg-slate-200 h-screen w-screen overflow-hidden p-4 flex items-center justify-center font-sans"> 
+ <div id="root" class="w-full h-full"></div> 
+ <script type="text/babel"> 
+ const { useState, useMemo, useEffect, useRef, useCallback } = React; 
+
+ const saveToLocal = (key, data) => localStorage.setItem(`colorsam_${key}`, JSON.stringify(data));
+ const getFromLocal = (key, fallback) => {
+    const stored = localStorage.getItem(`colorsam_${key}`);
+    try { return stored ? JSON.parse(stored) : fallback; } catch(e) { return fallback; }
+ };
+
+ // --- GLOBAL HELPERS ---
+ const realLchToRgb = (lVal, cVal, hVal) => { 
+    const rad = (hVal * Math.PI) / 180; const a = Math.cos(rad) * cVal; const b = Math.sin(rad) * cVal; 
+    let y = (lVal + 16) / 116; let x = a / 500 + y; let z = y - b / 200; 
+    const xyzMap = (v) => v * v * v > 0.008856 ? v * v * v : (v - 16 / 116) / 7.787; 
+    x = 95.047 * xyzMap(x); y = 100.000 * xyzMap(y); z = 108.883 * xyzMap(z); 
+    const x_ = x / 100; const y_ = y / 100; const z_ = z / 100; 
+    let r = x_ * 3.2406 + y_ * -1.5372 + z_ * -0.4986; let g = x_ * -0.9689 + y_ * 1.8758 + z_ * 0.0415; let bl = x_ * 0.0557 + y_ * -0.2040 + z_ * 1.0570; 
+    const rgbMap = (v) => v > 0.0031308 ? (1.055 * Math.pow(v, 1 / 2.4) - 0.055) : 12.92 * v; 
+    let rawR = Math.round(rgbMap(r) * 255); let rawG = Math.round(rgbMap(g) * 255); let rawB = Math.round(rgbMap(bl) * 255); 
+    return { r: Math.min(255, Math.max(0, rawR)), g: Math.min(255, Math.max(0, rawG)), b: Math.min(255, Math.max(0, rawB)), outOfGamut: (rawR < 0 || rawR > 255 || rawG < 0 || rawG > 255 || rawB < 0 || rawB > 255) }; 
+ };
+
+ const checkGamut = (lVal, cVal, hVal) => { 
+    const rad = (hVal * Math.PI) / 180; 
+    const a = Math.cos(rad) * cVal; const b = Math.sin(rad) * cVal; 
+    let y = (lVal + 16) / 116; let x = a / 500 + y; let z = y - b / 200; 
+    const xyzMap = (v) => v * v * v > 0.008856 ? v * v * v : (v - 16 / 116) / 7.787; 
+    let X = 96.422 * xyzMap(x); let Y = 100.000 * xyzMap(y); let Z = 82.521 * xyzMap(z); 
+    const D65X = X * 0.9555766 + Y * -0.0230393 + Z * 0.0631636;
+    const D65Y = X * -0.0282895 + Y * 1.0099416 + Z * 0.0210077;
+    const D65Z = X * 0.0122982 + Y * -0.0204830 + Z * 1.3299098;
+    const sr =  3.2404542 * D65X - 1.5371385 * D65Y - 0.4985314 * D65Z;
+    const sg = -0.9692660 * D65X + 1.8760108 * D65Y + 0.0415560 * D65Z;
+    const sb =  0.0556434 * D65X - 0.2040259 * D65Y + 1.0572252 * D65Z;
+    const pr =  2.4934969 * D65X - 0.9313836 * D65Y - 0.4027108 * D65Z;
+    const pg = -0.8294889 * D65X + 1.7626640 * D65Y + 0.0236247 * D65Z;
+    const pb =  0.0358458 * D65X - 0.0761723 * D65Y + 0.9568845 * D65Z;
+    const isSRGB = sr >= -0.01 && sr <= 100.01 && sg >= -0.01 && sg <= 100.01 && sb >= -0.01 && sb <= 100.01;
+    const isP3   = pr >= -0.01 && pr <= 100.01 && pg >= -0.01 && pg <= 100.01 && pb >= -0.01 && pb <= 100.01;
+    const gamma = (v) => { let val = v / 100; return val > 0.0031308 ? 1.055 * Math.pow(val, 1/2.4) - 0.055 : 12.92 * val; };
+    return { isSRGB, isP3, sRGB: { r: Math.min(255, Math.max(0, Math.round(gamma(sr) * 255))), g: Math.min(255, Math.max(0, Math.round(gamma(sg) * 255))), b: Math.min(255, Math.max(0, Math.round(gamma(sb) * 255))) } };
+ };
+
+ const generateDefaultHues = () => {
+    const arr = []; for(let i=0; i<101; i++) { if(i <= 60) arr.push(i*2); else arr.push(120 + (i-60)*6); }
+    return arr;
+ };
+
+ const DEFAULT_LIGHT_RANGES = [{ label: "A", min: 0, max: 0, mid: 0 },{ label: "B", min: 1, max: 7, mid: 4 },{ label: "C", min: 8, max: 17, mid: 12.5 },{ label: "D", min: 18, max: 29, mid: 23.5 },{ label: "E", min: 30, max: 44, mid: 37 },{ label: "F", min: 45, max: 59, mid: 52 },{ label: "G", min: 60, max: 74, mid: 67 },{ label: "H", min: 75, max: 84, mid: 79.5 },{ label: "I", min: 85, max: 91, mid: 88 },{ label: "J", min: 92, max: 96, mid: 94 },{ label: "K", min: 97, max: 99, mid: 98 },{ label: "L", min: 100, max: 100, mid: 100 }]; 
+ const DEFAULT_CHROMA_RANGES = [{ label: "A", min: 0, max: 0, mid: 0 },{ label: "B", min: 1, max: 3, mid: 2 },{ label: "C", min: 4, max: 8, mid: 6 },{ label: "D", min: 9, max: 15, mid: 12 },{ label: "E", min: 16, max: 25, mid: 20.5 },{ label: "F", min: 26, max: 40, mid: 33 },{ label: "G", min: 41, max: 55, mid: 48 },{ label: "H", min: 56, max: 70, mid: 63 },{ label: "I", min: 71, max: 82, mid: 76.5 },{ label: "J", min: 83, max: 92, mid: 87.5 },{ label: "K", min: 93, max: 99, mid: 96 },{ label: "L", min: 100, max: 100, mid: 100 }]; 
+ const DEFAULT_ANCHORS = [{ label: "Pastel", l: 79.5, c: 6 }, { label: "Earth", l: 50.5, c: 6 }, { label: "Shadow", l: 20.5, c: 6 }, { label: "Gem", l: 20.5, c: 76.5 }, { label: "Vivid", l: 50.5, c: 76.5 }, { label: "Tint", l: 79.5, c: 76.5 }];
+ const DEFAULT_ADJECTIVES = [["", "", "", "", "", "", "", "", "", "", "", ""], ["Void", "Null", "Pitch", "Dark", "Murky", "Stygian", "Hollow", "Deepest", "Bottom", "Under", "Nether", "Crypt"], ["Inky", "Raven", "Sable", "Shaded", "Opaque", "Vast", "Core", "Total", "Ultra", "Hyper", "Blind", "Grim"], ["Steely", "Dense", "Deep", "Hard", "Rigid", "Stern", "Massive", "Major", "Main", "Mega", "Iron", "Lead"], ["Dim", "Dusk", "Matte", "Solid", "Stout", "Strong", "Mighty", "Potent", "Power", "Force", "Tough", "Hardy"], ["Muted", "Plain", "Flat", "Dry", "Base", "Raw", "Firm", "Heavy", "Grand", "Epic", "Regal", "Noble"], ["Dusty", "Ashen", "Tame", "Smooth", "Pure", "Prime", "Rich", "Lush", "Ripe", "True", "Bold", "Wild"], ["Foggy", "Hazy", "Mild", "Crisp", "Light", "Keen", "Sharp", "Electric", "Vibrant", "Neon", "Flux", "Pulse"], ["Pale", "Fair", "Clean", "Fresh", "Clear", "Bright", "Sunny", "Glowing", "Shining", "Spark", "Luster", "Gloss"], ["Faint", "Thin", "Fine", "Lite", "Soft", "Bleached", "Luminous", "Brilliant", "Beam", "Ray", "Gleam", "Silky"], ["Stark", "Sheer", "Wispy", "Snowy", "Chalky", "Blinding", "Radiant", "Beaming", "Flash", "Flare", "Solar", "White"], ["", "", "", "", "", "", "", "", "", "", "", ""]];
+ const DEFAULT_NOUNS = ["Mallow,Rose,Raisin,Garnet,Petal,Cerise", "Mauve,Pink,Prune,Rubellite,Blossom,Fuchsia", "Heather,Magenta,Fig,Tourmaline,Orchid,Neon", "Lilac,Berry,Mulberry,Spinel,Bud,Laser", "Dust,Ruby,Wine,Rhodolite,Rose,Hot", "Ash,Crimson,Merlot,Zircon,Pink,Pop", "Stone,Scarlet,Currant,Beryl,Salmon,Flash", "Clay,Vermilion,Brick,Jasper,Coral,Beam", "Sand,Red,Rust,Agate,Peach,Ray", "Silt,Cherry,Mahogany,Carnelian,Melon,Glow", "Pottery,Poppy,Carob,Agate,Almond,Mango", "Nutmeg,Nasturtium,Mocha,Sardonyx,Buff,Sorbet", "Terracotta,Paprika,Cocoa,Carnelian,Ecru,Sherbet", "Curry,Lantern,Bean,Magma,Dough,Squash", "Sahara,Kumquat,Peat,Volcano,Fawn,Yam", "Arid,Titian,Soil,Obsidian,Beige,Mandarin", "Bronze,Carrot,Grit,Root,Sand,Satsuma", "Copper,Zinnia,Leather,Cove,Dune,Calendula", "Brass,Tiger,Saddle,Bark,Wheat,Sunflower", "Pyrite,Ginger,Hide,Cavern,Grain,Daylily", "Mesa,Orange,Bison,Tortoise,Cream,Gold", "Bronze,Marigold,Clove,Topaz,Biscuit,Apricot", "Ochre,Squash,Nutmeg,Amber,Wheat,Maize", "Spice,Tangerine,Truffle,Citrine,Grain,Cream", "Cumin,Yam,Coffee,Tiger,Dough,Manila", "Camel,Clementine,Caraway,Pyrite,Ecru,Buff", "Fawn,Mango,Umber,Cognac,Oat,Blond", "Dijon,Saffron,Malt,Brandy,Sol,Vanilla", "Mustard,Turmeric,Stout,Whiskey,Beige,Banana", "Curry,Gold,Hemp,Bourbon,Sand,Lager", "Brass,Sunflower,Burlap,Cider,Straw,Lemon", "Straw,Dandelion,Thatch,Ale,Parchment,Chiffon", "Khaki,Canary,Rope,Mead,Ivory,Butter", "Gamba,Solar,Cork,Syrup,Bone,Custard", "Rattan,Sulfur,Twine,Toffee,Linen,Daffodil", "Stalk,Mimosa,Reed,Caramel,Lace,Pineapple", "Weave,Buttercup,Cane,Butterscotch,Silk,Daisy", "Chino,Honey,Cask,Molasses,Cloud,Corn", "Husk,Medallion,Bark,Treacle,Pearl,Popcorn", "Suede,Bumblebee,Silt,Root,Alabaster,Cheese", "Dust,Jonquil,Soil,Fossil,Cotton,Primrose", "Raffia,Dandelion,Rattan,Resin,Parchment,Chiffon", "Agave,Zest,Wicker,Sap,Ivory,Butter", "Flaxen,Citron,Bamboo,Comb,Tusk,Custard", "Straw,Bumblebee,Reed,Hive,Linen,Daffodil", "Ecru,Mace,Cane,Pollen,Lace,Pineapple", "Sand,Canary,Thatch,Wax,Silk,Daisy", "Oat,Mimosa,Rope,Ingot,Cloud,Corn", "Wheat,Flax,Cork,Nugget,Pearl,Popcorn", "Khaki,Gorse,Fiber,Bullion,Alabaster,Cheese", "Gamba,Corn,Twine,Gilt,Cotton,Primrose", "Husk,Butter,Bale,Or,Chalk,Vanilla", "Suede,Lemon,Hay,Medal,Milk,Meringue", "Dust,Solar,Hessian,Trophy,Foam,Wafer", "Cream,Jonquil,Jute,Crown,Mist,Buttermilk", "Custard,Titan,Cord,Ocre,Haze,Shortbread", "Blond,Medallion,Bran,Sulphur,Puff,Pastry", "Camel,Cadmium,Grain,Pyrite,Down,Cookie", "Fawn,Genista,Seed,Brass,Feather,Cake", "Dijon,Aureolin,Husk,Bronze,Vapor,Frosting", "Mustard,Yellow,Loam,Mineral,Snow,Icing", "Pickle,Acid,Olive,Sulphur,Rind,Tart", "Caper,Quince,Pesto,Pyrite,Pulp,Dill", "Lichen,Reed,Algae,Marcasite,Shoot,Endive", "Moss,Absinthe,Kelp,Zircon,Bud,Fennel", "Sage,Peridot,Nori,Olivine,Stem,Anise", "Brine,Linden,Hemp,Sphene,Aloe,Tea", "Fern,Verdet,Jute,Serpent,Palm,Melon", "Basil,Chrysolite,Sisal,Diopside,Silk,Apple", "Laurel,Pear,Spinach,Idocrase,Shea,Mint", "Myrtle,Chartreuse,Kale,Tourmaline,Foam,Glow", "Cactus,Pomelo,Collard,Dragon,Mist,Volt", "Agave,Wasabi,Chard,Viper,Dew,Ray", "Reseda,Celadon,Nettle,Lizard,Spray,Laser", "Willow,Pistachio,Sorrel,Iguana,Balm,Neon", "Thyme,Avocado,Herbal,Mamba,Whisp,Limeade", "Oregano,Lemongrass,Verdant,Python,Breeze,Zest", "Savory,Verbena,Grove,Cobra,Puff,Sprite", "Marjoram,Beryl,Copse,Drake,Air,Fizz", "Lichen,Neon,Thicket,Wyvern,Vapor,Spark", "Taiga,Lime,Forest,Basilisk,Snow,Flux", "Basil,Bud,Thicket,Zircon,Dew,Mint", "Oregano,Sprout,Grove,Spinel,Aloe,Foam", "Sage,Kiwi,Copse,Garnet,Shea,Mist", "Thyme,Parrot,Brake,Tsavorite,Balm,Spray", "Bay,Mantis,Hedge,Uvarovite,Whisp,Fizz", "Laurel,Fern,Shrub,Verdite,Cloud,Ray", "Savory,Eden,Bush,Chrome,Vapor,Volt", "Nettle,Cactus,Bracken,Emerald,Air,Beam", "Hemp,Matcha,Brier,Beryl,Puff,Flash", "Tea,Foliage,Thorn,Jade,Mist,Neon", "Matcha,Iguana,Bramble,Malachite,Soft,Glow", "Pesto,Leaf,Undergrowth,Serpentine,Cotton,Pulse", "Sage,Olive,Thicket,Peridot,Aloe,Beam", "Laurel,Fern,Grove,Verdite,Mint,Ray", "Myrtle,Moss,Forest,Emerald,Foam,Glow", "Basil,Algae,Jungle,Jade,Dew,Volt", "Thyme,Kelp,Copse,Malachite,Mist,Neon", "Teal,Seaweed,Abyss,Beryl,Aqua,Cyan", "Cyan,Spruce,Deep,Turquoise,Sky,Electric", "Azure,Pine,Ocean,Sapphire,Ice,Bolt", "Cobalt,Denim,Midnight,Lapis,Frost,Laser", "Blue,Navy,Abyss,Indigo,Mist,Ray", "Indigo,Ink,Void,Violet,Lilac,Glow", "Violet,Grape,Night,Amethyst,Orchid,Neon", "Purple,Plum,Shadow,Magenta,Rose,Beam", "Magenta,Berry,Deep,Fuchsia,Pink,Flash", "Pink,Rose,Wine,Ruby,Blush,Glow", "Red,Brick,Blood,Garnet,Coral,Spark", "Orange,Rust,Clay,Amber,Peach,Ray", "Gold,Ochre,Earth,Topaz,Cream,Beam", "Yellow,Dijon,Sand,Citrine,Lemon,Flash", "Lime,Moss,Slime,Peridot,Mint,Glow"];
+
+ // --- COMPONENTS ---
+ const Icon = ({ children, className, onClick }) => <svg onClick={onClick} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>{children}</svg>; 
+ const Grid = ({ className }) => <Icon className={className}><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M3 9h18" /><path d="M3 15h18" /><path d="M9 3v18" /><path d="M15 3v18" /></Icon>; 
+ const ChevronLeft = ({ className }) => <Icon className={className}><path d="m15 18-6-6 6-6" /></Icon>; 
+ const ChevronRight = ({ className }) => <Icon className={className}><path d="m9 18 6-6-6-6" /></Icon>; 
+ const Tag = ({ className }) => <Icon className={className}><path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l5 5a2 2 0 0 0 2.828 0l7.172-7.172a2 2 0 0 0 0-2.828l-5-5Z" /><path d="M7 7h.01" /></Icon>; 
+ const RefreshCw = ({ className, onClick }) => <Icon onClick={onClick} className={className}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" /></Icon>; 
+ const Download = ({ className, onClick }) => <Icon onClick={onClick} className={className}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" x2="12" y1="15" y2="3" /></Icon>; 
+ const Upload = ({ className }) => <Icon className={className}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" x2="12" y1="3" y2="15" /></Icon>; 
+ const Palette = ({ className }) => <Icon className={className}><circle cx="13.5" cy="6.5" r=".5" fill="currentColor" /><circle cx="17.5" cy="10.5" r=".5" fill="currentColor" /><circle cx="8.5" cy="7.5" r=".5" fill="currentColor" /><circle cx="6.5" cy="12.5" r=".5" fill="currentColor" /><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.093 0-.84.672-1.531 1.514-1.531h2.418c4.281 0 7.793-3.351 7.793-7.609C24.496 4.672 18.902 2 12 2Z" /></Icon>; 
+ const Hash = ({ className }) => <Icon className={className}><line x1="4" x2="20" y1="9" y2="9" /><line x1="4" x2="20" y1="15" y2="15" /><line x1="10" x2="8" y1="3" y2="21" /><line x1="16" x2="14" y1="3" y2="21" /></Icon>; 
+ const Ruler = ({ className }) => <Icon className={className}><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/></Icon>;
+ const Sparkles = ({ className, onClick }) => <Icon onClick={onClick} className={className}><path d="m12 3 1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M3 5h4"/><path d="M21 17v4"/><path d="M19 19h4"/></Icon>;
+ const Layers = ({ className }) => <Icon className={className}><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" /><polyline points="2 12 12 17 22 12" /></Icon>;
+ const Plus = ({ className }) => <Icon className={className}><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></Icon>;
+ const X = ({ className }) => <Icon className={className}><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></Icon>;
+ const Monitor = ({ className }) => <Icon className={className}><rect width="20" height="14" x="2" y="3" rx="2" /><line x1="8" x2="16" y1="21" y2="21" /><line x1="12" x2="12" y1="17" y2="21" /></Icon>;
+ const AlertTriangle = ({ className }) => <Icon className={className}><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" /><line x1="12" x2="12" y1="9" y2="13" /><line x1="12" x2="12.01" y1="17" y2="17" /></Icon>;
+
+ const SnapControl = ({ label, value, setter, max, displayVal, gradient, isInverted, isActive }) => { 
+    const [localText, setLocalText] = useState(displayVal); 
+    useEffect(() => { setLocalText(displayVal); }, [displayVal]); 
+    const commitChange = () => { 
+        let val = parseInt(localText); 
+        if (isNaN(val)) { setLocalText(displayVal); return; } 
+        if (label === "Hue") { if (val < 0) val = 0; if (val > 360) val = 360; setter(val); } 
+        else { if (val < 0) val = 0; if (val > max) val = max; setter(val); } 
+    }; 
+    return ( 
+    <div className={`flex flex-col gap-2 mb-4 p-2 rounded-xl transition-all duration-300 ${isActive ? 'bg-blue-50 ring-2 ring-blue-500 shadow-sm' : 'hover:bg-slate-50'}`}> 
+    <div className="flex justify-between items-center text-xs font-bold uppercase text-slate-500"> 
+        <span className={isActive ? 'text-blue-700' : ''}>{label}</span> 
+        <input type="text" value={localText} onChange={(e) => setLocalText(e.target.value)} onBlur={commitChange} onKeyDown={(e) => e.key === 'Enter' && commitChange()} className={`font-mono text-right w-12 bg-transparent border-b ${isActive ? 'border-blue-300 text-blue-700' : 'border-slate-300'} focus:border-blue-500 focus:outline-none`} /> 
+    </div> 
+    <div className="flex items-center gap-3"> 
+        <button onClick={() => setter(isInverted ? Math.min(max, value + 1) : Math.max(0, value - 1))} className={`w-8 h-8 flex items-center justify-center rounded-full border shadow-sm transition-colors ${isActive ? 'bg-blue-100 border-blue-200 text-blue-700' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}><ChevronLeft className="w-4 h-4" /></button> 
+        <div className="relative flex-1 h-6"> 
+        <input type="range" min="0" max={max} value={isInverted ? max - value : value} onChange={(e) => { const val = parseInt(e.target.value); setter(isInverted ? max - val : val); }} className="w-full h-full absolute top-0 left-0 z-20 opacity-0 cursor-pointer appearance-none bg-transparent" /> 
+        <div className="w-full h-3 rounded-full absolute top-1.5 z-0 border border-black/5" style={{ background: gradient, backgroundSize: '100% 100%' }} /> 
+        <div className="h-6 w-6 bg-white border border-slate-300 rounded-full shadow-md absolute top-0 z-10 pointer-events-none transition-transform flex items-center justify-center text-[10px]" style={{ left: `calc(${(((isInverted ? max - value : value) / max) * 100)}% - 12px)` }} /> 
+        </div> 
+        <button onClick={() => setter(isInverted ? Math.max(0, value - 1) : Math.min(max, value + 1))} className={`w-8 h-8 flex items-center justify-center rounded-full border shadow-sm transition-colors ${isActive ? 'bg-blue-100 border-blue-200 text-blue-700' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}><ChevronRight className="w-4 h-4" /></button> 
+    </div> 
+    </div> 
+    ); 
+ }; 
+
+ const MatrixTable = ({ yData, xData, yLabel, xLabel, renderCell, activeIds, interactionSource }) => { 
+    const containerRef = useRef(null);
+    const activeRowIdx = activeIds.r;
+    const activeColIdx = activeIds.c;
+
+    useEffect(() => {
+        if (interactionSource && interactionSource.current === 'click') {
+            interactionSource.current = null;
+            return;
+        }
+        if (containerRef.current) {
+            const activeEl = containerRef.current.querySelector('[data-active="true"]');
+            if (activeEl) {
+                activeEl.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
+            }
+        }
+    }, [activeRowIdx, activeColIdx, interactionSource]);
+
+    return ( 
+    <div ref={containerRef} className="h-full w-full overflow-auto rounded-xl border border-slate-200 bg-white shadow-sm flex flex-col relative"> 
+        <table className="min-w-max text-[10px] text-center border-separate border-spacing-1 table-fixed relative z-10"> 
+            <thead> 
+                <tr> 
+                    <th className="p-2 text-slate-300 font-mono text-left bg-white sticky top-0 z-40 w-20 border-b border-slate-100"><span>{yLabel}\{xLabel}</span></th> 
+                    {xData.map((col) => ( 
+                    <th key={col.index} className={`p-2 font-bold border-b border-slate-100 bg-white sticky top-0 z-40 ${col.isActive ? 'text-blue-600 bg-blue-50 ring-inset ring-2 ring-blue-500/20 rounded-t' : 'text-slate-500'}`}> 
+                        <div className="flex flex-col items-center"><span className="text-xs">{col.label}</span>{col.data && (<span className="text-[8px] font-normal opacity-50 font-mono">{col.data.min === col.data.max ? `${col.data.min}°` : `${col.data.min}-${col.data.max}°`}</span>)}</div> 
+                    </th> 
+                    ))} 
+                </tr> 
+            </thead> 
+            <tbody> 
+                {yData.map((row) => (
+                    <tr key={row.index}>
+                        <td className={`p-2 font-bold border-r border-slate-100 text-left bg-white sticky left-0 z-30 ${row.isActive ? 'text-blue-600 bg-blue-50 ring-inset ring-2 ring-blue-500/20 rounded-l' : 'text-slate-500'}`}>
+                            <div className="flex flex-col"><span className="text-xs">{row.label}</span>{row.data && (<span className="text-[8px] font-normal opacity-50 font-mono">{row.data.min === row.data.max ? `${row.data.min}°` : `${row.data.min}-${row.data.max}°`}</span>)}</div>
+                        </td>
+                        {xData.map((col) => renderCell(row.index, col.index))}
+                    </tr>
+                ))} 
+            </tbody> 
+        </table> 
+    </div> 
+    ) 
+ }; 
+
+ const HarmonySwatch = ({ offset, label, currentH, currentL, currentC, setH, displayGamut }) => { 
+    let harmH = (currentH + offset) % 360; 
+    if (harmH < 0) harmH += 360; 
+    
+    let harmL = currentL; 
+    let harmC = currentC; 
+    if (harmC < 5) harmC = 60; 
+    if (harmL < 10 || harmL > 90) harmL = 50; 
+    
+    const gamut = checkGamut(harmL, harmC, harmH);
+    const swatchColor = `lch(${harmL}% ${harmC} ${harmH})`; 
+    const hatch = { backgroundImage: 'repeating-linear-gradient(45deg, #cbd5e1 0px, #cbd5e1 4px, transparent 4px, transparent 8px)', backgroundColor: 'transparent' };
+    
+    const isOutOfGamut = displayGamut === 'p3' ? !gamut.isP3 : !gamut.isSRGB;
+
+    return ( 
+    <div onClick={() => setH(harmH)} className="flex flex-col items-center gap-1 cursor-pointer group"> 
+        <div className="w-8 h-8 rounded-full shadow-sm border border-black/10 group-hover:scale-110 transition-transform relative overflow-hidden" 
+            style={isOutOfGamut ? hatch : { backgroundColor: swatchColor }}> 
+        </div> 
+        <span className="text-[8px] font-bold text-slate-400 uppercase">{label}</span> 
+    </div> 
+    ) 
+ }; 
+
+ const ColorSAMIfier = () => { 
+    // --- STATE ---
+    const [h, setH] = useState(getFromLocal('h', 40)); 
+    const [c, setC] = useState(getFromLocal('c', 50)); 
+    const [l, setL] = useState(getFromLocal('l', 52)); 
+    const [activeView, setActiveView] = useState("hue_pivot"); 
+    const [isFlipped, setIsFlipped] = useState(false); 
+    const interactionSource = useRef(null); 
+    const [displayGamut, setDisplayGamut] = useState("srgb");
+    const [nameWarning, setNameWarning] = useState(null);
+
+    const [lightRanges, setLightRanges] = useState(getFromLocal('lightRanges', DEFAULT_LIGHT_RANGES));
+    const [chromaRanges, setChromaRanges] = useState(getFromLocal('chromaRanges', DEFAULT_CHROMA_RANGES));
+    const [anchors, setAnchors] = useState(getFromLocal('anchors', DEFAULT_ANCHORS));
+    const [hueValues, setHueValues] = useState(getFromLocal('hueValues', generateDefaultHues()));
+    const [adjectiveMatrix, setAdjectiveMatrix] = useState(getFromLocal('adjectiveMatrix', DEFAULT_ADJECTIVES)); 
+    const [nounData, setNounData] = useState(getFromLocal('nounData', DEFAULT_NOUNS)); 
+    const [palette, setPalette] = useState(getFromLocal('userPalette', []));
+    
+    // NEW: Local temp input state
+    const [tempName, setTempName] = useState(null);
+
+    const parsedNouns = useMemo(() => nounData.map(row => row.split(',')), [nounData]);
+
+    useEffect(() => {
+        if (window.matchMedia && window.matchMedia("(color-gamut: p3)").matches) {
+            setDisplayGamut("p3");
+        } else {
+            setDisplayGamut("srgb");
+        }
+
+        saveToLocal('h', h); saveToLocal('c', c); saveToLocal('l', l);
+        saveToLocal('lightRanges', lightRanges); saveToLocal('chromaRanges', chromaRanges);
+        saveToLocal('anchors', anchors); saveToLocal('hueValues', hueValues);
+        saveToLocal('adjectiveMatrix', adjectiveMatrix);
+        saveToLocal('nounData', nounData);
+        saveToLocal('userPalette', palette);
+    }, [h, c, l, adjectiveMatrix, nounData, lightRanges, chromaRanges, anchors, hueValues, palette]);
+    
+    // Reset temp name when navigating
+    useEffect(() => {
+        setTempName(null);
+    }, [l, c, h]);
+
+    const updateAdjective = (r, c, val) => {
+        setAdjectiveMatrix(prev => {
+            const next = [...prev];
+            next[r] = [...next[r]];
+            next[r][c] = val;
+            return next;
+        });
+    };
+
+    const updateNoun = (r, c, val) => {
+        setNounData(prev => {
+            const next = [...prev];
+            const rowStr = next[r] || "";
+            const parts = rowStr.split(',');
+            // Pad if necessary
+            while (parts.length < anchors.length) parts.push("");
+            parts[c] = val;
+            next[r] = parts.join(',');
+            return next;
+        });
+    };
+
+    const getIndexFromHue = (hue) => { 
+        let closestIdx = 0;
+        let minDiff = 360;
+        hueValues.forEach((hVal, idx) => {
+            let diff = Math.abs(hVal - hue);
+            if(diff > 180) diff = 360 - diff; 
+            if(diff < minDiff) {
+                minDiff = diff;
+                closestIdx = idx;
+            }
+        });
+        return closestIdx;
+    }; 
+    
+    const hIdx = getIndexFromHue(h);
+    const lIdx = lightRanges.findIndex(rg => l >= rg.min && l <= rg.max); 
+    const cIdx = chromaRanges.findIndex(rg => c >= rg.min && c <= rg.max); 
+
+    const getNearestAnchorIndex = useCallback((lX, cX) => { 
+        let bestIdx = 0;
+        let minDist = 999999;
+        const currentMidL = lightRanges[lX]?.mid || 50;
+        const currentMidC = chromaRanges[cX]?.mid || 20;
+
+        anchors.forEach((anchor, idx) => {
+            const d = Math.sqrt(Math.pow(currentMidL - anchor.l, 2) + Math.pow(currentMidC - anchor.c, 2));
+            if(d < minDist) {
+                minDist = d;
+                bestIdx = idx;
+            }
+        });
+        return bestIdx;
+    }, [lightRanges, chromaRanges, anchors]); 
+
+    const currentMapping = useMemo(() => { 
+        const rowLIdx = lightRanges.findIndex(rg => l >= rg.min && l <= rg.max);
+        const rowCIdx = chromaRanges.findIndex(rg => c >= rg.min && c <= rg.max);
+        
+        if (rowLIdx === -1 || rowCIdx === -1) return { baseNoun: "Unknown", adj: "Unknown", code: "???", strIdx: -1, hueRow: hIdx };
+
+        if (l === 0) return { baseNoun: "Nero", adj: "", code: `AA000`, strIdx:-1, hueRow:-1 }; 
+        if (l === 100) return { baseNoun: "Blanc", adj: "", code: `LA000`, strIdx:-1, hueRow:-1 }; 
+        if (c === 0) return { baseNoun: "Cinza", adj: adjectiveMatrix[rowLIdx]?.[0] || "", code: `${lightRanges[rowLIdx]?.label || 'A'}A000`, strIdx:-1, hueRow:-1 }; 
+        
+        const sIdx = getNearestAnchorIndex(rowLIdx, rowCIdx); 
+        const bNoun = parsedNouns[hIdx]?.[sIdx] || "Hue"; 
+        let adj = adjectiveMatrix[rowLIdx]?.[rowCIdx] || ""; 
+        if (bNoun && adj && bNoun.toLowerCase() === adj.toLowerCase()) adj = ""; 
+        return { baseNoun: bNoun, adj, code: `${lightRanges[rowLIdx]?.label || '?'}${chromaRanges[rowCIdx]?.label || '?'}${h.toString().padStart(3,'0')}`, strIdx: sIdx, hueRow: hIdx }; 
+    }, [l, c, h, adjectiveMatrix, parsedNouns, hIdx, lightRanges, chromaRanges, getNearestAnchorIndex]);
+
+    const fullDisplayName = currentMapping.adj ? `${currentMapping.adj} ${currentMapping.baseNoun}` : currentMapping.baseNoun; 
+
+    // --- DUPLICATE HANDLER ---
+    const handleNameChange = (val) => {
+        const rL = lightRanges.findIndex(rg => l >= rg.min && l <= rg.max);
+        const rC = chromaRanges.findIndex(rg => c >= rg.min && c <= rg.max);
+        
+        if (l === 0 || l === 100) return; 
+
+        // Split "Adjective Noun"
+        const parts = val.trim().split(/\s+/);
+        let newNoun = "";
+        let newAdj = "";
+        
+        if (parts.length === 1) {
+            newNoun = parts[0]; 
+        } else {
+            newNoun = parts.pop();
+            newAdj = parts.join(" ");
+        }
+        
+        const checkNoun = newNoun.trim();
+        const checkAdj = newAdj.trim();
+
+        let warning = null;
+
+        if (c === 0) {
+            // Cinza mode
+            if (rL !== -1) {
+                updateAdjective(rL, 0, val.replace("Cinza", "").trim());
+            }
+        } else {
+             const sIdx = getNearestAnchorIndex(rL, rC);
+             const hRow = hIdx;
+             
+             if (hRow !== -1 && sIdx !== -1) updateNoun(hRow, sIdx, checkNoun);
+             if (rL !== -1 && rC !== -1) updateAdjective(rL, rC, checkAdj);
+             
+             // Scan Nouns
+             if (checkNoun && checkNoun.toLowerCase() !== "hue") {
+                 for(let h=0; h<parsedNouns.length; h++) {
+                     for(let s=0; s<anchors.length; s++) {
+                         if (h === hRow && s === sIdx) continue;
+                         const existing = parsedNouns[h][s];
+                         if (existing && existing.toLowerCase() === checkNoun.toLowerCase()) {
+                             warning = `Duplicate Noun '${checkNoun}' found at ${hueValues[h]}° / ${anchors[s].label}`;
+                         }
+                     }
+                 }
+             }
+             // Scan Adjectives
+             if (checkAdj) {
+                 for(let r=0; r<adjectiveMatrix.length; r++) {
+                     for(let cIter=0; cIter<adjectiveMatrix[r].length; cIter++) {
+                         if (r === rL && cIter === rC) continue;
+                         const existing = adjectiveMatrix[r][cIter];
+                         if (existing && existing.toLowerCase() === checkAdj.toLowerCase()) {
+                             warning = `Duplicate Adjective '${checkAdj}' found at L:${lightRanges[r].label} C:${chromaRanges[cIter].label}`;
+                         }
+                     }
+                 }
+             }
+        }
+        setNameWarning(warning);
+    };
+
+    // CANONICAL REFERENCE
+    const safeLIdx = lightRanges.findIndex(rg => l >= rg.min && l <= rg.max);
+    const safeCIdx = chromaRanges.findIndex(rg => c >= rg.min && c <= rg.max);
+    
+    const canonicalL = lightRanges[safeLIdx]?.mid ?? 50;
+    const canonicalC = chromaRanges[safeCIdx]?.mid ?? 0;
+    const canonicalH = hueValues[hIdx] ?? 0;
+    
+    // Check Gamut
+    const canonGamut = checkGamut(canonicalL, canonicalC, canonicalH);
+    const canonHex = `#${canonGamut.sRGB.r.toString(16).padStart(2,'0')}${canonGamut.sRGB.g.toString(16).padStart(2,'0')}${canonGamut.sRGB.b.toString(16).padStart(2,'0')}`.toUpperCase();
+
+    // Check Current
+    const currentGamut = checkGamut(l, c, h);
+    const actualHex = `#${currentGamut.sRGB.r.toString(16).padStart(2,'0')}${currentGamut.sRGB.g.toString(16).padStart(2,'0')}${currentGamut.sRGB.b.toString(16).padStart(2,'0')}`.toUpperCase();
+
+    const deltaE = Math.sqrt(Math.pow(canonicalL - l, 2) + Math.pow(canonicalC - c, 2)).toFixed(1); 
+
+    // --- EXPLORER RENDER LOGIC ---
+    const getExplorerParams = useCallback((view, flipped, rI, cI) => {
+        let localLIdx = safeLIdx, localCIdx = safeCIdx, localHIdx = hIdx;
+        if (localLIdx === -1) localLIdx = 0; if (localCIdx === -1) localCIdx = 0;
+
+        if (view === "hue_pivot") {
+            localLIdx = flipped ? cI : rI;
+            localCIdx = flipped ? rI : cI;
+        } else if (view === "chroma_pivot") {
+            localHIdx = flipped ? cI : rI;
+            localLIdx = flipped ? rI : cI;
+            localCIdx = safeCIdx; 
+        } else if (view === "light_pivot") {
+            localHIdx = flipped ? cI : rI;
+            localCIdx = flipped ? rI : cI;
+            localLIdx = safeLIdx;
+        }
+        
+        const safeL = lightRanges[localLIdx] || lightRanges[0];
+        const safeC = chromaRanges[localCIdx] || chromaRanges[0];
+        const safeH = hueValues[localHIdx] ?? 0;
+        
+        return { lVal: safeL.mid, cVal: safeC.mid, hVal: safeH, lIdx: localLIdx, cIdx: localCIdx, hIdx: localHIdx };
+    }, [safeLIdx, safeCIdx, hIdx, lightRanges, chromaRanges, hueValues]);
+
+    const handleExport = () => { 
+        const wb = XLSX.utils.book_new(); 
+        
+        const rangesData = [
+            ["Type", "Label", "Min", "Max", "Mid"],
+            ...lightRanges.map(r => ["Light", r.label, r.min, r.max, r.mid]),
+            ...chromaRanges.map(r => ["Chroma", r.label, r.min, r.max, r.mid])
+        ];
+        const rangeWS = XLSX.utils.aoa_to_sheet(rangesData);
+        XLSX.utils.book_append_sheet(wb, rangeWS, "Ranges");
+
+        const anchorHeader = ["Label", "Target L", "Target C"];
+        const anchorBody = anchors.map(a => [a.label, a.l, a.c]);
+        const anchorWS = XLSX.utils.aoa_to_sheet([anchorHeader, ...anchorBody]);
+        XLSX.utils.book_append_sheet(wb, anchorWS, "Anchors");
+
+        const adjHeader = ["(L/C)", ...chromaRanges.map(c => c.label)];
+        const adjBody = adjectiveMatrix.map((row, i) => [lightRanges[i]?.label || `L${i}`, ...row]);
+        const adjWS = XLSX.utils.aoa_to_sheet([adjHeader, ...adjBody]);
+        XLSX.utils.book_append_sheet(wb, adjWS, "Adjectives"); 
+        
+        const nounHeader = ["Hue Angle", ...anchors.map(a => a.label)];
+        const nounBody = nounData.map((row, i) => [`${hueValues[i]}°`, ...row.split(',')]);
+        const nounWS = XLSX.utils.aoa_to_sheet([nounHeader, ...nounBody]);
+        XLSX.utils.book_append_sheet(wb, nounWS, "Nouns"); 
+        
+        const sessionHeader = ["Key", "Value"];
+        const sessionBody = [
+            ["Current L", l],
+            ["Current C", c],
+            ["Current H", h],
+            ["Active View", activeView],
+            ["Flipped", isFlipped],
+            ["Palette JSON", JSON.stringify(palette)]
+        ];
+        const sessionWS = XLSX.utils.aoa_to_sheet([sessionHeader, ...sessionBody]);
+        XLSX.utils.book_append_sheet(wb, sessionWS, "Session");
+
+        XLSX.writeFile(wb, "ColorSAMIficator_State.xlsx"); 
+    }; 
+
+    const handleImport = (e) => { 
+        const file = e.target.files[0]; if(!file) return; 
+        const reader = new FileReader(); 
+        reader.onload = (evt) => { 
+            const wb = XLSX.read(evt.target.result, {type: 'binary'}); 
+            
+            if(wb.Sheets["Ranges"]) {
+                const rangeRaw = XLSX.utils.sheet_to_json(wb.Sheets["Ranges"]);
+                const newL = rangeRaw.filter(r => r.Type === "Light").map(r => ({ label: r.Label, min: parseInt(r.Min), max: parseInt(r.Max), mid: parseFloat(r.Mid) }));
+                const newC = rangeRaw.filter(r => r.Type === "Chroma").map(r => ({ label: r.Label, min: parseInt(r.Min), max: parseInt(r.Max), mid: parseFloat(r.Mid) }));
+                if (newL.length > 0) setLightRanges(newL);
+                if (newC.length > 0) setChromaRanges(newC);
+            }
+
+            if(wb.Sheets["Anchors"]) {
+                const anchorRaw = XLSX.utils.sheet_to_json(wb.Sheets["Anchors"]);
+                const newAnchors = anchorRaw.map(a => ({ label: a.Label, l: parseFloat(a["Target L"]), c: parseFloat(a["Target C"]) }));
+                if (newAnchors.length > 0) setAnchors(newAnchors);
+            }
+
+            if(wb.Sheets["Adjectives"]) { 
+                const rawAdj = XLSX.utils.sheet_to_json(wb.Sheets["Adjectives"], {header: 1}); 
+                let matrixData = rawAdj;
+                if (rawAdj.length > 0 && rawAdj[0][0] === "(L/C)") {
+                     const body = rawAdj.slice(1);
+                     matrixData = body.map(row => row.slice(1));
+                }
+                setAdjectiveMatrix(matrixData.map(row => row.map(cell => cell || "")));
+            } 
+            
+            if(wb.Sheets["Nouns"]) { 
+                const rawNouns = XLSX.utils.sheet_to_json(wb.Sheets["Nouns"], {header: 1}); 
+                if (rawNouns.length > 0) {
+                    const headerRow = rawNouns[0];
+                    let startIndex = 0;
+                    if (headerRow[0] === "Hue Angle") startIndex = 1;
+                    const numColumns = anchors.length > 0 ? anchors.length : (headerRow.length - startIndex); 
+                    const body = rawNouns.slice(1);
+                    const newHues = [];
+                    const newNouns = body.map(row => {
+                        const hueStr = row[0].toString().replace('°','');
+                        newHues.push(parseInt(hueStr));
+                        const nounParts = row.slice(startIndex, startIndex + numColumns);
+                        return nounParts.map(n => n || "Hue").join(',');
+                    });
+                    setHueValues(newHues);
+                    setNounData(newNouns);
+                }
+            }
+
+            if(wb.Sheets["Session"]) {
+                const sessionRaw = XLSX.utils.sheet_to_json(wb.Sheets["Session"], {header: 1}); 
+                sessionRaw.forEach(row => {
+                    const k = row[0]; const v = row[1];
+                    if (k === "Current L") setL(parseFloat(v));
+                    if (k === "Current C") setC(parseFloat(v));
+                    if (k === "Current H") setH(parseFloat(v));
+                    if (k === "Active View") setActiveView(v);
+                    if (k === "Flipped") setIsFlipped(v === "true" || v === true);
+                    if (k === "Palette JSON") {
+                        try { setPalette(JSON.parse(v)); } catch(e) {}
+                    }
+                });
+            }
+        }; 
+        reader.readAsBinaryString(file); 
+        e.target.value = "";
+    }; 
+
+    const generateSliderBackground = (mode) => { 
+        const stops = []; const steps = 20; 
+        for (let i = 0; i <= steps; i++) { 
+            const pct = i / steps; let lV = l, cV = c, hV = h; 
+            if (mode === 'light') lV = pct * 100; else if (mode === 'chroma') cV = pct * 100; else hV = hueValues[Math.min(hueValues.length-1, Math.round(pct * (hueValues.length-1)))]; 
+            
+            const gamut = checkGamut(lV, cV, hV);
+            const isOut = displayGamut === 'p3' ? !gamut.isP3 : !gamut.isSRGB;
+            
+            const color = isOut ? 'transparent' : `lch(${lV}% ${cV} ${hV})`; 
+            stops.push(`${color} ${pct * 100}%`); 
+        } 
+        return `linear-gradient(to right, ${stops.join(', ')})`; 
+    }; 
+
+    const lightRangeData = useMemo(() => lightRanges.map((r, i) => ({ label: r.label, index: i, isActive: i === safeLIdx, data: r })), [safeLIdx, lightRanges]);
+    const chromaRangeData = useMemo(() => chromaRanges.map((r, i) => ({ label: r.label, index: i, isActive: i === safeCIdx, data: r })), [safeCIdx, chromaRanges]);
+    
+    const hueRangesData = useMemo(() => hueValues.map((val, i) => {
+        const nextVal = hueValues[i+1] !== undefined ? hueValues[i+1] : 360;
+        const maxVal = nextVal - (nextVal > val ? 1 : 0);
+        return { 
+            label: `${val}°`, 
+            index: i, 
+            isActive: i === hIdx, 
+            data: { min: val, max: maxVal > val ? maxVal : val }
+        };
+    }), [hIdx, hueValues]);
+
+    const renderCell = useCallback((rI, cI) => {
+        const { lVal, cVal, hVal, lIdx: cellL, cIdx: cellC, hIdx: cellH } = getExplorerParams(activeView, isFlipped, rI, cI);
+        
+        const gamut = checkGamut(lVal, cVal, hVal);
+        const isOut = displayGamut === 'p3' ? !gamut.isP3 : !gamut.isSRGB;
+
+        const isActive = cellL === safeLIdx && cellC === safeCIdx && cellH === hIdx;
+        
+        const anchor = getNearestAnchorIndex(cellL, cellC);
+        let noun = parsedNouns[cellH]?.[anchor] || "Hue";
+        if (cellL === 0) noun = "Nero"; else if (cellL === lightRanges.length - 1) noun = "Blanc"; else if (cellC === 0) noun = "Cinza";
+
+        return (
+            <td key={`${rI}-${cI}`} className="p-0 h-16 w-16 relative border-none" style={{zIndex: isActive ? 60 : 'auto'}}>
+                <div onClick={() => { 
+                    interactionSource.current = 'click';
+                    setL(lVal); setC(cVal); setH(hVal); 
+                }} 
+                    className={`w-full h-full rounded-md overflow-hidden transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] border border-slate-100 ${isActive ? 'scale-110 shadow-xl ring-2 ring-blue-500' : 'hover:scale-105 hover:shadow-md'}`} 
+                    style={{ backgroundColor: isOut ? 'transparent' : `lch(${lVal}% ${cVal} ${hVal})`, backgroundImage: isOut ? 'repeating-linear-gradient(45deg, #cbd5e1 0px, #cbd5e1 4px, transparent 4px, transparent 8px)' : 'none', color: lVal > 55 ? 'black' : 'white' }}
+                    data-active={isActive}>
+                    <div className="flex flex-col h-full justify-center px-1 text-center">
+                        <div className="text-[9px] font-bold opacity-70 leading-none mb-0.5">{adjectiveMatrix[cellL]?.[cellC] || ""}</div>
+                        <div className="text-[8px] leading-none opacity-90">{noun}</div>
+                    </div>
+                </div>
+            </td>
+        );
+    }, [activeView, isFlipped, getExplorerParams, safeLIdx, safeCIdx, hIdx, getNearestAnchorIndex, parsedNouns, lightRanges.length, adjectiveMatrix, displayGamut]);
+
+    // Swatch Style Logic
+    const isCanonOut = displayGamut === 'p3' ? !canonGamut.isP3 : !canonGamut.isSRGB;
+    const swatchStyle = isCanonOut ? { backgroundImage: 'repeating-linear-gradient(45deg, #cbd5e1 0px, #cbd5e1 4px, transparent 4px, transparent 8px)', backgroundColor: 'transparent' } : { backgroundColor: `lch(${canonicalL}% ${canonicalC} ${canonicalH})` };
+
+    return ( 
+    <div className="w-full h-full bg-white md:rounded-3xl shadow-xl border border-slate-100 flex flex-col overflow-hidden"> 
+    <div className="shrink-0 py-4 flex flex-col items-center bg-white z-20 shadow-sm relative"> 
+        <h1 className="text-3xl font-black tracking-tighter text-slate-900">The COLOR<span className="text-green-700">SAMI</span>FICATOR</h1> 
+        <div className="flex items-center gap-2 mt-1">
+            <span className={`text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded ${displayGamut === 'p3' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-500'}`}>
+                {displayGamut === 'p3' ? 'Display P3' : 'sRGB'}
+            </span>
+        </div>
+        <div className="absolute right-6 top-1/2 -translate-y-1/2 flex gap-2"> 
+            <Download onClick={handleExport} className="w-9 h-9 p-2 rounded-full hover:bg-slate-100 text-slate-600 cursor-pointer" />
+            <label className="p-2 rounded-full hover:bg-slate-100 text-slate-600 cursor-pointer"><Upload className="w-5 h-5" /><input type="file" onChange={handleImport} className="hidden" accept=".xlsx, .xls" /></label> 
+        </div> 
+    </div> 
+    
+    <div className="flex-1 min-h-0 flex flex-row"> 
+        <div className="w-[420px] shrink-0 border-r border-slate-100 flex flex-col p-6 pt-6 bg-white z-10 overflow-y-auto"> 
+        
+        <div className="w-full aspect-[2/1] rounded-3xl flex flex-col items-center justify-center relative overflow-hidden ring-1 ring-black/5 shrink-0 mb-4 transition-all duration-300" style={swatchStyle}> 
+            
+            <div className="absolute inset-0 bg-gradient-to-tr from-black/5 to-white/10 pointer-events-none" />
+
+            <div className="z-20 text-center flex flex-col items-center w-full px-6 drop-shadow-md"> 
+                <div className="bg-white/90 backdrop-blur text-slate-900 px-3 py-1 rounded-full text-xs font-mono font-bold mb-4 shadow-sm border border-white/50 flex items-center gap-1"><Tag className="w-3 h-3 text-blue-500" /> {currentMapping.code}</div> 
+                
+                <input 
+                    type="text" 
+                    value={tempName !== null ? tempName : fullDisplayName} 
+                    onChange={(e) => {
+                        setTempName(e.target.value);
+                        handleNameChange(e.target.value);
+                    }}
+                    onBlur={() => setTempName(null)}
+                    className="font-black text-2xl md:text-3xl w-full text-center leading-tight break-words bg-transparent border-none outline-none text-shadow-sm hover:bg-white/10 rounded transition-colors" 
+                    style={{ color: canonicalL > 50 ? 'black' : 'white', textShadow: '0 2px 10px rgba(0,0,0,0.1)' }} 
+                />
+
+                {nameWarning && (
+                    <div className="mt-2 px-3 py-1 bg-red-500/90 backdrop-blur text-white text-[10px] font-bold rounded-full flex items-center gap-1 shadow-lg animate-bounce">
+                        <AlertTriangle className="w-3 h-3" />
+                        {nameWarning}
+                    </div>
+                )}
+
+                <div className="mt-4 flex gap-2 flex-wrap justify-center"> 
+                    <div className="px-2 py-1 bg-black/40 backdrop-blur-md rounded text-[10px] font-mono text-white flex items-center gap-1">Canonical: L{Math.round(canonicalL)} • C{Math.round(canonicalC)} • H{Math.round(canonicalH)}°</div> 
+                    <div className="px-2 py-1 bg-black/40 backdrop-blur-md rounded text-[10px] font-mono text-white flex items-center gap-1"><Hash className="w-3 h-3 opacity-70" /> {canonHex}</div> 
+                    <div className="px-2 py-1 bg-white text-blue-600 backdrop-blur-md rounded text-[10px] font-black flex items-center gap-1"><Ruler className="w-3 h-3" /> ΔE {deltaE}</div> 
+                </div> 
+            </div> 
+        </div> 
+
+        <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100 space-y-2 shrink-0"> 
+            <SnapControl label="Light" value={l} setter={setL} max={100} displayVal={Math.round(l)} gradient={generateSliderBackground('light')} isActive={activeView.includes('hue') || activeView.includes('chroma')} /> 
+            <SnapControl label="Chroma" value={c} setter={setC} max={100} displayVal={Math.round(c)} gradient={generateSliderBackground('chroma')} isActive={activeView.includes('hue') || activeView.includes('light')} /> 
+            <SnapControl label="Hue" value={h} setter={setH} max={360} displayVal={Math.round(h) + "°"} gradient={generateSliderBackground('hue')} isActive={activeView.includes('chroma') || activeView.includes('light')} /> 
+        </div> 
+
+        <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 shrink-0 my-4"> 
+            <div className="text-[10px] font-bold text-slate-400 uppercase mb-3 flex items-center gap-2"><Palette className="w-3 h-3" /> Harmonies</div> 
+            <div className="flex justify-between items-center px-2"> 
+                <HarmonySwatch offset={0} label="Base" currentH={h} currentL={l} currentC={c} setH={setH} displayGamut={displayGamut} /> 
+                <div className="w-px h-6 bg-slate-200"></div> 
+                <HarmonySwatch offset={180} label="Comp" currentH={h} currentL={l} currentC={c} setH={setH} displayGamut={displayGamut} /> 
+                <HarmonySwatch offset={-30} label="Ana -" currentH={h} currentL={l} currentC={c} setH={setH} displayGamut={displayGamut} /> 
+                <HarmonySwatch offset={30} label="Ana +" currentH={h} currentL={l} currentC={c} setH={setH} displayGamut={displayGamut} /> 
+                <div className="w-px h-6 bg-slate-200"></div> 
+                <HarmonySwatch offset={120} label="Tri 1" currentH={h} currentL={l} currentC={c} setH={setH} displayGamut={displayGamut} /> 
+                <HarmonySwatch offset={240} label="Tri 2" currentH={h} currentL={l} currentC={c} setH={setH} displayGamut={displayGamut} /> 
+            </div> 
+        </div>
+
+        {/* PALETTE PLAYGROUND */}
+        <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 shrink-0 mb-4">
+            <div className="flex justify-between items-center mb-3">
+                <div className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-2"><Layers className="w-3 h-3" /> Palette Playground</div>
+                <div className="text-[9px] font-bold text-slate-300 uppercase">{palette.length}/10</div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+                {palette.map((p, i) => {
+                     const gamut = checkGamut(p.l, p.c, p.h);
+                     const isOut = displayGamut === 'p3' ? !gamut.isP3 : !gamut.isSRGB;
+                     
+                     const pBg = `lch(${p.l}% ${p.c} ${p.h})`;
+                     const style = isOut ? { backgroundImage: 'repeating-linear-gradient(45deg, #cbd5e1 0px, #cbd5e1 2px, transparent 2px, transparent 6px)', backgroundColor: 'transparent' } : { backgroundColor: pBg };
+                     return (
+                         <div key={i} onClick={() => { setL(p.l); setC(p.c); setH(p.h); }} className="w-8 h-8 rounded-lg shadow-sm border border-black/10 cursor-pointer relative group transition-transform hover:scale-110" style={style}>
+                            <div onClick={(e) => { e.stopPropagation(); setPalette(palette.filter((_, idx) => idx !== i)); }} className="absolute -top-1 -right-1 bg-white text-slate-400 hover:text-red-500 rounded-full p-0.5 shadow-md opacity-0 group-hover:opacity-100 transition-opacity">
+                                <X className="w-2 h-2" />
+                            </div>
+                         </div>
+                     );
+                })}
+                {palette.length < 10 && (
+                    <button onClick={() => setPalette([...palette, {l, c, h}])} className="w-8 h-8 rounded-lg border-2 border-dashed border-slate-200 flex items-center justify-center text-slate-300 hover:border-slate-300 hover:text-slate-400 transition-colors">
+                        <Plus className="w-4 h-4" />
+                    </button>
+                )}
+            </div>
+        </div>
+
+        <div className="mt-2 p-4 bg-blue-50 border border-blue-100 rounded-xl text-[10px] text-blue-600">
+            <h4 className="font-bold uppercase mb-1 flex items-center gap-1"><Monitor className="w-3 h-3" /> Monitor Profile: {displayGamut.toUpperCase()}</h4>
+            <p>Gamut warnings and colors are optimized for your screen capabilities.</p>
+        </div>
+        </div> 
+        
+        <div className="flex-1 flex flex-col min-w-0 bg-slate-50/50"> 
+        <div className="h-14 border-b border-slate-200 flex items-center px-6 justify-between bg-white shrink-0"> 
+            <div className="flex items-center gap-2"><Grid className="w-4 h-4 text-blue-500" /><span className="text-xs font-bold uppercase tracking-wider text-slate-500">Explorer Grid</span></div> 
+            <div className="flex items-center gap-2"> 
+                <RefreshCw onClick={() => setIsFlipped(!isFlipped)} className={`p-2 w-8 h-8 rounded hover:bg-slate-100 text-slate-500 cursor-pointer ${isFlipped ? 'text-blue-600' : ''}`} /> 
+                <select value={activeView} onChange={(e) => setActiveView(e.target.value)} className="bg-slate-100 pl-4 pr-10 py-1.5 rounded-lg text-xs font-bold text-slate-700 cursor-pointer"> 
+                    <option value="hue_pivot">HUE FIXED (L × C)</option> 
+                    <option value="chroma_pivot">CHROMA FIXED (H × L)</option> 
+                    <option value="light_pivot">LIGHT FIXED (H × C)</option> 
+                </select> 
+            </div> 
+        </div> 
+        <div className="flex-1 overflow-hidden relative p-4"> 
+            {activeView === 'hue_pivot' && ( 
+            <MatrixTable yLabel={isFlipped ? "C" : "L"} xLabel={isFlipped ? "L" : "C"} yData={isFlipped ? chromaRangeData : lightRangeData} xData={isFlipped ? lightRangeData : chromaRangeData} activeIds={{r: isFlipped ? safeCIdx : safeLIdx, c: isFlipped ? safeLIdx : safeCIdx}} renderCell={renderCell} interactionSource={interactionSource} /> 
+            )} 
+            {activeView === 'chroma_pivot' && ( 
+            <MatrixTable yLabel={isFlipped ? "L" : "H"} xLabel={isFlipped ? "H" : "L"} yData={isFlipped ? lightRangeData : hueRangesData} xData={isFlipped ? hueRangesData : lightRangeData} activeIds={{r: isFlipped ? safeLIdx : hIdx, c: isFlipped ? hIdx : safeLIdx}} renderCell={renderCell} interactionSource={interactionSource} /> 
+            )} 
+            {activeView === 'light_pivot' && ( 
+            <MatrixTable yLabel={isFlipped ? "C" : "H"} xLabel={isFlipped ? "H" : "C"} yData={isFlipped ? chromaRangeData : hueRangesData} xData={isFlipped ? hueRangesData : chromaRangeData} activeIds={{r: isFlipped ? safeCIdx : hIdx, c: isFlipped ? hIdx : safeCIdx}} renderCell={renderCell} interactionSource={interactionSource} /> 
+            )} 
+        </div> 
+        </div> 
+    </div> 
+    </div> 
+    ); 
+ }; 
+ const root = ReactDOM.createRoot(document.getElementById('root')); 
+ root.render(<ColorSAMIfier />); 
+ </script> 
+</body> 
+</html>
