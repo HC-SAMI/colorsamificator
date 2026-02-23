@@ -3,37 +3,40 @@
 <head> 
  <meta charset="UTF-8"> 
  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"> 
- <title>The COLORSAMIFICATOR - V119 Engine Fixed</title> 
+ <title>The COLORSAMIFICATOR - V124</title> 
  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script> 
  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script> 
  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script> 
  <script src="https://cdn.tailwindcss.com"></script> 
  <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script> 
- 
- <!-- FIREBASE COMPAT (Universal Support) -->
- <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
- <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
- <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
-
+ <script>
+    tailwind.config = {
+      darkMode: 'class',
+    }
+  </script>
  <style> 
  body { height: 100vh; height: 100dvh; overscroll-behavior: none; }
+ :root { --hatch-color: #cbd5e1; }
+ .dark { --hatch-color: #262626; }
  ::-webkit-scrollbar { width: 6px; height: 6px; } 
  ::-webkit-scrollbar-track { background: transparent; } 
  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; } 
+ .dark ::-webkit-scrollbar-thumb { background: #333333; } 
  ::-webkit-scrollbar-thumb:hover { background: #94a3b8; } 
+ .dark ::-webkit-scrollbar-thumb:hover { background: #555555; } 
  .scroll-hide::-webkit-scrollbar { display: none; }
  .scroll-hide { -ms-overflow-style: none; scrollbar-width: none; }
  </style> 
 </head> 
-<body class="bg-slate-200 w-screen overflow-hidden p-2 md:p-4 flex items-center justify-center font-sans"> 
+<body class="bg-slate-200 dark:bg-black w-screen overflow-hidden p-2 md:p-4 flex items-center justify-center font-sans transition-colors duration-300"> 
  <div id="root" class="w-full h-full"></div> 
  <script type="text/babel"> 
- const { useState, useMemo, useEffect, useRef, useCallback } = React; 
+ const { useState, useMemo, useEffect, useRef, useCallback, memo } = React; 
 
- const saveToLocal = (key, data) => localStorage.setItem(`colorsam_v119_${key}`, JSON.stringify(data));
+ const saveToLocal = (key, data) => localStorage.setItem(`colorsam_v124_${key}`, JSON.stringify(data));
  const getFromLocal = (key, fallback) => {
     try { 
-        const stored = localStorage.getItem(`colorsam_v119_${key}`);
+        const stored = localStorage.getItem(`colorsam_v124_${key}`);
         return stored ? JSON.parse(stored) : fallback; 
     } catch(e) { return fallback; }
  };
@@ -48,16 +51,12 @@
     const y = (l + 16) / 116;
     const x = a / 500 + y;
     const z = y - b / 200;
-    
-    // Fixed: The precise CSS Color 4 inverse transfer function
     const fInv = (n) => n > 0.20689655172413793 ? Math.pow(n, 3) : (116 * n - 16) / 903.2962962962963;
-    
     const D50 = [0.96422, 1.00000, 0.82521]; 
     return [D50[0] * fInv(x), D50[1] * fInv(y), D50[2] * fInv(z)];
  };
 
  const xyz2lin_srgb = (X, Y, Z) => {
-    // Exact D50-adapted sRGB matrix
     const r =  3.1338561 * X - 1.6168667 * Y - 0.4906146 * Z;
     const g = -0.9787684 * X + 1.9161415 * Y + 0.0334540 * Z;
     const b =  0.0719453 * X - 0.2289914 * Y + 1.4052427 * Z;
@@ -66,7 +65,6 @@
 
  const lin2srgb = (lin) => {
     const gamma = (v) => {
-        // Safe gamma curve handling for negative out-of-gamut values
         let absV = Math.abs(v);
         let res = absV <= 0.0031308 ? 12.92 * absV : 1.055 * Math.pow(absV, 1/2.4) - 0.055;
         return v < 0 ? -res : res;
@@ -82,19 +80,16 @@
  };
 
  const inGamut = ([r, g, b]) => {
-    const e = 0.001; // Standard tolerance
+    const e = 0.001; 
     return r >= -e && r <= 1+e && g >= -e && g <= 1+e && b >= -e && b <= 1+e;
  };
 
  const realLchToRgb = (l, c, h) => {
-    // Explicit anchor locks
     if (l >= 100) return { r: 255, g: 255, b: 255, outOfGamut: false };
     if (l <= 0) return { r: 0, g: 0, b: 0, outOfGamut: false };
-
     const [L, a, b] = lch2lab(l, c, h);
     const [X, Y, Z] = lab2xyz(L, a, b);
     let linRGB = xyz2lin_srgb(X, Y, Z);
-
     let outOfGamut = !inGamut(linRGB);
     
     if (outOfGamut) {
@@ -110,10 +105,8 @@
         const [mX, mY, mZ] = lab2xyz(mL, ma, mb);
         linRGB = xyz2lin_srgb(mX, mY, mZ);
     }
-
     const [rr, gg, bb] = lin2srgb(linRGB);
     const clamp = (v) => Math.round(Math.max(0, Math.min(1, v)) * 255);
-
     return { r: clamp(rr), g: clamp(gg), b: clamp(bb), outOfGamut };
  };
 
@@ -126,9 +119,192 @@
     return { isSRGB: inGamut(linSRGB), isP3: inGamut(linP3) };
  };
  
- const checkGamut = checkGamutStatus; // Alias
+ const checkGamut = checkGamutStatus;
 
- // --- CONSTANTS ---
+ const getMappedCssColor = (l, c, h, gamut) => {
+    if (l >= 100) return '#FFFFFF';
+    if (l <= 0) return '#000000';
+    
+    const [L, a, b] = lch2lab(l, c, h);
+    const [X, Y, Z] = lab2xyz(L, a, b);
+    let linColor = gamut === 'p3' ? xyz2lin_p3(X, Y, Z) : xyz2lin_srgb(X, Y, Z);
+    
+    if (!inGamut(linColor)) {
+        let minC = 0; let maxC = c; let bestC = 0;
+        for (let i = 0; i < 20; i++) {
+            const midC = (minC + maxC) / 2;
+            const [tL, ta, tb] = lch2lab(l, midC, h);
+            const [tX, tY, tZ] = lab2xyz(tL, ta, tb);
+            const tLin = gamut === 'p3' ? xyz2lin_p3(tX, tY, tZ) : xyz2lin_srgb(tX, tY, tZ);
+            if (inGamut(tLin)) { bestC = midC; minC = midC; } else { maxC = midC; }
+        }
+        const [mL, ma, mb] = lch2lab(l, bestC, h);
+        const [mX, mY, mZ] = lab2xyz(mL, ma, mb);
+        linColor = gamut === 'p3' ? xyz2lin_p3(mX, mY, mZ) : xyz2lin_srgb(mX, mY, mZ);
+    }
+
+    const [v1, v2, v3] = lin2srgb(linColor); 
+    const clamp = (v) => Math.max(0, Math.min(1, v));
+    
+    if (gamut === 'p3') {
+        return `color(display-p3 ${clamp(v1).toFixed(4)} ${clamp(v2).toFixed(4)} ${clamp(v3).toFixed(4)})`;
+    } else {
+        const r = Math.round(clamp(v1) * 255);
+        const g = Math.round(clamp(v2) * 255);
+        const b = Math.round(clamp(v3) * 255);
+        return `rgb(${r},${g},${b})`;
+    }
+ };
+
+ // ============================================================================
+ // DATA CONFIGURATION: ADJECTIVES & NOUNS
+ // ============================================================================
+
+ const RAW_ADJECTIVES_CSV = `L \\ C,C1 (Muted),C2,C3,C4,C5 (Mid),C6 (Mid),C7,C8,C9,C10 (Vivid)
+L20 (Lightest),Pale,Faint,Washed,Bare,Slight,Clean,Pure,Crisp,Stark,Bright
+L19,Hushed,Calm,Quiet,Still,Tame,Plain,Flat,Soft,Light,Fresh
+L18,Mild,Gentle,Tender,Mellow,Clear,Keen,Sharp,Brisk,Bold,Wild
+L17,Modest,Simple,Subtle,Firm,Strong,Vivid,Fierce,Grand,Prime,High
+L16,Dim,Faded,Placid,Staid,Basic,Main,Primary,Leading,Foremost,Peak
+L15,Solid,Rich,Luxe,Lavish,Epic,Proud,Regal,Noble,Royal,Peerless
+L14,Shaded,Dusky,Deep,Stout,Robust,Mighty,Matchless,Select,Rare,Unique
+L13,Covert,Secret,Hidden,Mystic,Mythic,Fabled,Lunar,Astral,Cosmic,Solar
+L12,Hazy,Misty,Foggy,Clouded,Veiled,Obscure,Opaque,Lucid,Vibrant,Dynamic
+L11,Silent,Muffled,Somber,Solemn,Serious,Serene,Tranquil,Even,Level,Consistent
+L10 (Center),Neutral,Core,Base,Suave,Chic,Smart,Neat,Trim,Slick,Dapper
+L09,Ashen,Smoky,Pearly,Chalky,Milky,Snowy,Icy,Starry,Breezy,Airy
+L08,Inky,Starless,Moonless,Benthic,Abyssal,Profound,Dark,Utmost,Supreme,Extreme
+L07,Absolute,Total,Deepest,Darkest,Highest,Greatest,Grandest,Chief,Ultimate,Paramount
+L06,Brilliant,Radiant,Luminous,Shining,Glowing,Gleaming,Dazzling,Blazing,Flashing,Striking
+L05,Piercing,Brazen,Daring,Heroic,Active,Kinetic,Electric,Intense,Fervent,Potent
+L04,Ancient,Primal,Old,Vintage,Classic,Historic,Timeworn,Early,First,Pristine
+L03,Rustic,Rural,Native,Local,Formal,Proper,Stately,August,Majestic,Splendid
+L02,Sturdy,Hardy,Stable,Steadfast,Resolute,Grounded,Anchored,Steady,Firm,Fixed
+L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned,Muted,Subdued`;
+
+ const RAW_NOUNS_CSV = `Hue Angle,Shade (L < 50),Tint (L ≥ 50)
+0°,Crimson,Rose
+3°,Scarlet,Poppy
+6°,Brick,Tulip
+9°,Rust,Blush
+12°,Tomato,Coral
+15°,Clay,Peach
+18°,Copper,Melon
+21°,Cocoa,Apricot
+24°,Nutmeg,Mango
+27°,Mocha,Amber
+30°,Truffle,Bisque
+33°,Coffee,Cashmere
+36°,Bronze,Topaz
+39°,Sable,Honey
+42°,Fawn,Daisy
+45°,Camel,Butter
+48°,Sand,Oriole
+51°,Brass,Wheat
+54°,Gold,Vanilla
+57°,Straw,Lily
+60°,Pollen,Saffron
+63°,Ochre,Sun
+66°,Mustard,Fleece
+69°,Hay,Corn
+72°,Yolk,Lemon
+75°,Canary,Finch
+78°,Pear,Dew
+81°,Olive,Bud
+84°,Caper,Lichen
+87°,Matcha,Chartreuse
+90°,Moss,Vine
+93°,Ivy,Agave
+96°,Cactus,Fennel
+99°,Basil,Lime
+102°,Kelp,Reed
+105°,Sage,Celery
+108°,Forest,Apple
+111°,Jungle,Meadow
+114°,Clover,Pasture
+117°,Hunter,Sprite
+120°,Frond,Sprout
+123°,Canopy,Spring
+126°,Tundra,Fern
+129°,Basin,Oasis
+132°,Tropics,Glade
+135°,Thicket,Fauna
+138°,Shamrock,Glacier
+141°,Teal,Seafoam
+144°,Marine,Aqua
+147°,Ocean,Breeze
+150°,Harbor,Ice
+153°,Bayou,Shell
+156°,River,Lake
+159°,Cove,Brook
+162°,Tide,Stream
+165°,Surf,Pool
+168°,Atoll,Shoal
+171°,Fjord,Ripple
+174°,Urchin,Splash
+177°,Marlin,Azure
+180°,Cobalt,Air
+183°,Sapphire,Rain
+186°,Lapis,Cloud
+189°,Lagoon,Water
+192°,Trench,Frost
+195°,Whale,Jay
+198°,Storm,Robin
+201°,Slate,Bay
+204°,Falcon,Jewel
+207°,Heron,Gem
+210°,Denim,Opal
+213°,Baltic,Pearl
+216°,Raven,Dove
+219°,Crow,Bell
+222°,Ink,Petal
+225°,Night,Crystal
+228°,Shadow,Aster
+231°,Midnight,Bluebell
+234°,Navy,Indigo
+237°,Bunting,Iris
+240°,Lupin,Crocus
+243°,Pansy,Lilac
+246°,Tanzanite,Thistle
+249°,Concord,Mauve
+252°,Cassis,Blossom
+255°,Amethyst,Heather
+258°,Plum,Lavender
+261°,Prune,Bloom
+264°,Raisin,Wisteria
+267°,Fig,Phlox
+270°,Mulberry,Petunia
+273°,Jam,Allium
+276°,Violet,Lotus
+279°,Grape,Pansy
+282°,Murex,Peony
+285°,Orchid,Quartz
+288°,Dahlia,Diamond
+291°,Cosmos,Stone
+294°,Claret,Prism
+297°,Port,Guava
+300°,Syrah,Rosebud
+303°,Shiraz,Carnation
+306°,Sangria,Mallow
+309°,Merlot,Zinnia
+312°,Bordeaux,Macaw
+315°,Malbec,Ballet
+318°,Fuchsia,Pink
+321°,Magenta,Flamingo
+324°,Berry,Sunset
+327°,Ruby,Cherry
+330°,Garnet,Radish
+333°,Currant,Dragonfruit
+336°,Rhubarb,Punch
+339°,Pepper,Bubblegum
+342°,Chili,Sorbet
+345°,Cayenne,Taffy
+348°,Spice,Jelly
+351°,Cardinal,Candy
+354°,Fire,Sweet
+357°,Strawberry,Heart`;
+
+ // --- CONSTANTS & MIGRATION DATA ---
  const generateLightRanges = () => {
     const ranges = [{ label: "A", min: 0, max: 0, mid: 0 }]; 
     for (let i = 0; i < 19; i++) {
@@ -155,40 +331,59 @@
  const NEW_CHROMA_RANGES = generateChromaRanges();
  const NEW_HUE_VALUES = Array.from({length: 120}, (_, i) => i * 3);
  const DEFAULT_ANCHORS = [{ label: "Dark", l: 25, c: 30 }, { label: "Light", l: 75, c: 30 }];
- 
- // --- MIGRATION DATA ---
- const OLD_ADJECTIVES = [["", "", "", "", "", "", "", "", "", "", "", ""], ["Void", "Null", "Pitch", "Dark", "Murky", "Stygian", "Hollow", "Deepest", "Bottom", "Under", "Nether", "Crypt"], ["Inky", "Raven", "Sable", "Shaded", "Opaque", "Vast", "Core", "Total", "Ultra", "Hyper", "Blind", "Grim"], ["Steely", "Dense", "Deep", "Hard", "Rigid", "Stern", "Massive", "Major", "Main", "Mega", "Iron", "Lead"], ["Dim", "Dusk", "Matte", "Solid", "Stout", "Strong", "Mighty", "Potent", "Power", "Force", "Tough", "Hardy"], ["Muted", "Plain", "Flat", "Dry", "Base", "Raw", "Firm", "Heavy", "Grand", "Epic", "Regal", "Noble"], ["Dusty", "Ashen", "Tame", "Smooth", "Pure", "Prime", "Rich", "Lush", "Ripe", "True", "Bold", "Wild"], ["Foggy", "Hazy", "Mild", "Crisp", "Light", "Keen", "Sharp", "Electric", "Vibrant", "Neon", "Flux", "Pulse"], ["Pale", "Fair", "Clean", "Fresh", "Clear", "Bright", "Sunny", "Glowing", "Shining", "Spark", "Luster", "Gloss"], ["Faint", "Thin", "Fine", "Lite", "Soft", "Bleached", "Luminous", "Brilliant", "Beam", "Ray", "Gleam", "Silky"], ["Stark", "Sheer", "Wispy", "Snowy", "Chalky", "Blinding", "Radiant", "Beaming", "Flash", "Flare", "Solar", "White"], ["", "", "", "", "", "", "", "", "", "", "", ""]];
- const OLD_NOUNS = ["Mallow,Rose,Raisin,Garnet,Petal,Cerise", "Mauve,Pink,Prune,Rubellite,Blossom,Fuchsia", "Heather,Magenta,Fig,Tourmaline,Orchid,Neon", "Lilac,Berry,Mulberry,Spinel,Bud,Laser", "Dust,Ruby,Wine,Rhodolite,Rose,Hot", "Ash,Crimson,Merlot,Zircon,Pink,Pop", "Stone,Scarlet,Currant,Beryl,Salmon,Flash", "Clay,Vermilion,Brick,Jasper,Coral,Beam", "Sand,Red,Rust,Agate,Peach,Ray", "Silt,Cherry,Mahogany,Carnelian,Melon,Glow", "Pottery,Poppy,Carob,Agate,Almond,Mango", "Nutmeg,Nasturtium,Mocha,Sardonyx,Buff,Sorbet", "Terracotta,Paprika,Cocoa,Carnelian,Ecru,Sherbet", "Curry,Lantern,Bean,Magma,Dough,Squash", "Sahara,Kumquat,Peat,Volcano,Fawn,Yam", "Arid,Titian,Soil,Obsidian,Beige,Mandarin", "Bronze,Carrot,Grit,Root,Sand,Satsuma", "Copper,Zinnia,Leather,Cove,Dune,Calendula", "Brass,Tiger,Saddle,Bark,Wheat,Sunflower", "Pyrite,Ginger,Hide,Cavern,Grain,Daylily", "Mesa,Orange,Bison,Tortoise,Cream,Gold", "Bronze,Marigold,Clove,Topaz,Biscuit,Apricot", "Ochre,Squash,Nutmeg,Amber,Wheat,Maize", "Spice,Tangerine,Truffle,Citrine,Grain,Cream", "Cumin,Yam,Coffee,Tiger,Dough,Manila", "Camel,Clementine,Caraway,Pyrite,Ecru,Buff", "Fawn,Mango,Umber,Cognac,Oat,Blond", "Dijon,Saffron,Malt,Brandy,Sol,Vanilla", "Mustard,Turmeric,Stout,Whiskey,Beige,Banana", "Curry,Gold,Hemp,Bourbon,Sand,Lager", "Brass,Sunflower,Burlap,Cider,Straw,Lemon", "Straw,Dandelion,Thatch,Ale,Parchment,Chiffon", "Khaki,Canary,Rope,Mead,Ivory,Butter", "Gamba,Solar,Cork,Syrup,Bone,Custard", "Rattan,Sulfur,Twine,Toffee,Linen,Daffodil", "Stalk,Mimosa,Reed,Caramel,Lace,Pineapple", "Weave,Buttercup,Cane,Butterscotch,Silk,Daisy", "Chino,Honey,Cask,Molasses,Cloud,Corn", "Husk,Medallion,Bark,Treacle,Pearl,Popcorn", "Suede,Bumblebee,Silt,Root,Alabaster,Cheese", "Dust,Jonquil,Soil,Fossil,Cotton,Primrose", "Raffia,Dandelion,Rattan,Resin,Parchment,Chiffon", "Agave,Zest,Wicker,Sap,Ivory,Butter", "Flaxen,Citron,Bamboo,Comb,Tusk,Custard", "Straw,Bumblebee,Reed,Hive,Linen,Daffodil", "Ecru,Mace,Cane,Pollen,Lace,Pineapple", "Sand,Canary,Thatch,Wax,Silk,Daisy", "Oat,Mimosa,Rope,Ingot,Cloud,Corn", "Wheat,Flax,Cork,Nugget,Pearl,Popcorn", "Khaki,Gorse,Fiber,Bullion,Alabaster,Cheese", "Gamba,Corn,Twine,Gilt,Cotton,Primrose", "Husk,Butter,Bale,Or,Chalk,Vanilla", "Suede,Lemon,Hay,Medal,Milk,Meringue", "Dust,Solar,Hessian,Trophy,Foam,Wafer", "Cream,Jonquil,Jute,Crown,Mist,Buttermilk", "Custard,Titan,Cord,Ocre,Haze,Shortbread", "Blond,Medallion,Bran,Sulphur,Puff,Pastry", "Camel,Cadmium,Grain,Pyrite,Down,Cookie", "Fawn,Genista,Seed,Brass,Feather,Cake", "Dijon,Aureolin,Husk,Bronze,Vapor,Frosting", "Mustard,Yellow,Loam,Mineral,Snow,Icing", "Pickle,Acid,Olive,Sulphur,Rind,Tart", "Caper,Quince,Pesto,Pyrite,Pulp,Dill", "Lichen,Reed,Algae,Marcasite,Shoot,Endive", "Moss,Absinthe,Kelp,Zircon,Bud,Fennel", "Sage,Peridot,Nori,Olivine,Stem,Anise", "Brine,Linden,Hemp,Sphene,Aloe,Tea", "Fern,Verdet,Jute,Serpent,Palm,Melon", "Basil,Chrysolite,Sisal,Diopside,Silk,Apple", "Laurel,Pear,Spinach,Idocrase,Shea,Mint", "Myrtle,Chartreuse,Kale,Tourmaline,Foam,Glow", "Cactus,Pomelo,Collard,Dragon,Mist,Volt", "Agave,Wasabi,Chard,Viper,Dew,Ray", "Reseda,Celadon,Nettle,Lizard,Spray,Laser", "Willow,Pistachio,Sorrel,Iguana,Balm,Neon", "Thyme,Avocado,Herbal,Mamba,Whisp,Limeade", "Oregano,Lemongrass,Verdant,Python,Breeze,Zest", "Savory,Verbena,Grove,Cobra,Puff,Sprite", "Marjoram,Beryl,Copse,Drake,Air,Fizz", "Lichen,Neon,Thicket,Wyvern,Vapor,Spark", "Taiga,Lime,Forest,Basilisk,Snow,Flux", "Basil,Bud,Thicket,Zircon,Dew,Mint", "Oregano,Sprout,Grove,Spinel,Aloe,Foam", "Sage,Kiwi,Copse,Garnet,Shea,Mist", "Thyme,Parrot,Brake,Tsavorite,Balm,Spray", "Bay,Mantis,Hedge,Uvarovite,Whisp,Fizz", "Laurel,Fern,Shrub,Verdite,Cloud,Ray", "Savory,Eden,Bush,Chrome,Vapor,Volt", "Nettle,Cactus,Bracken,Emerald,Air,Beam", "Hemp,Matcha,Brier,Beryl,Puff,Flash", "Tea,Foliage,Thorn,Jade,Mist,Neon", "Matcha,Iguana,Bramble,Malachite,Soft,Glow", "Pesto,Leaf,Undergrowth,Serpentine,Cotton,Pulse", "Sage,Olive,Thicket,Peridot,Aloe,Beam", "Laurel,Fern,Grove,Verdite,Mint,Ray", "Myrtle,Moss,Forest,Emerald,Foam,Glow", "Basil,Algae,Jungle,Jade,Dew,Volt", "Thyme,Kelp,Copse,Malachite,Mist,Neon", "Teal,Seaweed,Abyss,Beryl,Aqua,Cyan", "Cyan,Spruce,Deep,Turquoise,Sky,Electric", "Azure,Pine,Ocean,Sapphire,Ice,Bolt", "Cobalt,Denim,Midnight,Lapis,Frost,Laser", "Blue,Navy,Abyss,Indigo,Mist,Ray", "Indigo,Ink,Void,Violet,Lilac,Glow", "Violet,Grape,Night,Amethyst,Orchid,Neon", "Purple,Plum,Shadow,Magenta,Rose,Beam", "Magenta,Berry,Deep,Fuchsia,Pink,Flash", "Pink,Rose,Wine,Ruby,Blush,Glow", "Red,Brick,Blood,Garnet,Coral,Spark", "Orange,Rust,Clay,Amber,Peach,Ray", "Gold,Ochre,Earth,Topaz,Cream,Beam", "Yellow,Dijon,Sand,Citrine,Lemon,Flash", "Lime,Moss,Slime,Peridot,Mint,Glow"];
 
  const generateAdjectiveMatrix = () => {
-    const matrix = [];
-    for(let l=0; l<22; l++) {
-        const row = [];
-        for(let c=0; c<10; c++) {
-            const oldL = Math.floor(l * (12/22));
-            const oldC = Math.floor(c * (12/10));
-            row.push(OLD_ADJECTIVES[Math.min(11, oldL)][Math.min(11, oldC)] || "");
+    const lines = RAW_ADJECTIVES_CSV.trim().split('\n').map(l => l.trim()).filter(l => l && !l.toLowerCase().startsWith('l \\ c'));
+    const matrix = Array(22).fill(null).map(() => Array(10).fill(""));
+
+    lines.forEach(line => {
+        const parts = line.split(',');
+        const label = parts[0] || "";
+        const match = label.match(/L(\d+)/i);
+        if (match) {
+            const lVal = parseInt(match[1]);
+            if (lVal >= 1 && lVal <= 20) {
+                const row = parts.slice(1, 11).map(s => s.trim());
+                while(row.length < 10) row.push("");
+                matrix[lVal] = row;
+            }
         }
-        matrix.push(row);
-    }
+    });
+
     return matrix;
  };
 
  const generateNounData = () => {
-    const nouns = [];
-    for(let i=0; i<120; i++) {
-        const deg = i * 3;
-        let oldIdx = 0;
-        if (deg <= 120) oldIdx = Math.round(deg / 2);
-        else oldIdx = 60 + Math.round((deg - 120) / 6);
-        oldIdx = Math.max(0, Math.min(OLD_NOUNS.length - 1, oldIdx));
-
-        const oldRowParts = OLD_NOUNS[oldIdx].split(',');
-        const darkNoun = oldRowParts[2] || oldRowParts[3] || oldRowParts[1] || "Hue";
-        const lightNoun = oldRowParts[0] || oldRowParts[5] || oldRowParts[4] || "Hue";
-        nouns.push(`${darkNoun},${lightNoun}`);
-    }
+    const lines = RAW_NOUNS_CSV.trim().split('\n').map(l => l.trim()).filter(l => l && !l.toLowerCase().startsWith('hue'));
+    const nouns = Array(120).fill("Hue,Hue");
+    
+    lines.forEach((line) => {
+        const parts = line.split(',');
+        const angleMatch = (parts[0] || "").match(/\d+/);
+        if (angleMatch) {
+            const angle = parseInt(angleMatch[0]);
+            const idx = Math.round(angle / 3);
+            if (idx >= 0 && idx < 120) {
+                nouns[idx] = `${(parts[1] || "Hue").trim()},${(parts[2] || "Hue").trim()}`;
+            }
+        }
+    });
     return nouns;
+ };
+
+ // Safely returns the index for a value within custom range maps
+ const getRangeIndex = (val, ranges) => {
+    const rounded = Math.round(val);
+    let idx = ranges.findIndex(rg => rounded >= rg.min && rounded <= rg.max);
+    if (idx !== -1) return idx;
+    
+    let closest = 0;
+    let minDiff = Infinity;
+    ranges.forEach((rg, i) => {
+        const diff = Math.abs(val - rg.mid);
+        if (diff < minDiff) { minDiff = diff; closest = i; }
+    });
+    return closest;
  };
 
  // --- COMPONENTS ---
@@ -203,14 +398,60 @@
  const Palette = ({ className }) => <Icon className={className}><circle cx="13.5" cy="6.5" r=".5" fill="currentColor" /><circle cx="17.5" cy="10.5" r=".5" fill="currentColor" /><circle cx="8.5" cy="7.5" r=".5" fill="currentColor" /><circle cx="6.5" cy="12.5" r=".5" fill="currentColor" /><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.093 0-.84.672-1.531 1.514-1.531h2.418c4.281 0 7.793-3.351 7.793-7.609C24.496 4.672 18.902 2 12 2Z" /></Icon>; 
  const Hash = ({ className }) => <Icon className={className}><line x1="4" x2="20" y1="9" y2="9" /><line x1="4" x2="20" y1="15" y2="15" /><line x1="10" x2="8" y1="3" y2="21" /><line x1="16" x2="14" y1="3" y2="21" /></Icon>; 
  const Ruler = ({ className }) => <Icon className={className}><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/></Icon>;
- const Sparkles = ({ className, onClick }) => <Icon onClick={onClick} className={className}><path d="m12 3 1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M3 5h4"/><path d="M21 17v4"/><path d="M19 19h4"/></Icon>;
  const Layers = ({ className }) => <Icon className={className}><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" /><polyline points="2 12 12 17 22 12" /></Icon>;
  const Plus = ({ className }) => <Icon className={className}><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></Icon>;
- const X = ({ className }) => <Icon className={className}><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></Icon>;
+ const X = ({ className, onClick }) => <Icon onClick={onClick} className={className}><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></Icon>;
  const Monitor = ({ className }) => <Icon className={className}><rect width="20" height="14" x="2" y="3" rx="2" /><line x1="8" x2="16" y1="21" y2="21" /><line x1="12" x2="12" y1="17" y2="21" /></Icon>;
  const AlertTriangle = ({ className }) => <Icon className={className}><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" /><line x1="12" x2="12" y1="9" y2="13" /><line x1="12" x2="12.01" y1="17" y2="17" /></Icon>;
- const Cloud = ({ className }) => <Icon className={className}><path d="M17.5 19c0-1.7-1.3-3-3-3h-1.1c-.2-2.3-2.1-4-4.4-4-2.5 0-4.5 1.8-4.9 4.2C1.9 16.5 0 18.5 0 21s2 4.5 4.5 4.5h13c2.5 0 4.5-2 4.5-4.5S20 16.5 17.5 19zM13 13l-3-3-3 3M10 10v9" /></Icon>; 
- const CloudOff = ({ className }) => <Icon className={className}><path d="M22.61 16.95A5 5 0 0 0 18 10h-1.26a8 8 0 0 0-7.05-6M5 5a8 8 0 0 0 4 7h1.18a3 3 0 0 0-.44 10.3M2 2l20 20" /></Icon>;
+ const Moon = ({ className, onClick }) => <Icon onClick={onClick} className={className}><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></Icon>;
+ const Sun = ({ className, onClick }) => <Icon onClick={onClick} className={className}><circle cx="12" cy="12" r="4" /><path d="M12 2v2" /><path d="M12 20v2" /><path d="m4.93 4.93 1.41 1.41" /><path d="m17.66 17.66 1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" /></Icon>;
+ const HelpCircle = ({ className, onClick }) => <Icon onClick={onClick} className={className}><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><path d="M12 17h.01" /></Icon>;
+ const UndoIcon = ({ className, onClick }) => <Icon onClick={onClick} className={className}><path d="M3 7v6h6" /><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.6L3 13" /></Icon>;
+ const RedoIcon = ({ className, onClick }) => <Icon onClick={onClick} className={className}><path d="M21 7v6h-6" /><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.6L21 13" /></Icon>;
+ const ZoomIn = ({ className, onClick }) => <Icon onClick={onClick} className={className}><circle cx="11" cy="11" r="8" /><line x1="21" x2="16.65" y1="21" y2="16.65" /><line x1="11" x2="11" y1="8" y2="14" /><line x1="8" x2="14" y1="11" y2="11" /></Icon>;
+ const ZoomOut = ({ className, onClick }) => <Icon onClick={onClick} className={className}><circle cx="11" cy="11" r="8" /><line x1="21" x2="16.65" y1="21" y2="16.65" /><line x1="8" x2="14" y1="11" y2="11" /></Icon>;
+
+ const HelpModal = ({ onClose }) => (
+    <div className="fixed inset-0 bg-neutral-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+        <div className="bg-white dark:bg-neutral-950 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col border border-transparent dark:border-neutral-800">
+            <div className="flex justify-between items-center p-4 md:p-6 border-b border-slate-100 dark:border-neutral-900">
+                <h2 className="text-xl md:text-2xl font-black text-slate-800 dark:text-neutral-100 flex items-center gap-2">
+                    <HelpCircle className="w-6 h-6 text-blue-500" /> App Guide
+                </h2>
+                <X onClick={onClose} className="w-6 h-6 cursor-pointer text-slate-400 hover:text-slate-600 dark:hover:text-neutral-300" />
+            </div>
+            <div className="p-4 md:p-6 overflow-y-auto space-y-6 text-slate-600 dark:text-neutral-300 text-sm custom-scroll">
+                <section>
+                    <h3 className="font-bold text-lg text-slate-800 dark:text-neutral-100 mb-2">Interface Overview</h3>
+                    <ul className="list-disc pl-5 space-y-2">
+                        <li><strong>Explorer Grid:</strong> A 2D matrix that lets you explore the color space. It locks one attribute (like Hue) and plots the other two against each other. Click cells to jump to colors, and use (+)(-) to zoom.</li>
+                        <li><strong>Harmonies:</strong> Automatically generates mathematically related colors (analogous, complementary, triadic) based on your current selection.</li>
+                        <li><strong>Palette Playground:</strong> A staging area to save, compare, and collect up to 10 colors for your project. Click the '+' to save the active color.</li>
+                        <li><strong>Naming & Exporting:</strong> Click the large text in the preview box to assign custom color names. Use the download icon to export your complete color definitions to a spreadsheet.</li>
+                    </ul>
+                </section>
+                <section>
+                    <h3 className="font-bold text-lg text-slate-800 dark:text-neutral-100 mb-2">Understanding Color Values</h3>
+                    <p className="mb-2"><strong>LCH</strong> is a perceptually uniform color space, meaning it scales in a way that closely matches human vision.</p>
+                    <ul className="list-disc pl-5 space-y-2">
+                        <li><strong>L (Lightness):</strong> Ranges from 0 (pure black) to 100 (pure white).</li>
+                        <li><strong>C (Chroma):</strong> Measures the intensity or saturation. 0 is a pure gray. Higher numbers mean more vivid colors.</li>
+                        <li><strong>H (Hue):</strong> The actual color plotted on a 360-degree circle (e.g., 0° is Red, 120° is Green, 240° is Blue).</li>
+                        <li><strong>ΔE (Delta E):</strong> A metric that measures the visual distance between two colors. Here, it shows how far your custom slider adjustments have strayed from the nearest "locked" grid coordinate.</li>
+                    </ul>
+                </section>
+                <section>
+                    <h3 className="font-bold text-lg text-slate-800 dark:text-neutral-100 mb-2">Gamut Warnings</h3>
+                    <p>Not all mathematical LCH combinations can be physically displayed by standard monitors. These are considered "out of gamut."</p>
+                    <div className="mt-2 flex items-center gap-3">
+                        <div className="w-10 h-10 shrink-0 rounded border border-slate-300 dark:border-neutral-800" style={{backgroundColor: '#3b82f6', backgroundImage: 'repeating-linear-gradient(45deg, var(--hatch-color) 0px, var(--hatch-color) 4px, transparent 4px, transparent 8px)'}}></div>
+                        <span className="text-sm">If you see these stripes on a cell or swatch, the precise color cannot be displayed perfectly accurately on your screen. The app will automatically render the closest visual match it can.</span>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </div>
+ );
 
  const SnapControl = ({ label, value, setter, max, displayVal, gradient, isInverted, isActive }) => { 
     const [localText, setLocalText] = useState(displayVal); 
@@ -222,25 +463,82 @@
         else { if (val < 0) val = 0; if (val > max) val = max; setter(val); } 
     }; 
     return ( 
-    <div className={`flex flex-col gap-2 mb-4 p-2 rounded-xl transition-all duration-300 ${isActive ? 'bg-blue-50 ring-2 ring-blue-500 shadow-sm' : 'hover:bg-slate-50'}`}> 
-    <div className="flex justify-between items-center text-xs font-bold uppercase text-slate-500"> 
-        <span className={isActive ? 'text-blue-700' : ''}>{label}</span> 
-        <input type="text" value={localText} onChange={(e) => setLocalText(e.target.value)} onBlur={commitChange} onKeyDown={(e) => e.key === 'Enter' && commitChange()} className={`font-mono text-right w-12 bg-transparent border-b ${isActive ? 'border-blue-300 text-blue-700' : 'border-slate-300'} focus:border-blue-500 focus:outline-none`} /> 
+    <div className={`flex flex-col gap-2 mb-4 p-2 rounded-xl transition-all duration-300 ${isActive ? 'bg-blue-50 dark:bg-blue-900/30 ring-2 ring-blue-500 shadow-sm' : 'hover:bg-slate-50 dark:hover:bg-neutral-900/50'}`}> 
+    <div className="flex justify-between items-center text-xs font-bold uppercase text-slate-500 dark:text-neutral-400"> 
+        <span className={isActive ? 'text-blue-700 dark:text-blue-400' : ''}>{label}</span> 
+        <input type="text" value={localText} onChange={(e) => setLocalText(e.target.value)} onBlur={commitChange} onKeyDown={(e) => e.key === 'Enter' && commitChange()} className={`font-mono text-right w-12 bg-transparent border-b ${isActive ? 'border-blue-300 text-blue-700 dark:border-blue-500 dark:text-blue-400' : 'border-slate-300 dark:border-neutral-700'} focus:border-blue-500 focus:outline-none`} /> 
     </div> 
     <div className="flex items-center gap-3"> 
-        <button onClick={() => setter(isInverted ? Math.min(max, value + 1) : Math.max(0, value - 1))} className={`w-8 h-8 flex items-center justify-center rounded-full border shadow-sm transition-colors ${isActive ? 'bg-blue-100 border-blue-200 text-blue-700' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}><ChevronLeft className="w-4 h-4" /></button> 
+        <button onClick={() => setter(isInverted ? Math.min(max, value + 1) : Math.max(0, value - 1))} className={`w-8 h-8 flex items-center justify-center rounded-full border shadow-sm transition-colors ${isActive ? 'bg-blue-100 border-blue-200 text-blue-700 dark:bg-blue-900/50 dark:border-blue-800 dark:text-blue-300' : 'bg-white dark:bg-neutral-900 border-slate-200 dark:border-neutral-800 text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800'}`}><ChevronLeft className="w-4 h-4" /></button> 
         <div className="relative flex-1 h-6"> 
         <input type="range" min="0" max={max} value={isInverted ? max - value : value} onChange={(e) => { const val = parseInt(e.target.value); setter(isInverted ? max - val : val); }} className="w-full h-full absolute top-0 left-0 z-20 opacity-0 cursor-pointer appearance-none bg-transparent" /> 
-        <div className="w-full h-3 rounded-full absolute top-1.5 z-0 border border-black/5" style={{ background: gradient, backgroundSize: '100% 100%' }} /> 
-        <div className="h-6 w-6 bg-white border border-slate-300 rounded-full shadow-md absolute top-0 z-10 pointer-events-none transition-transform flex items-center justify-center text-[10px]" style={{ left: `calc(${(((isInverted ? max - value : value) / max) * 100)}% - 12px)` }} /> 
+        <div className="w-full h-3 rounded-full absolute top-1.5 z-0 border border-black/10 dark:border-white/10" style={{ background: gradient, backgroundSize: '100% 100%' }} /> 
+        <div className="h-6 w-6 bg-white dark:bg-neutral-200 border border-slate-300 dark:border-neutral-500 rounded-full shadow-md absolute top-0 z-10 pointer-events-none transition-transform flex items-center justify-center" style={{ left: `calc(${(((isInverted ? max - value : value) / max) * 100)}% - 12px)` }} /> 
         </div> 
-        <button onClick={() => setter(isInverted ? Math.max(0, value - 1) : Math.min(max, value + 1))} className={`w-8 h-8 flex items-center justify-center rounded-full border shadow-sm transition-colors ${isActive ? 'bg-blue-100 border-blue-200 text-blue-700' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}><ChevronRight className="w-4 h-4" /></button> 
+        <button onClick={() => setter(isInverted ? Math.max(0, value - 1) : Math.min(max, value + 1))} className={`w-8 h-8 flex items-center justify-center rounded-full border shadow-sm transition-colors ${isActive ? 'bg-blue-100 border-blue-200 text-blue-700 dark:bg-blue-900/50 dark:border-blue-800 dark:text-blue-300' : 'bg-white dark:bg-neutral-900 border-slate-200 dark:border-neutral-800 text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800'}`}><ChevronRight className="w-4 h-4" /></button> 
     </div> 
     </div> 
     ); 
  }; 
 
- const MatrixTable = ({ yData, xData, yLabel, xLabel, renderCell, activeIds, interactionSource }) => { 
+ // MEMOIZED COMPONENTS FOR PERFORMANCE (Math calculation decoupled from Render loops)
+ const MatrixCell = memo(({ rI, cI, isActive, cellL, cellC, lVal, cVal, hVal, noun, adj, displayGamut, onClick }) => {
+    
+    // Decoupled expensive gamut mapping
+    const isOut = useMemo(() => {
+        const gamutStatus = checkGamut(lVal, cVal, hVal);
+        return displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
+    }, [lVal, cVal, hVal, displayGamut]);
+
+    // Decoupled expensive CSS RGB resolution mapping
+    const cellColor = useMemo(() => {
+        return getMappedCssColor(lVal, cVal, hVal, displayGamut);
+    }, [lVal, cVal, hVal, displayGamut]);
+
+    if ((cellL === 0 || cellL === 21) && cellC > 0) {
+        return <td className="p-0 border-none bg-slate-50/50 dark:bg-neutral-950/50 w-16 h-16"></td>;
+    }
+
+    return (
+        <td className="p-0 relative border-none cursor-pointer w-16 h-16" style={{zIndex: isActive ? 60 : 'auto'}}>
+            <div onClick={() => onClick(lVal, cVal, hVal)} 
+                className={`w-full h-full flex flex-col items-center justify-center rounded-md overflow-hidden transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] border border-slate-100 dark:border-neutral-800 ${isActive ? 'scale-110 shadow-xl ring-2 ring-blue-500' : 'hover:scale-105 hover:shadow-md dark:hover:shadow-black/50'}`} 
+                style={{ backgroundColor: cellColor, backgroundImage: isOut ? 'repeating-linear-gradient(45deg, var(--hatch-color) 0px, var(--hatch-color) 4px, transparent 4px, transparent 8px)' : 'none', color: lVal > 55 ? 'black' : 'white' }}
+                data-active={isActive}>
+                <div className="font-bold opacity-70 leading-none mb-0.5 text-[9px] pointer-events-none select-none px-1 text-center">{adj}</div>
+                <div className="leading-none opacity-90 text-[8px] pointer-events-none select-none px-1 text-center">{noun}</div>
+            </div>
+        </td>
+    );
+ });
+
+ // Noun Row completely isolated from slider coordinate values (L & C) to stop the cascading list re-renders
+ const NounRow = memo(({ idx, displayHue, isHueActive, activeColIdx, parts, displayGamut, onHueClick, updateColorWithHistory, updateNoun }) => (
+    <tr className={`transition-all duration-200 cursor-pointer ${isHueActive ? 'bg-blue-50/50 dark:bg-blue-900/20' : 'hover:bg-slate-50 dark:hover:bg-neutral-900/50'}`} data-active={isHueActive}> 
+        <td onClick={() => onHueClick(displayHue)} className={`p-2 text-center font-mono opacity-80 bg-white dark:bg-neutral-950 sticky left-0 z-10 border-b border-r border-slate-100 dark:border-neutral-900 ${isHueActive ? '!bg-blue-50 dark:!bg-blue-900/40 font-bold text-blue-600 dark:text-blue-400' : 'text-slate-600 dark:text-neutral-400'}`}>{displayHue}°</td> 
+        {[0, 1].map((colIdx) => {
+            const n = parts[colIdx] || "";
+            const isCellActive = isHueActive && (colIdx === activeColIdx);
+            const repL = colIdx === 0 ? 40 : 75;
+            const repC = 25; 
+            
+            // These run using static representative values, avoiding slider state entirely
+            const cellRgb = realLchToRgb(repL, repC, displayHue);
+            const cellColor = getMappedCssColor(repL, repC, displayHue, displayGamut);
+            
+            return (
+                <td key={colIdx} onClick={() => updateColorWithHistory(repL, repC, displayHue)} className={`p-0 relative h-10 border-b border-r border-slate-100 dark:border-neutral-900 ${isCellActive ? 'ring-2 ring-blue-500 dark:ring-blue-400 z-20' : ''}`}>
+                   <div className="flex items-center h-full px-3 gap-2">
+                       <div className="w-4 h-4 rounded-full border border-black/10 dark:border-white/10 shrink-0" style={{backgroundColor: cellColor, backgroundImage: cellRgb.outOfGamut ? 'repeating-linear-gradient(45deg, var(--hatch-color) 0px, var(--hatch-color) 4px, transparent 4px, transparent 8px)' : 'none'}}></div>
+                       <input type="text" value={n} onChange={(e) => updateNoun(idx, colIdx, e.target.value)} className="w-full bg-transparent border-none outline-none font-medium text-slate-700 dark:text-neutral-200" />
+                   </div>
+                </td>
+            )
+        })}
+    </tr> 
+ ));
+
+ const MatrixTable = ({ yData, xData, yLabel, xLabel, renderCell, activeIds, interactionSource, zoom }) => { 
     const containerRef = useRef(null);
     const activeRowIdx = activeIds.r;
     const activeColIdx = activeIds.c;
@@ -256,58 +554,69 @@
                 activeEl.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
             }
         }
-    }, [activeRowIdx, activeColIdx, interactionSource]);
+    }, [activeRowIdx, activeColIdx, interactionSource, zoom]);
 
     return ( 
-    <div ref={containerRef} className="h-full w-full overflow-auto rounded-xl border border-slate-200 bg-white shadow-sm flex flex-col relative"> 
-        <table className="min-w-max text-[10px] text-center border-separate border-spacing-1 table-fixed relative z-10"> 
-            <thead> 
-                <tr> 
-                    <th className="p-2 text-slate-300 font-mono text-left bg-white sticky top-0 z-40 w-20 border-b border-slate-100"><span>{yLabel}\{xLabel}</span></th> 
-                    {xData.map((col) => ( 
-                    <th key={col.index} className={`p-2 font-bold border-b border-slate-100 bg-white sticky top-0 z-40 ${col.isActive ? 'text-blue-600 bg-blue-50 ring-inset ring-2 ring-blue-500/20 rounded-t' : 'text-slate-500'}`}> 
-                        <div className="flex flex-col items-center"><span className="text-xs">{col.label}</span>{col.data && (<span className="text-[8px] font-normal opacity-50 font-mono">{col.data.min === col.data.max ? col.data.min : `${col.data.min}-${col.data.max}`}</span>)}</div> 
-                    </th> 
+    <div 
+        ref={containerRef} 
+        className={`h-full w-full overflow-auto rounded-xl border border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 shadow-sm flex flex-col relative custom-scroll`}> 
+        <div style={{ zoom: zoom, transformOrigin: 'top left' }}>
+            <table className="min-w-max text-[10px] text-center border-separate border-spacing-1 table-fixed relative z-10 pointer-events-none"> 
+                <thead> 
+                    <tr> 
+                        <th className="p-2 text-slate-400 dark:text-neutral-500 font-mono text-left bg-white dark:bg-neutral-950 sticky top-0 z-40 border-b border-slate-100 dark:border-neutral-900 pointer-events-auto w-20">
+                            <span>{yLabel}\{xLabel}</span>
+                        </th> 
+                        {xData.map((col) => ( 
+                        <th key={col.index} className={`p-2 font-bold border-b border-slate-100 dark:border-neutral-900 bg-white dark:bg-neutral-950 sticky top-0 z-40 pointer-events-auto w-16 ${col.isActive ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 ring-inset ring-2 ring-blue-500/20 dark:ring-blue-400/30 rounded-t' : 'text-slate-500 dark:text-neutral-400'}`}> 
+                            <div className="flex flex-col items-center">
+                                <span className="text-xs">{col.label}</span>
+                                {col.data && (<span className="text-[8px] font-normal opacity-50 font-mono">{col.data.min === col.data.max ? col.data.min : `${col.data.min}-${col.data.max}`}</span>)}
+                            </div> 
+                        </th> 
+                        ))} 
+                    </tr> 
+                </thead> 
+                <tbody className="pointer-events-auto"> 
+                    {yData.map((row) => (
+                        <tr key={row.index}>
+                            <td className={`p-2 font-bold border-r border-slate-100 dark:border-neutral-900 text-left bg-white dark:bg-neutral-950 sticky left-0 z-30 w-20 ${row.isActive ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 ring-inset ring-2 ring-blue-500/20 dark:ring-blue-400/30 rounded-l' : 'text-slate-500 dark:text-neutral-400'}`}>
+                                <div className="flex flex-col items-start">
+                                    <span className="text-xs">{row.label}</span>
+                                    {row.data && (<span className="text-[8px] font-normal opacity-50 font-mono">{row.data.min === row.data.max ? row.data.min : `${row.data.min}-${row.data.max}`}</span>)}
+                                </div>
+                            </td>
+                            {xData.map((col) => renderCell(row.index, col.index))}
+                        </tr>
                     ))} 
-                </tr> 
-            </thead> 
-            <tbody> 
-                {yData.map((row) => (
-                    <tr key={row.index}>
-                        <td className={`p-2 font-bold border-r border-slate-100 text-left bg-white sticky left-0 z-30 ${row.isActive ? 'text-blue-600 bg-blue-50 ring-inset ring-2 ring-blue-500/20 rounded-l' : 'text-slate-500'}`}>
-                            <div className="flex flex-col"><span className="text-xs">{row.label}</span>{row.data && (<span className="text-[8px] font-normal opacity-50 font-mono">{row.data.min === row.data.max ? row.data.min : `${row.data.min}-${row.data.max}`}</span>)}</div>
-                        </td>
-                        {xData.map((col) => renderCell(row.index, col.index))}
-                    </tr>
-                ))} 
-            </tbody> 
-        </table> 
+                </tbody> 
+            </table> 
+        </div>
     </div> 
     ) 
  }; 
 
- const HarmonySwatch = ({ offset, label, currentH, currentL, currentC, setH, displayGamut }) => { 
+ const HarmonySwatch = ({ offset, label, currentH, currentL, currentC, onSelect, displayGamut }) => { 
     let harmH = (currentH + offset) % 360; 
     if (harmH < 0) harmH += 360; 
     
     let harmL = currentL; 
     let harmC = currentC; 
-    if (harmC < 5) harmC = 60; 
-    if (harmL < 10 || harmL > 90) harmL = 50; 
     
     const gamutStatus = checkGamut(harmL, harmC, harmH);
-    const rgb = realLchToRgb(harmL, harmC, harmH);
-    const swatchColor = `rgb(${rgb.r},${rgb.g},${rgb.b})`; 
-    const hatch = { backgroundImage: 'repeating-linear-gradient(45deg, #cbd5e1 0px, #cbd5e1 4px, transparent 4px, transparent 8px)', backgroundColor: 'transparent' };
+    const swatchColor = getMappedCssColor(harmL, harmC, harmH, displayGamut);
     
     const isOutOfGamut = displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
 
     return ( 
-    <div onClick={() => setH(harmH)} className="flex flex-col items-center gap-1 cursor-pointer group"> 
-        <div className="w-8 h-8 rounded-full shadow-sm border border-black/10 group-hover:scale-110 transition-transform relative overflow-hidden" 
-            style={isOutOfGamut ? hatch : { backgroundColor: swatchColor }}> 
+    <div onClick={() => onSelect(harmH)} className="flex flex-col items-center gap-1 cursor-pointer group shrink-0"> 
+        <div className="w-8 h-8 rounded-full shadow-sm border border-black/10 dark:border-white/10 group-hover:scale-110 transition-transform relative overflow-hidden" 
+            style={{
+                backgroundColor: swatchColor,
+                backgroundImage: isOutOfGamut ? 'repeating-linear-gradient(45deg, var(--hatch-color) 0px, var(--hatch-color) 4px, transparent 4px, transparent 8px)' : 'none'
+            }}> 
         </div> 
-        <span className="text-[8px] font-bold text-slate-400 uppercase">{label}</span> 
+        <span className="text-[8px] font-bold text-slate-500 dark:text-neutral-400 uppercase">{label}</span> 
     </div> 
     ) 
  }; 
@@ -317,11 +626,23 @@
     const [h, setH] = useState(getFromLocal('h', 40)); 
     const [c, setC] = useState(getFromLocal('c', 50)); 
     const [l, setL] = useState(getFromLocal('l', 52)); 
-    const [activeView, setActiveView] = useState("hue_pivot"); 
+    const [gridZoom, setGridZoom] = useState(() => getFromLocal('gridZoom', 1));
+    
+    // --- HISTORY STATE ---
+    const [history, setHistory] = useState(() => {
+        const local = getFromLocal('history', null);
+        return local && local.length > 0 ? local : [{l: getFromLocal('l', 52), c: getFromLocal('c', 50), h: getFromLocal('h', 40)}];
+    });
+    const [historyIndex, setHistoryIndex] = useState(() => getFromLocal('historyIndex', 0));
+
+    const [activeView, useStateView] = useState("hue_pivot"); 
+    const setActiveView = (view) => useStateView(view);
     const [isFlipped, setIsFlipped] = useState(false); 
     const interactionSource = useRef(null); 
     const [displayGamut, setDisplayGamut] = useState("srgb");
     const [nameWarning, setNameWarning] = useState(null);
+    const [isDark, setIsDark] = useState(() => getFromLocal('darkMode', false));
+    const [showHelp, setShowHelp] = useState(false);
 
     const [lightRanges, setLightRanges] = useState(getFromLocal('lightRanges', NEW_LIGHT_RANGES));
     const [chromaRanges, setChromaRanges] = useState(getFromLocal('chromaRanges', NEW_CHROMA_RANGES));
@@ -339,75 +660,70 @@
     });
     
     const [palette, setPalette] = useState(getFromLocal('userPalette', []));
-    
-    // Cloud State
-    const [isCloudEnabled, setIsCloudEnabled] = useState(false);
-    const [isSynced, setIsSynced] = useState(false);
-    const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-    const dbRef = useRef(null);
-    const docRef = useRef(null);
-    
     const [tempName, setTempName] = useState(null);
 
     const parsedNouns = useMemo(() => nounData.map(row => row.split(',')), [nounData]);
 
-    // Init Firebase (Compat)
+    const handleZoomIn = () => setGridZoom(prev => {
+        if (prev <= 0.1) return 0.25;
+        const step = prev >= 1 ? 0.5 : 0.25;
+        return Math.min(Math.round((prev + step) * 100) / 100, 3.0);
+    });
+    const handleZoomOut = () => setGridZoom(prev => {
+        if (prev <= 0.25) return 0.1;
+        const step = prev > 1 ? 0.5 : 0.25;
+        return Math.max(Math.round((prev - step) * 100) / 100, 0.1);
+    });
+
+    // Handle Dark Mode toggling
     useEffect(() => {
-        const init = async () => {
-             if (typeof window.firebase === 'undefined') {
-                 console.warn("Firebase scripts not loaded. Offline mode.");
-                 return;
-             }
-             if (typeof __firebase_config === 'undefined' || !__firebase_config) {
-                 console.warn("Firebase config missing. Offline mode.");
-                 return;
-             }
-             try {
-                const firebaseConfig = JSON.parse(__firebase_config);
-                if (!firebase.apps.length) {
-                    firebase.initializeApp(firebaseConfig);
-                }
-                const auth = firebase.auth();
-                const db = firebase.firestore();
-                dbRef.current = db;
+        if (isDark) {
+            document.documentElement.classList.add('dark');
+        } else {
+            document.documentElement.classList.remove('dark');
+        }
+        saveToLocal('darkMode', isDark);
+    }, [isDark]);
 
-                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-                
-                // Auth
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await auth.signInWithCustomToken(__initial_auth_token);
-                } else {
-                    await auth.signInAnonymously();
-                }
+    // Memoize the background generators to prevent intensive calculations every frame
+    const lightGradientBg = useMemo(() => {
+        const stops = []; const steps = 20; 
+        for (let i = 0; i <= steps; i++) { 
+            const pct = i / steps; let lV = pct * 100;
+            const gamutStatus = checkGamut(lV, c, h);
+            const isOut = displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
+            const color = getMappedCssColor(lV, c, h, displayGamut);
+            // Even in the gradient track, keeping the actual color makes sense, we just won't show the hatching easily here
+            stops.push(`${isOut ? 'transparent' : color} ${pct * 100}%`); 
+        } 
+        return `linear-gradient(to right, ${stops.join(', ')})`;
+    }, [c, h, displayGamut]);
 
-                const d = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('colorsami_v1').doc('main');
-                docRef.current = d;
-                
-                d.onSnapshot((snapshot) => {
-                    if (snapshot.exists) {
-                        const data = snapshot.data();
-                        if (data.lightRanges) setLightRanges(data.lightRanges);
-                        if (data.chromaRanges) setChromaRanges(data.chromaRanges);
-                        if (data.hueValues) setHueValues(data.hueValues);
-                        if (data.adjectiveMatrix) setAdjectiveMatrix(data.adjectiveMatrix);
-                        if (data.nounData) setNounData(data.nounData);
-                        
-                        setIsSynced(true);
-                        setHasUnsavedChanges(false);
-                    }
-                }, (error) => {
-                    console.error("Sync error:", error);
-                    setIsSynced(false);
-                });
+    const chromaGradientBg = useMemo(() => {
+        const stops = []; const steps = 20; 
+        for (let i = 0; i <= steps; i++) { 
+            const pct = i / steps; let cV = pct * 100;
+            const gamutStatus = checkGamut(l, cV, h);
+            const isOut = displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
+            const color = getMappedCssColor(l, cV, h, displayGamut); 
+            stops.push(`${isOut ? 'transparent' : color} ${pct * 100}%`); 
+        } 
+        return `linear-gradient(to right, ${stops.join(', ')})`;
+    }, [l, h, displayGamut]);
 
-                setIsCloudEnabled(true);
-             } catch (e) {
-                 console.error("Firebase init failed:", e);
-             }
-        };
-        init();
-    }, []);
+    const hueGradientBg = useMemo(() => {
+        const stops = []; const steps = 20; 
+        for (let i = 0; i <= steps; i++) { 
+            const pct = i / steps; let hV = hueValues[Math.min(hueValues.length-1, Math.round(pct * (hueValues.length-1)))]; 
+            const gamutStatus = checkGamut(l, c, hV);
+            const isOut = displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
+            const color = getMappedCssColor(l, c, hV, displayGamut); 
+            stops.push(`${isOut ? 'transparent' : color} ${pct * 100}%`); 
+        } 
+        return `linear-gradient(to right, ${stops.join(', ')})`;
+    }, [l, c, displayGamut, hueValues]);
 
+    // DEBOUNCED LOCAL STORAGE SAVE (Crucial for Slider Performance)
     useEffect(() => {
         if (window.matchMedia && window.matchMedia("(color-gamut: p3)").matches) {
             setDisplayGamut("p3");
@@ -415,51 +731,88 @@
             setDisplayGamut("srgb");
         }
 
-        saveToLocal('h', h); saveToLocal('c', c); saveToLocal('l', l);
-        saveToLocal('lightRanges', lightRanges); saveToLocal('chromaRanges', chromaRanges);
-        saveToLocal('anchors', anchors); saveToLocal('hueValues', hueValues);
-        saveToLocal('adjectiveMatrix', adjectiveMatrix);
-        saveToLocal('nounData', nounData);
-        saveToLocal('userPalette', palette);
-        
-        if (isCloudEnabled) setHasUnsavedChanges(true);
+        const timer = setTimeout(() => {
+            saveToLocal('h', h); saveToLocal('c', c); saveToLocal('l', l);
+            saveToLocal('gridZoom', gridZoom);
+            saveToLocal('history', history); saveToLocal('historyIndex', historyIndex);
+            saveToLocal('lightRanges', lightRanges); saveToLocal('chromaRanges', chromaRanges);
+            saveToLocal('anchors', anchors); saveToLocal('hueValues', hueValues);
+            saveToLocal('adjectiveMatrix', adjectiveMatrix);
+            saveToLocal('nounData', nounData);
+            saveToLocal('userPalette', palette);
 
-    }, [h, c, l, adjectiveMatrix, nounData, lightRanges, chromaRanges, anchors, hueValues, palette, isCloudEnabled]);
+        }, 300); // 300ms debounce
+
+        return () => clearTimeout(timer);
+    }, [h, c, l, gridZoom, history, historyIndex, adjectiveMatrix, nounData, lightRanges, chromaRanges, anchors, hueValues, palette]);
     
     useEffect(() => {
         setTempName(null);
     }, [l, c, h]);
 
-    // Cloud Save Function
-    const handleCloudSave = async () => {
-        if (!docRef.current) return;
-        try {
-            await docRef.current.set({
-                lightRanges, chromaRanges, hueValues, adjectiveMatrix, nounData, lastUpdated: new Date().toISOString()
-            });
-            setHasUnsavedChanges(false);
-        } catch (e) {
-            console.error("Save failed:", e);
-            alert("Failed to save to cloud.");
+    // History Logic 
+    const updateColorWithHistory = useCallback((newL, newC, newH) => {
+        setL(newL); setC(newC); setH(newH);
+        setHistory(prev => {
+            const newHist = prev.slice(0, historyIndex + 1);
+            if (newHist.length > 0) {
+                const last = newHist[newHist.length - 1];
+                if (last.l === newL && last.c === newC && last.h === newH) return newHist;
+            }
+            newHist.push({l: newL, c: newC, h: newH});
+            if(newHist.length > 50) newHist.shift(); 
+            setHistoryIndex(newHist.length - 1);
+            return newHist;
+        });
+    }, [historyIndex]);
+
+    const handleCellClick = useCallback((lVal, cVal, hVal) => {
+        interactionSource.current = 'click';
+        updateColorWithHistory(lVal, cVal, hVal);
+    }, [updateColorWithHistory]);
+
+    // Independent closure ref so Noun list clicking doesn't depend on slider primitives for rendering
+    const stateRef = useRef({ l, c, h });
+    useEffect(() => { stateRef.current = { l, c, h }; }, [l, c, h]);
+
+    const handleRowHueClick = useCallback((newH) => {
+        updateColorWithHistory(stateRef.current.l, stateRef.current.c, newH);
+    }, [updateColorWithHistory]);
+
+    const handleUndo = () => {
+        if (historyIndex > 0) {
+            const prevIdx = historyIndex - 1;
+            const state = history[prevIdx];
+            setL(state.l); setC(state.c); setH(state.h);
+            setHistoryIndex(prevIdx);
         }
     };
 
-    const updateAdjective = (r, c, val) => {
+    const handleRedo = () => {
+        if (historyIndex < history.length - 1) {
+            const nextIdx = historyIndex + 1;
+            const state = history[nextIdx];
+            setL(state.l); setC(state.c); setH(state.h);
+            setHistoryIndex(nextIdx);
+        }
+    };
+
+    const updateAdjective = (r, cIdx, val) => {
         setAdjectiveMatrix(prev => {
             const next = [...prev];
             next[r] = [...next[r]];
-            next[r][c] = val;
+            next[r][cIdx] = val;
             return next;
         });
     };
 
-    const updateNoun = (r, c, val) => {
+    const updateNoun = (r, cIdx, val) => {
         setNounData(prev => {
             const next = [...prev];
             const rowStr = next[r] || "";
             const parts = rowStr.split(',');
             while (parts.length < 2) parts.push("");
-            parts[c] = val;
+            parts[cIdx] = val;
             next[r] = parts.join(',');
             return next;
         });
@@ -480,19 +833,17 @@
     }; 
     
     const hIdx = getIndexFromHue(h);
-    const lIdx = lightRanges.findIndex(rg => l >= rg.min && l <= rg.max); 
-    const cIdx = chromaRanges.findIndex(rg => c >= rg.min && c <= rg.max); 
+    const lIdx = getRangeIndex(l, lightRanges); 
+    const cIdx = getRangeIndex(c, chromaRanges); 
 
     const getNounColumnIndex = (lIdx) => { 
         return lIdx < 11 ? 0 : 1;
     }; 
 
     const currentMapping = useMemo(() => { 
-        const rowLIdx = lightRanges.findIndex(rg => l >= rg.min && l <= rg.max);
-        const rowCIdx = chromaRanges.findIndex(rg => c >= rg.min && c <= rg.max);
+        const rowLIdx = getRangeIndex(l, lightRanges);
+        const rowCIdx = getRangeIndex(c, chromaRanges);
         
-        if (rowLIdx === -1 || rowCIdx === -1) return { baseNoun: "Unknown", adj: "Unknown", code: "???", strIdx: -1, hueRow: hIdx };
-
         if (rowLIdx === 0) return { baseNoun: "Nero", adj: "", code: `AA000`, strIdx:-1, hueRow:-1 }; 
         if (rowLIdx === 21) return { baseNoun: "Blanc", adj: "", code: `VA000`, strIdx:-1, hueRow:-1 }; 
         if (rowCIdx === 0) return { baseNoun: "Cinza", adj: adjectiveMatrix[rowLIdx]?.[0] || "", code: `${lightRanges[rowLIdx]?.label || 'A'}A000`, strIdx:-1, hueRow:-1 }; 
@@ -506,22 +857,15 @@
 
     const fullDisplayName = currentMapping.adj ? `${currentMapping.adj} ${currentMapping.baseNoun}` : currentMapping.baseNoun; 
 
-    // --- DUPLICATE HANDLER ---
     const handleNameChange = (val) => {
-        const rL = lightRanges.findIndex(rg => l >= rg.min && l <= rg.max);
-        const rC = chromaRanges.findIndex(rg => c >= rg.min && c <= rg.max);
-        
+        const rL = getRangeIndex(l, lightRanges);
+        const rC = getRangeIndex(c, chromaRanges);
         if (rL === 0 || rL === 21) return; 
 
         const parts = val.trim().split(/\s+/);
-        let newNoun = "";
-        let newAdj = "";
-        
+        let newNoun = ""; let newAdj = "";
         if (parts.length === 1) { newNoun = parts[0]; } else { newNoun = parts.pop(); newAdj = parts.join(" "); }
-        
-        const checkNoun = newNoun.trim();
-        const checkAdj = newAdj.trim();
-
+        const checkNoun = newNoun.trim(); const checkAdj = newAdj.trim();
         let warning = null;
 
         if (rC === 0) {
@@ -529,7 +873,6 @@
         } else {
              const sIdx = getNounColumnIndex(rL);
              const hRow = hIdx;
-             
              if (hRow !== -1) updateNoun(hRow, sIdx, checkNoun);
              if (rL !== -1 && rC !== -1) updateAdjective(rL, rC, checkAdj);
              
@@ -559,46 +902,47 @@
         setNameWarning(warning);
     };
 
-    // CANONICAL REFERENCE
-    const safeLIdx = lightRanges.findIndex(rg => l >= rg.min && l <= rg.max);
-    const safeCIdx = chromaRanges.findIndex(rg => c >= rg.min && c <= rg.max);
+    const safeLIdx = getRangeIndex(l, lightRanges);
+    const safeCIdx = getRangeIndex(c, chromaRanges);
     
-    const canonicalL = lightRanges[safeLIdx]?.mid ?? 50;
-    const canonicalC = chromaRanges[safeCIdx]?.mid ?? 0;
-    const canonicalH = hueValues[hIdx] ?? 0;
+    let canonicalL = lightRanges[safeLIdx]?.mid ?? 50;
+    let canonicalC = chromaRanges[safeCIdx]?.mid ?? 0;
+    let canonicalH = hueValues[hIdx] ?? 0;
+
+    if (safeLIdx === 0 || safeLIdx === 21 || safeCIdx === 0) {
+        canonicalC = 0;
+        canonicalH = 0;
+    }
+
     const canonRgb = realLchToRgb(canonicalL, canonicalC, canonicalH);
     const canonHex = `#${canonRgb.r.toString(16).padStart(2,'0')}${canonRgb.g.toString(16).padStart(2,'0')}${canonRgb.b.toString(16).padStart(2,'0')}`.toUpperCase();
     const canonGamut = checkGamut(canonicalL, canonicalC, canonicalH);
     const deltaE = Math.sqrt(Math.pow(canonicalL - l, 2) + Math.pow(canonicalC - c, 2)).toFixed(1); 
 
-    // --- EXPLORER RENDER LOGIC ---
     const getExplorerParams = useCallback((view, flipped, rI, cI) => {
         let localLIdx = safeLIdx, localCIdx = safeCIdx, localHIdx = hIdx;
-        if (localLIdx === -1) localLIdx = 0; if (localCIdx === -1) localCIdx = 0;
 
-        if (view === "hue_pivot") {
-            localLIdx = flipped ? cI : rI;
-            localCIdx = flipped ? rI : cI;
-        } else if (view === "chroma_pivot") {
-            localHIdx = flipped ? cI : rI;
-            localLIdx = flipped ? rI : cI;
-            localCIdx = safeCIdx; 
-        } else if (view === "light_pivot") {
-            localHIdx = flipped ? cI : rI;
-            localCIdx = flipped ? rI : cI;
-            localLIdx = safeLIdx;
-        }
+        if (view === "hue_pivot") { localLIdx = flipped ? cI : rI; localCIdx = flipped ? rI : cI; } 
+        else if (view === "chroma_pivot") { localHIdx = flipped ? cI : rI; localLIdx = flipped ? rI : cI; localCIdx = safeCIdx; } 
+        else if (view === "light_pivot") { localHIdx = flipped ? cI : rI; localCIdx = flipped ? rI : cI; localLIdx = safeLIdx; }
         
         const safeL = lightRanges[localLIdx] || lightRanges[0];
         const safeC = chromaRanges[localCIdx] || chromaRanges[0];
         const safeH = hueValues[localHIdx] ?? 0;
+
+        let cVal = safeC.mid;
+        let hVal = safeH;
         
-        return { lVal: safeL.mid, cVal: safeC.mid, hVal: safeH, lIdx: localLIdx, cIdx: localCIdx, hIdx: localHIdx };
+        if (localLIdx === 0 || localLIdx === 21 || localCIdx === 0) {
+            cVal = 0;
+            hVal = 0;
+        }
+
+        return { lVal: safeL.mid, cVal, hVal, lIdx: localLIdx, cIdx: localCIdx, hIdx: localHIdx };
     }, [safeLIdx, safeCIdx, hIdx, lightRanges, chromaRanges, hueValues]);
 
     const handleExport = () => { 
         const wb = XLSX.utils.book_new(); 
-        
         const rangesData = [
             ["Type", "Label", "Min", "Max", "Mid"],
             ...lightRanges.map(r => ["Light", r.label, r.min, r.max, r.mid]),
@@ -619,11 +963,8 @@
         
         const sessionHeader = ["Key", "Value"];
         const sessionBody = [
-            ["Current L", l],
-            ["Current C", c],
-            ["Current H", h],
-            ["Active View", activeView],
-            ["Flipped", isFlipped],
+            ["Current L", l], ["Current C", c], ["Current H", h],
+            ["Active View", activeView], ["Flipped", isFlipped],
             ["Palette JSON", JSON.stringify(palette)]
         ];
         const sessionWS = XLSX.utils.aoa_to_sheet([sessionHeader, ...sessionBody]);
@@ -637,7 +978,6 @@
         const reader = new FileReader(); 
         reader.onload = (evt) => { 
             const wb = XLSX.read(evt.target.result, {type: 'binary'}); 
-            
             if(wb.Sheets["Ranges"]) {
                 const rangeRaw = XLSX.utils.sheet_to_json(wb.Sheets["Ranges"]);
                 const newL = rangeRaw.filter(r => r.Type === "Light").map(r => ({ label: r.Label, min: parseInt(r.Min), max: parseInt(r.Max), mid: parseFloat(r.Mid) }));
@@ -645,7 +985,6 @@
                 if (newL.length > 0) setLightRanges(newL);
                 if (newC.length > 0) setChromaRanges(newC);
             }
-
             if(wb.Sheets["Adjectives"]) { 
                 const rawAdj = XLSX.utils.sheet_to_json(wb.Sheets["Adjectives"], {header: 1}); 
                 let matrixData = rawAdj;
@@ -655,26 +994,22 @@
                 }
                 setAdjectiveMatrix(matrixData.map(row => row.map(cell => cell || "")));
             } 
-            
             if(wb.Sheets["Nouns"]) { 
                 const rawNouns = XLSX.utils.sheet_to_json(wb.Sheets["Nouns"], {header: 1}); 
                 if (rawNouns.length > 0) {
-                    const headerRow = rawNouns[0];
-                    let startIndex = 0;
+                    const headerRow = rawNouns[0]; let startIndex = 0;
                     if (headerRow[0] === "Hue Angle") startIndex = 1;
                     const body = rawNouns.slice(1);
                     const newHues = [];
                     const newNouns = body.map(row => {
                         const hueStr = row[0].toString().replace('°','');
                         newHues.push(parseInt(hueStr));
-                        const nounParts = row.slice(startIndex, startIndex + 2); // 2 columns
+                        const nounParts = row.slice(startIndex, startIndex + 2); 
                         return nounParts.map(n => n || "Hue").join(',');
                     });
-                    setHueValues(newHues);
-                    setNounData(newNouns);
+                    setHueValues(newHues); setNounData(newNouns);
                 }
             }
-
             if(wb.Sheets["Session"]) {
                 const sessionRaw = XLSX.utils.sheet_to_json(wb.Sheets["Session"], {header: 1}); 
                 sessionRaw.forEach(row => {
@@ -684,117 +1019,98 @@
                     if (k === "Current H") setH(parseFloat(v));
                     if (k === "Active View") setActiveView(v);
                     if (k === "Flipped") setIsFlipped(v === "true" || v === true);
-                    if (k === "Palette JSON") {
-                        try { setPalette(JSON.parse(v)); } catch(e) {}
-                    }
+                    if (k === "Palette JSON") { try { setPalette(JSON.parse(v)); } catch(e) {} }
                 });
             }
         }; 
-        reader.readAsBinaryString(file); 
-        e.target.value = "";
-    }; 
-
-    const generateSliderBackground = (mode) => { 
-        const stops = []; const steps = 20; 
-        for (let i = 0; i <= steps; i++) { 
-            const pct = i / steps; let lV = l, cV = c, hV = h; 
-            if (mode === 'light') lV = pct * 100; else if (mode === 'chroma') cV = pct * 100; else hV = hueValues[Math.min(hueValues.length-1, Math.round(pct * (hueValues.length-1)))]; 
-            
-            const gamutStatus = checkGamut(lV, cV, hV);
-            const isOut = displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
-            
-            const color = isOut ? 'transparent' : `lch(${lV}% ${cV} ${hV})`; 
-            stops.push(`${color} ${pct * 100}%`); 
-        } 
-        return `linear-gradient(to right, ${stops.join(', ')})`; 
+        reader.readAsBinaryString(file); e.target.value = "";
     }; 
 
     const lightRangeData = useMemo(() => lightRanges.map((r, i) => ({ label: r.label, index: i, isActive: i === safeLIdx, data: r })), [safeLIdx, lightRanges]);
     const chromaRangeData = useMemo(() => chromaRanges.map((r, i) => ({ label: r.label, index: i, isActive: i === safeCIdx, data: r })), [safeCIdx, chromaRanges]);
-    
     const hueRangesData = useMemo(() => hueValues.map((val, i) => {
         const nextVal = hueValues[i+1] !== undefined ? hueValues[i+1] : 360;
         const maxVal = nextVal - (nextVal > val ? 1 : 0);
-        return { 
-            label: `${val}°`, 
-            index: i, 
-            isActive: i === hIdx, 
-            data: { min: val, max: maxVal > val ? maxVal : val }
-        };
+        return { label: `${val}°`, index: i, isActive: i === hIdx, data: { min: val, max: maxVal > val ? maxVal : val } };
     }), [hIdx, hueValues]);
 
     const renderCell = useCallback((rI, cI) => {
         const { lVal, cVal, hVal, lIdx: cellL, cIdx: cellC, hIdx: cellH } = getExplorerParams(activeView, isFlipped, rI, cI);
-        
-        const gamutStatus = checkGamut(lVal, cVal, hVal);
-        const isOut = displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
-
         const isActive = cellL === safeLIdx && cellC === safeCIdx && cellH === hIdx;
         
         const anchor = getNounColumnIndex(cellL);
         let noun = parsedNouns[cellH]?.[anchor] || "Hue";
         if (cellL === 0) noun = "Nero"; else if (cellL === 21) noun = "Blanc"; else if (cellC === 0) noun = "Cinza";
 
-        // V111 Logic: Fix Nero/Blanc to only show in Column 0
-        if ((cellL === 0 || cellL === 21) && cellC > 0) {
-            return <td key={`${rI}-${cI}`} className="p-0 h-16 w-16 relative border-none bg-slate-50/50"></td>;
-        }
+        const adj = adjectiveMatrix[cellL]?.[cellC] || "";
 
         return (
-            <td key={`${rI}-${cI}`} className="p-0 h-16 w-16 relative border-none" style={{zIndex: isActive ? 60 : 'auto'}}>
-                <div onClick={() => { 
-                    interactionSource.current = 'click';
-                    setL(lVal); setC(cVal); setH(hVal); 
-                }} 
-                    className={`w-full h-full rounded-md overflow-hidden transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] border border-slate-100 ${isActive ? 'scale-110 shadow-xl ring-2 ring-blue-500' : 'hover:scale-105 hover:shadow-md'}`} 
-                    style={{ backgroundColor: isOut ? 'transparent' : `lch(${lVal}% ${cVal} ${hVal})`, backgroundImage: isOut ? 'repeating-linear-gradient(45deg, #cbd5e1 0px, #cbd5e1 4px, transparent 4px, transparent 8px)' : 'none', color: lVal > 55 ? 'black' : 'white' }}
-                    data-active={isActive}>
-                    <div className="flex flex-col h-full justify-center px-1 text-center">
-                        <div className="text-[9px] font-bold opacity-70 leading-none mb-0.5">{adjectiveMatrix[cellL]?.[cellC] || ""}</div>
-                        <div className="text-[8px] leading-none opacity-90">{noun}</div>
-                    </div>
-                </div>
-            </td>
+            <MatrixCell 
+                key={`${rI}-${cI}`}
+                rI={rI} cI={cI} 
+                isActive={isActive} cellL={cellL} cellC={cellC} 
+                lVal={lVal} cVal={cVal} hVal={hVal} 
+                noun={noun} adj={adj} displayGamut={displayGamut}
+                onClick={handleCellClick}
+            />
         );
-    }, [activeView, isFlipped, getExplorerParams, safeLIdx, safeCIdx, hIdx, parsedNouns, lightRanges.length, adjectiveMatrix, displayGamut]);
+    }, [activeView, isFlipped, getExplorerParams, safeLIdx, safeCIdx, hIdx, parsedNouns, adjectiveMatrix, displayGamut, handleCellClick]);
 
     const isCanonOut = displayGamut === 'p3' ? !canonGamut.isP3 : !canonGamut.isSRGB;
-    const swatchStyle = isCanonOut ? { backgroundImage: 'repeating-linear-gradient(45deg, #cbd5e1 0px, #cbd5e1 4px, transparent 4px, transparent 8px)', backgroundColor: 'transparent' } : { backgroundColor: `rgb(${canonRgb.r},${canonRgb.g},${canonRgb.b})` };
+    const canonBgColor = getMappedCssColor(canonicalL, canonicalC, canonicalH, displayGamut);
+    
+    // Maintain canon background color overlaid with transparent hatch pattern
+    const swatchStyle = { 
+        backgroundColor: canonBgColor,
+        backgroundImage: isCanonOut ? 'repeating-linear-gradient(45deg, var(--hatch-color) 0px, var(--hatch-color) 4px, transparent 4px, transparent 8px)' : 'none' 
+    };
+
+    // Boolean primitive passed down to prevent rerenders inside Noun list map
+    const activeNounColIdx = l < 50 ? 0 : 1; 
 
     return ( 
-    <div className="w-full h-full bg-white md:rounded-3xl shadow-xl border border-slate-100 flex flex-col overflow-hidden"> 
-    <div className="shrink-0 py-2 md:py-4 flex flex-col items-center bg-white z-20 shadow-sm relative"> 
-        <h1 className="text-xl md:text-3xl font-black tracking-tighter text-slate-900">The COLOR<span className="text-green-700">SAMI</span>FICATOR</h1> 
-        <div className="flex items-center gap-2 mt-1">
-            <span className={`text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded ${displayGamut === 'p3' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-500'}`}>
-                {displayGamut === 'p3' ? 'Display P3' : 'sRGB'}
-            </span>
-            <div className={`px-2 py-0.5 rounded-full flex items-center gap-1 transition-colors ${!isCloudEnabled ? 'bg-slate-100 text-slate-400' : hasUnsavedChanges ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'}`}>
-                <div className={`w-1.5 h-1.5 rounded-full ${!isCloudEnabled ? 'bg-slate-400' : hasUnsavedChanges ? 'bg-amber-500' : 'bg-blue-500'}`}></div>
-                <span className="text-[9px] font-black uppercase tracking-wide">{!isCloudEnabled ? "OFFLINE" : hasUnsavedChanges ? "UNSAVED" : "LIVE"}</span>
-            </div>
-        </div>
-        <div className="absolute right-2 md:right-6 top-1/2 -translate-y-1/2 flex gap-1 md:gap-2"> 
-            <button 
-                onClick={handleCloudSave} 
-                disabled={!isCloudEnabled}
-                className={`p-2 rounded-full transition-colors ${isCloudEnabled ? 'hover:bg-blue-50 text-blue-600' : 'opacity-30 cursor-not-allowed text-slate-400'}`} 
-                title={isCloudEnabled ? "Save to Cloud" : "Cloud Unavailable"}
-            >
-                {isCloudEnabled ? <Cloud className="w-5 h-5" /> : <CloudOff className="w-5 h-5" />}
+    <div className="w-full h-full bg-white dark:bg-neutral-950 md:rounded-3xl shadow-xl border border-slate-100 dark:border-neutral-900 flex flex-col overflow-hidden transition-colors duration-300"> 
+    {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+    
+    <div className="shrink-0 py-2 md:py-3 flex flex-col items-center bg-white dark:bg-neutral-950 z-20 shadow-sm relative transition-colors duration-300 border-b border-slate-100 dark:border-neutral-900"> 
+        <h1 className="text-xl md:text-3xl font-black tracking-tighter text-slate-900 dark:text-neutral-100">The COLOR<span className="text-green-600 dark:text-green-500">SAMI</span>FICATOR</h1> 
+        <span className="text-xs font-bold text-slate-400 dark:text-neutral-500 tracking-wider">VERSION 1.24</span>
+        
+        {/* Left Toolbar (History + Help) */}
+        <div className="absolute left-2 md:left-6 top-1/2 -translate-y-1/2 flex gap-1 md:gap-2">
+            <button onClick={handleUndo} disabled={historyIndex === 0} className={`p-2 rounded-full transition-colors ${historyIndex === 0 ? 'opacity-30 cursor-not-allowed text-slate-400' : 'hover:bg-slate-100 dark:hover:bg-neutral-900 text-slate-600 dark:text-neutral-300'}`}>
+                <UndoIcon className="w-5 h-5" />
             </button>
-            <Download onClick={handleExport} className="w-9 h-9 p-2 rounded-full hover:bg-slate-100 text-slate-600 cursor-pointer" />
-            <label className="p-2 rounded-full hover:bg-slate-100 text-slate-600 cursor-pointer"><Upload className="w-5 h-5" /><input type="file" onChange={handleImport} className="hidden" accept=".xlsx, .xls" /></label> 
+            <button onClick={handleRedo} disabled={historyIndex === history.length - 1} className={`p-2 rounded-full transition-colors ${historyIndex === history.length - 1 ? 'opacity-30 cursor-not-allowed text-slate-400' : 'hover:bg-slate-100 dark:hover:bg-neutral-900 text-slate-600 dark:text-neutral-300'}`}>
+                <RedoIcon className="w-5 h-5" />
+            </button>
+            <div className="w-px h-6 bg-slate-200 dark:bg-neutral-800 mx-1 self-center hidden md:block"></div>
+            <button onClick={() => setShowHelp(true)} className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-neutral-900 text-slate-600 dark:text-neutral-300 transition-colors hidden md:block">
+                <HelpCircle className="w-5 h-5" />
+            </button>
+        </div>
+
+        {/* Right Toolbar (Export/Import/Theme) */}
+        <div className="absolute right-2 md:right-6 top-1/2 -translate-y-1/2 flex gap-1 md:gap-2"> 
+            <button onClick={() => setIsDark(!isDark)} className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-neutral-900 text-slate-600 dark:text-neutral-300 transition-colors">
+                {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            </button>
+            <div className="w-px h-6 bg-slate-200 dark:bg-neutral-800 mx-1 self-center hidden md:block"></div>
+            <button onClick={handleExport} className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-neutral-900 text-slate-600 dark:text-neutral-300 transition-colors hidden md:block">
+                <Download className="w-5 h-5" />
+            </button>
+            <label className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-neutral-900 text-slate-600 dark:text-neutral-300 cursor-pointer transition-colors"><Upload className="w-5 h-5" /><input type="file" onChange={handleImport} className="hidden" accept=".xlsx, .xls" /></label> 
         </div> 
     </div> 
     
     <div className="flex-1 min-h-0 flex flex-col md:flex-row"> 
-        <div className="order-1 w-full md:w-[420px] shrink-0 flex-none md:flex-1 h-[45%] md:h-full border-b md:border-b-0 md:border-r border-slate-100 flex flex-col p-4 md:p-6 bg-white z-10 overflow-y-auto"> 
+        {/* Left Control Panel: Width fixed on desktop for more grid space */}
+        <div className="order-1 w-full md:w-80 lg:w-[360px] shrink-0 flex-none h-[45%] md:h-full border-b md:border-b-0 md:border-r border-slate-100 dark:border-neutral-900 flex flex-col p-4 md:p-6 bg-white dark:bg-neutral-950 z-10 overflow-y-auto transition-colors duration-300 custom-scroll"> 
         
-        {/* SWATCH CONTAINER - Restored Visibility & Style */}
-        <div className="w-full aspect-[3/1] md:aspect-[2/1] rounded-xl md:rounded-3xl flex flex-col items-center justify-center relative overflow-hidden mb-4 transition-all duration-300 min-h-[160px] border border-slate-200 shadow-sm" style={swatchStyle}> 
-            <div className="z-20 text-center flex flex-col items-center w-full px-6"> 
-                <div className="bg-white/90 backdrop-blur text-slate-900 px-3 py-1 rounded-full text-xs font-mono font-bold mb-2 md:mb-4 shadow-sm border border-white/50 flex items-center gap-1 z-10"><Tag className="w-3 h-3 text-blue-500" /> {currentMapping.code}</div> 
+        {/* SWATCH CONTAINER */}
+        <div className="w-full shrink-0 aspect-[3/1] md:aspect-[2/1] rounded-xl md:rounded-3xl flex flex-col items-center justify-center relative overflow-hidden mb-4 transition-all duration-300 min-h-[160px] border border-slate-200 dark:border-neutral-800 shadow-sm" style={swatchStyle}> 
+            <div className="z-20 text-center flex flex-col items-center w-full px-6 pointer-events-none"> 
+                <div className="bg-white/90 dark:bg-black/80 backdrop-blur text-slate-900 dark:text-neutral-100 px-3 py-1 rounded-full text-xs font-mono font-bold mb-2 md:mb-4 shadow-sm border border-white/50 dark:border-white/10 flex items-center gap-1 z-10 pointer-events-auto"><Tag className="w-3 h-3 text-blue-500" /> {currentMapping.code}</div> 
                 
                 <input 
                     type="text" 
@@ -804,88 +1120,96 @@
                         handleNameChange(e.target.value);
                     }}
                     onBlur={() => setTempName(null)}
-                    className="font-black text-xl md:text-3xl w-full text-center leading-tight break-words bg-transparent border-none outline-none text-shadow-sm hover:bg-white/10 rounded transition-colors z-10 relative" 
-                    style={{ color: canonicalL > 50 ? 'black' : 'white', textShadow: canonicalL > 50 ? 'none' : '0 2px 10px rgba(0,0,0,0.2)' }} 
+                    className="font-black text-xl md:text-3xl w-full text-center leading-tight break-words bg-transparent border-none outline-none text-shadow-sm hover:bg-white/10 dark:hover:bg-black/20 rounded transition-colors z-10 relative pointer-events-auto" 
+                    style={{ color: canonicalL > 50 ? 'black' : 'white', textShadow: canonicalL > 50 ? 'none' : '0 2px 10px rgba(0,0,0,0.6)' }} 
                 />
 
                 {nameWarning && (
-                    <div className="mt-2 px-3 py-1 bg-red-500/90 backdrop-blur text-white text-[10px] font-bold rounded-full flex items-center gap-1 shadow-lg animate-bounce z-10">
+                    <div className="mt-2 px-3 py-1 bg-red-500/90 backdrop-blur text-white text-[10px] font-bold rounded-full flex items-center gap-1 shadow-lg animate-bounce z-10 pointer-events-auto">
                         <AlertTriangle className="w-3 h-3" />
                         {nameWarning}
                     </div>
                 )}
 
-                <div className="mt-2 md:mt-4 flex gap-2 flex-wrap justify-center z-10"> 
+                <div className="mt-2 md:mt-4 flex gap-2 flex-wrap justify-center z-10 pointer-events-auto"> 
                     <div className="px-2 py-1 bg-black/40 backdrop-blur-md rounded text-[10px] font-mono text-white flex items-center gap-1">L{Math.round(canonicalL)} C{Math.round(canonicalC)} H{Math.round(canonicalH)}</div> 
                     <div className="px-2 py-1 bg-black/40 backdrop-blur-md rounded text-[10px] font-mono text-white flex items-center gap-1"><Hash className="w-3 h-3 opacity-70" /> {canonHex}</div> 
                     <div className="px-2 py-1 bg-black/40 backdrop-blur-md rounded text-[10px] font-mono text-white flex items-center gap-1">RGB {canonRgb.r},{canonRgb.g},{canonRgb.b}</div> 
-                    <div className="px-2 py-1 bg-white text-blue-600 backdrop-blur-md rounded text-[10px] font-black flex items-center gap-1"><Ruler className="w-3 h-3" /> ΔE {deltaE}</div> 
+                    <div className="px-2 py-1 bg-white dark:bg-neutral-900 text-blue-600 dark:text-blue-400 backdrop-blur-md rounded text-[10px] font-black flex items-center gap-1"><Ruler className="w-3 h-3" /> ΔE {deltaE}</div> 
                 </div> 
             </div> 
         </div> 
 
-        <div className="bg-slate-50 p-4 md:p-6 rounded-2xl border border-slate-100 space-y-2 shrink-0"> 
-            <SnapControl label="Light" value={l} setter={setL} max={100} displayVal={Math.round(l)} gradient={generateSliderBackground('light')} isActive={activeView.includes('hue') || activeView.includes('chroma')} /> 
-            <SnapControl label="Chroma" value={c} setter={setC} max={100} displayVal={Math.round(c)} gradient={generateSliderBackground('chroma')} isActive={activeView.includes('hue') || activeView.includes('light')} /> 
-            <SnapControl label="Hue" value={h} setter={setH} max={360} displayVal={Math.round(h) + "°"} gradient={generateSliderBackground('hue')} isActive={activeView.includes('chroma') || activeView.includes('light')} /> 
+        <div className="bg-slate-50 dark:bg-neutral-950/50 p-4 md:p-6 rounded-2xl border border-slate-100 dark:border-neutral-900 space-y-2 shrink-0 transition-colors duration-300"> 
+            <SnapControl label="Light" value={l} setter={setL} max={100} displayVal={Math.round(l)} gradient={lightGradientBg} isActive={activeView.includes('hue') || activeView.includes('chroma')} /> 
+            <SnapControl label="Chroma" value={c} setter={setC} max={100} displayVal={Math.round(c)} gradient={chromaGradientBg} isActive={activeView.includes('hue') || activeView.includes('light')} /> 
+            <SnapControl label="Hue" value={h} setter={setH} max={360} displayVal={Math.round(h) + "°"} gradient={hueGradientBg} isActive={activeView.includes('chroma') || activeView.includes('light')} /> 
         </div> 
 
-        <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 shrink-0 my-4"> 
-            <div className="text-[10px] font-bold text-slate-400 uppercase mb-3 flex items-center gap-2"><Palette className="w-3 h-3" /> Harmonies</div> 
+        <div className="bg-slate-50 dark:bg-neutral-950/50 p-4 rounded-2xl border border-slate-100 dark:border-neutral-900 shrink-0 my-4 transition-colors duration-300"> 
+            <div className="text-[10px] font-bold text-slate-400 dark:text-neutral-500 uppercase mb-3 flex items-center gap-2"><Palette className="w-3 h-3" /> Harmonies</div> 
             <div className="flex justify-between items-center px-2 overflow-x-auto scroll-hide pb-2"> 
-                <HarmonySwatch offset={0} label="Base" currentH={h} currentL={l} currentC={c} setH={setH} displayGamut={displayGamut} /> 
-                <div className="w-px h-6 bg-slate-200 mx-2 flex-shrink-0"></div> 
-                <HarmonySwatch offset={180} label="Comp" currentH={h} currentL={l} currentC={c} setH={setH} displayGamut={displayGamut} /> 
-                <HarmonySwatch offset={-30} label="Ana -" currentH={h} currentL={l} currentC={c} setH={setH} displayGamut={displayGamut} /> 
-                <HarmonySwatch offset={30} label="Ana +" currentH={h} currentL={l} currentC={c} setH={setH} displayGamut={displayGamut} /> 
-                <div className="w-px h-6 bg-slate-200 mx-2 flex-shrink-0"></div> 
-                <HarmonySwatch offset={120} label="Tri 1" currentH={h} currentL={l} currentC={c} setH={setH} displayGamut={displayGamut} /> 
-                <HarmonySwatch offset={240} label="Tri 2" currentH={h} currentL={l} currentC={c} setH={setH} displayGamut={displayGamut} /> 
+                <HarmonySwatch offset={0} label="Base" currentH={h} currentL={l} currentC={c} onSelect={(newH) => updateColorWithHistory(l, c, newH)} displayGamut={displayGamut} /> 
+                <div className="w-px h-6 bg-slate-200 dark:bg-neutral-800 mx-2 flex-shrink-0"></div> 
+                <HarmonySwatch offset={180} label="Comp" currentH={h} currentL={l} currentC={c} onSelect={(newH) => updateColorWithHistory(l, c, newH)} displayGamut={displayGamut} /> 
+                <HarmonySwatch offset={-30} label="Ana -" currentH={h} currentL={l} currentC={c} onSelect={(newH) => updateColorWithHistory(l, c, newH)} displayGamut={displayGamut} /> 
+                <HarmonySwatch offset={30} label="Ana +" currentH={h} currentL={l} currentC={c} onSelect={(newH) => updateColorWithHistory(l, c, newH)} displayGamut={displayGamut} /> 
+                <div className="w-px h-6 bg-slate-200 dark:bg-neutral-800 mx-2 flex-shrink-0"></div> 
+                <HarmonySwatch offset={120} label="Tri 1" currentH={h} currentL={l} currentC={c} onSelect={(newH) => updateColorWithHistory(l, c, newH)} displayGamut={displayGamut} /> 
+                <HarmonySwatch offset={240} label="Tri 2" currentH={h} currentL={l} currentC={c} onSelect={(newH) => updateColorWithHistory(l, c, newH)} displayGamut={displayGamut} /> 
             </div> 
         </div>
 
         {/* PALETTE PLAYGROUND */}
-        <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 shrink-0 mb-4">
+        <div className="bg-slate-50 dark:bg-neutral-950/50 p-4 rounded-2xl border border-slate-100 dark:border-neutral-900 shrink-0 mb-4 transition-colors duration-300">
             <div className="flex justify-between items-center mb-3">
-                <div className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-2"><Layers className="w-3 h-3" /> Palette Playground</div>
-                <div className="text-[9px] font-bold text-slate-300 uppercase">{palette.length}/10</div>
+                <div className="text-[10px] font-bold text-slate-400 dark:text-neutral-500 uppercase flex items-center gap-2"><Layers className="w-3 h-3" /> Palette Playground</div>
+                <div className="text-[9px] font-bold text-slate-400 dark:text-neutral-600 uppercase">{palette.length}/10</div>
             </div>
             <div className="flex flex-wrap gap-2">
                 {palette.map((p, i) => {
                      const gamutStatus = checkGamut(p.l, p.c, p.h);
                      const isOut = displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
-                     const rgbVal = realLchToRgb(p.l, p.c, p.h);
                      
-                     const pBg = `rgb(${rgbVal.r},${rgbVal.g},${rgbVal.b})`;
-                     const style = isOut ? { backgroundImage: 'repeating-linear-gradient(45deg, #cbd5e1 0px, #cbd5e1 2px, transparent 2px, transparent 6px)', backgroundColor: 'transparent' } : { backgroundColor: pBg };
+                     const pBg = getMappedCssColor(p.l, p.c, p.h, displayGamut);
+                     const style = { 
+                         backgroundColor: pBg, 
+                         backgroundImage: isOut ? 'repeating-linear-gradient(45deg, var(--hatch-color) 0px, var(--hatch-color) 2px, transparent 2px, transparent 6px)' : 'none' 
+                     };
                      return (
-                         <div key={i} onClick={() => { setL(p.l); setC(p.c); setH(p.h); }} className="w-8 h-8 rounded-lg shadow-sm border border-black/10 cursor-pointer relative group transition-transform hover:scale-110" style={style}>
-                            <div onClick={(e) => { e.stopPropagation(); setPalette(palette.filter((_, idx) => idx !== i)); }} className="absolute -top-1 -right-1 bg-white text-slate-400 hover:text-red-500 rounded-full p-0.5 shadow-md opacity-0 group-hover:opacity-100 transition-opacity">
+                         <div key={i} onClick={() => updateColorWithHistory(p.l, p.c, p.h)} className="w-8 h-8 rounded-lg shadow-sm border border-black/10 dark:border-white/10 cursor-pointer relative group transition-transform hover:scale-110 shrink-0" style={style}>
+                            <div onClick={(e) => { e.stopPropagation(); setPalette(palette.filter((_, idx) => idx !== i)); }} className="absolute -top-1 -right-1 bg-white dark:bg-neutral-800 text-slate-400 dark:text-neutral-300 hover:text-red-500 dark:hover:text-red-400 rounded-full p-0.5 shadow-md opacity-0 group-hover:opacity-100 transition-opacity">
                                 <X className="w-2 h-2" />
                             </div>
                          </div>
                      );
                 })}
                 {palette.length < 10 && (
-                    <button onClick={() => setPalette([...palette, {l, c, h}])} className="w-8 h-8 rounded-lg border-2 border-dashed border-slate-200 flex items-center justify-center text-slate-300 hover:border-slate-300 hover:text-slate-400 transition-colors">
+                    <button onClick={() => setPalette([...palette, {l, c, h}])} className="w-8 h-8 rounded-lg border-2 border-dashed border-slate-200 dark:border-neutral-700 flex items-center justify-center text-slate-300 dark:text-neutral-600 hover:border-slate-400 dark:hover:text-neutral-400 transition-colors shrink-0">
                         <Plus className="w-4 h-4" />
                     </button>
                 )}
             </div>
         </div>
 
-        <div className="mt-2 p-4 bg-blue-50 border border-blue-100 rounded-xl text-[10px] text-blue-600 hidden md:block">
-            <h4 className="font-bold uppercase mb-1 flex items-center gap-1"><Monitor className="w-3 h-3" /> Monitor Profile: {displayGamut.toUpperCase()}</h4>
-            <p>Gamut warnings and colors are optimized for your screen capabilities.</p>
-        </div>
         </div> 
         
-        <div className="order-2 flex-1 flex flex-col min-w-0 h-[55%] md:h-full bg-slate-50/50"> 
-        <div className="h-14 border-b border-slate-200 flex items-center px-4 md:px-6 justify-between bg-white shrink-0"> 
-            <div className="flex items-center gap-2"><Grid className="w-4 h-4 text-blue-500" /><span className="text-xs font-bold uppercase tracking-wider text-slate-500">Explorer Grid</span></div> 
+        <div className="order-2 flex-1 flex flex-col min-w-0 h-[55%] md:h-full bg-slate-50/50 dark:bg-black/50 transition-colors duration-300"> 
+        <div className="h-14 border-b border-slate-200 dark:border-neutral-900 flex items-center px-4 md:px-6 justify-between bg-white dark:bg-neutral-950 shrink-0 transition-colors duration-300"> 
+            
+            <div className="flex items-center gap-2">
+                <Grid className="w-4 h-4 text-blue-500 dark:text-blue-400" />
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400 hidden sm:inline">Explorer Grid</span>
+                <div className="ml-1 md:ml-3 flex items-center bg-slate-100 dark:bg-neutral-900 rounded-lg shadow-inner">
+                    <ZoomOut onClick={handleZoomOut} className="w-6 h-6 p-1 text-slate-400 dark:text-neutral-500 hover:text-blue-500 dark:hover:text-blue-400 cursor-pointer transition-colors" />
+                    <span className="text-[10px] font-mono w-8 text-center text-slate-500 dark:text-neutral-400">{Math.round(gridZoom * 100)}%</span>
+                    <ZoomIn onClick={handleZoomIn} className="w-6 h-6 p-1 text-slate-400 dark:text-neutral-500 hover:text-blue-500 dark:hover:text-blue-400 cursor-pointer transition-colors" />
+                </div>
+            </div> 
+
             <div className="flex items-center gap-2"> 
-                <RefreshCw onClick={() => setIsFlipped(!isFlipped)} className={`p-2 w-8 h-8 rounded hover:bg-slate-100 text-slate-500 cursor-pointer ${isFlipped ? 'text-blue-600' : ''}`} /> 
-                <select value={activeView} onChange={(e) => setActiveView(e.target.value)} className="bg-slate-100 pl-4 pr-8 py-1.5 rounded-lg text-xs font-bold text-slate-700 cursor-pointer appearance-none"> 
+                <RefreshCw onClick={() => setIsFlipped(!isFlipped)} className={`p-2 w-8 h-8 rounded hover:bg-slate-100 dark:hover:bg-neutral-900 text-slate-500 dark:text-neutral-400 cursor-pointer transition-colors ${isFlipped ? 'text-blue-600 dark:text-blue-400' : ''}`} /> 
+                <select value={activeView} onChange={(e) => setActiveView(e.target.value)} className="bg-slate-100 dark:bg-neutral-900 pl-4 pr-8 py-1.5 rounded-lg text-xs font-bold text-slate-700 dark:text-neutral-200 cursor-pointer appearance-none transition-colors border border-transparent dark:border-neutral-800 focus:outline-none focus:border-blue-500"> 
                     <option value="hue_pivot">HUE FIXED</option> 
                     <option value="chroma_pivot">CHROMA FIXED</option> 
                     <option value="light_pivot">LIGHT FIXED</option> 
@@ -895,22 +1219,22 @@
         </div> 
         <div className="flex-1 overflow-hidden relative p-2 md:p-4"> 
             {activeView === 'hue_pivot' && ( 
-            <MatrixTable yLabel={isFlipped ? "C" : "L"} xLabel={isFlipped ? "L" : "C"} yData={isFlipped ? chromaRangeData : lightRangeData} xData={isFlipped ? lightRangeData : chromaRangeData} activeIds={{r: isFlipped ? safeCIdx : safeLIdx, c: isFlipped ? safeLIdx : safeCIdx}} renderCell={renderCell} interactionSource={interactionSource} /> 
+            <MatrixTable zoom={gridZoom} yLabel={isFlipped ? "C" : "L"} xLabel={isFlipped ? "L" : "C"} yData={isFlipped ? chromaRangeData : lightRangeData} xData={isFlipped ? lightRangeData : chromaRangeData} activeIds={{r: isFlipped ? safeCIdx : safeLIdx, c: isFlipped ? safeLIdx : safeCIdx}} renderCell={renderCell} interactionSource={interactionSource} /> 
             )} 
             {activeView === 'chroma_pivot' && ( 
-            <MatrixTable yLabel={isFlipped ? "L" : "H"} xLabel={isFlipped ? "H" : "L"} yData={isFlipped ? lightRangeData : hueRangesData} xData={isFlipped ? hueRangesData : lightRangeData} activeIds={{r: isFlipped ? safeLIdx : hIdx, c: isFlipped ? hIdx : safeLIdx}} renderCell={renderCell} interactionSource={interactionSource} /> 
+            <MatrixTable zoom={gridZoom} yLabel={isFlipped ? "L" : "H"} xLabel={isFlipped ? "H" : "L"} yData={isFlipped ? lightRangeData : hueRangesData} xData={isFlipped ? hueRangesData : lightRangeData} activeIds={{r: isFlipped ? safeLIdx : hIdx, c: isFlipped ? hIdx : safeLIdx}} renderCell={renderCell} interactionSource={interactionSource} /> 
             )} 
             {activeView === 'light_pivot' && ( 
-            <MatrixTable yLabel={isFlipped ? "C" : "H"} xLabel={isFlipped ? "H" : "C"} yData={isFlipped ? chromaRangeData : hueRangesData} xData={isFlipped ? hueRangesData : chromaRangeData} activeIds={{r: isFlipped ? safeCIdx : hIdx, c: isFlipped ? hIdx : safeCIdx}} renderCell={renderCell} interactionSource={interactionSource} /> 
+            <MatrixTable zoom={gridZoom} yLabel={isFlipped ? "C" : "H"} xLabel={isFlipped ? "H" : "C"} yData={isFlipped ? chromaRangeData : hueRangesData} xData={isFlipped ? hueRangesData : chromaRangeData} activeIds={{r: isFlipped ? safeCIdx : hIdx, c: isFlipped ? hIdx : safeCIdx}} renderCell={renderCell} interactionSource={interactionSource} /> 
             )} 
             {activeView === 'noun' && ( 
-             <div className="h-full w-full overflow-auto rounded-xl border border-slate-200 bg-white shadow-sm"> 
+             <div className="h-full w-full overflow-auto rounded-xl border border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 shadow-sm transition-colors duration-300 custom-scroll"> 
                  <table className="w-full text-xs text-left table-fixed border-separate border-spacing-0"> 
-                 <thead className="bg-white sticky top-0 z-20 shadow-sm border-b border-slate-200"> 
+                 <thead className="bg-white dark:bg-neutral-950 sticky top-0 z-20 shadow-sm border-b border-slate-200 dark:border-neutral-900"> 
                      <tr> 
-                     <th className="p-3 font-bold text-slate-400 w-16 text-center bg-white sticky left-0 z-30 border-b border-slate-200">Hue</th> 
-                     <th className="p-3 font-bold text-slate-600 bg-slate-50 border-b border-r border-slate-200">Dark Shade (L&lt;50)</th>
-                     <th className="p-3 font-bold text-slate-600 bg-slate-50 border-b border-slate-200">Light Shade (L&ge;50)</th>
+                     <th className="p-3 font-bold text-slate-400 dark:text-neutral-500 w-16 text-center bg-white dark:bg-neutral-950 sticky left-0 z-30 border-b border-slate-200 dark:border-neutral-900">Hue</th> 
+                     <th className="p-3 font-bold text-slate-600 dark:text-neutral-300 bg-slate-50 dark:bg-neutral-950/50 border-b border-r border-slate-200 dark:border-neutral-900">Dark Shade (L&lt;50)</th>
+                     <th className="p-3 font-bold text-slate-600 dark:text-neutral-300 bg-slate-50 dark:bg-neutral-950/50 border-b border-slate-200 dark:border-neutral-900">Light Shade (L&ge;50)</th>
                      </tr> 
                  </thead> 
                  <tbody> 
@@ -918,24 +1242,23 @@
                      const displayHue = hueValues[idx]; 
                      const parts = rowStr.split(','); 
                      const isHueActive = hIdx === idx;
-                     // Column 0 = Dark, Column 1 = Light
                      return ( 
-                     <tr key={idx} className={`transition-all duration-200 cursor-pointer ${isHueActive ? 'bg-blue-50/50' : 'hover:bg-slate-50'}`} data-active={isHueActive}> 
-                         <td onClick={() => setH(displayHue)} className={`p-2 text-center font-mono opacity-80 bg-white sticky left-0 z-10 border-b border-r border-slate-100 ${isHueActive ? '!bg-blue-50 font-bold text-blue-600' : ''}`}>{displayHue}°</td> 
+                     <tr key={idx} className={`transition-all duration-200 cursor-pointer ${isHueActive ? 'bg-blue-50/50 dark:bg-blue-900/20' : 'hover:bg-slate-50 dark:hover:bg-neutral-900/50'}`} data-active={isHueActive}> 
+                         <td onClick={() => updateColorWithHistory(l, c, displayHue)} className={`p-2 text-center font-mono opacity-80 bg-white dark:bg-neutral-950 sticky left-0 z-10 border-b border-r border-slate-100 dark:border-neutral-900 ${isHueActive ? '!bg-blue-50 dark:!bg-blue-900/40 font-bold text-blue-600 dark:text-blue-400' : 'text-slate-600 dark:text-neutral-400'}`}>{displayHue}°</td> 
                          {[0, 1].map((colIdx) => {
                              const n = parts[colIdx] || "";
                              const isCellActive = isHueActive && (colIdx === (l < 50 ? 0 : 1));
-                             // Set representative L/C for clicking the list
-                             const repL = colIdx === 0 ? 25 : 75;
-                             const repC = 30; // Generic chroma
+                             const repL = colIdx === 0 ? 40 : 75;
+                             const repC = 25; 
+                             
                              const cellRgb = realLchToRgb(repL, repC, displayHue);
-                             const cellColor = `rgb(${cellRgb.r},${cellRgb.g},${cellRgb.b})`;
+                             const cellColor = getMappedCssColor(repL, repC, displayHue, displayGamut);
                              
                              return (
-                                 <td key={colIdx} onClick={() => { setH(displayHue); setL(repL); setC(repC); }} className={`p-0 relative h-10 border-b border-r border-slate-100 ${isCellActive ? 'ring-2 ring-blue-500 z-20' : ''}`}>
+                                 <td key={colIdx} onClick={() => updateColorWithHistory(repL, repC, displayHue)} className={`p-0 relative h-10 border-b border-r border-slate-100 dark:border-neutral-900 ${isCellActive ? 'ring-2 ring-blue-500 dark:ring-blue-400 z-20' : ''}`}>
                                     <div className="flex items-center h-full px-3 gap-2">
-                                        <div className="w-4 h-4 rounded-full border border-black/10" style={{backgroundColor: cellRgb.outOfGamut ? 'transparent' : cellColor, backgroundImage: cellRgb.outOfGamut ? 'repeating-linear-gradient(45deg, #cbd5e1 0px, #cbd5e1 4px, transparent 4px, transparent 8px)' : 'none'}}></div>
-                                        <input type="text" value={n} onChange={(e) => updateNoun(idx, colIdx, e.target.value)} className="w-full bg-transparent border-none outline-none font-medium text-slate-700" />
+                                        <div className="w-4 h-4 rounded-full border border-black/10 dark:border-white/10 shrink-0" style={{backgroundColor: cellColor, backgroundImage: cellRgb.outOfGamut ? 'repeating-linear-gradient(45deg, var(--hatch-color) 0px, var(--hatch-color) 4px, transparent 4px, transparent 8px)' : 'none'}}></div>
+                                        <input type="text" value={n} onChange={(e) => updateNoun(idx, colIdx, e.target.value)} className="w-full bg-transparent border-none outline-none font-medium text-slate-700 dark:text-neutral-200" />
                                     </div>
                                  </td>
                              )
