@@ -33,15 +33,15 @@
  <script type="text/babel"> 
  const { useState, useMemo, useEffect, useRef, useCallback, memo } = React; 
 
- const saveToLocal = (key, data) => localStorage.setItem(`colorsam_v124_${key}`, JSON.stringify(data));
+ const saveToLocal = (key, data) => localStorage.setItem(`colorsam_v129_${key}`, JSON.stringify(data));
  const getFromLocal = (key, fallback) => {
     try { 
-        const stored = localStorage.getItem(`colorsam_v124_${key}`);
+        const stored = localStorage.getItem(`colorsam_v129_${key}`);
         return stored ? JSON.parse(stored) : fallback; 
     } catch(e) { return fallback; }
  };
 
- // --- W3C REFERENCE MATH ENGINE (CSS COLOR 4) ---
+ // --- W3C REFERENCE MATH ENGINE (D50 at 2° Observer) ---
  const lch2lab = (l, c, h) => {
     const hRad = (h * Math.PI) / 180;
     return [l, c * Math.cos(hRad), c * Math.sin(hRad)];
@@ -80,7 +80,7 @@
  };
 
  const inGamut = ([r, g, b]) => {
-    const e = 0.001; 
+    const e = 0.075; 
     return r >= -e && r <= 1+e && g >= -e && g <= 1+e && b >= -e && b <= 1+e;
  };
 
@@ -120,6 +120,47 @@
  };
  
  const checkGamut = checkGamutStatus;
+
+ const srgb2lin = (c) => {
+    let v = c / 255;
+    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+ };
+
+ const rgbToLchConvert = (r, g, b) => {
+    let lr = srgb2lin(r), lg = srgb2lin(g), lb = srgb2lin(b);
+    let x = 0.4360747 * lr + 0.3850649 * lg + 0.1430804 * lb;
+    let y = 0.2225045 * lr + 0.7168786 * lg + 0.0606169 * lb;
+    let z = 0.0139322 * lr + 0.0971045 * lg + 0.7141733 * lb;
+
+    const f = (n) => n > 216/24389 ? Math.pow(n, 1/3) : (24389/27 * n + 16) / 116;
+    let fx = f(x / 0.96422), fy = f(y / 1.0), fz = f(z / 0.82521);
+
+    let L = 116 * fy - 16;
+    let a_val = 500 * (fx - fy);
+    let b_val = 200 * (fy - fz);
+
+    let C = Math.sqrt(a_val*a_val + b_val*b_val);
+    let H = Math.atan2(b_val, a_val) * (180 / Math.PI);
+    if (H < 0) H += 360;
+    return { l: Math.max(0, Math.min(100, L)), c: Math.max(0, C), h: isNaN(H) ? 0 : H };
+ };
+
+ const hexToLchConvert = (hex) => {
+    let clean = hex.replace(/[^0-9A-F]/gi, '');
+    if (clean.length === 3) clean = clean.split('').map(c => c+c).join('');
+    if (clean.length !== 6) return null;
+    let r = parseInt(clean.substring(0,2), 16);
+    let g = parseInt(clean.substring(2,4), 16);
+    let b = parseInt(clean.substring(4,6), 16);
+    return rgbToLchConvert(r, g, b);
+ };
+
+ const labToLchConvert = (l, a, b_val) => {
+    let C = Math.sqrt(a*a + b_val*b_val);
+    let H = Math.atan2(b_val, a) * (180 / Math.PI);
+    if (H < 0) H += 360;
+    return { l: Math.max(0, Math.min(100, l)), c: Math.max(0, C), h: isNaN(H) ? 0 : H };
+ };
 
  const getMappedCssColor = (l, c, h, gamut) => {
     if (l >= 100) return '#FFFFFF';
@@ -302,9 +343,29 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
 348°,Spice,Jelly
 351°,Cardinal,Candy
 354°,Fire,Sweet
-357°,Strawberry,Heart`;
+357°,Scarlet,Lantern`;
+
+ const RAW_MAJOR_GROUPS_CSV = `Hue Range,Dark Muted,Dark Vivid,Light Muted,Light Vivid
+345° - 15°,Burgundy,Crimson,Dusty Rose,Rose
+15° - 45°,Brown,Red,Beige,Coral
+45° - 75°,Olive Brown,Orange,Tan,Gold
+75° - 105°,Olive,Yellow,Pale Yellow,Bright Yellow
+105° - 135°,Dark Green,Green,Sage,Light Green
+135° - 165°,Dark Teal,Teal,Seafoam,Bright Teal
+165° - 195°,Dark Cyan,Cyan,Pale Cyan,Bright Cyan
+195° - 225°,Slate Blue,Cerulean,Light Blue,Sky Blue
+225° - 255°,Navy,Blue,Periwinkle,Bright Blue
+255° - 285°,Midnight Blue,Indigo,Pale Blue,Royal Blue
+285° - 315°,Plum,Purple,Lavender,Bright Purple
+315° - 345°,Dark Magenta,Magenta,Mauve,Pink`;
 
  // --- CONSTANTS & MIGRATION DATA ---
+ const HUE_RANGES_MAJOR = [
+    "345° - 15° (Crimson)", "15° - 45° (Red)", "45° - 75° (Orange)", "75° - 105° (Yellow)",
+    "105° - 135° (Yellow-Green)", "135° - 165° (Green)", "165° - 195° (Teal/Cyan)", "195° - 225° (Light Blue)",
+    "225° - 255° (Blue)", "255° - 285° (Indigo)", "285° - 315° (Purple)", "315° - 345° (Magenta)"
+ ];
+
  const generateLightRanges = () => {
     const ranges = [{ label: "A", min: 0, max: 0, mid: 0 }]; 
     for (let i = 0; i < 19; i++) {
@@ -371,6 +432,14 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     return nouns;
  };
 
+ const generateMajorGroups = () => {
+    const lines = RAW_MAJOR_GROUPS_CSV.trim().split('\n').slice(1);
+    return lines.map(line => {
+        const parts = line.split(',');
+        return parts.slice(1).map(s => s.trim());
+    });
+ };
+
  // Safely returns the index for a value within custom range maps
  const getRangeIndex = (val, ranges) => {
     const rounded = Math.round(val);
@@ -410,6 +479,30 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
  const RedoIcon = ({ className, onClick }) => <Icon onClick={onClick} className={className}><path d="M21 7v6h-6" /><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.6L21 13" /></Icon>;
  const ZoomIn = ({ className, onClick }) => <Icon onClick={onClick} className={className}><circle cx="11" cy="11" r="8" /><line x1="21" x2="16.65" y1="21" y2="16.65" /><line x1="11" x2="11" y1="8" y2="14" /><line x1="8" x2="14" y1="11" y2="11" /></Icon>;
  const ZoomOut = ({ className, onClick }) => <Icon onClick={onClick} className={className}><circle cx="11" cy="11" r="8" /><line x1="21" x2="16.65" y1="21" y2="16.65" /><line x1="8" x2="14" y1="11" y2="11" /></Icon>;
+
+ const ConverterInput = ({ label, value, onConvert, placeholder }) => {
+    const [localVal, setLocalVal] = useState(value);
+    useEffect(() => { setLocalVal(value); }, [value]);
+
+    const handleBlur = () => {
+        if (localVal !== value) onConvert(localVal);
+    };
+
+    return (
+        <div className="flex flex-col gap-1">
+            <label className="text-[9px] font-bold text-slate-400 uppercase pl-1">{label}</label>
+            <input 
+                type="text" 
+                value={localVal} 
+                onChange={(e) => setLocalVal(e.target.value)}
+                onBlur={handleBlur}
+                onKeyDown={(e) => e.key === 'Enter' && handleBlur()}
+                placeholder={placeholder}
+                className="w-full bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded-lg px-2 py-1.5 text-xs font-mono text-slate-700 dark:text-neutral-200 focus:outline-none focus:border-blue-500 transition-colors shadow-sm"
+            />
+        </div>
+    );
+ };
 
  const HelpModal = ({ onClose }) => (
     <div className="fixed inset-0 bg-neutral-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
@@ -481,16 +574,13 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     ); 
  }; 
 
- // MEMOIZED COMPONENTS FOR PERFORMANCE (Math calculation decoupled from Render loops)
  const MatrixCell = memo(({ rI, cI, isActive, cellL, cellC, lVal, cVal, hVal, noun, adj, displayGamut, onClick }) => {
     
-    // Decoupled expensive gamut mapping
     const isOut = useMemo(() => {
         const gamutStatus = checkGamut(lVal, cVal, hVal);
         return displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
     }, [lVal, cVal, hVal, displayGamut]);
 
-    // Decoupled expensive CSS RGB resolution mapping
     const cellColor = useMemo(() => {
         return getMappedCssColor(lVal, cVal, hVal, displayGamut);
     }, [lVal, cVal, hVal, displayGamut]);
@@ -512,7 +602,6 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     );
  });
 
- // Noun Row completely isolated from slider coordinate values (L & C) to stop the cascading list re-renders
  const NounRow = memo(({ idx, displayHue, isHueActive, activeColIdx, parts, displayGamut, onHueClick, updateColorWithHistory, updateNoun }) => (
     <tr className={`transition-all duration-200 cursor-pointer ${isHueActive ? 'bg-blue-50/50 dark:bg-blue-900/20' : 'hover:bg-slate-50 dark:hover:bg-neutral-900/50'}`} data-active={isHueActive}> 
         <td onClick={() => onHueClick(displayHue)} className={`p-2 text-center font-mono opacity-80 bg-white dark:bg-neutral-950 sticky left-0 z-10 border-b border-r border-slate-100 dark:border-neutral-900 ${isHueActive ? '!bg-blue-50 dark:!bg-blue-900/40 font-bold text-blue-600 dark:text-blue-400' : 'text-slate-600 dark:text-neutral-400'}`}>{displayHue}°</td> 
@@ -522,7 +611,6 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
             const repL = colIdx === 0 ? 40 : 75;
             const repC = 25; 
             
-            // These run using static representative values, avoiding slider state entirely
             const cellRgb = realLchToRgb(repL, repC, displayHue);
             const cellColor = getMappedCssColor(repL, repC, displayHue, displayGamut);
             
@@ -622,13 +710,11 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
  }; 
 
  const ColorSAMIfier = () => { 
-    // --- STATE ---
     const [h, setH] = useState(getFromLocal('h', 40)); 
     const [c, setC] = useState(getFromLocal('c', 50)); 
     const [l, setL] = useState(getFromLocal('l', 52)); 
     const [gridZoom, setGridZoom] = useState(() => getFromLocal('gridZoom', 1));
     
-    // --- HISTORY STATE ---
     const [history, setHistory] = useState(() => {
         const local = getFromLocal('history', null);
         return local && local.length > 0 ? local : [{l: getFromLocal('l', 52), c: getFromLocal('c', 50), h: getFromLocal('h', 40)}];
@@ -658,107 +744,90 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
         const local = getFromLocal('nounData', null);
         return (local && local.length === 120) ? local : generateNounData();
     });
+
+    const [majorGroups, setMajorGroups] = useState(() => {
+        const local = getFromLocal('majorGroups', null);
+        return (local && local.length === 12) ? local : generateMajorGroups();
+    });
+
+    const [extremeGroups, setExtremeGroups] = useState(() => {
+        return getFromLocal('extremeGroups', { white: "White", black: "Black", gray: "Gray" });
+    });
     
     const [palette, setPalette] = useState(getFromLocal('userPalette', []));
     const [tempName, setTempName] = useState(null);
 
     const parsedNouns = useMemo(() => nounData.map(row => row.split(',')), [nounData]);
 
-    const handleZoomIn = () => setGridZoom(prev => {
-        if (prev <= 0.1) return 0.25;
-        const step = prev >= 1 ? 0.5 : 0.25;
-        return Math.min(Math.round((prev + step) * 100) / 100, 3.0);
-    });
-    const handleZoomOut = () => setGridZoom(prev => {
-        if (prev <= 0.25) return 0.1;
-        const step = prev > 1 ? 0.5 : 0.25;
-        return Math.max(Math.round((prev - step) * 100) / 100, 0.1);
-    });
+    const handleZoomIn = () => setGridZoom(prev => Math.min(Math.round((prev + (prev >= 1 ? 0.5 : 0.25)) * 100) / 100, 3.0));
+    const handleZoomOut = () => setGridZoom(prev => Math.max(Math.round((prev - (prev > 1 ? 0.5 : 0.25)) * 100) / 100, 0.1));
 
-    // Handle Dark Mode toggling
     useEffect(() => {
-        if (isDark) {
-            document.documentElement.classList.add('dark');
-        } else {
-            document.documentElement.classList.remove('dark');
-        }
+        if (isDark) document.documentElement.classList.add('dark');
+        else document.documentElement.classList.remove('dark');
         saveToLocal('darkMode', isDark);
     }, [isDark]);
 
-    // Memoize the background generators to prevent intensive calculations every frame
     const lightGradientBg = useMemo(() => {
-        const stops = []; const steps = 20; 
-        for (let i = 0; i <= steps; i++) { 
-            const pct = i / steps; let lV = pct * 100;
-            const gamutStatus = checkGamut(lV, c, h);
-            const isOut = displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
-            const color = getMappedCssColor(lV, c, h, displayGamut);
-            // Even in the gradient track, keeping the actual color makes sense, we just won't show the hatching easily here
+        const stops = []; 
+        for (let i = 0; i <= 20; i++) { 
+            const pct = i / 20; 
+            const isOut = displayGamut === 'p3' ? !checkGamut(pct * 100, c, h).isP3 : !checkGamut(pct * 100, c, h).isSRGB;
+            const color = getMappedCssColor(pct * 100, c, h, displayGamut);
             stops.push(`${isOut ? 'transparent' : color} ${pct * 100}%`); 
         } 
         return `linear-gradient(to right, ${stops.join(', ')})`;
     }, [c, h, displayGamut]);
 
     const chromaGradientBg = useMemo(() => {
-        const stops = []; const steps = 20; 
-        for (let i = 0; i <= steps; i++) { 
-            const pct = i / steps; let cV = pct * 100;
-            const gamutStatus = checkGamut(l, cV, h);
-            const isOut = displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
-            const color = getMappedCssColor(l, cV, h, displayGamut); 
+        const stops = [];
+        for (let i = 0; i <= 20; i++) { 
+            const pct = i / 20; 
+            const isOut = displayGamut === 'p3' ? !checkGamut(l, pct * 100, h).isP3 : !checkGamut(l, pct * 100, h).isSRGB;
+            const color = getMappedCssColor(l, pct * 100, h, displayGamut); 
             stops.push(`${isOut ? 'transparent' : color} ${pct * 100}%`); 
         } 
         return `linear-gradient(to right, ${stops.join(', ')})`;
     }, [l, h, displayGamut]);
 
     const hueGradientBg = useMemo(() => {
-        const stops = []; const steps = 20; 
-        for (let i = 0; i <= steps; i++) { 
-            const pct = i / steps; let hV = hueValues[Math.min(hueValues.length-1, Math.round(pct * (hueValues.length-1)))]; 
-            const gamutStatus = checkGamut(l, c, hV);
-            const isOut = displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
+        const stops = []; 
+        for (let i = 0; i <= 20; i++) { 
+            const pct = i / 20; 
+            let hV = hueValues[Math.min(hueValues.length-1, Math.round(pct * (hueValues.length-1)))]; 
+            const isOut = displayGamut === 'p3' ? !checkGamut(l, c, hV).isP3 : !checkGamut(l, c, hV).isSRGB;
             const color = getMappedCssColor(l, c, hV, displayGamut); 
             stops.push(`${isOut ? 'transparent' : color} ${pct * 100}%`); 
         } 
         return `linear-gradient(to right, ${stops.join(', ')})`;
     }, [l, c, displayGamut, hueValues]);
 
-    // DEBOUNCED LOCAL STORAGE SAVE (Crucial for Slider Performance)
     useEffect(() => {
-        if (window.matchMedia && window.matchMedia("(color-gamut: p3)").matches) {
-            setDisplayGamut("p3");
-        } else {
-            setDisplayGamut("srgb");
-        }
-
+        setDisplayGamut(window.matchMedia && window.matchMedia("(color-gamut: p3)").matches ? "p3" : "srgb");
         const timer = setTimeout(() => {
             saveToLocal('h', h); saveToLocal('c', c); saveToLocal('l', l);
-            saveToLocal('gridZoom', gridZoom);
-            saveToLocal('history', history); saveToLocal('historyIndex', historyIndex);
+            saveToLocal('gridZoom', gridZoom); saveToLocal('history', history); saveToLocal('historyIndex', historyIndex);
             saveToLocal('lightRanges', lightRanges); saveToLocal('chromaRanges', chromaRanges);
             saveToLocal('anchors', anchors); saveToLocal('hueValues', hueValues);
-            saveToLocal('adjectiveMatrix', adjectiveMatrix);
-            saveToLocal('nounData', nounData);
+            saveToLocal('adjectiveMatrix', adjectiveMatrix); saveToLocal('nounData', nounData);
+            saveToLocal('majorGroups', majorGroups); saveToLocal('extremeGroups', extremeGroups);
             saveToLocal('userPalette', palette);
-
-        }, 300); // 300ms debounce
-
+        }, 300);
         return () => clearTimeout(timer);
-    }, [h, c, l, gridZoom, history, historyIndex, adjectiveMatrix, nounData, lightRanges, chromaRanges, anchors, hueValues, palette]);
+    }, [h, c, l, gridZoom, history, historyIndex, adjectiveMatrix, nounData, majorGroups, extremeGroups, lightRanges, chromaRanges, anchors, hueValues, palette]);
     
-    useEffect(() => {
-        setTempName(null);
-    }, [l, c, h]);
+    useEffect(() => setTempName(null), [l, c, h]);
 
-    // History Logic 
+    const exactRgb = useMemo(() => realLchToRgb(l, c, h), [l, c, h]);
+    const exactHex = useMemo(() => `#${exactRgb.r.toString(16).padStart(2,'0')}${exactRgb.g.toString(16).padStart(2,'0')}${exactRgb.b.toString(16).padStart(2,'0')}`.toUpperCase(), [exactRgb]);
+    const exactLab = useMemo(() => lch2lab(l, c, h), [l, c, h]);
+    const exactLabStr = useMemo(() => `${Math.round(exactLab[0])}, ${Math.round(exactLab[1])}, ${Math.round(exactLab[2])}`, [exactLab]);
+
     const updateColorWithHistory = useCallback((newL, newC, newH) => {
         setL(newL); setC(newC); setH(newH);
         setHistory(prev => {
             const newHist = prev.slice(0, historyIndex + 1);
-            if (newHist.length > 0) {
-                const last = newHist[newHist.length - 1];
-                if (last.l === newL && last.c === newC && last.h === newH) return newHist;
-            }
+            if (newHist.length > 0 && newHist[newHist.length - 1].l === newL && newHist[newHist.length - 1].c === newC && newHist[newHist.length - 1].h === newH) return newHist;
             newHist.push({l: newL, c: newC, h: newH});
             if(newHist.length > 50) newHist.shift(); 
             setHistoryIndex(newHist.length - 1);
@@ -771,19 +840,14 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
         updateColorWithHistory(lVal, cVal, hVal);
     }, [updateColorWithHistory]);
 
-    // Independent closure ref so Noun list clicking doesn't depend on slider primitives for rendering
     const stateRef = useRef({ l, c, h });
     useEffect(() => { stateRef.current = { l, c, h }; }, [l, c, h]);
-
-    const handleRowHueClick = useCallback((newH) => {
-        updateColorWithHistory(stateRef.current.l, stateRef.current.c, newH);
-    }, [updateColorWithHistory]);
+    const handleRowHueClick = useCallback((newH) => updateColorWithHistory(stateRef.current.l, stateRef.current.c, newH), [updateColorWithHistory]);
 
     const handleUndo = () => {
         if (historyIndex > 0) {
             const prevIdx = historyIndex - 1;
-            const state = history[prevIdx];
-            setL(state.l); setC(state.c); setH(state.h);
+            setL(history[prevIdx].l); setC(history[prevIdx].c); setH(history[prevIdx].h);
             setHistoryIndex(prevIdx);
         }
     };
@@ -791,8 +855,7 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     const handleRedo = () => {
         if (historyIndex < history.length - 1) {
             const nextIdx = historyIndex + 1;
-            const state = history[nextIdx];
-            setL(state.l); setC(state.c); setH(state.h);
+            setL(history[nextIdx].l); setC(history[nextIdx].c); setH(history[nextIdx].h);
             setHistoryIndex(nextIdx);
         }
     };
@@ -809,8 +872,7 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     const updateNoun = (r, cIdx, val) => {
         setNounData(prev => {
             const next = [...prev];
-            const rowStr = next[r] || "";
-            const parts = rowStr.split(',');
+            const parts = (next[r] || "").split(',');
             while (parts.length < 2) parts.push("");
             parts[cIdx] = val;
             next[r] = parts.join(',');
@@ -818,16 +880,21 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
         });
     };
 
+    const updateMajorGroup = (rIdx, cIdx, val) => {
+        setMajorGroups(prev => {
+            const next = [...prev];
+            next[rIdx] = [...next[rIdx]];
+            next[rIdx][cIdx] = val;
+            return next;
+        });
+    };
+
     const getIndexFromHue = (hue) => { 
-        let closestIdx = 0;
-        let minDiff = 360;
+        let closestIdx = 0; let minDiff = 360;
         hueValues.forEach((hVal, idx) => {
             let diff = Math.abs(hVal - hue);
             if(diff > 180) diff = 360 - diff; 
-            if(diff < minDiff) {
-                minDiff = diff;
-                closestIdx = idx;
-            }
+            if(diff < minDiff) { minDiff = diff; closestIdx = idx; }
         });
         return closestIdx;
     }; 
@@ -835,46 +902,36 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     const hIdx = getIndexFromHue(h);
     const lIdx = getRangeIndex(l, lightRanges); 
     const cIdx = getRangeIndex(c, chromaRanges); 
-
-    const getNounColumnIndex = (lIdx) => { 
-        return lIdx < 11 ? 0 : 1;
-    }; 
+    const getNounColumnIndex = (lIdx) => lIdx < 11 ? 0 : 1; 
 
     const currentMapping = useMemo(() => { 
         const rowLIdx = getRangeIndex(l, lightRanges);
         const rowCIdx = getRangeIndex(c, chromaRanges);
-        
-        if (rowLIdx === 0) return { baseNoun: "Nero", adj: "", code: `AA000`, strIdx:-1, hueRow:-1 }; 
-        if (rowLIdx === 21) return { baseNoun: "Blanc", adj: "", code: `VA000`, strIdx:-1, hueRow:-1 }; 
-        if (rowCIdx === 0) return { baseNoun: "Cinza", adj: adjectiveMatrix[rowLIdx]?.[0] || "", code: `${lightRanges[rowLIdx]?.label || 'A'}A000`, strIdx:-1, hueRow:-1 }; 
-        
+        if (rowLIdx === 0) return { baseNoun: "Nero", adj: "", code: `AA000` }; 
+        if (rowLIdx === 21) return { baseNoun: "Blanc", adj: "", code: `VA000` }; 
+        if (rowCIdx === 0) return { baseNoun: "Cinza", adj: adjectiveMatrix[rowLIdx]?.[0] || "", code: `${lightRanges[rowLIdx]?.label || 'A'}A000` }; 
         const sIdx = getNounColumnIndex(rowLIdx);
         const bNoun = parsedNouns[hIdx]?.[sIdx] || "Hue"; 
         let adj = adjectiveMatrix[rowLIdx]?.[rowCIdx] || ""; 
         if (bNoun && adj && bNoun.toLowerCase() === adj.toLowerCase()) adj = ""; 
-        return { baseNoun: bNoun, adj, code: `${lightRanges[rowLIdx]?.label || '?'}${chromaRanges[rowCIdx]?.label || '?'}${h.toString().padStart(3,'0')}`, strIdx: sIdx, hueRow: hIdx }; 
+        return { baseNoun: bNoun, adj, code: `${lightRanges[rowLIdx]?.label || '?'}${chromaRanges[rowCIdx]?.label || '?'}${h.toString().padStart(3,'0')}` }; 
     }, [l, c, h, adjectiveMatrix, parsedNouns, hIdx, lightRanges, chromaRanges]);
 
     const fullDisplayName = currentMapping.adj ? `${currentMapping.adj} ${currentMapping.baseNoun}` : currentMapping.baseNoun; 
 
     const handleNameChange = (val) => {
-        const rL = getRangeIndex(l, lightRanges);
-        const rC = getRangeIndex(c, chromaRanges);
+        const rL = getRangeIndex(l, lightRanges); const rC = getRangeIndex(c, chromaRanges);
         if (rL === 0 || rL === 21) return; 
-
         const parts = val.trim().split(/\s+/);
-        let newNoun = ""; let newAdj = "";
-        if (parts.length === 1) { newNoun = parts[0]; } else { newNoun = parts.pop(); newAdj = parts.join(" "); }
-        const checkNoun = newNoun.trim(); const checkAdj = newAdj.trim();
+        let checkNoun = (parts.length === 1 ? parts[0] : parts.pop()).trim();
+        let checkAdj = (parts.length === 1 ? "" : parts.join(" ")).trim();
         let warning = null;
-
         if (rC === 0) {
-            if (rL !== -1) updateAdjective(rL, 0, val.replace("Cinza", "").trim());
+            updateAdjective(rL, 0, val.replace("Cinza", "").trim());
         } else {
              const sIdx = getNounColumnIndex(rL);
-             const hRow = hIdx;
-             if (hRow !== -1) updateNoun(hRow, sIdx, checkNoun);
-             if (rL !== -1 && rC !== -1) updateAdjective(rL, rC, checkAdj);
+             updateNoun(hIdx, sIdx, checkNoun);
+             updateAdjective(rL, rC, checkAdj);
              
              if (checkNoun && checkNoun.toLowerCase() !== "hue") {
                  for(let h=0; h<parsedNouns.length; h++) {
@@ -904,127 +961,53 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
 
     const safeLIdx = getRangeIndex(l, lightRanges);
     const safeCIdx = getRangeIndex(c, chromaRanges);
-    
     let canonicalL = lightRanges[safeLIdx]?.mid ?? 50;
     let canonicalC = chromaRanges[safeCIdx]?.mid ?? 0;
     let canonicalH = hueValues[hIdx] ?? 0;
+    if (safeLIdx === 0 || safeLIdx === 21 || safeCIdx === 0) { canonicalC = 0; canonicalH = 0; }
 
-    if (safeLIdx === 0 || safeLIdx === 21 || safeCIdx === 0) {
-        canonicalC = 0;
-        canonicalH = 0;
-    }
+    const canonRgb = useMemo(() => realLchToRgb(canonicalL, canonicalC, canonicalH), [canonicalL, canonicalC, canonicalH]);
+    const canonHex = useMemo(() => `#${canonRgb.r.toString(16).padStart(2,'0')}${canonRgb.g.toString(16).padStart(2,'0')}${canonRgb.b.toString(16).padStart(2,'0')}`.toUpperCase(), [canonRgb]);
+    const canonGamut = useMemo(() => checkGamut(canonicalL, canonicalC, canonicalH), [canonicalL, canonicalC, canonicalH]);
+    
+    const isCanonOut = displayGamut === 'p3' ? !canonGamut.isP3 : !canonGamut.isSRGB;
+    const canonBgColor = getMappedCssColor(canonicalL, canonicalC, canonicalH, displayGamut);
+    
+    const swatchStyle = useMemo(() => ({ 
+        backgroundColor: canonBgColor,
+        backgroundImage: isCanonOut ? 'repeating-linear-gradient(45deg, var(--hatch-color) 0px, var(--hatch-color) 4px, transparent 4px, transparent 8px)' : 'none' 
+    }), [canonBgColor, isCanonOut]);
 
-    const canonRgb = realLchToRgb(canonicalL, canonicalC, canonicalH);
-    const canonHex = `#${canonRgb.r.toString(16).padStart(2,'0')}${canonRgb.g.toString(16).padStart(2,'0')}${canonRgb.b.toString(16).padStart(2,'0')}`.toUpperCase();
-    const canonGamut = checkGamut(canonicalL, canonicalC, canonicalH);
-    const deltaE = Math.sqrt(Math.pow(canonicalL - l, 2) + Math.pow(canonicalC - c, 2)).toFixed(1); 
+    const deltaE = useMemo(() => Math.sqrt(Math.pow(canonicalL - l, 2) + Math.pow(canonicalC - c, 2)).toFixed(1), [canonicalL, l, canonicalC, c]); 
+
+    const activeMajorHueIdx = Math.floor(((h + 15) % 360) / 30);
+    const isMajorLight = l >= 50 ? 1 : 0;
+    const isMajorVivid = c >= 40 ? 1 : 0;
+    const activeMajorQuadIdx = (isMajorLight * 2) + isMajorVivid;
+
+    const isWhiteActive = l > 95;
+    const isBlackActive = l < 5;
+    const isGrayActive = c < 10 && !isWhiteActive && !isBlackActive;
+
+    const majorGroup = useMemo(() => {
+        if (l > 95) return extremeGroups.white;
+        if (l < 5) return extremeGroups.black;
+        if (c < 10) return extremeGroups.gray;
+        return majorGroups[activeMajorHueIdx][activeMajorQuadIdx];
+    }, [l, c, activeMajorHueIdx, activeMajorQuadIdx, majorGroups, extremeGroups]);
 
     const getExplorerParams = useCallback((view, flipped, rI, cI) => {
         let localLIdx = safeLIdx, localCIdx = safeCIdx, localHIdx = hIdx;
-
         if (view === "hue_pivot") { localLIdx = flipped ? cI : rI; localCIdx = flipped ? rI : cI; } 
         else if (view === "chroma_pivot") { localHIdx = flipped ? cI : rI; localLIdx = flipped ? rI : cI; localCIdx = safeCIdx; } 
         else if (view === "light_pivot") { localHIdx = flipped ? cI : rI; localCIdx = flipped ? rI : cI; localLIdx = safeLIdx; }
-        
         const safeL = lightRanges[localLIdx] || lightRanges[0];
         const safeC = chromaRanges[localCIdx] || chromaRanges[0];
         const safeH = hueValues[localHIdx] ?? 0;
-
-        let cVal = safeC.mid;
-        let hVal = safeH;
-        
-        if (localLIdx === 0 || localLIdx === 21 || localCIdx === 0) {
-            cVal = 0;
-            hVal = 0;
-        }
-
+        let cVal = safeC.mid; let hVal = safeH;
+        if (localLIdx === 0 || localLIdx === 21 || localCIdx === 0) { cVal = 0; hVal = 0; }
         return { lVal: safeL.mid, cVal, hVal, lIdx: localLIdx, cIdx: localCIdx, hIdx: localHIdx };
     }, [safeLIdx, safeCIdx, hIdx, lightRanges, chromaRanges, hueValues]);
-
-    const handleExport = () => { 
-        const wb = XLSX.utils.book_new(); 
-        const rangesData = [
-            ["Type", "Label", "Min", "Max", "Mid"],
-            ...lightRanges.map(r => ["Light", r.label, r.min, r.max, r.mid]),
-            ...chromaRanges.map(r => ["Chroma", r.label, r.min, r.max, r.mid])
-        ];
-        const rangeWS = XLSX.utils.aoa_to_sheet(rangesData);
-        XLSX.utils.book_append_sheet(wb, rangeWS, "Ranges");
-
-        const adjHeader = ["(L/C)", ...chromaRanges.map(c => c.label)];
-        const adjBody = adjectiveMatrix.map((row, i) => [lightRanges[i]?.label || `L${i}`, ...row]);
-        const adjWS = XLSX.utils.aoa_to_sheet([adjHeader, ...adjBody]);
-        XLSX.utils.book_append_sheet(wb, adjWS, "Adjectives"); 
-        
-        const nounHeader = ["Hue Angle", "Dark Shade (L<50)", "Light Shade (L≥50)"];
-        const nounBody = nounData.map((row, i) => [`${hueValues[i]}°`, ...row.split(',')]);
-        const nounWS = XLSX.utils.aoa_to_sheet([nounHeader, ...nounBody]);
-        XLSX.utils.book_append_sheet(wb, nounWS, "Nouns"); 
-        
-        const sessionHeader = ["Key", "Value"];
-        const sessionBody = [
-            ["Current L", l], ["Current C", c], ["Current H", h],
-            ["Active View", activeView], ["Flipped", isFlipped],
-            ["Palette JSON", JSON.stringify(palette)]
-        ];
-        const sessionWS = XLSX.utils.aoa_to_sheet([sessionHeader, ...sessionBody]);
-        XLSX.utils.book_append_sheet(wb, sessionWS, "Session");
-
-        XLSX.writeFile(wb, "ColorSAMIficator_Manufacturing.xlsx"); 
-    }; 
-
-    const handleImport = (e) => { 
-        const file = e.target.files[0]; if(!file) return; 
-        const reader = new FileReader(); 
-        reader.onload = (evt) => { 
-            const wb = XLSX.read(evt.target.result, {type: 'binary'}); 
-            if(wb.Sheets["Ranges"]) {
-                const rangeRaw = XLSX.utils.sheet_to_json(wb.Sheets["Ranges"]);
-                const newL = rangeRaw.filter(r => r.Type === "Light").map(r => ({ label: r.Label, min: parseInt(r.Min), max: parseInt(r.Max), mid: parseFloat(r.Mid) }));
-                const newC = rangeRaw.filter(r => r.Type === "Chroma").map(r => ({ label: r.Label, min: parseInt(r.Min), max: parseInt(r.Max), mid: parseFloat(r.Mid) }));
-                if (newL.length > 0) setLightRanges(newL);
-                if (newC.length > 0) setChromaRanges(newC);
-            }
-            if(wb.Sheets["Adjectives"]) { 
-                const rawAdj = XLSX.utils.sheet_to_json(wb.Sheets["Adjectives"], {header: 1}); 
-                let matrixData = rawAdj;
-                if (rawAdj.length > 0 && rawAdj[0][0] === "(L/C)") {
-                     const body = rawAdj.slice(1);
-                     matrixData = body.map(row => row.slice(1));
-                }
-                setAdjectiveMatrix(matrixData.map(row => row.map(cell => cell || "")));
-            } 
-            if(wb.Sheets["Nouns"]) { 
-                const rawNouns = XLSX.utils.sheet_to_json(wb.Sheets["Nouns"], {header: 1}); 
-                if (rawNouns.length > 0) {
-                    const headerRow = rawNouns[0]; let startIndex = 0;
-                    if (headerRow[0] === "Hue Angle") startIndex = 1;
-                    const body = rawNouns.slice(1);
-                    const newHues = [];
-                    const newNouns = body.map(row => {
-                        const hueStr = row[0].toString().replace('°','');
-                        newHues.push(parseInt(hueStr));
-                        const nounParts = row.slice(startIndex, startIndex + 2); 
-                        return nounParts.map(n => n || "Hue").join(',');
-                    });
-                    setHueValues(newHues); setNounData(newNouns);
-                }
-            }
-            if(wb.Sheets["Session"]) {
-                const sessionRaw = XLSX.utils.sheet_to_json(wb.Sheets["Session"], {header: 1}); 
-                sessionRaw.forEach(row => {
-                    const k = row[0]; const v = row[1];
-                    if (k === "Current L") setL(parseFloat(v));
-                    if (k === "Current C") setC(parseFloat(v));
-                    if (k === "Current H") setH(parseFloat(v));
-                    if (k === "Active View") setActiveView(v);
-                    if (k === "Flipped") setIsFlipped(v === "true" || v === true);
-                    if (k === "Palette JSON") { try { setPalette(JSON.parse(v)); } catch(e) {} }
-                });
-            }
-        }; 
-        reader.readAsBinaryString(file); e.target.value = "";
-    }; 
 
     const lightRangeData = useMemo(() => lightRanges.map((r, i) => ({ label: r.label, index: i, isActive: i === safeLIdx, data: r })), [safeLIdx, lightRanges]);
     const chromaRangeData = useMemo(() => chromaRanges.map((r, i) => ({ label: r.label, index: i, isActive: i === safeCIdx, data: r })), [safeCIdx, chromaRanges]);
@@ -1036,6 +1019,8 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
 
     const renderCell = useCallback((rI, cI) => {
         const { lVal, cVal, hVal, lIdx: cellL, cIdx: cellC, hIdx: cellH } = getExplorerParams(activeView, isFlipped, rI, cI);
+        const gamutStatus = checkGamut(lVal, cVal, hVal);
+        const isOut = displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
         const isActive = cellL === safeLIdx && cellC === safeCIdx && cellH === hIdx;
         
         const anchor = getNounColumnIndex(cellL);
@@ -1056,16 +1041,106 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
         );
     }, [activeView, isFlipped, getExplorerParams, safeLIdx, safeCIdx, hIdx, parsedNouns, adjectiveMatrix, displayGamut, handleCellClick]);
 
-    const isCanonOut = displayGamut === 'p3' ? !canonGamut.isP3 : !canonGamut.isSRGB;
-    const canonBgColor = getMappedCssColor(canonicalL, canonicalC, canonicalH, displayGamut);
-    
-    // Maintain canon background color overlaid with transparent hatch pattern
-    const swatchStyle = { 
-        backgroundColor: canonBgColor,
-        backgroundImage: isCanonOut ? 'repeating-linear-gradient(45deg, var(--hatch-color) 0px, var(--hatch-color) 4px, transparent 4px, transparent 8px)' : 'none' 
+
+    const handleExport = () => { 
+        const wb = XLSX.utils.book_new(); 
+        const rangesData = [["Type", "Label", "Min", "Max", "Mid"], ...lightRanges.map(r => ["Light", r.label, r.min, r.max, r.mid]), ...chromaRanges.map(r => ["Chroma", r.label, r.min, r.max, r.mid])];
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rangesData), "Ranges");
+        const adjHeader = ["(L/C)", ...chromaRanges.map(c => c.label)];
+        const adjBody = adjectiveMatrix.map((row, i) => [lightRanges[i]?.label || `L${i}`, ...row]);
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([adjHeader, ...adjBody]), "Adjectives"); 
+        const nounHeader = ["Hue Angle", "Dark Shade (L<50)", "Light Shade (L≥50)"];
+        const nounBody = nounData.map((row, i) => [`${hueValues[i]}°`, ...row.split(',')]);
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([nounHeader, ...nounBody]), "Nouns"); 
+        
+        const mgHeader = ["Hue Range", "Dark Muted (L<50, C<40)", "Dark Vivid (L<50, C>=40)", "Light Muted (L>=50, C<40)", "Light Vivid (L>=50, C>=40)"];
+        const mgBody = majorGroups.map((row, i) => [HUE_RANGES_MAJOR[i], ...row]);
+        const extremeBody = [
+            ["Extremes", "Value"],
+            ["White (L>95)", extremeGroups.white],
+            ["Black (L<5)", extremeGroups.black],
+            ["Gray (C<10)", extremeGroups.gray],
+            [],
+            mgHeader,
+            ...mgBody
+        ];
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(extremeBody), "Major Groups");
+
+        const sessionBody = [["Current L", l], ["Current C", c], ["Current H", h], ["Active View", activeView], ["Flipped", isFlipped], ["Palette JSON", JSON.stringify(palette)]];
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Key", "Value"], ...sessionBody]), "Session");
+        XLSX.writeFile(wb, "ColorSAMIficator_Manufacturing.xlsx"); 
+    }; 
+
+    const handleImport = (e) => { 
+        const file = e.target.files[0]; if(!file) return; 
+        const reader = new FileReader(); 
+        reader.onload = (evt) => { 
+            const wb = XLSX.read(evt.target.result, {type: 'binary'}); 
+            if(wb.Sheets["Ranges"]) {
+                const rangeRaw = XLSX.utils.sheet_to_json(wb.Sheets["Ranges"]);
+                const newL = rangeRaw.filter(r => r.Type === "Light").map(r => ({ label: r.Label, min: parseInt(r.Min), max: parseInt(r.Max), mid: parseFloat(r.Mid) }));
+                const newC = rangeRaw.filter(r => r.Type === "Chroma").map(r => ({ label: r.Label, min: parseInt(r.Min), max: parseInt(r.Max), mid: parseFloat(r.Mid) }));
+                if (newL.length > 0) setLightRanges(newL); if (newC.length > 0) setChromaRanges(newC);
+            }
+            if(wb.Sheets["Adjectives"]) { 
+                const rawAdj = XLSX.utils.sheet_to_json(wb.Sheets["Adjectives"], {header: 1}); 
+                let matrixData = rawAdj.length > 0 && rawAdj[0][0] === "(L/C)" ? rawAdj.slice(1).map(row => row.slice(1)) : rawAdj;
+                setAdjectiveMatrix(matrixData.map(row => row.map(cell => cell || "")));
+            } 
+            if(wb.Sheets["Nouns"]) { 
+                const rawNouns = XLSX.utils.sheet_to_json(wb.Sheets["Nouns"], {header: 1}); 
+                if (rawNouns.length > 0) {
+                    const startIndex = rawNouns[0][0] === "Hue Angle" ? 1 : 0;
+                    const newHues = [];
+                    const newNouns = rawNouns.slice(1).map(row => {
+                        newHues.push(parseInt(row[0].toString().replace('°','')));
+                        return row.slice(startIndex, startIndex + 2).map(n => n || "Hue").join(',');
+                    });
+                    setHueValues(newHues); setNounData(newNouns);
+                }
+            }
+            if(wb.Sheets["Major Groups"]) {
+                const rawMG = XLSX.utils.sheet_to_json(wb.Sheets["Major Groups"], {header: 1});
+                const newMG = [];
+                let newExtremes = { ...extremeGroups };
+                rawMG.forEach(row => {
+                    if(!row[0]) return;
+                    const key = row[0].toString();
+                    if(key.includes("White")) newExtremes.white = row[1] || "White";
+                    else if(key.includes("Black")) newExtremes.black = row[1] || "Black";
+                    else if(key.includes("Gray")) newExtremes.gray = row[1] || "Gray";
+                    else if(key.includes("°")) {
+                        newMG.push([row[1]||"", row[2]||"", row[3]||"", row[4]||""]);
+                    }
+                });
+                if(newMG.length === 12) setMajorGroups(newMG);
+                setExtremeGroups(newExtremes);
+            }
+        }; 
+        reader.readAsBinaryString(file); e.target.value = "";
+    }; 
+
+    const handleHexConvert = (val) => {
+        const res = hexToLchConvert(val);
+        if (res) updateColorWithHistory(res.l, res.c, res.h);
     };
 
-    // Boolean primitive passed down to prevent rerenders inside Noun list map
+    const handleRgbConvert = (val) => {
+        const parts = val.replace(/[^0-9., ]/g, '').split(',').map(n => parseInt(n.trim()));
+        if (parts.length === 3 && parts.every(n => !isNaN(n) && n >= 0 && n <= 255)) {
+            const res = rgbToLchConvert(parts[0], parts[1], parts[2]);
+            updateColorWithHistory(res.l, res.c, res.h);
+        }
+    };
+
+    const handleLabConvert = (val) => {
+        const parts = val.replace(/[^0-9., \-]/g, '').split(',').map(n => parseFloat(n.trim()));
+        if (parts.length === 3 && parts.every(n => !isNaN(n))) {
+            const res = labToLchConvert(parts[0], parts[1], parts[2]);
+            updateColorWithHistory(res.l, res.c, res.h);
+        }
+    };
+
     const activeNounColIdx = l < 50 ? 0 : 1; 
 
     return ( 
@@ -1074,7 +1149,7 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     
     <div className="shrink-0 py-2 md:py-3 flex flex-col items-center bg-white dark:bg-neutral-950 z-20 shadow-sm relative transition-colors duration-300 border-b border-slate-100 dark:border-neutral-900"> 
         <h1 className="text-xl md:text-3xl font-black tracking-tighter text-slate-900 dark:text-neutral-100">The COLOR<span className="text-green-600 dark:text-green-500">SAMI</span>FICATOR</h1> 
-        <span className="text-xs font-bold text-slate-400 dark:text-neutral-500 tracking-wider">VERSION 1.24</span>
+        <span className="text-xs font-bold text-slate-400 dark:text-neutral-500 tracking-wider">VERSION 1.29 (NAMES FIXED)</span>
         
         {/* Left Toolbar (History + Help) */}
         <div className="absolute left-2 md:left-6 top-1/2 -translate-y-1/2 flex gap-1 md:gap-2">
@@ -1124,18 +1199,12 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                     style={{ color: canonicalL > 50 ? 'black' : 'white', textShadow: canonicalL > 50 ? 'none' : '0 2px 10px rgba(0,0,0,0.6)' }} 
                 />
 
-                {nameWarning && (
-                    <div className="mt-2 px-3 py-1 bg-red-500/90 backdrop-blur text-white text-[10px] font-bold rounded-full flex items-center gap-1 shadow-lg animate-bounce z-10 pointer-events-auto">
-                        <AlertTriangle className="w-3 h-3" />
-                        {nameWarning}
-                    </div>
-                )}
-
                 <div className="mt-2 md:mt-4 flex gap-2 flex-wrap justify-center z-10 pointer-events-auto"> 
                     <div className="px-2 py-1 bg-black/40 backdrop-blur-md rounded text-[10px] font-mono text-white flex items-center gap-1">L{Math.round(canonicalL)} C{Math.round(canonicalC)} H{Math.round(canonicalH)}</div> 
                     <div className="px-2 py-1 bg-black/40 backdrop-blur-md rounded text-[10px] font-mono text-white flex items-center gap-1"><Hash className="w-3 h-3 opacity-70" /> {canonHex}</div> 
-                    <div className="px-2 py-1 bg-black/40 backdrop-blur-md rounded text-[10px] font-mono text-white flex items-center gap-1">RGB {canonRgb.r},{canonRgb.g},{canonRgb.b}</div> 
+                    <div className="px-2 py-1 bg-black/40 backdrop-blur-md rounded text-[10px] font-mono text-white flex items-center gap-1">RGB {exactRgb.r},{exactRgb.g},{exactRgb.b}</div> 
                     <div className="px-2 py-1 bg-white dark:bg-neutral-900 text-blue-600 dark:text-blue-400 backdrop-blur-md rounded text-[10px] font-black flex items-center gap-1"><Ruler className="w-3 h-3" /> ΔE {deltaE}</div> 
+                    <div className="px-2 py-1 bg-purple-600 text-white dark:bg-purple-500/20 dark:text-purple-300 backdrop-blur-md rounded text-[10px] font-black uppercase tracking-wider flex items-center gap-1"><Layers className="w-3 h-3" /> {majorGroup}</div>
                 </div> 
             </div> 
         </div> 
@@ -1145,6 +1214,15 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
             <SnapControl label="Chroma" value={c} setter={setC} max={100} displayVal={Math.round(c)} gradient={chromaGradientBg} isActive={activeView.includes('hue') || activeView.includes('light')} /> 
             <SnapControl label="Hue" value={h} setter={setH} max={360} displayVal={Math.round(h) + "°"} gradient={hueGradientBg} isActive={activeView.includes('chroma') || activeView.includes('light')} /> 
         </div> 
+
+        <div className="bg-slate-50 dark:bg-neutral-950/50 p-4 rounded-2xl border border-slate-100 dark:border-neutral-900 shrink-0 mt-4 transition-colors duration-300">
+            <div className="text-[10px] font-bold text-slate-400 dark:text-neutral-500 uppercase mb-3 flex items-center gap-2"><RefreshCw className="w-3 h-3" /> Exact Converter</div>
+            <div className="grid grid-cols-3 gap-3">
+                <ConverterInput label="HEX" value={exactHex} onConvert={handleHexConvert} placeholder="#000000" />
+                <ConverterInput label="RGB" value={`${exactRgb.r}, ${exactRgb.g}, ${exactRgb.b}`} onConvert={handleRgbConvert} placeholder="R, G, B" />
+                <ConverterInput label="LAB" value={exactLabStr} onConvert={handleLabConvert} placeholder="L, a, b" />
+            </div>
+        </div>
 
         <div className="bg-slate-50 dark:bg-neutral-950/50 p-4 rounded-2xl border border-slate-100 dark:border-neutral-900 shrink-0 my-4 transition-colors duration-300"> 
             <div className="text-[10px] font-bold text-slate-400 dark:text-neutral-500 uppercase mb-3 flex items-center gap-2"><Palette className="w-3 h-3" /> Harmonies</div> 
@@ -1214,6 +1292,7 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                     <option value="chroma_pivot">CHROMA FIXED</option> 
                     <option value="light_pivot">LIGHT FIXED</option> 
                     <option value="noun">NOUN LIST</option> 
+                    <option value="major_groups">MAJOR GROUPS</option> 
                 </select> 
             </div> 
         </div> 
@@ -1238,36 +1317,95 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                      </tr> 
                  </thead> 
                  <tbody> 
-                 {nounData.map((rowStr, idx) => { 
+                 {nounData.map((_, idx) => { 
                      const displayHue = hueValues[idx]; 
-                     const parts = rowStr.split(','); 
                      const isHueActive = hIdx === idx;
-                     return ( 
-                     <tr key={idx} className={`transition-all duration-200 cursor-pointer ${isHueActive ? 'bg-blue-50/50 dark:bg-blue-900/20' : 'hover:bg-slate-50 dark:hover:bg-neutral-900/50'}`} data-active={isHueActive}> 
-                         <td onClick={() => updateColorWithHistory(l, c, displayHue)} className={`p-2 text-center font-mono opacity-80 bg-white dark:bg-neutral-950 sticky left-0 z-10 border-b border-r border-slate-100 dark:border-neutral-900 ${isHueActive ? '!bg-blue-50 dark:!bg-blue-900/40 font-bold text-blue-600 dark:text-blue-400' : 'text-slate-600 dark:text-neutral-400'}`}>{displayHue}°</td> 
-                         {[0, 1].map((colIdx) => {
-                             const n = parts[colIdx] || "";
-                             const isCellActive = isHueActive && (colIdx === (l < 50 ? 0 : 1));
-                             const repL = colIdx === 0 ? 40 : 75;
-                             const repC = 25; 
-                             
-                             const cellRgb = realLchToRgb(repL, repC, displayHue);
-                             const cellColor = getMappedCssColor(repL, repC, displayHue, displayGamut);
-                             
-                             return (
-                                 <td key={colIdx} onClick={() => updateColorWithHistory(repL, repC, displayHue)} className={`p-0 relative h-10 border-b border-r border-slate-100 dark:border-neutral-900 ${isCellActive ? 'ring-2 ring-blue-500 dark:ring-blue-400 z-20' : ''}`}>
-                                    <div className="flex items-center h-full px-3 gap-2">
-                                        <div className="w-4 h-4 rounded-full border border-black/10 dark:border-white/10 shrink-0" style={{backgroundColor: cellColor, backgroundImage: cellRgb.outOfGamut ? 'repeating-linear-gradient(45deg, var(--hatch-color) 0px, var(--hatch-color) 4px, transparent 4px, transparent 8px)' : 'none'}}></div>
-                                        <input type="text" value={n} onChange={(e) => updateNoun(idx, colIdx, e.target.value)} className="w-full bg-transparent border-none outline-none font-medium text-slate-700 dark:text-neutral-200" />
-                                    </div>
-                                 </td>
-                             )
-                         })}
-                     </tr> 
-                     ); 
+                     const parts = parsedNouns[idx];
+                     return (
+                         <NounRow 
+                             key={idx} idx={idx} 
+                             displayHue={displayHue} isHueActive={isHueActive} 
+                             activeColIdx={activeNounColIdx}
+                             parts={parts} displayGamut={displayGamut} 
+                             onHueClick={handleRowHueClick} 
+                             updateColorWithHistory={updateColorWithHistory} 
+                             updateNoun={updateNoun}
+                         />
+                     );
                  })} 
                  </tbody> 
                  </table> 
+             </div> 
+            )} 
+            {activeView === 'major_groups' && ( 
+             <div className="h-full w-full overflow-auto rounded-xl border border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 shadow-sm transition-colors duration-300 custom-scroll flex flex-col p-4 md:p-6 gap-6 md:gap-8"> 
+                 <div>
+                     <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-3">Extreme Values</h3>
+                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                         {['white', 'black', 'gray'].map(k => {
+                             const isExtActive = (k === 'white' && isWhiteActive) || (k === 'black' && isBlackActive) || (k === 'gray' && isGrayActive);
+                             const repL = k === 'white' ? 98 : (k === 'black' ? 2 : 50);
+                             const cellColor = getMappedCssColor(repL, 0, 0, displayGamut);
+                             return (
+                                 <div key={k} className="flex flex-col gap-1">
+                                     <label className="text-[9px] font-bold text-slate-500 capitalize pl-1">{k} {k==='white'?'(L > 95)':k==='black'?'(L < 5)':'(C < 10)'}</label>
+                                     <div className={`relative rounded-lg overflow-hidden border ${isExtActive ? 'border-blue-500 ring-2 ring-blue-500 shadow-md z-10' : 'border-slate-200 dark:border-neutral-800 shadow-sm'} transition-all duration-300`} style={{backgroundColor: cellColor}}>
+                                         <input type="text" value={extremeGroups[k]} onChange={e => setExtremeGroups(p => ({...p, [k]: e.target.value}))} className={`w-full bg-transparent p-2.5 text-xs font-bold focus:outline-none transition-colors ${repL < 50 ? 'text-white' : 'text-black'}`} style={{textShadow: repL < 50 ? '0 1px 3px rgba(0,0,0,0.8)' : 'none'}}/>
+                                     </div>
+                                 </div>
+                             )
+                         })}
+                     </div>
+                 </div>
+
+                 <div className="pb-8">
+                     <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-3">Hue Segments (L × C)</h3>
+                     <div className="border border-slate-200 dark:border-neutral-800 rounded-xl overflow-hidden shadow-sm">
+                         <table className="w-full text-xs text-left table-fixed border-separate border-spacing-0">
+                             <thead className="bg-slate-50 dark:bg-neutral-900/50">
+                                 <tr>
+                                     <th className="p-3 font-bold text-slate-500 border-b border-r border-slate-200 dark:border-neutral-800 w-1/5 text-center bg-white dark:bg-neutral-950 sticky left-0 z-20">Hue Range</th>
+                                     <th className="p-3 font-bold text-slate-500 border-b border-r border-slate-200 dark:border-neutral-800"><div className="flex flex-col">Dark Muted<span className="font-normal opacity-70 text-[9px] font-mono mt-0.5">L&lt;50, C&lt;40</span></div></th>
+                                     <th className="p-3 font-bold text-slate-500 border-b border-r border-slate-200 dark:border-neutral-800"><div className="flex flex-col">Dark Vivid<span className="font-normal opacity-70 text-[9px] font-mono mt-0.5">L&lt;50, C&ge;40</span></div></th>
+                                     <th className="p-3 font-bold text-slate-500 border-b border-r border-slate-200 dark:border-neutral-800"><div className="flex flex-col">Light Muted<span className="font-normal opacity-70 text-[9px] font-mono mt-0.5">L&ge;50, C&lt;40</span></div></th>
+                                     <th className="p-3 font-bold text-slate-500 border-b border-slate-200 dark:border-neutral-800"><div className="flex flex-col">Light Vivid<span className="font-normal opacity-70 text-[9px] font-mono mt-0.5">L&ge;50, C&ge;40</span></div></th>
+                                 </tr>
+                             </thead>
+                             <tbody>
+                                 {majorGroups.map((row, rIdx) => {
+                                     const isRowActive = activeMajorHueIdx === rIdx && !isWhiteActive && !isBlackActive && !isGrayActive;
+                                     return (
+                                         <tr key={rIdx} className={isRowActive ? 'bg-blue-50/10 dark:bg-blue-900/5' : ''} data-active={isRowActive}>
+                                             <td className={`p-3 border-b border-r border-slate-100 dark:border-neutral-900 font-mono text-center text-[10px] sticky left-0 z-10 ${isRowActive ? 'font-bold text-blue-600 dark:text-blue-400 bg-white dark:bg-neutral-950' : 'text-slate-500 dark:text-neutral-500 bg-slate-50/50 dark:bg-neutral-900/30'}`}>
+                                                 {HUE_RANGES_MAJOR[rIdx]}
+                                             </td>
+                                             {[0,1,2,3].map(cIdx => {
+                                                 const isCellActive = isRowActive && activeMajorQuadIdx === cIdx;
+                                                 const repL = cIdx < 2 ? 30 : 80;
+                                                 const repC = (cIdx % 2 === 0) ? 15 : 50;
+                                                 const repH = rIdx * 30;
+                                                 
+                                                 const cellColor = getMappedCssColor(repL, repC, repH, displayGamut);
+                                                 
+                                                 return (
+                                                     <td key={cIdx} className={`p-0 border-b border-slate-100 dark:border-neutral-900 ${cIdx < 3 ? 'border-r' : ''}`} style={{backgroundColor: cellColor}}>
+                                                         <input 
+                                                             type="text" 
+                                                             value={row[cIdx]} 
+                                                             onChange={(e) => updateMajorGroup(rIdx, cIdx, e.target.value)} 
+                                                             className={`w-full h-11 px-3 bg-transparent border-none outline-none font-medium transition-colors ${repL < 50 ? 'text-white' : 'text-black'} ${isCellActive ? 'ring-2 ring-inset ring-blue-500 bg-white/20 dark:bg-black/20 font-bold' : 'hover:bg-white/10 dark:hover:bg-black/10'}`}
+                                                             style={{textShadow: repL < 50 ? '0 1px 3px rgba(0,0,0,0.8)' : 'none'}}
+                                                         />
+                                                     </td>
+                                                 )
+                                             })}
+                                         </tr>
+                                     );
+                                 })}
+                             </tbody>
+                         </table>
+                     </div>
+                 </div>
              </div> 
             )} 
         </div> 
