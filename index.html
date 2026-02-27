@@ -3,7 +3,7 @@
 <head> 
  <meta charset="UTF-8"> 
  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"> 
- <title>The COLORSAMIFICATOR - V124</title> 
+ <title>The COLORSAMIFICATOR - V133</title> 
  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script> 
  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script> 
  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script> 
@@ -33,10 +33,10 @@
  <script type="text/babel"> 
  const { useState, useMemo, useEffect, useRef, useCallback, memo } = React; 
 
- const saveToLocal = (key, data) => localStorage.setItem(`colorsam_v129_${key}`, JSON.stringify(data));
+ const saveToLocal = (key, data) => localStorage.setItem(`colorsam_v133_${key}`, JSON.stringify(data));
  const getFromLocal = (key, fallback) => {
     try { 
-        const stored = localStorage.getItem(`colorsam_v129_${key}`);
+        const stored = localStorage.getItem(`colorsam_v133_${key}`);
         return stored ? JSON.parse(stored) : fallback; 
     } catch(e) { return fallback; }
  };
@@ -205,7 +205,7 @@
 L20 (Lightest),Pale,Faint,Washed,Bare,Slight,Clean,Pure,Crisp,Stark,Bright
 L19,Hushed,Calm,Quiet,Still,Tame,Plain,Flat,Soft,Light,Fresh
 L18,Mild,Gentle,Tender,Mellow,Clear,Keen,Sharp,Brisk,Bold,Wild
-L17,Modest,Simple,Subtle,Firm,Strong,Vivid,Fierce,Grand,Prime,High
+L17,Modest,Simple,Subtle,Direct,Strong,Vivid,Fierce,Grand,Prime,High
 L16,Dim,Faded,Placid,Staid,Basic,Main,Primary,Leading,Foremost,Peak
 L15,Solid,Rich,Luxe,Lavish,Epic,Proud,Regal,Noble,Royal,Peerless
 L14,Shaded,Dusky,Deep,Stout,Robust,Mighty,Matchless,Select,Rare,Unique
@@ -317,7 +317,7 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
 270°,Mulberry,Petunia
 273°,Jam,Allium
 276°,Violet,Lotus
-279°,Grape,Pansy
+279°,Grape,Clematis
 282°,Murex,Peony
 285°,Orchid,Quartz
 288°,Dahlia,Diamond
@@ -343,7 +343,7 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
 348°,Spice,Jelly
 351°,Cardinal,Candy
 354°,Fire,Sweet
-357°,Scarlet,Lantern`;
+357°,Wine,Lantern`;
 
  const RAW_MAJOR_GROUPS_CSV = `Hue Range,Dark Muted,Dark Vivid,Light Muted,Light Vivid
 345° - 15°,Burgundy,Crimson,Dusty Rose,Rose
@@ -920,44 +920,112 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     const fullDisplayName = currentMapping.adj ? `${currentMapping.adj} ${currentMapping.baseNoun}` : currentMapping.baseNoun; 
 
     const handleNameChange = (val) => {
-        const rL = getRangeIndex(l, lightRanges); const rC = getRangeIndex(c, chromaRanges);
+        const rL = getRangeIndex(l, lightRanges); 
+        const rC = getRangeIndex(c, chromaRanges);
         if (rL === 0 || rL === 21) return; 
+        
         const parts = val.trim().split(/\s+/);
-        let checkNoun = (parts.length === 1 ? parts[0] : parts.pop()).trim();
-        let checkAdj = (parts.length === 1 ? "" : parts.join(" ")).trim();
-        let warning = null;
+        let checkNoun = "";
+        let checkAdj = "";
+        
+        if (parts.length > 1) {
+            checkNoun = parts.pop().trim();
+            checkAdj = parts.join(" ").trim();
+        } else {
+            checkNoun = parts[0].trim();
+        }
+        
         if (rC === 0) {
             updateAdjective(rL, 0, val.replace("Cinza", "").trim());
         } else {
              const sIdx = getNounColumnIndex(rL);
              updateNoun(hIdx, sIdx, checkNoun);
              updateAdjective(rL, rC, checkAdj);
-             
-             if (checkNoun && checkNoun.toLowerCase() !== "hue") {
-                 for(let h=0; h<parsedNouns.length; h++) {
-                     for(let s=0; s<2; s++) {
-                         if (h === hRow && s === sIdx) continue;
-                         const existing = parsedNouns[h][s];
-                         if (existing && existing.toLowerCase() === checkNoun.toLowerCase()) {
-                             warning = `Duplicate Noun '${checkNoun}' found at ${hueValues[h]}° / ${s === 0 ? 'Dark' : 'Light'}`;
-                         }
-                     }
-                 }
-             }
-             if (checkAdj) {
-                 for(let r=0; r<adjectiveMatrix.length; r++) {
-                     for(let cIter=0; cIter<adjectiveMatrix[r].length; cIter++) {
-                         if (r === rL && cIter === rC) continue;
-                         const existing = adjectiveMatrix[r][cIter];
-                         if (existing && existing.toLowerCase() === checkAdj.toLowerCase()) {
-                             warning = `Duplicate Adjective '${checkAdj}' found at L:${lightRanges[r].label} C:${chromaRanges[cIter].label}`;
-                         }
-                     }
-                 }
-             }
         }
-        setNameWarning(warning);
     };
+
+    useEffect(() => {
+        let warning = null;
+        
+        // 1. Check Nouns
+        const seenNouns = new Map();
+        for (let idx = 0; idx < parsedNouns.length; idx++) {
+            for (let sIdx = 0; sIdx < 2; sIdx++) {
+                const rawNoun = parsedNouns[idx][sIdx] || "";
+                const noun = rawNoun.trim().toLowerCase();
+                if (noun && noun !== "hue") {
+                    const loc = `${hueValues[idx]}° (${sIdx === 0 ? 'Dark' : 'Light'})`;
+                    if (seenNouns.has(noun)) {
+                        warning = `Duplicate Noun: '${rawNoun.trim()}' at ${seenNouns.get(noun)} & ${loc}`;
+                        break;
+                    }
+                    seenNouns.set(noun, loc);
+                }
+            }
+            if (warning) break;
+        }
+
+        // 2. Check Adjectives
+        if (!warning) {
+            const seenAdjs = new Map();
+            for (let r = 0; r < adjectiveMatrix.length; r++) {
+                if (!adjectiveMatrix[r]) continue;
+                for (let col = 0; col < adjectiveMatrix[r].length; col++) {
+                    const rawAdj = adjectiveMatrix[r][col] || "";
+                    const adj = rawAdj.trim().toLowerCase();
+                    if (adj) {
+                        const loc = `L${lightRanges[r]?.label || r}-C${chromaRanges[col]?.label || col}`;
+                        if (seenAdjs.has(adj)) {
+                            warning = `Duplicate Adj: '${rawAdj.trim()}' at ${seenAdjs.get(adj)} & ${loc}`;
+                            break;
+                        }
+                        seenAdjs.set(adj, loc);
+                    }
+                }
+                if (warning) break;
+            }
+        }
+
+        // 3. Check Major Groups
+        if (!warning) {
+            const seenMGs = new Map();
+            for (const [k, v] of Object.entries(extremeGroups)) {
+                const rawVal = v || "";
+                const val = rawVal.trim().toLowerCase();
+                if (val) {
+                    const loc = `Extreme ${k.charAt(0).toUpperCase() + k.slice(1)}`;
+                    if (seenMGs.has(val)) {
+                        warning = `Duplicate Group: '${rawVal.trim()}' at ${seenMGs.get(val)} & ${loc}`;
+                        break;
+                    }
+                    seenMGs.set(val, loc);
+                }
+            }
+            
+            if (!warning) {
+                const QUAD_NAMES = ["Dark Muted", "Dark Vivid", "Light Muted", "Light Vivid"];
+                for (let r = 0; r < majorGroups.length; r++) {
+                    if (!majorGroups[r]) continue;
+                    for (let col = 0; col < majorGroups[r].length; col++) {
+                        const rawMg = majorGroups[r][col] || "";
+                        const mg = rawMg.trim().toLowerCase();
+                        if (mg) {
+                            const rangeLabel = HUE_RANGES_MAJOR[r].split(' ')[0] + ' ' + HUE_RANGES_MAJOR[r].split(' ')[1] + ' ' + HUE_RANGES_MAJOR[r].split(' ')[2];
+                            const loc = `${rangeLabel} ${QUAD_NAMES[col]}`;
+                            if (seenMGs.has(mg)) {
+                                warning = `Duplicate Group: '${rawMg.trim()}' at ${seenMGs.get(mg)} & ${loc}`;
+                                break;
+                            }
+                            seenMGs.set(mg, loc);
+                        }
+                    }
+                    if (warning) break;
+                }
+            }
+        }
+
+        setNameWarning(warning);
+    }, [parsedNouns, adjectiveMatrix, majorGroups, extremeGroups, hueValues, lightRanges, chromaRanges]);
 
     const safeLIdx = getRangeIndex(l, lightRanges);
     const safeCIdx = getRangeIndex(c, chromaRanges);
@@ -1149,7 +1217,7 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     
     <div className="shrink-0 py-2 md:py-3 flex flex-col items-center bg-white dark:bg-neutral-950 z-20 shadow-sm relative transition-colors duration-300 border-b border-slate-100 dark:border-neutral-900"> 
         <h1 className="text-xl md:text-3xl font-black tracking-tighter text-slate-900 dark:text-neutral-100">The COLOR<span className="text-green-600 dark:text-green-500">SAMI</span>FICATOR</h1> 
-        <span className="text-xs font-bold text-slate-400 dark:text-neutral-500 tracking-wider">VERSION 1.29 (NAMES FIXED)</span>
+        <span className="text-xs font-bold text-slate-400 dark:text-neutral-500 tracking-wider">VERSION 1.33 (LOCATIONS & FIXES)</span>
         
         {/* Left Toolbar (History + Help) */}
         <div className="absolute left-2 md:left-6 top-1/2 -translate-y-1/2 flex gap-1 md:gap-2">
@@ -1198,6 +1266,13 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                     className="font-black text-xl md:text-3xl w-full text-center leading-tight break-words bg-transparent border-none outline-none text-shadow-sm hover:bg-white/10 dark:hover:bg-black/20 rounded transition-colors z-10 relative pointer-events-auto" 
                     style={{ color: canonicalL > 50 ? 'black' : 'white', textShadow: canonicalL > 50 ? 'none' : '0 2px 10px rgba(0,0,0,0.6)' }} 
                 />
+
+                {nameWarning && (
+                    <div className="mt-2 px-3 py-1.5 bg-red-500/90 backdrop-blur text-white text-[10px] font-bold rounded-xl flex items-center justify-center gap-1 shadow-lg animate-pulse z-10 pointer-events-auto max-w-[90%] text-center">
+                        <AlertTriangle className="w-4 h-4 shrink-0" />
+                        {nameWarning}
+                    </div>
+                )}
 
                 <div className="mt-2 md:mt-4 flex gap-2 flex-wrap justify-center z-10 pointer-events-auto"> 
                     <div className="px-2 py-1 bg-black/40 backdrop-blur-md rounded text-[10px] font-mono text-white flex items-center gap-1">L{Math.round(canonicalL)} C{Math.round(canonicalC)} H{Math.round(canonicalH)}</div> 
@@ -1382,7 +1457,8 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                                              {[0,1,2,3].map(cIdx => {
                                                  const isCellActive = isRowActive && activeMajorQuadIdx === cIdx;
                                                  const repL = cIdx < 2 ? 30 : 80;
-                                                 const repC = (cIdx % 2 === 0) ? 15 : 50;
+                                                 // Cap the chroma slightly for backgrounds so we don't naturally hit out-of-gamut ranges for pure primaries
+                                                 const repC = (cIdx % 2 === 0) ? 15 : 60;
                                                  const repH = rIdx * 30;
                                                  
                                                  const cellColor = getMappedCssColor(repL, repC, repH, displayGamut);
