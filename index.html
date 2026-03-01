@@ -3,7 +3,7 @@
 <head> 
  <meta charset="UTF-8"> 
  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"> 
- <title>The COLORSAMIFICATOR - V133</title> 
+ <title>The COLORSAMIFICATOR - 1.85</title> 
  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script> 
  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script> 
  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script> 
@@ -16,8 +16,14 @@
   </script>
  <style> 
  body { height: 100vh; height: 100dvh; overscroll-behavior: none; }
- :root { --hatch-color: #cbd5e1; }
- .dark { --hatch-color: #262626; }
+ :root { 
+   --hatch-dark: rgba(0, 0, 0, 0.35); 
+   --hatch-light: rgba(255, 255, 255, 0.4); 
+ }
+ .dark { 
+   --hatch-dark: rgba(0, 0, 0, 0.6); 
+   --hatch-light: rgba(255, 255, 255, 0.25); 
+ }
  ::-webkit-scrollbar { width: 6px; height: 6px; } 
  ::-webkit-scrollbar-track { background: transparent; } 
  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; } 
@@ -26,6 +32,24 @@
  .dark ::-webkit-scrollbar-thumb:hover { background: #555555; } 
  .scroll-hide::-webkit-scrollbar { display: none; }
  .scroll-hide { -ms-overflow-style: none; scrollbar-width: none; }
+ .crosshair-shadow { box-shadow: 0 0 0 1.5px rgba(0,0,0,0.6), inset 0 0 0 1.5px rgba(0,0,0,0.6); }
+ 
+ /* Slider Styling */
+ input[type=range]::-webkit-slider-thumb {
+   appearance: none;
+   width: 12px;
+   height: 12px;
+   border-radius: 50%;
+   background: #3b82f6;
+   cursor: pointer;
+ }
+ input[type=range]::-moz-range-thumb {
+   width: 12px;
+   height: 12px;
+   border-radius: 50%;
+   background: #3b82f6;
+   cursor: pointer;
+ }
  </style> 
 </head> 
 <body class="bg-slate-200 dark:bg-black w-screen overflow-hidden p-2 md:p-4 flex items-center justify-center font-sans transition-colors duration-300"> 
@@ -33,10 +57,10 @@
  <script type="text/babel"> 
  const { useState, useMemo, useEffect, useRef, useCallback, memo } = React; 
 
- const saveToLocal = (key, data) => localStorage.setItem(`colorsam_v133_${key}`, JSON.stringify(data));
+ const saveToLocal = (key, data) => localStorage.setItem(`colorsam_v185_${key}`, JSON.stringify(data));
  const getFromLocal = (key, fallback) => {
     try { 
-        const stored = localStorage.getItem(`colorsam_v133_${key}`);
+        const stored = localStorage.getItem(`colorsam_v185_${key}`);
         return stored ? JSON.parse(stored) : fallback; 
     } catch(e) { return fallback; }
  };
@@ -80,7 +104,7 @@
  };
 
  const inGamut = ([r, g, b]) => {
-    const e = 0.075; 
+    const e = 0.001; 
     return r >= -e && r <= 1+e && g >= -e && g <= 1+e && b >= -e && b <= 1+e;
  };
 
@@ -110,6 +134,18 @@
     return { r: clamp(rr), g: clamp(gg), b: clamp(bb), outOfGamut };
  };
 
+ const rawLchToRgb = (l, c, h) => {
+    const [L, a, b] = lch2lab(l, c, h);
+    const [X, Y, Z] = lab2xyz(L, a, b);
+    const linRGB = xyz2lin_srgb(X, Y, Z);
+    const [rr, gg, bb] = lin2srgb(linRGB);
+    return {
+        r: Math.round(rr * 255),
+        g: Math.round(gg * 255),
+        b: Math.round(bb * 255)
+    };
+ };
+
  const checkGamutStatus = (l, c, h) => {
     if (l >= 100 || l <= 0) return { isSRGB: true, isP3: true }; 
     const [L, a, b] = lch2lab(l, c, h);
@@ -123,10 +159,12 @@
 
  const srgb2lin = (c) => {
     let v = c / 255;
-    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    let absV = Math.abs(v);
+    let res = absV <= 0.04045 ? absV / 12.92 : Math.pow((absV + 0.055) / 1.055, 2.4);
+    return v < 0 ? -res : res;
  };
 
- const rgbToLchConvert = (r, g, b) => {
+ const rgbToLchConvert = (r, g, b, currentH) => {
     let lr = srgb2lin(r), lg = srgb2lin(g), lb = srgb2lin(b);
     let x = 0.4360747 * lr + 0.3850649 * lg + 0.1430804 * lb;
     let y = 0.2225045 * lr + 0.7168786 * lg + 0.0606169 * lb;
@@ -142,24 +180,24 @@
     let C = Math.sqrt(a_val*a_val + b_val*b_val);
     let H = Math.atan2(b_val, a_val) * (180 / Math.PI);
     if (H < 0) H += 360;
-    return { l: Math.max(0, Math.min(100, L)), c: Math.max(0, C), h: isNaN(H) ? 0 : H };
+    return { l: Math.max(0, Math.min(100, L)), c: Math.max(0, C), h: C < 0.1 ? currentH : (isNaN(H) ? currentH : H) };
  };
 
- const hexToLchConvert = (hex) => {
+ const hexToLchConvert = (hex, currentH) => {
     let clean = hex.replace(/[^0-9A-F]/gi, '');
     if (clean.length === 3) clean = clean.split('').map(c => c+c).join('');
     if (clean.length !== 6) return null;
     let r = parseInt(clean.substring(0,2), 16);
     let g = parseInt(clean.substring(2,4), 16);
     let b = parseInt(clean.substring(4,6), 16);
-    return rgbToLchConvert(r, g, b);
+    return rgbToLchConvert(r, g, b, currentH);
  };
 
- const labToLchConvert = (l, a, b_val) => {
+ const labToLchConvert = (l, a, b_val, currentH) => {
     let C = Math.sqrt(a*a + b_val*b_val);
     let H = Math.atan2(b_val, a) * (180 / Math.PI);
     if (H < 0) H += 360;
-    return { l: Math.max(0, Math.min(100, l)), c: Math.max(0, C), h: isNaN(H) ? 0 : H };
+    return { l: Math.max(0, Math.min(100, l)), c: Math.max(0, C), h: C < 0.1 ? currentH : (isNaN(H) ? currentH : H) };
  };
 
  const getMappedCssColor = (l, c, h, gamut) => {
@@ -223,7 +261,7 @@ L03,Rustic,Rural,Native,Local,Formal,Proper,Stately,August,Majestic,Splendid
 L02,Sturdy,Hardy,Stable,Steadfast,Resolute,Grounded,Anchored,Steady,Firm,Fixed
 L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned,Muted,Subdued`;
 
- const RAW_NOUNS_CSV = `Hue Angle,Shade (L < 50),Tint (L ≥ 50)
+ const RAW_NOUNS_CSV = `Hue Angle,Shades (L < 50),Tints (L ≥ 50)
 0°,Crimson,Rose
 3°,Scarlet,Poppy
 6°,Brick,Tulip
@@ -345,25 +383,25 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
 354°,Fire,Sweet
 357°,Wine,Lantern`;
 
- const RAW_MAJOR_GROUPS_CSV = `Hue Range,Dark Muted,Dark Vivid,Light Muted,Light Vivid
-345° - 15°,Burgundy,Crimson,Dusty Rose,Rose
-15° - 45°,Brown,Red,Beige,Coral
-45° - 75°,Olive Brown,Orange,Tan,Gold
-75° - 105°,Olive,Yellow,Pale Yellow,Bright Yellow
-105° - 135°,Dark Green,Green,Sage,Light Green
-135° - 165°,Dark Teal,Teal,Seafoam,Bright Teal
-165° - 195°,Dark Cyan,Cyan,Pale Cyan,Bright Cyan
-195° - 225°,Slate Blue,Cerulean,Light Blue,Sky Blue
-225° - 255°,Navy,Blue,Periwinkle,Bright Blue
-255° - 285°,Midnight Blue,Indigo,Pale Blue,Royal Blue
-285° - 315°,Plum,Purple,Lavender,Bright Purple
-315° - 345°,Dark Magenta,Magenta,Mauve,Pink`;
+ const RAW_MAJOR_GROUPS_CSV = `Hue Range,Toned Shades,Vivid Shades,Vivid Tints,Toned Tints
+345° - 15°,Burgundy,Crimson,Rose,Dusty Rose
+15° - 45°,Brown,Red,Coral,Peach
+45° - 75°,Rust,Orange,Gold,Tan
+75° - 105°,Olive,Yellow,Bright Yellow,Pale Yellow
+105° - 135°,Dark Green,Green,Light Green,Sage
+135° - 165°,Forest,Mint,Seafoam,Celery
+165° - 195°,Dark Teal,Teal,Aqua,Pale Teal
+195° - 225°,Dark Cyan,Cyan,Sky Blue,Pale Cyan
+225° - 255°,Navy,Azure,Cerulean,Periwinkle
+255° - 285°,Midnight,Indigo,Cornflower,Pale Blue
+285° - 315°,Dark Blue,Blue,Bright Blue,Light Blue
+315° - 345°,Plum,Magenta,Pink,Mauve`;
 
  // --- CONSTANTS & MIGRATION DATA ---
  const HUE_RANGES_MAJOR = [
-    "345° - 15° (Crimson)", "15° - 45° (Red)", "45° - 75° (Orange)", "75° - 105° (Yellow)",
-    "105° - 135° (Yellow-Green)", "135° - 165° (Green)", "165° - 195° (Teal/Cyan)", "195° - 225° (Light Blue)",
-    "225° - 255° (Blue)", "255° - 285° (Indigo)", "285° - 315° (Purple)", "315° - 345° (Magenta)"
+    "345° - 15°", "15° - 45°", "45° - 75°", "75° - 105°",
+    "105° - 135°", "135° - 165°", "165° - 195°", "195° - 225°",
+    "225° - 255°", "255° - 285°", "285° - 315°", "315° - 345°"
  ];
 
  const generateLightRanges = () => {
@@ -379,12 +417,10 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
 
  const generateChromaRanges = () => {
     const ranges = [{ label: "A", min: 0, max: 0, mid: 0 }];
-    ranges.push({ label: "B", min: 1, max: 9, mid: 5 });
-    for (let i = 0; i < 7; i++) {
-        const start = 10 + (i * 10);
-        ranges.push({ label: String.fromCharCode(67 + i), min: start, max: start + 9, mid: start + 4.5 });
+    for (let i = 0; i < 14; i++) {
+        const start = 1 + (i * 10);
+        ranges.push({ label: String.fromCharCode(66 + i), min: start, max: start + 9, mid: start + 4.5 });
     }
-    ranges.push({ label: "J", min: 80, max: 100, mid: 90 });
     return ranges;
  };
 
@@ -395,7 +431,7 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
 
  const generateAdjectiveMatrix = () => {
     const lines = RAW_ADJECTIVES_CSV.trim().split('\n').map(l => l.trim()).filter(l => l && !l.toLowerCase().startsWith('l \\ c'));
-    const matrix = Array(22).fill(null).map(() => Array(10).fill(""));
+    const matrix = Array(22).fill(null).map(() => Array(15).fill(""));
 
     lines.forEach(line => {
         const parts = line.split(',');
@@ -404,8 +440,8 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
         if (match) {
             const lVal = parseInt(match[1]);
             if (lVal >= 1 && lVal <= 20) {
-                const row = parts.slice(1, 11).map(s => s.trim());
-                while(row.length < 10) row.push("");
+                const row = parts.slice(1, 16).map(s => s.trim());
+                while(row.length < 15) row.push("");
                 matrix[lVal] = row;
             }
         }
@@ -456,16 +492,21 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
  };
 
  // --- COMPONENTS ---
- const Icon = ({ children, className, onClick }) => <svg onClick={onClick} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>{children}</svg>; 
+ const Icon = ({ children, className, onClick, title }) => <svg onClick={onClick} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><title>{title}</title>{children}</svg>; 
  const Grid = ({ className }) => <Icon className={className}><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M3 9h18" /><path d="M3 15h18" /><path d="M9 3v18" /><path d="M15 3v18" /></Icon>; 
  const ChevronLeft = ({ className }) => <Icon className={className}><path d="m15 18-6-6 6-6" /></Icon>; 
  const ChevronRight = ({ className }) => <Icon className={className}><path d="m9 18 6-6-6-6" /></Icon>; 
  const Tag = ({ className }) => <Icon className={className}><path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l5 5a2 2 0 0 0 2.828 0l7.172-7.172a2 2 0 0 0 0-2.828l-5-5Z" /><path d="M7 7h.01" /></Icon>; 
- const RefreshCw = ({ className, onClick }) => <Icon onClick={onClick} className={className}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" /></Icon>; 
+ const RefreshCw = ({ className, onClick, title }) => <Icon onClick={onClick} className={className} title={title}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" /></Icon>; 
  const Download = ({ className, onClick }) => <Icon onClick={onClick} className={className}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" x2="12" y1="15" y2="3" /></Icon>; 
  const Upload = ({ className }) => <Icon className={className}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" x2="12" y1="3" y2="15" /></Icon>; 
  const Palette = ({ className }) => <Icon className={className}><circle cx="13.5" cy="6.5" r=".5" fill="currentColor" /><circle cx="17.5" cy="10.5" r=".5" fill="currentColor" /><circle cx="8.5" cy="7.5" r=".5" fill="currentColor" /><circle cx="6.5" cy="12.5" r=".5" fill="currentColor" /><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.093 0-.84.672-1.531 1.514-1.531h2.418c4.281 0 7.793-3.351 7.793-7.609C24.496 4.672 18.902 2 12 2Z" /></Icon>; 
  const Hash = ({ className }) => <Icon className={className}><line x1="4" x2="20" y1="9" y2="9" /><line x1="4" x2="20" y1="15" y2="15" /><line x1="10" x2="8" y1="3" y2="21" /><line x1="16" x2="14" y1="3" y2="21" /></Icon>; 
+ const MapIcon = ({ className, onClick, title }) => <Icon onClick={onClick} className={className} title={title}><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" /><line x1="9" x2="9" y1="3" y2="18" /><line x1="15" x2="15" y1="6" y2="21" /></Icon>;
+ const SeamlessIcon = ({ className, onClick, title }) => <Icon onClick={onClick} className={className} title={title}><rect x="3" y="3" width="8" height="8" /><rect x="13" y="3" width="8" height="8" /><rect x="3" y="13" width="8" height="8" /><rect x="13" y="13" width="8" height="8" /></Icon>;
+ const CrosshairIcon = ({ className, onClick, title }) => <Icon onClick={onClick} className={className} title={title}><circle cx="12" cy="12" r="10" /><line x1="22" x2="18" y1="12" y2="12" /><line x1="6" x2="2" y1="12" y2="12" /><line x1="12" x2="12" y1="6" y2="2" /><line x1="12" x2="12" y1="22" y2="18" /></Icon>;
+ const Grid3x3 = ({ className, onClick, title }) => <Icon onClick={onClick} className={className} title={title}><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><line x1="9" x2="9" y1="3" y2="21" /><line x1="15" x2="15" y1="3" y2="21" /><line x1="3" x2="21" y1="9" y2="9" /><line x1="3" x2="21" y1="15" y2="15" /></Icon>;
+ const Blocks = ({ className, onClick, title }) => <Icon onClick={onClick} className={className} title={title}><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /></Icon>;
  const Ruler = ({ className }) => <Icon className={className}><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/></Icon>;
  const Layers = ({ className }) => <Icon className={className}><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" /><polyline points="2 12 12 17 22 12" /></Icon>;
  const Plus = ({ className }) => <Icon className={className}><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></Icon>;
@@ -479,6 +520,10 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
  const RedoIcon = ({ className, onClick }) => <Icon onClick={onClick} className={className}><path d="M21 7v6h-6" /><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.6L21 13" /></Icon>;
  const ZoomIn = ({ className, onClick }) => <Icon onClick={onClick} className={className}><circle cx="11" cy="11" r="8" /><line x1="21" x2="16.65" y1="21" y2="16.65" /><line x1="11" x2="11" y1="8" y2="14" /><line x1="8" x2="14" y1="11" y2="11" /></Icon>;
  const ZoomOut = ({ className, onClick }) => <Icon onClick={onClick} className={className}><circle cx="11" cy="11" r="8" /><line x1="21" x2="16.65" y1="21" y2="16.65" /><line x1="8" x2="14" y1="11" y2="11" /></Icon>;
+ const Lock = ({ className, onClick }) => <Icon onClick={onClick} className={className}><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></Icon>;
+ const Unlock = ({ className, onClick }) => <Icon onClick={onClick} className={className}><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 9.9-1" /></Icon>;
+ const ArrowLeftRight = ({ className, onClick, title }) => <Icon onClick={onClick} className={className} title={title}><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></Icon>;
+ const ArrowUpDown = ({ className, onClick, title }) => <Icon onClick={onClick} className={className} title={title}><path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/></Icon>;
 
  const ConverterInput = ({ label, value, onConvert, placeholder }) => {
     const [localVal, setLocalVal] = useState(value);
@@ -499,6 +544,31 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                 onKeyDown={(e) => e.key === 'Enter' && handleBlur()}
                 placeholder={placeholder}
                 className="w-full bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded-lg px-2 py-1.5 text-xs font-mono text-slate-700 dark:text-neutral-200 focus:outline-none focus:border-blue-500 transition-colors shadow-sm"
+            />
+        </div>
+    );
+ };
+
+ const AutoInput = ({ value, onChange, onBlur, disabled, placeholder, emptyText = "", className, style }) => {
+    const [isFocused, setIsFocused] = useState(false);
+    const showEmpty = disabled ? "" : emptyText;
+    const textToMeasure = value || (isFocused ? placeholder : showEmpty);
+
+    return (
+        <div className="inline-grid items-center align-middle relative">
+            <span className={`invisible whitespace-pre col-start-1 row-start-1 px-1 min-w-[1ch] ${className}`} style={{ ...style, pointerEvents: 'none' }}>
+                {textToMeasure || " "}
+            </span>
+            <input 
+                type="text"
+                value={value}
+                onChange={onChange}
+                onFocus={() => setIsFocused(true)}
+                onBlur={(e) => { setIsFocused(false); if(onBlur) onBlur(e); }}
+                disabled={disabled}
+                placeholder={isFocused ? placeholder : showEmpty}
+                className={`col-start-1 row-start-1 w-full h-full px-1 text-center m-0 bg-transparent border-none outline-none overflow-hidden ${className}`}
+                style={style}
             />
         </div>
     );
@@ -537,7 +607,7 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                     <h3 className="font-bold text-lg text-slate-800 dark:text-neutral-100 mb-2">Gamut Warnings</h3>
                     <p>Not all mathematical LCH combinations can be physically displayed by standard monitors. These are considered "out of gamut."</p>
                     <div className="mt-2 flex items-center gap-3">
-                        <div className="w-10 h-10 shrink-0 rounded border border-slate-300 dark:border-neutral-800" style={{backgroundColor: '#3b82f6', backgroundImage: 'repeating-linear-gradient(45deg, var(--hatch-color) 0px, var(--hatch-color) 4px, transparent 4px, transparent 8px)'}}></div>
+                        <div className="w-10 h-10 shrink-0 rounded border border-slate-300 dark:border-neutral-800" style={{backgroundColor: '#3b82f6', backgroundImage: 'repeating-linear-gradient(45deg, var(--hatch-dark) 0px, var(--hatch-dark) 4px, var(--hatch-light) 4px, var(--hatch-light) 8px)'}}></div>
                         <span className="text-sm">If you see these stripes on a cell or swatch, the precise color cannot be displayed perfectly accurately on your screen. The app will automatically render the closest visual match it can.</span>
                     </div>
                 </section>
@@ -574,7 +644,112 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     ); 
  }; 
 
- const MatrixCell = memo(({ rI, cI, isActive, cellL, cellC, lVal, cVal, hVal, noun, adj, displayGamut, onClick }) => {
+ const ContinuousSpace = memo(({ xType, yType, fixedVal, h, c, l, flipX, flipY, displayGamut, updateColor, width, height, isDark }) => {
+    const canvasRef = useRef(null);
+    const containerRef = useRef(null);
+    const isDragging = useRef(false);
+
+    const xMax = xType === 'c' ? 140 : xType === 'l' ? 100 : 360;
+    const yMax = yType === 'c' ? 140 : yType === 'l' ? 100 : 360;
+
+    const activeXVal = xType === 'l' ? l : xType === 'c' ? c : h;
+    const activeYVal = yType === 'l' ? l : yType === 'c' ? c : h;
+
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        
+        // Dynamically scale resolution based on the actual container up to a safe 500px maximum
+        const MAX_RES = 500;
+        const scale = Math.min(MAX_RES / Math.max(width, 1), MAX_RES / Math.max(height, 1), 1);
+        const cvsW = Math.max(1, Math.floor(width * scale));
+        const cvsH = Math.max(1, Math.floor(height * scale));
+        
+        canvas.width = cvsW;
+        canvas.height = cvsH;
+        
+        const imgData = ctx.createImageData(cvsW, cvsH);
+
+        for(let py = 0; py < cvsH; py++) {
+            for(let px = 0; px < cvsW; px++) {
+                const normX = flipX ? (cvsW - 1 - px) / cvsW : px / cvsW;
+                const normY = flipY ? (cvsH - 1 - py) / cvsH : py / cvsH;
+
+                const valX = normX * xMax;
+                const valY = normY * yMax;
+
+                let pxL = fixedVal, pxC = fixedVal, pxH = fixedVal;
+                if (xType === 'l') pxL = valX; else if (xType === 'c') pxC = valX; else pxH = valX;
+                if (yType === 'l') pxL = valY; else if (yType === 'c') pxC = valY; else pxH = valY;
+
+                const gamutStatus = checkGamut(pxL, pxC, pxH);
+                const isOut = displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
+
+                const rgb = rawLchToRgb(pxL, pxC, pxH);
+                let r = Math.max(0, Math.min(255, rgb.r));
+                let g = Math.max(0, Math.min(255, rgb.g));
+                let b = Math.max(0, Math.min(255, rgb.b));
+
+                const i = (py * cvsW + px) * 4;
+                imgData.data[i] = r;
+                imgData.data[i+1] = g;
+                imgData.data[i+2] = b;
+                imgData.data[i+3] = isOut ? 64 : 255;
+            }
+        }
+        ctx.putImageData(imgData, 0, 0);
+    }, [fixedVal, xType, yType, flipX, flipY, displayGamut, xMax, yMax, width, height, isDark]);
+
+    const handlePointer = useCallback((e) => {
+        if (!containerRef.current) return;
+        const rect = containerRef.current.getBoundingClientRect();
+        
+        let normX = (e.clientX - rect.left) / rect.width;
+        let normY = (e.clientY - rect.top) / rect.height;
+        normX = Math.max(0, Math.min(1, normX));
+        normY = Math.max(0, Math.min(1, normY));
+
+        if (flipX) normX = 1 - normX;
+        if (flipY) normY = 1 - normY;
+
+        const valX = normX * xMax;
+        const valY = normY * yMax;
+
+        let newL = l, newC = c, newH = h;
+        if (xType === 'l') newL = valX; else if (xType === 'c') newC = valX; else newH = valX;
+        if (yType === 'l') newL = valY; else if (yType === 'c') newC = valY; else newH = valY;
+
+        updateColor(newL, newC, newH);
+    }, [flipX, flipY, l, c, h, updateColor, xType, yType, xMax, yMax]);
+
+    let crossX = activeXVal / xMax;
+    let crossY = activeYVal / yMax;
+    if (flipX) crossX = 1 - crossX;
+    if (flipY) crossY = 1 - crossY;
+
+    return (
+        <div 
+            ref={containerRef}
+            className="relative overflow-hidden cursor-crosshair touch-none"
+            style={{ width: width, height: height }}
+            onPointerDown={(e) => { isDragging.current = true; handlePointer(e); containerRef.current.setPointerCapture(e.pointerId); }}
+            onPointerMove={(e) => { if (isDragging.current) handlePointer(e); }}
+            onPointerUp={(e) => { isDragging.current = false; containerRef.current.releasePointerCapture(e.pointerId); }}
+            onPointerCancel={(e) => { isDragging.current = false; containerRef.current.releasePointerCapture(e.pointerId); }}
+        >
+            <canvas ref={canvasRef} className="w-full h-full object-fill pointer-events-none relative z-10" />
+            <div 
+                className="absolute pointer-events-none w-5 h-5 -ml-2.5 -mt-2.5 rounded-full border-[1.5px] border-white crosshair-shadow flex items-center justify-center z-50 transition-none"
+                style={{ left: `${crossX * 100}%`, top: `${crossY * 100}%` }}
+            >
+                <div className="w-1 h-1 bg-white rounded-full shadow-[0_0_0_1px_rgba(0,0,0,0.6)]"></div>
+            </div>
+        </div>
+    );
+ });
+
+ const MatrixCell = memo(({ rI, cI, isActive, isLocked, cellL, cellC, lVal, cVal, hVal, noun, adj, displayGamut, onClick, isMacro, borders, groupBg, groupL, showGroupName, zoom }) => {
     
     const isOut = useMemo(() => {
         const gamutStatus = checkGamut(lVal, cVal, hVal);
@@ -586,28 +761,84 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     }, [lVal, cVal, hVal, displayGamut]);
 
     if ((cellL === 0 || cellL === 21) && cellC > 0) {
-        return <td className="p-0 border-none bg-slate-50/50 dark:bg-neutral-950/50 w-16 h-16"></td>;
+        return <td className="p-0 border-none bg-slate-50/50 dark:bg-neutral-950/50 box-border" style={{ width: 64 * zoom, height: 64 * zoom, minWidth: 64 * zoom, minHeight: 64 * zoom, maxWidth: 64 * zoom, maxHeight: 64 * zoom }}></td>;
     }
 
+    const activeBg = isMacro ? groupBg : cellColor;
+    const activeL = isMacro ? groupL : lVal;
+
+    let tdZIndex = 10;
+    if (isActive) tdZIndex = 60;
+    else if (isMacro && showGroupName) tdZIndex = 40;
+
+    let modeClasses = "";
+    let radiusStyles = {};
+    
+    if (isMacro) {
+        modeClasses = isActive ? 'ring-inset ring-[4px] ring-black/20 dark:ring-white/20 z-50' : 'z-10';
+        radiusStyles = {
+            borderTopLeftRadius: borders?.top && borders?.left ? `${16 * zoom}px` : 0,
+            borderTopRightRadius: borders?.top && borders?.right ? `${16 * zoom}px` : 0,
+            borderBottomLeftRadius: borders?.bottom && borders?.left ? `${16 * zoom}px` : 0,
+            borderBottomRightRadius: borders?.bottom && borders?.right ? `${16 * zoom}px` : 0,
+        };
+    } else {
+        modeClasses = `border border-slate-100 dark:border-neutral-800 ${
+            isActive ? 'scale-110 shadow-xl ring-2 ring-blue-500 z-50' : 'hover:scale-105 hover:shadow-md dark:hover:shadow-black/50 z-10'
+        }`;
+        radiusStyles = { borderRadius: `${6 * zoom}px` };
+    }
+    
+    const opacityClass = isOut && !isActive ? 'opacity-25' : 'opacity-100';
+
     return (
-        <td className="p-0 relative border-none cursor-pointer w-16 h-16" style={{zIndex: isActive ? 60 : 'auto'}}>
+        <td className="relative border-none cursor-pointer box-border" style={{zIndex: tdZIndex, padding: isMacro ? 0 : `${2 * zoom}px`, width: 64 * zoom, height: 64 * zoom, minWidth: 64 * zoom, minHeight: 64 * zoom, maxWidth: 64 * zoom, maxHeight: 64 * zoom }}>
             <div onClick={() => onClick(lVal, cVal, hVal)} 
-                className={`w-full h-full flex flex-col items-center justify-center rounded-md overflow-hidden transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] border border-slate-100 dark:border-neutral-800 ${isActive ? 'scale-110 shadow-xl ring-2 ring-blue-500' : 'hover:scale-105 hover:shadow-md dark:hover:shadow-black/50'}`} 
-                style={{ backgroundColor: cellColor, backgroundImage: isOut ? 'repeating-linear-gradient(45deg, var(--hatch-color) 0px, var(--hatch-color) 4px, transparent 4px, transparent 8px)' : 'none', color: lVal > 55 ? 'black' : 'white' }}
+                className={`w-full h-full flex flex-col items-center justify-center relative transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] overflow-hidden ${modeClasses}`}
+                style={radiusStyles}
                 data-active={isActive}>
-                <div className="font-bold opacity-70 leading-none mb-0.5 text-[9px] pointer-events-none select-none px-1 text-center">{adj}</div>
-                <div className="leading-none opacity-90 text-[8px] pointer-events-none select-none px-1 text-center">{noun}</div>
+                
+                <div className={`absolute inset-0 pointer-events-none transition-opacity duration-300 ${opacityClass}`}
+                     style={{ backgroundColor: activeBg }}>
+                </div>
+
+                <div className={`relative z-30 w-full h-full flex flex-col items-center justify-center pointer-events-none ${opacityClass}`} style={{ color: activeL > 55 ? 'black' : 'white' }}>
+                    {!isMacro && isLocked && zoom >= 0.9 && <div className="absolute top-1 right-1 opacity-70"><Lock className="w-2.5 h-2.5" /></div>}
+                    {!isMacro && zoom >= 0.9 && <div className="font-bold opacity-70 leading-none mb-0.5 text-[9px] px-1 text-center truncate w-full">{adj}</div>}
+                    {!isMacro && zoom >= 0.9 && <div className="leading-none opacity-90 text-[8px] px-1 text-center truncate w-full">{noun}</div>}
+                    
+                    {isMacro && isActive && (
+                        <div className="w-6 h-6 rounded-full border-[1.5px] border-white crosshair-shadow flex items-center justify-center">
+                            <div className="w-1.5 h-1.5 bg-white rounded-full shadow-[0_0_0_1px_rgba(0,0,0,0.6)]"></div>
+                        </div>
+                    )}
+                </div>
             </div>
+
+            {isMacro && showGroupName && (
+                <div className="absolute inset-0 flex items-center justify-center z-[100] pointer-events-none overflow-visible p-1">
+                    <span className="font-black tracking-widest uppercase whitespace-nowrap px-3 py-1.5 rounded-full shadow-lg backdrop-blur-md"
+                          style={{
+                              fontSize: `12px`,
+                              backgroundColor: activeL > 55 ? 'rgba(255, 255, 255, 0.65)' : 'rgba(0, 0, 0, 0.55)',
+                              color: activeL > 55 ? 'rgba(0, 0, 0, 0.9)' : 'rgba(255, 255, 255, 0.95)',
+                              border: activeL > 55 ? '1px solid rgba(255,255,255,0.5)' : '1px solid rgba(255,255,255,0.1)'
+                          }}>
+                        {showGroupName}
+                    </span>
+                </div>
+            )}
         </td>
     );
  });
 
- const NounRow = memo(({ idx, displayHue, isHueActive, activeColIdx, parts, displayGamut, onHueClick, updateColorWithHistory, updateNoun }) => (
+ const NounRow = memo(({ idx, displayHue, isHueActive, activeColIdx, parts, isDarkLocked, isLightLocked, displayGamut, onHueClick, updateColorWithHistory, updateNoun, counts }) => (
     <tr className={`transition-all duration-200 cursor-pointer ${isHueActive ? 'bg-blue-50/50 dark:bg-blue-900/20' : 'hover:bg-slate-50 dark:hover:bg-neutral-900/50'}`} data-active={isHueActive}> 
         <td onClick={() => onHueClick(displayHue)} className={`p-2 text-center font-mono opacity-80 bg-white dark:bg-neutral-950 sticky left-0 z-10 border-b border-r border-slate-100 dark:border-neutral-900 ${isHueActive ? '!bg-blue-50 dark:!bg-blue-900/40 font-bold text-blue-600 dark:text-blue-400' : 'text-slate-600 dark:text-neutral-400'}`}>{displayHue}°</td> 
         {[0, 1].map((colIdx) => {
             const n = parts[colIdx] || "";
             const isCellActive = isHueActive && (colIdx === activeColIdx);
+            const isLocked = colIdx === 0 ? isDarkLocked : isLightLocked;
             const repL = colIdx === 0 ? 40 : 75;
             const repC = 25; 
             
@@ -617,8 +848,12 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
             return (
                 <td key={colIdx} onClick={() => updateColorWithHistory(repL, repC, displayHue)} className={`p-0 relative h-10 border-b border-r border-slate-100 dark:border-neutral-900 ${isCellActive ? 'ring-2 ring-blue-500 dark:ring-blue-400 z-20' : ''}`}>
                    <div className="flex items-center h-full px-3 gap-2">
-                       <div className="w-4 h-4 rounded-full border border-black/10 dark:border-white/10 shrink-0" style={{backgroundColor: cellColor, backgroundImage: cellRgb.outOfGamut ? 'repeating-linear-gradient(45deg, var(--hatch-color) 0px, var(--hatch-color) 4px, transparent 4px, transparent 8px)' : 'none'}}></div>
-                       <input type="text" value={n} onChange={(e) => updateNoun(idx, colIdx, e.target.value)} className="w-full bg-transparent border-none outline-none font-medium text-slate-700 dark:text-neutral-200" />
+                       <div className="w-4 h-4 rounded-full border border-black/10 dark:border-white/10 shrink-0 relative overflow-hidden" style={{backgroundColor: cellColor}}>
+                            {cellRgb.outOfGamut && <div className="absolute inset-0 opacity-100 pointer-events-none" style={{backgroundImage: 'repeating-linear-gradient(45deg, var(--hatch-dark) 0px, var(--hatch-dark) 4px, var(--hatch-light) 4px, var(--hatch-light) 8px)'}}></div>}
+                            {isLocked && <Lock className="w-2 h-2 absolute inset-0 m-auto text-slate-500 drop-shadow-sm bg-white/80 rounded-full p-[1px]" />}
+                       </div>
+                       <input type="text" disabled={isLocked} value={n} onChange={(e) => updateNoun(idx, colIdx, e.target.value)} className={`w-full bg-transparent border-none outline-none font-medium text-slate-700 dark:text-neutral-200 ${isLocked ? 'opacity-40 cursor-not-allowed' : ''}`} />
+                       {counts && counts[colIdx] !== undefined && <span className={`text-[9px] font-mono whitespace-nowrap px-1.5 py-0.5 rounded shadow-inner ${counts[colIdx] > 0 ? 'text-slate-500 dark:text-neutral-400 bg-slate-100 dark:bg-neutral-900' : 'text-red-400 bg-red-50 dark:bg-red-900/20'}`}>{counts[colIdx]} <span className="opacity-60">in-gamut</span></span>}
                    </div>
                 </td>
             )
@@ -626,10 +861,20 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     </tr> 
  ));
 
- const MatrixTable = ({ yData, xData, yLabel, xLabel, renderCell, activeIds, interactionSource, zoom }) => { 
+ const MatrixTable = ({ yData, xData, yLabel, xLabel, renderCell, activeIds, interactionSource, zoom, setZoom, matrixLOD, h, c, l, flipX, flipY, displayGamut, updateColor, isDark }) => { 
     const containerRef = useRef(null);
     const activeRowIdx = activeIds.r;
     const activeColIdx = activeIds.c;
+
+    const isSeamless = matrixLOD === 'seamless';
+    const isMacro = matrixLOD === 'macro';
+    const xType = xLabel.toLowerCase();
+    const yType = yLabel.toLowerCase();
+    const fixedType = ['l', 'c', 'h'].find(t => t !== xType && t !== yType);
+    const fixedVal = fixedType === 'l' ? l : fixedType === 'c' ? c : h;
+
+    const zoomRef = useRef(zoom);
+    useEffect(() => { zoomRef.current = zoom; }, [zoom]);
 
     useEffect(() => {
         if (interactionSource && interactionSource.current === 'click') {
@@ -644,37 +889,94 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
         }
     }, [activeRowIdx, activeColIdx, interactionSource, zoom]);
 
+    useEffect(() => {
+        const el = containerRef.current;
+        if (!el) return;
+
+        const handleWheel = (e) => {
+            if (e.ctrlKey) {
+                e.preventDefault();
+                setZoom(Math.min(Math.max(0.1, zoomRef.current - e.deltaY * 0.01), 3.0));
+            }
+        };
+
+        let initDist = 0;
+        let initZ = 1;
+        
+        const handleTouchStart = (e) => {
+            if (e.touches.length === 2) {
+                e.preventDefault();
+                initDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+                initZ = zoomRef.current;
+            }
+        };
+        
+        const handleTouchMove = (e) => {
+            if (e.touches.length === 2) {
+                e.preventDefault();
+                const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+                const scale = dist / initDist;
+                setZoom(Math.min(Math.max(0.1, initZ * scale), 3.0));
+            }
+        };
+
+        el.addEventListener('wheel', handleWheel, { passive: false });
+        el.addEventListener('touchstart', handleTouchStart, { passive: false });
+        el.addEventListener('touchmove', handleTouchMove, { passive: false });
+
+        return () => {
+            el.removeEventListener('wheel', handleWheel);
+            el.removeEventListener('touchstart', handleTouchStart);
+            el.removeEventListener('touchmove', handleTouchMove);
+        };
+    }, [setZoom]);
+
     return ( 
     <div 
         ref={containerRef} 
         className={`h-full w-full overflow-auto rounded-xl border border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 shadow-sm flex flex-col relative custom-scroll`}> 
-        <div style={{ zoom: zoom, transformOrigin: 'top left' }}>
-            <table className="min-w-max text-[10px] text-center border-separate border-spacing-1 table-fixed relative z-10 pointer-events-none"> 
+        <div style={{ transformOrigin: 'top left' }}> 
+            <table className={`min-w-max text-[10px] text-center table-fixed relative z-10 pointer-events-none border-collapse border-spacing-0`}> 
                 <thead> 
                     <tr> 
-                        <th className="p-2 text-slate-400 dark:text-neutral-500 font-mono text-left bg-white dark:bg-neutral-950 sticky top-0 z-40 border-b border-slate-100 dark:border-neutral-900 pointer-events-auto w-20">
-                            <span>{yLabel}\{xLabel}</span>
+                        <th className="p-2 text-slate-400 dark:text-neutral-500 font-mono text-left bg-white dark:bg-neutral-950 sticky top-0 z-40 border-b border-slate-100 dark:border-neutral-900 pointer-events-auto w-20 min-w-[5rem]">
+                            {zoom >= 0.9 && <span>{yLabel}\{xLabel}</span>}
                         </th> 
                         {xData.map((col) => ( 
-                        <th key={col.index} className={`p-2 font-bold border-b border-slate-100 dark:border-neutral-900 bg-white dark:bg-neutral-950 sticky top-0 z-40 pointer-events-auto w-16 ${col.isActive ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 ring-inset ring-2 ring-blue-500/20 dark:ring-blue-400/30 rounded-t' : 'text-slate-500 dark:text-neutral-400'}`}> 
-                            <div className="flex flex-col items-center">
-                                <span className="text-xs">{col.label}</span>
-                                {col.data && (<span className="text-[8px] font-normal opacity-50 font-mono">{col.data.min === col.data.max ? col.data.min : `${col.data.min}-${col.data.max}`}</span>)}
+                        <th key={col.index} style={{ width: 64 * zoom, minWidth: 64 * zoom, maxWidth: 64 * zoom }} className={`p-1 font-bold border-b border-slate-100 dark:border-neutral-900 bg-white dark:bg-neutral-950 sticky top-0 z-40 pointer-events-auto box-border ${col.isActive ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 ring-inset ring-2 ring-blue-500/20 dark:ring-blue-400/30 rounded-t' : 'text-slate-500 dark:text-neutral-400'}`}> 
+                            <div className="flex flex-col items-center justify-center overflow-hidden w-full h-full px-0.5">
+                                {zoom >= 0.9 && <span className="text-xs truncate w-full">{col.label}</span>}
+                                {zoom >= 0.9 && col.data && (<span className="text-[8px] font-normal opacity-50 font-mono truncate w-full">{col.data.min === col.data.max ? col.data.min : `${col.data.min}-${col.data.max}`}</span>)}
                             </div> 
                         </th> 
                         ))} 
                     </tr> 
                 </thead> 
                 <tbody className="pointer-events-auto"> 
-                    {yData.map((row) => (
+                    {yData.map((row, rI) => (
                         <tr key={row.index}>
-                            <td className={`p-2 font-bold border-r border-slate-100 dark:border-neutral-900 text-left bg-white dark:bg-neutral-950 sticky left-0 z-30 w-20 ${row.isActive ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 ring-inset ring-2 ring-blue-500/20 dark:ring-blue-400/30 rounded-l' : 'text-slate-500 dark:text-neutral-400'}`}>
-                                <div className="flex flex-col items-start">
-                                    <span className="text-xs">{row.label}</span>
-                                    {row.data && (<span className="text-[8px] font-normal opacity-50 font-mono">{row.data.min === row.data.max ? row.data.min : `${row.data.min}-${row.data.max}`}</span>)}
+                            <td style={{ height: 64 * zoom, minHeight: 64 * zoom, maxHeight: 64 * zoom }} className={`p-1 font-bold border-r border-slate-100 dark:border-neutral-900 text-left bg-white dark:bg-neutral-950 sticky left-0 z-30 w-20 min-w-[5rem] box-border ${row.isActive ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 ring-inset ring-2 ring-blue-500/20 dark:ring-blue-400/30 rounded-l' : 'text-slate-500 dark:text-neutral-400'}`}>
+                                <div className="flex flex-col items-start justify-center overflow-hidden w-full h-full pl-1">
+                                    {zoom >= 0.9 && <span className="text-xs truncate w-full leading-none">{row.label}</span>}
+                                    {zoom >= 0.9 && row.data && (<span className="text-[8px] font-normal opacity-50 font-mono truncate w-full mt-0.5 leading-none">{row.data.min === row.data.max ? row.data.min : `${row.data.min}-${row.data.max}`}</span>)}
                                 </div>
                             </td>
-                            {xData.map((col) => renderCell(row.index, col.index))}
+                            {isSeamless && rI === 0 && (
+                                <td rowSpan={yData.length} colSpan={xData.length} className="p-0 border-none relative align-top">
+                                    <ContinuousSpace 
+                                        xType={xType} yType={yType} 
+                                        fixedType={fixedType} fixedVal={fixedVal}
+                                        h={h} c={c} l={l}
+                                        flipX={flipX} flipY={flipY}
+                                        displayGamut={displayGamut}
+                                        updateColor={updateColor}
+                                        width={xData.length * 64 * zoom}
+                                        height={yData.length * 64 * zoom}
+                                        isDark={isDark}
+                                    />
+                                </td>
+                            )}
+                            {!isSeamless && xData.map((col) => renderCell(row.index, col.index))}
                         </tr>
                     ))} 
                 </tbody> 
@@ -699,10 +1001,8 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     return ( 
     <div onClick={() => onSelect(harmH)} className="flex flex-col items-center gap-1 cursor-pointer group shrink-0"> 
         <div className="w-8 h-8 rounded-full shadow-sm border border-black/10 dark:border-white/10 group-hover:scale-110 transition-transform relative overflow-hidden" 
-            style={{
-                backgroundColor: swatchColor,
-                backgroundImage: isOutOfGamut ? 'repeating-linear-gradient(45deg, var(--hatch-color) 0px, var(--hatch-color) 4px, transparent 4px, transparent 8px)' : 'none'
-            }}> 
+            style={{backgroundColor: swatchColor}}>
+            {isOutOfGamut && <div className="absolute inset-0 opacity-100 pointer-events-none" style={{backgroundImage: 'repeating-linear-gradient(45deg, var(--hatch-dark) 0px, var(--hatch-dark) 4px, var(--hatch-light) 4px, var(--hatch-light) 8px)'}}></div>}
         </div> 
         <span className="text-[8px] font-bold text-slate-500 dark:text-neutral-400 uppercase">{label}</span> 
     </div> 
@@ -714,6 +1014,10 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     const [c, setC] = useState(getFromLocal('c', 50)); 
     const [l, setL] = useState(getFromLocal('l', 52)); 
     const [gridZoom, setGridZoom] = useState(() => getFromLocal('gridZoom', 1));
+    const [lockedCells, setLockedCells] = useState(() => getFromLocal('lockedCells', []));
+    const [flipX, setFlipX] = useState(() => getFromLocal('flipX', false));
+    const [flipY, setFlipY] = useState(() => getFromLocal('flipY', false));
+    const [matrixLOD, setMatrixLOD] = useState(() => getFromLocal('matrixLOD', 'grid'));
     
     const [history, setHistory] = useState(() => {
         const local = getFromLocal('history', null);
@@ -751,16 +1055,14 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     });
 
     const [extremeGroups, setExtremeGroups] = useState(() => {
-        return getFromLocal('extremeGroups', { white: "White", black: "Black", gray: "Gray" });
+        return getFromLocal('extremeGroups', { white: "White", black: "Black", lightGray: "Light Gray", darkGray: "Dark Gray" });
     });
     
     const [palette, setPalette] = useState(getFromLocal('userPalette', []));
-    const [tempName, setTempName] = useState(null);
+    const [tempAdj, setTempAdj] = useState(null);
+    const [tempNoun, setTempNoun] = useState(null);
 
     const parsedNouns = useMemo(() => nounData.map(row => row.split(',')), [nounData]);
-
-    const handleZoomIn = () => setGridZoom(prev => Math.min(Math.round((prev + (prev >= 1 ? 0.5 : 0.25)) * 100) / 100, 3.0));
-    const handleZoomOut = () => setGridZoom(prev => Math.max(Math.round((prev - (prev > 1 ? 0.5 : 0.25)) * 100) / 100, 0.1));
 
     useEffect(() => {
         if (isDark) document.documentElement.classList.add('dark');
@@ -783,8 +1085,8 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
         const stops = [];
         for (let i = 0; i <= 20; i++) { 
             const pct = i / 20; 
-            const isOut = displayGamut === 'p3' ? !checkGamut(l, pct * 100, h).isP3 : !checkGamut(l, pct * 100, h).isSRGB;
-            const color = getMappedCssColor(l, pct * 100, h, displayGamut); 
+            const isOut = displayGamut === 'p3' ? !checkGamut(l, pct * 140, h).isP3 : !checkGamut(l, pct * 140, h).isSRGB;
+            const color = getMappedCssColor(l, pct * 140, h, displayGamut); 
             stops.push(`${isOut ? 'transparent' : color} ${pct * 100}%`); 
         } 
         return `linear-gradient(to right, ${stops.join(', ')})`;
@@ -811,15 +1113,108 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
             saveToLocal('anchors', anchors); saveToLocal('hueValues', hueValues);
             saveToLocal('adjectiveMatrix', adjectiveMatrix); saveToLocal('nounData', nounData);
             saveToLocal('majorGroups', majorGroups); saveToLocal('extremeGroups', extremeGroups);
+            saveToLocal('lockedCells', lockedCells);
+            saveToLocal('flipX', flipX); saveToLocal('flipY', flipY);
             saveToLocal('userPalette', palette);
+            saveToLocal('matrixLOD', matrixLOD);
         }, 300);
         return () => clearTimeout(timer);
-    }, [h, c, l, gridZoom, history, historyIndex, adjectiveMatrix, nounData, majorGroups, extremeGroups, lightRanges, chromaRanges, anchors, hueValues, palette]);
+    }, [h, c, l, gridZoom, history, historyIndex, adjectiveMatrix, nounData, majorGroups, extremeGroups, lightRanges, chromaRanges, anchors, hueValues, palette, lockedCells, flipX, flipY, matrixLOD]);
     
-    useEffect(() => setTempName(null), [l, c, h]);
+    useEffect(() => {
+        setTempAdj(null);
+        setTempNoun(null);
+    }, [l, c, h]);
 
-    const exactRgb = useMemo(() => realLchToRgb(l, c, h), [l, c, h]);
-    const exactHex = useMemo(() => `#${exactRgb.r.toString(16).padStart(2,'0')}${exactRgb.g.toString(16).padStart(2,'0')}${exactRgb.b.toString(16).padStart(2,'0')}`.toUpperCase(), [exactRgb]);
+    // THE IDEAL ANCHOR APPROACH 
+    const groupBackgrounds = useMemo(() => {
+        // Accurately calibrated perceptual hue peaks for LCH
+        const IDEAL_HUES = [0, 40, 60, 100, 134, 150, 180, 196, 240, 270, 300, 328]; 
+        
+        return {
+            white: { bg: getMappedCssColor(98, 0, 0, displayGamut), l: 98 },
+            black: { bg: getMappedCssColor(2, 0, 0, displayGamut), l: 2 },
+            lightGray: { bg: getMappedCssColor(75, 0, 0, displayGamut), l: 75 },
+            darkGray: { bg: getMappedCssColor(25, 0, 0, displayGamut), l: 25 },
+            quads: Array.from({ length: 12 }, (_, rIdx) => {
+                const idealH = IDEAL_HUES[rIdx];
+                return [
+                    { bg: getMappedCssColor(30, 20, idealH, displayGamut), l: 30 },  // Toned Shades
+                    { bg: getMappedCssColor(40, 140, idealH, displayGamut), l: 40 }, // Vivid Shades (Auto-mapped to highest in-gamut chroma)
+                    { bg: getMappedCssColor(80, 140, idealH, displayGamut), l: 80 }, // Vivid Tints (Auto-mapped to highest in-gamut chroma)
+                    { bg: getMappedCssColor(80, 20, idealH, displayGamut), l: 80 }   // Toned Tints
+                ];
+            })
+        };
+    }, [displayGamut]);
+
+    const getGroupId = useCallback((lVal, cVal, hVal) => {
+        if (lVal > 95 && cVal < 10) return 'white';
+        if (lVal < 10 && cVal < 10) return 'black';
+        if (cVal < 10) return lVal >= 50 ? 'lightGray' : 'darkGray';
+        const hueGroup = Math.floor(((hVal + 15) % 360) / 30);
+        const quadGroup = lVal < 50 ? (cVal < 40 ? 0 : 1) : (cVal >= 40 ? 2 : 3);
+        return `h${hueGroup}-q${quadGroup}`;
+    }, []);
+
+    const cellCounts = useMemo(() => {
+        const nounCounts = Array(120).fill(null).map(() => [0, 0]);
+        const adjCounts = Array(22).fill(null).map(() => Array(15).fill(0));
+        const groupCounts = {
+            white: 0, black: 0, lightGray: 0, darkGray: 0,
+            quads: Array(12).fill(null).map(() => [0,0,0,0])
+        };
+
+        for (let lI = 0; lI < lightRanges.length; lI++) {
+            for (let cI = 0; cI < chromaRanges.length; cI++) {
+                const lVal = lightRanges[lI]?.mid;
+                const cVal = chromaRanges[cI]?.mid;
+                
+                if (lVal === undefined || cVal === undefined) continue;
+
+                // Skip mathematical edges that don't map to grid cells.
+                if ((lI === 0 || lI === 21) && cI > 0) continue;
+                
+                for (let hI = 0; hI < hueValues.length; hI++) {
+                    const hVal = hueValues[hI];
+
+                    const gamutStatus = checkGamut(lVal, cVal, hVal);
+                    const isOut = displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
+                    
+                    if (!isOut) {
+                        if (lI > 0 && lI < 21 && cI > 0) {
+                            const sIdx = lI < 11 ? 0 : 1;
+                            nounCounts[hI][sIdx]++;
+                            if (adjCounts[lI] && adjCounts[lI][cI] !== undefined) {
+                                adjCounts[lI][cI]++;
+                            }
+                        }
+
+                        const gId = getGroupId(lVal, cVal, hVal);
+                        if (gId === 'white') groupCounts.white++;
+                        else if (gId === 'black') groupCounts.black++;
+                        else if (gId === 'lightGray') groupCounts.lightGray++;
+                        else if (gId === 'darkGray') groupCounts.darkGray++;
+                        else {
+                            const match = gId.match(/h(\d+)-q(\d+)/);
+                            if (match) {
+                                const hGrp = parseInt(match[1]);
+                                const qGrp = parseInt(match[2]);
+                                if (groupCounts.quads[hGrp] && groupCounts.quads[hGrp][qGrp] !== undefined) {
+                                    groupCounts.quads[hGrp][qGrp]++;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return { nounCounts, groupCounts, adjCounts };
+    }, [lightRanges, chromaRanges, hueValues, getGroupId, displayGamut]);
+
+    const exactMappedRgb = useMemo(() => realLchToRgb(l, c, h), [l, c, h]);
+    const exactRawRgb = useMemo(() => rawLchToRgb(l, c, h), [l, c, h]);
+    const exactHex = useMemo(() => `#${exactMappedRgb.r.toString(16).padStart(2,'0')}${exactMappedRgb.g.toString(16).padStart(2,'0')}${exactMappedRgb.b.toString(16).padStart(2,'0')}`.toUpperCase(), [exactMappedRgb]);
     const exactLab = useMemo(() => lch2lab(l, c, h), [l, c, h]);
     const exactLabStr = useMemo(() => `${Math.round(exactLab[0])}, ${Math.round(exactLab[1])}, ${Math.round(exactLab[2])}`, [exactLab]);
 
@@ -863,6 +1258,7 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     const updateAdjective = (r, cIdx, val) => {
         setAdjectiveMatrix(prev => {
             const next = [...prev];
+            if (!next[r]) next[r] = [];
             next[r] = [...next[r]];
             next[r][cIdx] = val;
             return next;
@@ -883,6 +1279,7 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     const updateMajorGroup = (rIdx, cIdx, val) => {
         setMajorGroups(prev => {
             const next = [...prev];
+            if (!next[rIdx]) next[rIdx] = [];
             next[rIdx] = [...next[rIdx]];
             next[rIdx][cIdx] = val;
             return next;
@@ -917,31 +1314,47 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
         return { baseNoun: bNoun, adj, code: `${lightRanges[rowLIdx]?.label || '?'}${chromaRanges[rowCIdx]?.label || '?'}${h.toString().padStart(3,'0')}` }; 
     }, [l, c, h, adjectiveMatrix, parsedNouns, hIdx, lightRanges, chromaRanges]);
 
-    const fullDisplayName = currentMapping.adj ? `${currentMapping.adj} ${currentMapping.baseNoun}` : currentMapping.baseNoun; 
+    const safeLIdx = getRangeIndex(l, lightRanges);
+    const safeCIdx = getRangeIndex(c, chromaRanges);
+    
+    const currentCellKey = `l_${safeLIdx}_c_${safeCIdx}_h_${hIdx}`;
+    const isCurrentExplicitlyLocked = lockedCells.includes(currentCellKey);
 
-    const handleNameChange = (val) => {
-        const rL = getRangeIndex(l, lightRanges); 
+    const isAdjLocked = useMemo(() => {
+        return lockedCells.some(k => {
+            const parts = k.split('_');
+            return parseInt(parts[1]) === safeLIdx && parseInt(parts[3]) === safeCIdx;
+        });
+    }, [lockedCells, safeLIdx, safeCIdx]);
+
+    const isNounLocked = useMemo(() => {
+        const currentLightBand = safeLIdx < 11 ? 0 : 1;
+        return lockedCells.some(k => {
+            const parts = k.split('_');
+            const locL = parseInt(parts[1]);
+            const locC = parseInt(parts[3]);
+            const locH = parseInt(parts[5]);
+            if (locL === 0 || locL === 21 || locC === 0) return false;
+            const locLightBand = locL < 11 ? 0 : 1;
+            return locH === hIdx && locLightBand === currentLightBand;
+        });
+    }, [lockedCells, safeLIdx, hIdx]);
+
+    const handleAdjChange = (val) => {
+        if (isAdjLocked) return;
+        const rL = getRangeIndex(l, lightRanges);
         const rC = getRangeIndex(c, chromaRanges);
-        if (rL === 0 || rL === 21) return; 
-        
-        const parts = val.trim().split(/\s+/);
-        let checkNoun = "";
-        let checkAdj = "";
-        
-        if (parts.length > 1) {
-            checkNoun = parts.pop().trim();
-            checkAdj = parts.join(" ").trim();
-        } else {
-            checkNoun = parts[0].trim();
-        }
-        
-        if (rC === 0) {
-            updateAdjective(rL, 0, val.replace("Cinza", "").trim());
-        } else {
-             const sIdx = getNounColumnIndex(rL);
-             updateNoun(hIdx, sIdx, checkNoun);
-             updateAdjective(rL, rC, checkAdj);
-        }
+        if (rL === 0 || rL === 21) return;
+        updateAdjective(rL, rC, val.trim());
+    };
+
+    const handleNounChange = (val) => {
+        if (isNounLocked) return;
+        const rL = getRangeIndex(l, lightRanges);
+        const rC = getRangeIndex(c, chromaRanges);
+        if (rL === 0 || rL === 21 || rC === 0) return;
+        const sIdx = getNounColumnIndex(rL);
+        updateNoun(hIdx, sIdx, val.trim());
     };
 
     useEffect(() => {
@@ -954,7 +1367,7 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                 const rawNoun = parsedNouns[idx][sIdx] || "";
                 const noun = rawNoun.trim().toLowerCase();
                 if (noun && noun !== "hue") {
-                    const loc = `${hueValues[idx]}° (${sIdx === 0 ? 'Dark' : 'Light'})`;
+                    const loc = `${hueValues[idx]}° (${sIdx === 0 ? 'Shades' : 'Tints'})`;
                     if (seenNouns.has(noun)) {
                         warning = `Duplicate Noun: '${rawNoun.trim()}' at ${seenNouns.get(noun)} & ${loc}`;
                         break;
@@ -1003,14 +1416,14 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
             }
             
             if (!warning) {
-                const QUAD_NAMES = ["Dark Muted", "Dark Vivid", "Light Muted", "Light Vivid"];
+                const QUAD_NAMES = ["Toned Shades", "Vivid Shades", "Vivid Tints", "Toned Tints"];
                 for (let r = 0; r < majorGroups.length; r++) {
                     if (!majorGroups[r]) continue;
                     for (let col = 0; col < majorGroups[r].length; col++) {
                         const rawMg = majorGroups[r][col] || "";
                         const mg = rawMg.trim().toLowerCase();
                         if (mg) {
-                            const rangeLabel = HUE_RANGES_MAJOR[r].split(' ')[0] + ' ' + HUE_RANGES_MAJOR[r].split(' ')[1] + ' ' + HUE_RANGES_MAJOR[r].split(' ')[2];
+                            const rangeLabel = HUE_RANGES_MAJOR[r];
                             const loc = `${rangeLabel} ${QUAD_NAMES[col]}`;
                             if (seenMGs.has(mg)) {
                                 warning = `Duplicate Group: '${rawMg.trim()}' at ${seenMGs.get(mg)} & ${loc}`;
@@ -1027,55 +1440,60 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
         setNameWarning(warning);
     }, [parsedNouns, adjectiveMatrix, majorGroups, extremeGroups, hueValues, lightRanges, chromaRanges]);
 
-    const safeLIdx = getRangeIndex(l, lightRanges);
-    const safeCIdx = getRangeIndex(c, chromaRanges);
     let canonicalL = lightRanges[safeLIdx]?.mid ?? 50;
     let canonicalC = chromaRanges[safeCIdx]?.mid ?? 0;
-    let canonicalH = hueValues[hIdx] ?? 0;
-    if (safeLIdx === 0 || safeLIdx === 21 || safeCIdx === 0) { canonicalC = 0; canonicalH = 0; }
 
-    const canonRgb = useMemo(() => realLchToRgb(canonicalL, canonicalC, canonicalH), [canonicalL, canonicalC, canonicalH]);
-    const canonHex = useMemo(() => `#${canonRgb.r.toString(16).padStart(2,'0')}${canonRgb.g.toString(16).padStart(2,'0')}${canonRgb.b.toString(16).padStart(2,'0')}`.toUpperCase(), [canonRgb]);
-    const canonGamut = useMemo(() => checkGamut(canonicalL, canonicalC, canonicalH), [canonicalL, canonicalC, canonicalH]);
-    
-    const isCanonOut = displayGamut === 'p3' ? !canonGamut.isP3 : !canonGamut.isSRGB;
-    const canonBgColor = getMappedCssColor(canonicalL, canonicalC, canonicalH, displayGamut);
+    const exactGamut = useMemo(() => checkGamut(l, c, h), [l, c, h]);
+    const isExactOut = displayGamut === 'p3' ? !exactGamut.isP3 : !exactGamut.isSRGB;
+    const exactBgColor = getMappedCssColor(l, c, h, displayGamut);
     
     const swatchStyle = useMemo(() => ({ 
-        backgroundColor: canonBgColor,
-        backgroundImage: isCanonOut ? 'repeating-linear-gradient(45deg, var(--hatch-color) 0px, var(--hatch-color) 4px, transparent 4px, transparent 8px)' : 'none' 
-    }), [canonBgColor, isCanonOut]);
+        backgroundColor: exactBgColor
+    }), [exactBgColor]);
 
     const deltaE = useMemo(() => Math.sqrt(Math.pow(canonicalL - l, 2) + Math.pow(canonicalC - c, 2)).toFixed(1), [canonicalL, l, canonicalC, c]); 
 
     const activeMajorHueIdx = Math.floor(((h + 15) % 360) / 30);
-    const isMajorLight = l >= 50 ? 1 : 0;
-    const isMajorVivid = c >= 40 ? 1 : 0;
-    const activeMajorQuadIdx = (isMajorLight * 2) + isMajorVivid;
+    const activeMajorQuadIdx = l < 50 ? (c < 40 ? 0 : 1) : (c >= 40 ? 2 : 3);
 
-    const isWhiteActive = l > 95;
-    const isBlackActive = l < 5;
-    const isGrayActive = c < 10 && !isWhiteActive && !isBlackActive;
+    const isWhiteActive = l > 95 && c < 10;
+    const isBlackActive = l < 10 && c < 10;
+    const isLightGrayActive = c < 10 && l >= 50 && !isWhiteActive;
+    const isDarkGrayActive = c < 10 && l < 50 && !isBlackActive;
 
     const majorGroup = useMemo(() => {
-        if (l > 95) return extremeGroups.white;
-        if (l < 5) return extremeGroups.black;
-        if (c < 10) return extremeGroups.gray;
+        if (l > 95 && c < 10) return extremeGroups.white;
+        if (l < 10 && c < 10) return extremeGroups.black;
+        if (c < 10 && l >= 50) return extremeGroups.lightGray;
+        if (c < 10 && l < 50) return extremeGroups.darkGray;
         return majorGroups[activeMajorHueIdx][activeMajorQuadIdx];
     }, [l, c, activeMajorHueIdx, activeMajorQuadIdx, majorGroups, extremeGroups]);
 
-    const getExplorerParams = useCallback((view, flipped, rI, cI) => {
-        let localLIdx = safeLIdx, localCIdx = safeCIdx, localHIdx = hIdx;
-        if (view === "hue_pivot") { localLIdx = flipped ? cI : rI; localCIdx = flipped ? rI : cI; } 
-        else if (view === "chroma_pivot") { localHIdx = flipped ? cI : rI; localLIdx = flipped ? rI : cI; localCIdx = safeCIdx; } 
-        else if (view === "light_pivot") { localHIdx = flipped ? cI : rI; localCIdx = flipped ? rI : cI; localLIdx = safeLIdx; }
-        const safeL = lightRanges[localLIdx] || lightRanges[0];
-        const safeC = chromaRanges[localCIdx] || chromaRanges[0];
-        const safeH = hueValues[localHIdx] ?? 0;
-        let cVal = safeC.mid; let hVal = safeH;
-        if (localLIdx === 0 || localLIdx === 21 || localCIdx === 0) { cVal = 0; hVal = 0; }
-        return { lVal: safeL.mid, cVal, hVal, lIdx: localLIdx, cIdx: localCIdx, hIdx: localHIdx };
-    }, [safeLIdx, safeCIdx, hIdx, lightRanges, chromaRanges, hueValues]);
+    // Derived list for "Locked Colors" view
+    const lockedList = useMemo(() => {
+        return lockedCells.map(key => {
+            const parts = key.split('_');
+            const cLIdx = parseInt(parts[1]);
+            const cCIdx = parseInt(parts[3]);
+            const cHIdx = parseInt(parts[5]);
+            
+            const lVal = lightRanges[cLIdx]?.mid ?? 50;
+            const cVal = chromaRanges[cCIdx]?.mid ?? 0;
+            const hVal = hueValues[cHIdx] ?? 0;
+
+            const sIdx = cLIdx < 11 ? 0 : 1;
+            let noun = parsedNouns[cHIdx]?.[sIdx] || "Hue";
+            if (cLIdx === 0) noun = "Nero"; else if (cLIdx === 21) noun = "Blanc"; else if (cCIdx === 0) noun = "Cinza";
+            let adj = adjectiveMatrix[cLIdx]?.[cCIdx] || "";
+            if (noun && adj && noun.toLowerCase() === adj.toLowerCase()) adj = "";
+
+            const gamutStatus = checkGamut(lVal, cVal, hVal);
+            const isOut = displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
+            const color = getMappedCssColor(lVal, cVal, hVal, displayGamut);
+            
+            return { key, lVal, cVal, hVal, noun, adj, color, isOut };
+        });
+    }, [lockedCells, lightRanges, chromaRanges, hueValues, parsedNouns, adjectiveMatrix, displayGamut]);
 
     const lightRangeData = useMemo(() => lightRanges.map((r, i) => ({ label: r.label, index: i, isActive: i === safeLIdx, data: r })), [safeLIdx, lightRanges]);
     const chromaRangeData = useMemo(() => chromaRanges.map((r, i) => ({ label: r.label, index: i, isActive: i === safeCIdx, data: r })), [safeCIdx, chromaRanges]);
@@ -1085,8 +1503,94 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
         return { label: `${val}°`, index: i, isActive: i === hIdx, data: { min: val, max: maxVal > val ? maxVal : val } };
     }), [hIdx, hueValues]);
 
-    const renderCell = useCallback((rI, cI) => {
-        const { lVal, cVal, hVal, lIdx: cellL, cIdx: cellC, hIdx: cellH } = getExplorerParams(activeView, isFlipped, rI, cI);
+    let currentXData = [];
+    let currentYData = [];
+    let currentXLabel = "";
+    let currentYLabel = "";
+    let currentActiveR = 0;
+    let currentActiveC = 0;
+
+    if (activeView === 'hue_pivot') {
+        currentXData = isFlipped ? lightRangeData : chromaRangeData;
+        currentYData = isFlipped ? chromaRangeData : lightRangeData;
+        currentXLabel = isFlipped ? "L" : "C";
+        currentYLabel = isFlipped ? "C" : "L";
+        currentActiveR = isFlipped ? safeCIdx : safeLIdx;
+        currentActiveC = isFlipped ? safeLIdx : safeCIdx;
+    } else if (activeView === 'chroma_pivot') {
+        currentXData = isFlipped ? hueRangesData : lightRangeData;
+        currentYData = isFlipped ? lightRangeData : hueRangesData;
+        currentXLabel = isFlipped ? "H" : "L";
+        currentYLabel = isFlipped ? "L" : "H";
+        currentActiveR = isFlipped ? safeLIdx : hIdx;
+        currentActiveC = isFlipped ? hIdx : safeLIdx;
+    } else if (activeView === 'light_pivot') {
+        currentXData = isFlipped ? hueRangesData : chromaRangeData;
+        currentYData = isFlipped ? chromaRangeData : hueRangesData;
+        currentXLabel = isFlipped ? "H" : "C";
+        currentYLabel = isFlipped ? "C" : "H";
+        currentActiveR = isFlipped ? safeCIdx : hIdx;
+        currentActiveC = isFlipped ? hIdx : safeCIdx;
+    }
+
+    const finalXData = flipX ? [...currentXData].reverse() : currentXData;
+    const finalYData = flipY ? [...currentYData].reverse() : currentYData;
+
+    const getExplorerParams = useCallback((view, flipped, xIdx, yIdx) => {
+        let localLIdx = safeLIdx, localCIdx = safeCIdx, localHIdx = hIdx;
+        
+        let targetX = xIdx;
+        let targetY = yIdx;
+
+        if (view === "hue_pivot") { 
+            localCIdx = flipped ? targetY : targetX; 
+            localLIdx = flipped ? targetX : targetY; 
+        } else if (view === "chroma_pivot") { 
+            localLIdx = flipped ? targetY : targetX; 
+            localHIdx = flipped ? targetX : targetY; 
+        } else if (view === "light_pivot") { 
+            localCIdx = flipped ? targetY : targetX; 
+            localHIdx = flipped ? targetX : targetY; 
+        }
+        
+        const safeL = lightRanges[localLIdx] || lightRanges[0];
+        const safeC = chromaRanges[localCIdx] || chromaRanges[0];
+        const safeH = hueValues[localHIdx] ?? 0;
+        let cVal = safeC.mid; let hVal = safeH;
+        if (localLIdx === 0 || localLIdx === 21 || localCIdx === 0) { cVal = 0; }
+        return { lVal: safeL.mid, cVal, hVal, lIdx: localLIdx, cIdx: localCIdx, hIdx: localHIdx };
+    }, [safeLIdx, safeCIdx, hIdx, lightRanges, chromaRanges, hueValues]);
+
+    const groupCenters = useMemo(() => {
+        const centers = {};
+        if (matrixLOD !== 'macro') return centers;
+        const groups = {};
+        for (let y = 0; y < finalYData.length; y++) {
+            for (let x = 0; x < finalXData.length; x++) {
+                const p = getExplorerParams(activeView, isFlipped, x, y);
+                if ((p.lIdx === 0 || p.lIdx === 21) && p.cIdx > 0) continue;
+                const gId = getGroupId(p.lVal, p.cVal, p.hVal);
+                if (!groups[gId]) groups[gId] = { minX: x, maxX: x, minY: y, maxY: y };
+                else {
+                    groups[gId].minX = Math.min(groups[gId].minX, x);
+                    groups[gId].maxX = Math.max(groups[gId].maxX, x);
+                    groups[gId].minY = Math.min(groups[gId].minY, y);
+                    groups[gId].maxY = Math.max(groups[gId].maxY, y);
+                }
+            }
+        }
+        for (const gId in groups) {
+            const g = groups[gId];
+            const cx = Math.floor((g.minX + g.maxX) / 2);
+            const cy = Math.floor((g.minY + g.maxY) / 2);
+            centers[`${cy}-${cx}`] = gId;
+        }
+        return centers;
+    }, [matrixLOD, finalXData.length, finalYData.length, activeView, isFlipped, getExplorerParams, getGroupId]);
+
+    const renderCell = useCallback((yIdx, xIdx) => {
+        const currentParams = getExplorerParams(activeView, isFlipped, xIdx, yIdx);
+        const { lVal, cVal, hVal, lIdx: cellL, cIdx: cellC, hIdx: cellH } = currentParams;
         const gamutStatus = checkGamut(lVal, cVal, hVal);
         const isOut = displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
         const isActive = cellL === safeLIdx && cellC === safeCIdx && cellH === hIdx;
@@ -1096,19 +1600,108 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
         if (cellL === 0) noun = "Nero"; else if (cellL === 21) noun = "Blanc"; else if (cellC === 0) noun = "Cinza";
 
         const adj = adjectiveMatrix[cellL]?.[cellC] || "";
+        const cellKey = `l_${cellL}_c_${cellC}_h_${cellH}`;
+        const isLocked = lockedCells.includes(cellKey);
+
+        let borders = { top: false, bottom: false, left: false, right: false };
+        let groupBg = '';
+        let groupL = 50;
+        let showGroupName = null;
+        const isMacro = matrixLOD === 'macro';
+
+        if (isMacro && !((cellL === 0 || cellL === 21) && cellC > 0)) {
+            const currentGroupId = getGroupId(lVal, cVal, hVal);
+            
+            if (currentGroupId === 'white') { groupBg = groupBackgrounds.white.bg; groupL = groupBackgrounds.white.l; }
+            else if (currentGroupId === 'black') { groupBg = groupBackgrounds.black.bg; groupL = groupBackgrounds.black.l; }
+            else if (currentGroupId === 'lightGray') { groupBg = groupBackgrounds.lightGray.bg; groupL = groupBackgrounds.lightGray.l; }
+            else if (currentGroupId === 'darkGray') { groupBg = groupBackgrounds.darkGray.bg; groupL = groupBackgrounds.darkGray.l; }
+            else {
+                const match = currentGroupId.match(/h(\d+)-q(\d+)/);
+                if (match) {
+                    groupBg = groupBackgrounds.quads[parseInt(match[1])][parseInt(match[2])].bg;
+                    groupL = groupBackgrounds.quads[parseInt(match[1])][parseInt(match[2])].l;
+                }
+            }
+
+            const getGroupAt = (x, y) => {
+                if (x < 0 || x >= finalXData.length || y < 0 || y >= finalYData.length) return 'out_of_bounds';
+                const p = getExplorerParams(activeView, isFlipped, x, y);
+                if ((p.lIdx === 0 || p.lIdx === 21) && p.cIdx > 0) return 'empty';
+                return getGroupId(p.lVal, p.cVal, p.hVal);
+            };
+
+            const visualUpY = flipY ? yIdx + 1 : yIdx - 1;
+            const visualDownY = flipY ? yIdx - 1 : yIdx + 1;
+            const visualLeftX = flipX ? xIdx + 1 : xIdx - 1;
+            const visualRightX = flipX ? xIdx - 1 : xIdx + 1;
+
+            borders.top = currentGroupId !== getGroupAt(xIdx, visualUpY);
+            borders.bottom = currentGroupId !== getGroupAt(xIdx, visualDownY);
+            borders.left = currentGroupId !== getGroupAt(visualLeftX, yIdx);
+            borders.right = currentGroupId !== getGroupAt(visualRightX, yIdx);
+
+            if (groupCenters[`${yIdx}-${xIdx}`] === currentGroupId) {
+                if (currentGroupId === 'white') showGroupName = extremeGroups.white;
+                else if (currentGroupId === 'black') showGroupName = extremeGroups.black;
+                else if (currentGroupId === 'lightGray') showGroupName = extremeGroups.lightGray;
+                else if (currentGroupId === 'darkGray') showGroupName = extremeGroups.darkGray;
+                else {
+                    const match = currentGroupId.match(/h(\d+)-q(\d+)/);
+                    if (match) showGroupName = majorGroups[parseInt(match[1])][parseInt(match[2])];
+                }
+            }
+        }
 
         return (
             <MatrixCell 
-                key={`${rI}-${cI}`}
-                rI={rI} cI={cI} 
-                isActive={isActive} cellL={cellL} cellC={cellC} 
+                key={`${yIdx}-${xIdx}`}
+                rI={yIdx} cI={xIdx} 
+                isActive={isActive} isLocked={isLocked} cellL={cellL} cellC={cellC} 
                 lVal={lVal} cVal={cVal} hVal={hVal} 
                 noun={noun} adj={adj} displayGamut={displayGamut}
                 onClick={handleCellClick}
+                isMacro={isMacro} borders={borders}
+                groupBg={groupBg} groupL={groupL}
+                showGroupName={showGroupName}
+                zoom={gridZoom}
             />
         );
-    }, [activeView, isFlipped, getExplorerParams, safeLIdx, safeCIdx, hIdx, parsedNouns, adjectiveMatrix, displayGamut, handleCellClick]);
+    }, [activeView, isFlipped, getExplorerParams, safeLIdx, safeCIdx, hIdx, parsedNouns, adjectiveMatrix, displayGamut, handleCellClick, lockedCells, matrixLOD, finalXData.length, finalYData.length, groupBackgrounds, flipX, flipY, groupCenters, extremeGroups, majorGroups, getGroupId, gridZoom]);
 
+    const handleRgbConvert = (val) => {
+        const hasPercent = val.includes('%');
+        const cleanVal = val.replace(/[^0-9., \-]/g, '').trim();
+        const parts = cleanVal.includes(',') ? cleanVal.split(',') : cleanVal.split(/\s+/);
+        const numParts = parts.map(n => parseFloat(n.trim()));
+        
+        if (numParts.length === 3 && numParts.every(n => !isNaN(n))) {
+            const r = hasPercent ? (numParts[0] / 100) * 255 : numParts[0];
+            const g = hasPercent ? (numParts[1] / 100) * 255 : numParts[1];
+            const b = hasPercent ? (numParts[2] / 100) * 255 : numParts[2];
+            const res = rgbToLchConvert(r, g, b, h);
+            updateColorWithHistory(res.l, res.c, res.h);
+        }
+    };
+
+    const handleHexConvert = (val) => {
+        let clean = val.replace(/[^0-9A-F]/gi, '');
+        if (clean.length === 3) clean = clean.split('').map(c => c+c).join('');
+        if (clean.length !== 6) return null;
+        let r = parseInt(clean.substring(0,2), 16);
+        let g = parseInt(clean.substring(2,4), 16);
+        let b = parseInt(clean.substring(4,6), 16);
+        const res = rgbToLchConvert(r, g, b, h);
+        if (res) updateColorWithHistory(res.l, res.c, res.h);
+    };
+
+    const handleLabConvert = (val) => {
+        const parts = val.replace(/[^0-9., \-]/g, '').split(',').map(n => parseFloat(n.trim()));
+        if (parts.length === 3 && parts.every(n => !isNaN(n))) {
+            const res = labToLchConvert(parts[0], parts[1], parts[2], h);
+            updateColorWithHistory(res.l, res.c, res.h);
+        }
+    };
 
     const handleExport = () => { 
         const wb = XLSX.utils.book_new(); 
@@ -1117,24 +1710,25 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
         const adjHeader = ["(L/C)", ...chromaRanges.map(c => c.label)];
         const adjBody = adjectiveMatrix.map((row, i) => [lightRanges[i]?.label || `L${i}`, ...row]);
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([adjHeader, ...adjBody]), "Adjectives"); 
-        const nounHeader = ["Hue Angle", "Dark Shade (L<50)", "Light Shade (L≥50)"];
+        const nounHeader = ["Hue Angle", "Shades (L<50)", "Tints (L≥50)"];
         const nounBody = nounData.map((row, i) => [`${hueValues[i]}°`, ...row.split(',')]);
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([nounHeader, ...nounBody]), "Nouns"); 
         
-        const mgHeader = ["Hue Range", "Dark Muted (L<50, C<40)", "Dark Vivid (L<50, C>=40)", "Light Muted (L>=50, C<40)", "Light Vivid (L>=50, C>=40)"];
-        const mgBody = majorGroups.map((row, i) => [HUE_RANGES_MAJOR[i], ...row]);
+        const mgHeader = ["Hue Range", "Toned Shades (L<50, C<40)", "Vivid Shades (L<50, C>=40)", "Vivid Tints (L>=50, C>=40)", "Toned Tints (L>=50, C<40)"];
+        const mgBody = majorGroups.map((row, i) => [HUE_RANGES_MAJOR[i], row[0], row[1], row[3], row[2]]);
         const extremeBody = [
             ["Extremes", "Value"],
             ["White (L>95)", extremeGroups.white],
             ["Black (L<5)", extremeGroups.black],
-            ["Gray (C<10)", extremeGroups.gray],
+            ["Light Gray (C<10, L>=50)", extremeGroups.lightGray],
+            ["Dark Gray (C<10, L<50)", extremeGroups.darkGray],
             [],
             mgHeader,
             ...mgBody
         ];
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(extremeBody), "Major Groups");
 
-        const sessionBody = [["Current L", l], ["Current C", c], ["Current H", h], ["Active View", activeView], ["Flipped", isFlipped], ["Palette JSON", JSON.stringify(palette)]];
+        const sessionBody = [["Current L", l], ["Current C", c], ["Current H", h], ["Active View", activeView], ["Flipped", isFlipped], ["Locked Cells", JSON.stringify(lockedCells)], ["Flip X", flipX], ["Flip Y", flipY], ["Palette JSON", JSON.stringify(palette)]];
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Key", "Value"], ...sessionBody]), "Session");
         XLSX.writeFile(wb, "ColorSAMIficator_Manufacturing.xlsx"); 
     }; 
@@ -1176,7 +1770,9 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                     const key = row[0].toString();
                     if(key.includes("White")) newExtremes.white = row[1] || "White";
                     else if(key.includes("Black")) newExtremes.black = row[1] || "Black";
-                    else if(key.includes("Gray")) newExtremes.gray = row[1] || "Gray";
+                    else if(key.includes("Light Gray") || key.includes("Light")) newExtremes.lightGray = row[1] || "Light Gray";
+                    else if(key.includes("Dark Gray") || key.includes("Dark")) newExtremes.darkGray = row[1] || "Dark Gray";
+                    else if(key.includes("Gray")) newExtremes.lightGray = row[1] || "Gray";
                     else if(key.includes("°")) {
                         newMG.push([row[1]||"", row[2]||"", row[3]||"", row[4]||""]);
                     }
@@ -1184,30 +1780,20 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                 if(newMG.length === 12) setMajorGroups(newMG);
                 setExtremeGroups(newExtremes);
             }
+            if(wb.Sheets["Session"]) {
+                const sessionRaw = XLSX.utils.sheet_to_json(wb.Sheets["Session"]);
+                const lockedRow = sessionRaw.find(r => r.Key === "Locked Cells");
+                if (lockedRow && lockedRow.Value) {
+                    try { setLockedCells(JSON.parse(lockedRow.Value)); } catch(e) {}
+                }
+                const fXRow = sessionRaw.find(r => r.Key === "Flip X");
+                if (fXRow && fXRow.Value !== undefined) setFlipX(fXRow.Value === true || fXRow.Value === "true");
+                const fYRow = sessionRaw.find(r => r.Key === "Flip Y");
+                if (fYRow && fYRow.Value !== undefined) setFlipY(fYRow.Value === true || fYRow.Value === "true");
+            }
         }; 
         reader.readAsBinaryString(file); e.target.value = "";
     }; 
-
-    const handleHexConvert = (val) => {
-        const res = hexToLchConvert(val);
-        if (res) updateColorWithHistory(res.l, res.c, res.h);
-    };
-
-    const handleRgbConvert = (val) => {
-        const parts = val.replace(/[^0-9., ]/g, '').split(',').map(n => parseInt(n.trim()));
-        if (parts.length === 3 && parts.every(n => !isNaN(n) && n >= 0 && n <= 255)) {
-            const res = rgbToLchConvert(parts[0], parts[1], parts[2]);
-            updateColorWithHistory(res.l, res.c, res.h);
-        }
-    };
-
-    const handleLabConvert = (val) => {
-        const parts = val.replace(/[^0-9., \-]/g, '').split(',').map(n => parseFloat(n.trim()));
-        if (parts.length === 3 && parts.every(n => !isNaN(n))) {
-            const res = labToLchConvert(parts[0], parts[1], parts[2]);
-            updateColorWithHistory(res.l, res.c, res.h);
-        }
-    };
 
     const activeNounColIdx = l < 50 ? 0 : 1; 
 
@@ -1217,10 +1803,10 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
     
     <div className="shrink-0 py-2 md:py-3 flex flex-col items-center bg-white dark:bg-neutral-950 z-20 shadow-sm relative transition-colors duration-300 border-b border-slate-100 dark:border-neutral-900"> 
         <h1 className="text-xl md:text-3xl font-black tracking-tighter text-slate-900 dark:text-neutral-100">The COLOR<span className="text-green-600 dark:text-green-500">SAMI</span>FICATOR</h1> 
-        <span className="text-xs font-bold text-slate-400 dark:text-neutral-500 tracking-wider">VERSION 1.33 (LOCATIONS & FIXES)</span>
+        <span className="text-xs font-bold text-slate-400 dark:text-neutral-500 tracking-wider">1.84</span>
         
         {/* Left Toolbar (History + Help) */}
-        <div className="absolute left-2 md:left-6 top-1/2 -translate-y-1/2 flex gap-1 md:gap-2">
+        <div className="absolute left-2 md:left-6 top-1/2 -translate-y-1/2 flex items-center gap-1 md:gap-2">
             <button onClick={handleUndo} disabled={historyIndex === 0} className={`p-2 rounded-full transition-colors ${historyIndex === 0 ? 'opacity-30 cursor-not-allowed text-slate-400' : 'hover:bg-slate-100 dark:hover:bg-neutral-900 text-slate-600 dark:text-neutral-300'}`}>
                 <UndoIcon className="w-5 h-5" />
             </button>
@@ -1228,13 +1814,28 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                 <RedoIcon className="w-5 h-5" />
             </button>
             <div className="w-px h-6 bg-slate-200 dark:bg-neutral-800 mx-1 self-center hidden md:block"></div>
+            
+            <img 
+                src="Stelumar_PNG-CLR.png" 
+                alt="Stelumar Logo" 
+                className="h-6 md:h-10 object-contain mr-1 md:mr-2"
+                onError={(e) => { 
+                    e.target.onerror = null; 
+                    e.target.src = 'https://placehold.co/150x40/09281a/efebe1?text=STELUMAR'; 
+                }}
+            />
+
             <button onClick={() => setShowHelp(true)} className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-neutral-900 text-slate-600 dark:text-neutral-300 transition-colors hidden md:block">
                 <HelpCircle className="w-5 h-5" />
             </button>
         </div>
 
         {/* Right Toolbar (Export/Import/Theme) */}
-        <div className="absolute right-2 md:right-6 top-1/2 -translate-y-1/2 flex gap-1 md:gap-2"> 
+        <div className="absolute right-2 md:right-6 top-1/2 -translate-y-1/2 flex items-center gap-1 md:gap-2"> 
+            <div className="hidden sm:flex items-center px-2 py-1.5 rounded-md bg-slate-50 dark:bg-neutral-900/50 border border-slate-100 dark:border-neutral-800 mr-1 transition-colors" title="Detected Display Gamut">
+                <Monitor className="w-3 h-3 text-slate-400 mr-1.5" />
+                <span className="text-[9px] font-black text-slate-500 dark:text-neutral-400 uppercase tracking-widest">{displayGamut === 'p3' ? 'Display P3' : 'sRGB'}</span>
+            </div>
             <button onClick={() => setIsDark(!isDark)} className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-neutral-900 text-slate-600 dark:text-neutral-300 transition-colors">
                 {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
             </button>
@@ -1251,42 +1852,91 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
         <div className="order-1 w-full md:w-80 lg:w-[360px] shrink-0 flex-none h-[45%] md:h-full border-b md:border-b-0 md:border-r border-slate-100 dark:border-neutral-900 flex flex-col p-4 md:p-6 bg-white dark:bg-neutral-950 z-10 overflow-y-auto transition-colors duration-300 custom-scroll"> 
         
         {/* SWATCH CONTAINER */}
-        <div className="w-full shrink-0 aspect-[3/1] md:aspect-[2/1] rounded-xl md:rounded-3xl flex flex-col items-center justify-center relative overflow-hidden mb-4 transition-all duration-300 min-h-[160px] border border-slate-200 dark:border-neutral-800 shadow-sm" style={swatchStyle}> 
-            <div className="z-20 text-center flex flex-col items-center w-full px-6 pointer-events-none"> 
-                <div className="bg-white/90 dark:bg-black/80 backdrop-blur text-slate-900 dark:text-neutral-100 px-3 py-1 rounded-full text-xs font-mono font-bold mb-2 md:mb-4 shadow-sm border border-white/50 dark:border-white/10 flex items-center gap-1 z-10 pointer-events-auto"><Tag className="w-3 h-3 text-blue-500" /> {currentMapping.code}</div> 
-                
-                <input 
-                    type="text" 
-                    value={tempName !== null ? tempName : fullDisplayName} 
-                    onChange={(e) => {
-                        setTempName(e.target.value);
-                        handleNameChange(e.target.value);
+        <div className="w-full shrink-0 aspect-video md:aspect-[2/1] rounded-xl md:rounded-3xl flex flex-col items-center justify-center relative overflow-hidden mb-4 transition-all duration-300 min-h-[200px] border border-slate-200 dark:border-neutral-800 shadow-sm" style={swatchStyle}> 
+            {isExactOut && <div className="absolute inset-0 opacity-100 pointer-events-none" style={{backgroundImage: 'repeating-linear-gradient(45deg, var(--hatch-dark) 0px, var(--hatch-dark) 4px, var(--hatch-light) 4px, var(--hatch-light) 8px)'}}></div>}
+            
+            {/* Top Left: Color Code */}
+            <div className="absolute top-3 left-3 z-30 bg-white/90 dark:bg-black/80 backdrop-blur text-slate-900 dark:text-neutral-100 px-3 py-1 rounded-full text-xs font-mono font-bold shadow-sm border border-white/50 dark:border-white/10 flex items-center gap-1 pointer-events-auto">
+                <Tag className="w-3 h-3 text-blue-500" /> {currentMapping.code}
+            </div>
+            
+            {/* Top Right: Padlock */}
+            <div className={`absolute top-3 right-3 z-30 transition-colors pointer-events-auto`}>
+                <button 
+                    onClick={() => {
+                        setLockedCells(prev => 
+                            prev.includes(currentCellKey) 
+                                ? prev.filter(k => k !== currentCellKey) 
+                                : [...prev, currentCellKey]
+                        );
                     }}
-                    onBlur={() => setTempName(null)}
-                    className="font-black text-xl md:text-3xl w-full text-center leading-tight break-words bg-transparent border-none outline-none text-shadow-sm hover:bg-white/10 dark:hover:bg-black/20 rounded transition-colors z-10 relative pointer-events-auto" 
-                    style={{ color: canonicalL > 50 ? 'black' : 'white', textShadow: canonicalL > 50 ? 'none' : '0 2px 10px rgba(0,0,0,0.6)' }} 
-                />
+                    title={isCurrentExplicitlyLocked ? "Unlock Cell" : "Lock Cell"}
+                    className="p-1.5 rounded-full hover:bg-black/20 dark:hover:bg-white/20 transition-all"
+                >
+                    {isCurrentExplicitlyLocked ? (
+                        <Lock className={`w-5 h-5 drop-shadow-md ${l < 50 ? 'text-white' : 'text-black'}`} />
+                    ) : (
+                        <Unlock className={`w-5 h-5 drop-shadow-md opacity-40 hover:opacity-100 ${l < 50 ? 'text-white' : 'text-black'}`} />
+                    )}
+                </button>
+            </div>
 
+            {/* Bottom Left: LCH & Delta E */}
+            <div className="absolute bottom-3 left-3 z-30 flex flex-wrap gap-2 pointer-events-auto max-w-[60%]">
+                <div className="px-2 py-1 bg-black/40 backdrop-blur-md rounded text-[10px] font-mono text-white flex items-center gap-1">L{Number(l).toFixed(1)} C{Number(c).toFixed(1)} H{Number(h).toFixed(1)}</div> 
+                {deltaE !== '0.0' && (
+                    <div className="px-2 py-1 bg-white dark:bg-neutral-900 text-blue-600 dark:text-blue-400 backdrop-blur-md rounded text-[10px] font-black flex items-center gap-1"><Ruler className="w-3 h-3" /> ΔE {deltaE}</div> 
+                )}
+            </div>
+
+            {/* Bottom Right: Major Group */}
+            <div className="absolute bottom-3 right-3 z-30 pointer-events-auto max-w-[40%] text-right">
+                <div className="px-2 py-1 bg-purple-600 text-white dark:bg-purple-500/20 dark:text-purple-300 backdrop-blur-md rounded text-[10px] font-black uppercase tracking-wider flex items-center justify-end gap-1"><Layers className="w-3 h-3" /> {majorGroup}</div>
+            </div>
+
+            {/* Center: Names & Warnings */}
+            <div className="z-20 text-center flex flex-col items-center justify-center w-full px-4 pointer-events-none mt-2"> 
                 {nameWarning && (
-                    <div className="mt-2 px-3 py-1.5 bg-red-500/90 backdrop-blur text-white text-[10px] font-bold rounded-xl flex items-center justify-center gap-1 shadow-lg animate-pulse z-10 pointer-events-auto max-w-[90%] text-center">
+                    <div className="mb-2 px-3 py-1.5 bg-red-500/90 backdrop-blur text-white text-[10px] font-bold rounded-xl flex items-center justify-center gap-1 shadow-lg animate-pulse pointer-events-auto max-w-full text-center">
                         <AlertTriangle className="w-4 h-4 shrink-0" />
                         {nameWarning}
                     </div>
                 )}
-
-                <div className="mt-2 md:mt-4 flex gap-2 flex-wrap justify-center z-10 pointer-events-auto"> 
-                    <div className="px-2 py-1 bg-black/40 backdrop-blur-md rounded text-[10px] font-mono text-white flex items-center gap-1">L{Math.round(canonicalL)} C{Math.round(canonicalC)} H{Math.round(canonicalH)}</div> 
-                    <div className="px-2 py-1 bg-black/40 backdrop-blur-md rounded text-[10px] font-mono text-white flex items-center gap-1"><Hash className="w-3 h-3 opacity-70" /> {canonHex}</div> 
-                    <div className="px-2 py-1 bg-black/40 backdrop-blur-md rounded text-[10px] font-mono text-white flex items-center gap-1">RGB {exactRgb.r},{exactRgb.g},{exactRgb.b}</div> 
-                    <div className="px-2 py-1 bg-white dark:bg-neutral-900 text-blue-600 dark:text-blue-400 backdrop-blur-md rounded text-[10px] font-black flex items-center gap-1"><Ruler className="w-3 h-3" /> ΔE {deltaE}</div> 
-                    <div className="px-2 py-1 bg-purple-600 text-white dark:bg-purple-500/20 dark:text-purple-300 backdrop-blur-md rounded text-[10px] font-black uppercase tracking-wider flex items-center gap-1"><Layers className="w-3 h-3" /> {majorGroup}</div>
-                </div> 
+                
+                { (safeLIdx === 0 || safeLIdx === 21) ? (
+                    <div className="font-black text-2xl md:text-4xl w-full text-center leading-tight break-words relative pointer-events-auto" style={{ color: l > 50 ? 'black' : 'white', textShadow: l > 50 ? 'none' : '0 2px 10px rgba(0,0,0,0.6)' }}>
+                        {currentMapping.baseNoun}
+                    </div>
+                ) : (
+                    <div className="flex flex-col w-full max-w-[95%] mx-auto items-center justify-center gap-1 md:gap-2 relative pointer-events-auto"> 
+                        <AutoInput 
+                            value={tempAdj !== null ? tempAdj : currentMapping.adj} 
+                            onChange={(e) => setTempAdj(e.target.value)}
+                            onBlur={() => { handleAdjChange(tempAdj !== null ? tempAdj : currentMapping.adj); setTempAdj(null); }}
+                            disabled={isAdjLocked}
+                            placeholder="Adjective"
+                            emptyText="+"
+                            className={`font-black text-xl md:text-3xl rounded transition-colors ${isAdjLocked ? 'opacity-50 cursor-not-allowed' : 'hover:bg-white/10 dark:hover:bg-black/20 focus:bg-white/20 dark:focus:bg-black/30'}`} 
+                            style={{ color: l > 50 ? 'black' : 'white', textShadow: l > 50 ? 'none' : '0 2px 10px rgba(0,0,0,0.6)' }} 
+                        />
+                        <AutoInput 
+                            value={tempNoun !== null ? tempNoun : currentMapping.baseNoun} 
+                            onChange={(e) => setTempNoun(e.target.value)}
+                            onBlur={() => { handleNounChange(tempNoun !== null ? tempNoun : currentMapping.baseNoun); setTempNoun(null); }}
+                            disabled={isNounLocked || safeCIdx === 0}
+                            placeholder="Noun"
+                            emptyText="Noun"
+                            className={`font-black text-2xl md:text-4xl rounded transition-colors ${(isNounLocked || safeCIdx === 0) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-white/10 dark:hover:bg-black/20 focus:bg-white/20 dark:focus:bg-black/30'}`} 
+                            style={{ color: l > 50 ? 'black' : 'white', textShadow: l > 50 ? 'none' : '0 2px 10px rgba(0,0,0,0.6)' }} 
+                        />
+                    </div>
+                )}
             </div> 
         </div> 
 
         <div className="bg-slate-50 dark:bg-neutral-950/50 p-4 md:p-6 rounded-2xl border border-slate-100 dark:border-neutral-900 space-y-2 shrink-0 transition-colors duration-300"> 
             <SnapControl label="Light" value={l} setter={setL} max={100} displayVal={Math.round(l)} gradient={lightGradientBg} isActive={activeView.includes('hue') || activeView.includes('chroma')} /> 
-            <SnapControl label="Chroma" value={c} setter={setC} max={100} displayVal={Math.round(c)} gradient={chromaGradientBg} isActive={activeView.includes('hue') || activeView.includes('light')} /> 
+            <SnapControl label="Chroma" value={c} setter={setC} max={140} displayVal={Math.round(c)} gradient={chromaGradientBg} isActive={activeView.includes('hue') || activeView.includes('light')} /> 
             <SnapControl label="Hue" value={h} setter={setH} max={360} displayVal={Math.round(h) + "°"} gradient={hueGradientBg} isActive={activeView.includes('chroma') || activeView.includes('light')} /> 
         </div> 
 
@@ -1294,7 +1944,7 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
             <div className="text-[10px] font-bold text-slate-400 dark:text-neutral-500 uppercase mb-3 flex items-center gap-2"><RefreshCw className="w-3 h-3" /> Exact Converter</div>
             <div className="grid grid-cols-3 gap-3">
                 <ConverterInput label="HEX" value={exactHex} onConvert={handleHexConvert} placeholder="#000000" />
-                <ConverterInput label="RGB" value={`${exactRgb.r}, ${exactRgb.g}, ${exactRgb.b}`} onConvert={handleRgbConvert} placeholder="R, G, B" />
+                <ConverterInput label="RGB" value={`${exactRawRgb.r}, ${exactRawRgb.g}, ${exactRawRgb.b}`} onConvert={handleRgbConvert} placeholder="R, G, B" />
                 <ConverterInput label="LAB" value={exactLabStr} onConvert={handleLabConvert} placeholder="L, a, b" />
             </div>
         </div>
@@ -1325,12 +1975,9 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                      const isOut = displayGamut === 'p3' ? !gamutStatus.isP3 : !gamutStatus.isSRGB;
                      
                      const pBg = getMappedCssColor(p.l, p.c, p.h, displayGamut);
-                     const style = { 
-                         backgroundColor: pBg, 
-                         backgroundImage: isOut ? 'repeating-linear-gradient(45deg, var(--hatch-color) 0px, var(--hatch-color) 2px, transparent 2px, transparent 6px)' : 'none' 
-                     };
                      return (
-                         <div key={i} onClick={() => updateColorWithHistory(p.l, p.c, p.h)} className="w-8 h-8 rounded-lg shadow-sm border border-black/10 dark:border-white/10 cursor-pointer relative group transition-transform hover:scale-110 shrink-0" style={style}>
+                         <div key={i} onClick={() => updateColorWithHistory(p.l, p.c, p.h)} className="w-8 h-8 rounded-lg shadow-sm border border-black/10 dark:border-white/10 cursor-pointer relative group transition-transform hover:scale-110 shrink-0 overflow-hidden" style={{backgroundColor: pBg}}>
+                            {isOut && <div className="absolute inset-0 opacity-100 pointer-events-none" style={{backgroundImage: 'repeating-linear-gradient(45deg, var(--hatch-dark) 0px, var(--hatch-dark) 4px, var(--hatch-light) 4px, var(--hatch-light) 8px)'}}></div>}
                             <div onClick={(e) => { e.stopPropagation(); setPalette(palette.filter((_, idx) => idx !== i)); }} className="absolute -top-1 -right-1 bg-white dark:bg-neutral-800 text-slate-400 dark:text-neutral-300 hover:text-red-500 dark:hover:text-red-400 rounded-full p-0.5 shadow-md opacity-0 group-hover:opacity-100 transition-opacity">
                                 <X className="w-2 h-2" />
                             </div>
@@ -1351,44 +1998,61 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
         <div className="h-14 border-b border-slate-200 dark:border-neutral-900 flex items-center px-4 md:px-6 justify-between bg-white dark:bg-neutral-950 shrink-0 transition-colors duration-300"> 
             
             <div className="flex items-center gap-2">
-                <Grid className="w-4 h-4 text-blue-500 dark:text-blue-400" />
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400 hidden sm:inline">Explorer Grid</span>
-                <div className="ml-1 md:ml-3 flex items-center bg-slate-100 dark:bg-neutral-900 rounded-lg shadow-inner">
-                    <ZoomOut onClick={handleZoomOut} className="w-6 h-6 p-1 text-slate-400 dark:text-neutral-500 hover:text-blue-500 dark:hover:text-blue-400 cursor-pointer transition-colors" />
-                    <span className="text-[10px] font-mono w-8 text-center text-slate-500 dark:text-neutral-400">{Math.round(gridZoom * 100)}%</span>
-                    <ZoomIn onClick={handleZoomIn} className="w-6 h-6 p-1 text-slate-400 dark:text-neutral-500 hover:text-blue-500 dark:hover:text-blue-400 cursor-pointer transition-colors" />
+                <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-neutral-900 rounded-lg mr-2 hidden sm:flex">
+                    <button onClick={() => setMatrixLOD('seamless')} className={`p-1.5 rounded transition-colors ${matrixLOD === 'seamless' ? 'bg-white dark:bg-neutral-800 shadow-sm text-blue-600 dark:text-blue-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-neutral-300'}`} title="Continuous Seamless Space"><CrosshairIcon className="w-4 h-4" /></button>
+                    <button onClick={() => setMatrixLOD('grid')} className={`p-1.5 rounded transition-colors ${matrixLOD === 'grid' ? 'bg-white dark:bg-neutral-800 shadow-sm text-blue-600 dark:text-blue-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-neutral-300'}`} title="Discrete Grid Space"><Grid3x3 className="w-4 h-4" /></button>
+                    <button onClick={() => setMatrixLOD('macro')} className={`p-1.5 rounded transition-colors ${matrixLOD === 'macro' ? 'bg-white dark:bg-neutral-800 shadow-sm text-blue-600 dark:text-blue-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-neutral-300'}`} title="Major Groups Space"><Blocks className="w-4 h-4" /></button>
+                </div>
+
+                <div className="ml-1 md:ml-1 flex items-center bg-slate-100 dark:bg-neutral-900 rounded-lg shadow-inner px-2 py-1 gap-2">
+                    <button onClick={() => setGridZoom(1)} className="text-[10px] font-black text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors" title="Reset Zoom">100%</button>
+                    <input 
+                        type="range" min="0.1" max="3" step="0.01" 
+                        value={gridZoom} 
+                        onChange={(e) => setGridZoom(parseFloat(e.target.value))} 
+                        className="w-16 md:w-24 h-1.5 bg-slate-300 dark:bg-neutral-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                    />
+                    <span className="text-[10px] font-mono w-8 text-right text-slate-500 dark:text-neutral-400">{Math.round(gridZoom * 100)}%</span>
                 </div>
             </div> 
 
-            <div className="flex items-center gap-2"> 
-                <RefreshCw onClick={() => setIsFlipped(!isFlipped)} className={`p-2 w-8 h-8 rounded hover:bg-slate-100 dark:hover:bg-neutral-900 text-slate-500 dark:text-neutral-400 cursor-pointer transition-colors ${isFlipped ? 'text-blue-600 dark:text-blue-400' : ''}`} /> 
-                <select value={activeView} onChange={(e) => setActiveView(e.target.value)} className="bg-slate-100 dark:bg-neutral-900 pl-4 pr-8 py-1.5 rounded-lg text-xs font-bold text-slate-700 dark:text-neutral-200 cursor-pointer appearance-none transition-colors border border-transparent dark:border-neutral-800 focus:outline-none focus:border-blue-500"> 
+            <div className="flex items-center gap-1 md:gap-2"> 
+                <ArrowLeftRight onClick={() => setFlipX(!flipX)} className={`p-2 w-8 h-8 rounded hover:bg-slate-100 dark:hover:bg-neutral-900 text-slate-500 dark:text-neutral-400 cursor-pointer transition-colors ${flipX ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : ''}`} title="Flip Horizontal" />
+                <ArrowUpDown onClick={() => setFlipY(!flipY)} className={`p-2 w-8 h-8 rounded hover:bg-slate-100 dark:hover:bg-neutral-900 text-slate-500 dark:text-neutral-400 cursor-pointer transition-colors ${flipY ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : ''}`} title="Flip Vertical" />
+                <RefreshCw onClick={() => setIsFlipped(!isFlipped)} className={`p-2 w-8 h-8 rounded hover:bg-slate-100 dark:hover:bg-neutral-900 text-slate-500 dark:text-neutral-400 cursor-pointer transition-colors ${isFlipped ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : ''}`} title="Transpose Axes" /> 
+                <select value={activeView} onChange={(e) => setActiveView(e.target.value)} className="bg-slate-100 dark:bg-neutral-900 pl-4 pr-8 py-1.5 rounded-lg text-xs font-bold text-slate-700 dark:text-neutral-200 cursor-pointer appearance-none transition-colors border border-transparent dark:border-neutral-800 focus:outline-none focus:border-blue-500 ml-1"> 
                     <option value="hue_pivot">HUE FIXED</option> 
                     <option value="chroma_pivot">CHROMA FIXED</option> 
                     <option value="light_pivot">LIGHT FIXED</option> 
                     <option value="noun">NOUN LIST</option> 
+                    <option value="adjective">ADJECTIVE LIST</option> 
                     <option value="major_groups">MAJOR GROUPS</option> 
+                    <option value="locked_cells">LOCKED COLORS</option> 
                 </select> 
             </div> 
         </div> 
         <div className="flex-1 overflow-hidden relative p-2 md:p-4"> 
-            {activeView === 'hue_pivot' && ( 
-            <MatrixTable zoom={gridZoom} yLabel={isFlipped ? "C" : "L"} xLabel={isFlipped ? "L" : "C"} yData={isFlipped ? chromaRangeData : lightRangeData} xData={isFlipped ? lightRangeData : chromaRangeData} activeIds={{r: isFlipped ? safeCIdx : safeLIdx, c: isFlipped ? safeLIdx : safeCIdx}} renderCell={renderCell} interactionSource={interactionSource} /> 
-            )} 
-            {activeView === 'chroma_pivot' && ( 
-            <MatrixTable zoom={gridZoom} yLabel={isFlipped ? "L" : "H"} xLabel={isFlipped ? "H" : "L"} yData={isFlipped ? lightRangeData : hueRangesData} xData={isFlipped ? hueRangesData : lightRangeData} activeIds={{r: isFlipped ? safeLIdx : hIdx, c: isFlipped ? hIdx : safeLIdx}} renderCell={renderCell} interactionSource={interactionSource} /> 
-            )} 
-            {activeView === 'light_pivot' && ( 
-            <MatrixTable zoom={gridZoom} yLabel={isFlipped ? "C" : "H"} xLabel={isFlipped ? "H" : "C"} yData={isFlipped ? chromaRangeData : hueRangesData} xData={isFlipped ? hueRangesData : chromaRangeData} activeIds={{r: isFlipped ? safeCIdx : hIdx, c: isFlipped ? hIdx : safeCIdx}} renderCell={renderCell} interactionSource={interactionSource} /> 
-            )} 
+            {(activeView === 'hue_pivot' || activeView === 'chroma_pivot' || activeView === 'light_pivot') && (
+                <MatrixTable zoom={gridZoom} setZoom={setGridZoom} yLabel={currentYLabel} xLabel={currentXLabel} yData={finalYData} xData={finalXData} activeIds={{r: currentActiveR, c: currentActiveC}} renderCell={renderCell} interactionSource={interactionSource} matrixLOD={matrixLOD} h={h} c={c} l={l} flipX={flipX} flipY={flipY} displayGamut={displayGamut} updateColor={updateColorWithHistory} isDark={isDark} />
+            )}
             {activeView === 'noun' && ( 
              <div className="h-full w-full overflow-auto rounded-xl border border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 shadow-sm transition-colors duration-300 custom-scroll"> 
                  <table className="w-full text-xs text-left table-fixed border-separate border-spacing-0"> 
                  <thead className="bg-white dark:bg-neutral-950 sticky top-0 z-20 shadow-sm border-b border-slate-200 dark:border-neutral-900"> 
                      <tr> 
                      <th className="p-3 font-bold text-slate-400 dark:text-neutral-500 w-16 text-center bg-white dark:bg-neutral-950 sticky left-0 z-30 border-b border-slate-200 dark:border-neutral-900">Hue</th> 
-                     <th className="p-3 font-bold text-slate-600 dark:text-neutral-300 bg-slate-50 dark:bg-neutral-950/50 border-b border-r border-slate-200 dark:border-neutral-900">Dark Shade (L&lt;50)</th>
-                     <th className="p-3 font-bold text-slate-600 dark:text-neutral-300 bg-slate-50 dark:bg-neutral-950/50 border-b border-slate-200 dark:border-neutral-900">Light Shade (L&ge;50)</th>
+                     <th className="p-3 font-bold text-slate-600 dark:text-neutral-300 bg-slate-50 dark:bg-neutral-950/50 border-b border-r border-slate-200 dark:border-neutral-900">
+                        <div className="flex flex-col">
+                            Shades (L&lt;50)
+                            <span className="font-normal opacity-70 text-[9px] font-mono mt-0.5">{(cellCounts && cellCounts.nounCounts && cellCounts.nounCounts[hIdx]) ? cellCounts.nounCounts[hIdx][0] : 0} in-gamut</span>
+                        </div>
+                     </th>
+                     <th className="p-3 font-bold text-slate-600 dark:text-neutral-300 bg-slate-50 dark:bg-neutral-950/50 border-b border-slate-200 dark:border-neutral-900">
+                        <div className="flex flex-col">
+                            Tints (L&ge;50)
+                            <span className="font-normal opacity-70 text-[9px] font-mono mt-0.5">{(cellCounts && cellCounts.nounCounts && cellCounts.nounCounts[hIdx]) ? cellCounts.nounCounts[hIdx][1] : 0} in-gamut</span>
+                        </div>
+                     </th>
                      </tr> 
                  </thead> 
                  <tbody> 
@@ -1396,15 +2060,35 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                      const displayHue = hueValues[idx]; 
                      const isHueActive = hIdx === idx;
                      const parts = parsedNouns[idx];
+                     
+                     const isNounDarkLocked = lockedCells.some(k => {
+                         const pts = k.split('_');
+                         const locL = parseInt(pts[1]);
+                         const locC = parseInt(pts[3]);
+                         const locH = parseInt(pts[5]);
+                         return locC !== 0 && locL !== 0 && locL !== 21 && locH === idx && locL < 11;
+                     });
+                     
+                     const isNounLightLocked = lockedCells.some(k => {
+                         const pts = k.split('_');
+                         const locL = parseInt(pts[1]);
+                         const locC = parseInt(pts[3]);
+                         const locH = parseInt(pts[5]);
+                         return locC !== 0 && locL !== 0 && locL !== 21 && locH === idx && locL >= 11;
+                     });
+                     
                      return (
                          <NounRow 
                              key={idx} idx={idx} 
                              displayHue={displayHue} isHueActive={isHueActive} 
                              activeColIdx={activeNounColIdx}
                              parts={parts} displayGamut={displayGamut} 
+                             isDarkLocked={isNounDarkLocked}
+                             isLightLocked={isNounLightLocked}
                              onHueClick={handleRowHueClick} 
                              updateColorWithHistory={updateColorWithHistory} 
                              updateNoun={updateNoun}
+                             counts={cellCounts?.nounCounts?.[idx]}
                          />
                      );
                  })} 
@@ -1412,20 +2096,66 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                  </table> 
              </div> 
             )} 
+            {activeView === 'adjective' && (
+             <div className="h-full w-full overflow-auto rounded-xl border border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 shadow-sm transition-colors duration-300 custom-scroll"> 
+                 <table className="w-full text-xs text-left table-fixed border-separate border-spacing-0"> 
+                 <thead className="bg-white dark:bg-neutral-950 sticky top-0 z-20 shadow-sm border-b border-slate-200 dark:border-neutral-900"> 
+                     <tr> 
+                     <th className="p-2 font-bold text-slate-400 dark:text-neutral-500 w-16 text-center bg-white dark:bg-neutral-950 sticky left-0 z-30 border-b border-r border-slate-200 dark:border-neutral-900">L \ C</th> 
+                     {chromaRanges.slice(1).map(c => (
+                         <th key={c.index} className="p-2 font-bold text-slate-600 dark:text-neutral-300 bg-slate-50 dark:bg-neutral-950/50 border-b border-r border-slate-200 dark:border-neutral-900 text-center min-w-[90px]">{c.label}</th>
+                     ))}
+                     </tr> 
+                 </thead> 
+                 <tbody> 
+                 {lightRanges.map((l, i) => ({...l, originalIndex: i})).slice(1, 21).reverse().map((lRange) => { 
+                     const lIdx = lRange.originalIndex;
+                     const isRowActive = safeLIdx === lIdx;
+                     return (
+                         <tr key={lIdx} className={`transition-all duration-200 ${isRowActive ? 'bg-blue-50/30 dark:bg-blue-900/10' : 'hover:bg-slate-50 dark:hover:bg-neutral-900/50'}`}> 
+                             <td className={`p-2 text-center font-mono opacity-80 bg-white dark:bg-neutral-950 sticky left-0 z-10 border-b border-r border-slate-100 dark:border-neutral-900 ${isRowActive ? '!bg-blue-50 dark:!bg-blue-900/40 font-bold text-blue-600 dark:text-blue-400' : 'text-slate-600 dark:text-neutral-400'}`}>L{lIdx}</td> 
+                             {chromaRanges.map((c, i) => ({...c, originalIndex: i})).slice(1).map(cRange => {
+                                 const cIdx = cRange.originalIndex;
+                                 const val = adjectiveMatrix[lIdx]?.[cIdx] || "";
+                                 const count = cellCounts?.adjCounts?.[lIdx]?.[cIdx];
+                                 const isCellActive = isRowActive && safeCIdx === cIdx;
+                                 const isLocked = lockedCells.some(k => k.split('_')[1] == lIdx && k.split('_')[3] == cIdx);
+                                 
+                                 return (
+                                     <td key={cIdx} onClick={() => updateColorWithHistory(lRange.mid, cRange.mid, h)} className={`p-0 relative h-12 border-b border-r border-slate-100 dark:border-neutral-900 cursor-pointer ${isCellActive ? 'ring-2 ring-inset ring-blue-500 dark:ring-blue-400 z-20 bg-blue-50/50 dark:bg-blue-900/20' : ''}`}>
+                                        <div className="flex flex-col items-center justify-center h-full px-1 py-1 gap-1 relative">
+                                            {isLocked && <Lock className="w-2 h-2 absolute top-1 right-1 text-slate-400" />}
+                                            <input type="text" disabled={isLocked} value={val} onChange={(e) => updateAdjective(lIdx, cIdx, e.target.value)} className={`w-full text-center bg-transparent border-none outline-none font-medium text-slate-700 dark:text-neutral-200 ${isLocked ? 'opacity-40 cursor-not-allowed' : ''}`} placeholder="-" />
+                                            {count !== undefined && <span className={`text-[8px] font-mono whitespace-nowrap px-1.5 py-0.5 rounded shadow-inner ${count > 0 ? 'text-slate-500 dark:text-neutral-400 bg-slate-100 dark:bg-neutral-900' : 'text-red-400 bg-red-50 dark:bg-red-900/20'}`}>
+                                                {count} <span className="opacity-60">in-gamut</span>
+                                            </span>}
+                                        </div>
+                                     </td>
+                                 )
+                             })}
+                         </tr>
+                     );
+                 })} 
+                 </tbody> 
+                 </table> 
+             </div> 
+            )}
             {activeView === 'major_groups' && ( 
              <div className="h-full w-full overflow-auto rounded-xl border border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 shadow-sm transition-colors duration-300 custom-scroll flex flex-col p-4 md:p-6 gap-6 md:gap-8"> 
                  <div>
                      <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-3">Extreme Values</h3>
-                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                         {['white', 'black', 'gray'].map(k => {
-                             const isExtActive = (k === 'white' && isWhiteActive) || (k === 'black' && isBlackActive) || (k === 'gray' && isGrayActive);
-                             const repL = k === 'white' ? 98 : (k === 'black' ? 2 : 50);
-                             const cellColor = getMappedCssColor(repL, 0, 0, displayGamut);
+                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                         {['white', 'black', 'lightGray', 'darkGray'].map(k => {
+                             const isExtActive = (k === 'white' && isWhiteActive) || (k === 'black' && isBlackActive) || (k === 'lightGray' && isLightGrayActive) || (k === 'darkGray' && isDarkGrayActive);
+                             const cellData = groupBackgrounds[k];
                              return (
                                  <div key={k} className="flex flex-col gap-1">
-                                     <label className="text-[9px] font-bold text-slate-500 capitalize pl-1">{k} {k==='white'?'(L > 95)':k==='black'?'(L < 5)':'(C < 10)'}</label>
-                                     <div className={`relative rounded-lg overflow-hidden border ${isExtActive ? 'border-blue-500 ring-2 ring-blue-500 shadow-md z-10' : 'border-slate-200 dark:border-neutral-800 shadow-sm'} transition-all duration-300`} style={{backgroundColor: cellColor}}>
-                                         <input type="text" value={extremeGroups[k]} onChange={e => setExtremeGroups(p => ({...p, [k]: e.target.value}))} className={`w-full bg-transparent p-2.5 text-xs font-bold focus:outline-none transition-colors ${repL < 50 ? 'text-white' : 'text-black'}`} style={{textShadow: repL < 50 ? '0 1px 3px rgba(0,0,0,0.8)' : 'none'}}/>
+                                     <label className="text-[9px] font-bold text-slate-500 capitalize pl-1 flex items-center justify-between">
+                                        <span>{k.replace(/([A-Z])/g, ' $1').trim()} {k === 'white' ? '(L > 95, C < 10)' : k === 'black' ? '(L < 10, C < 10)' : k === 'lightGray' ? '(50 ≤ L ≤ 95, C < 10)' : '(10 ≤ L < 50, C < 10)'}</span>
+                                        {cellCounts && cellCounts.groupCounts && cellCounts.groupCounts[k] !== undefined && <span className={`px-1.5 py-0.5 rounded text-[8px] font-mono ${cellCounts.groupCounts[k] > 0 ? 'bg-slate-200 dark:bg-neutral-800 text-slate-500 dark:text-neutral-400' : 'bg-red-100 text-red-500 dark:bg-red-900/30'}`}>{cellCounts.groupCounts[k]} in-gamut</span>}
+                                     </label>
+                                     <div className={`relative rounded-lg overflow-hidden border ${isExtActive ? 'border-blue-500 ring-2 ring-blue-500 shadow-md z-10' : 'border-slate-200 dark:border-neutral-800 shadow-sm'} transition-all duration-300`} style={{backgroundColor: cellData.bg}}>
+                                         <input type="text" value={extremeGroups[k]} onChange={e => setExtremeGroups(p => ({...p, [k]: e.target.value}))} className={`w-full bg-transparent p-2.5 text-xs font-bold focus:outline-none transition-colors ${cellData.l < 50 ? 'text-white' : 'text-black'}`} style={{textShadow: cellData.l < 50 ? '0 1px 3px rgba(0,0,0,0.8)' : 'none'}}/>
                                      </div>
                                  </div>
                              )
@@ -1440,15 +2170,15 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                              <thead className="bg-slate-50 dark:bg-neutral-900/50">
                                  <tr>
                                      <th className="p-3 font-bold text-slate-500 border-b border-r border-slate-200 dark:border-neutral-800 w-1/5 text-center bg-white dark:bg-neutral-950 sticky left-0 z-20">Hue Range</th>
-                                     <th className="p-3 font-bold text-slate-500 border-b border-r border-slate-200 dark:border-neutral-800"><div className="flex flex-col">Dark Muted<span className="font-normal opacity-70 text-[9px] font-mono mt-0.5">L&lt;50, C&lt;40</span></div></th>
-                                     <th className="p-3 font-bold text-slate-500 border-b border-r border-slate-200 dark:border-neutral-800"><div className="flex flex-col">Dark Vivid<span className="font-normal opacity-70 text-[9px] font-mono mt-0.5">L&lt;50, C&ge;40</span></div></th>
-                                     <th className="p-3 font-bold text-slate-500 border-b border-r border-slate-200 dark:border-neutral-800"><div className="flex flex-col">Light Muted<span className="font-normal opacity-70 text-[9px] font-mono mt-0.5">L&ge;50, C&lt;40</span></div></th>
-                                     <th className="p-3 font-bold text-slate-500 border-b border-slate-200 dark:border-neutral-800"><div className="flex flex-col">Light Vivid<span className="font-normal opacity-70 text-[9px] font-mono mt-0.5">L&ge;50, C&ge;40</span></div></th>
+                                     <th className="p-3 font-bold text-slate-500 border-b border-r border-slate-200 dark:border-neutral-800"><div className="flex flex-col items-start">Toned Shades<span className="font-normal opacity-70 text-[9px] font-mono mt-0.5">L&lt;50, C&lt;40</span></div></th>
+                                     <th className="p-3 font-bold text-slate-500 border-b border-r border-slate-200 dark:border-neutral-800"><div className="flex flex-col items-start">Vivid Shades<span className="font-normal opacity-70 text-[9px] font-mono mt-0.5">L&lt;50, C&ge;40</span></div></th>
+                                     <th className="p-3 font-bold text-slate-500 border-b border-r border-slate-200 dark:border-neutral-800"><div className="flex flex-col items-start">Vivid Tints<span className="font-normal opacity-70 text-[9px] font-mono mt-0.5">L&ge;50, C&ge;40</span></div></th>
+                                     <th className="p-3 font-bold text-slate-500 border-b border-slate-200 dark:border-neutral-800"><div className="flex flex-col items-start">Toned Tints<span className="font-normal opacity-70 text-[9px] font-mono mt-0.5">L&ge;50, C&lt;40</span></div></th>
                                  </tr>
                              </thead>
                              <tbody>
                                  {majorGroups.map((row, rIdx) => {
-                                     const isRowActive = activeMajorHueIdx === rIdx && !isWhiteActive && !isBlackActive && !isGrayActive;
+                                     const isRowActive = activeMajorHueIdx === rIdx && !isWhiteActive && !isBlackActive && !isLightGrayActive && !isDarkGrayActive;
                                      return (
                                          <tr key={rIdx} className={isRowActive ? 'bg-blue-50/10 dark:bg-blue-900/5' : ''} data-active={isRowActive}>
                                              <td className={`p-3 border-b border-r border-slate-100 dark:border-neutral-900 font-mono text-center text-[10px] sticky left-0 z-10 ${isRowActive ? 'font-bold text-blue-600 dark:text-blue-400 bg-white dark:bg-neutral-950' : 'text-slate-500 dark:text-neutral-500 bg-slate-50/50 dark:bg-neutral-900/30'}`}>
@@ -1456,22 +2186,23 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                                              </td>
                                              {[0,1,2,3].map(cIdx => {
                                                  const isCellActive = isRowActive && activeMajorQuadIdx === cIdx;
-                                                 const repL = cIdx < 2 ? 30 : 80;
-                                                 // Cap the chroma slightly for backgrounds so we don't naturally hit out-of-gamut ranges for pure primaries
-                                                 const repC = (cIdx % 2 === 0) ? 15 : 60;
-                                                 const repH = rIdx * 30;
-                                                 
-                                                 const cellColor = getMappedCssColor(repL, repC, repH, displayGamut);
+                                                 const cellData = groupBackgrounds.quads[rIdx][cIdx];
+                                                 const count = cellCounts && cellCounts.groupCounts && cellCounts.groupCounts.quads && cellCounts.groupCounts.quads[rIdx] ? cellCounts.groupCounts.quads[rIdx][cIdx] : 0;
                                                  
                                                  return (
-                                                     <td key={cIdx} className={`p-0 border-b border-slate-100 dark:border-neutral-900 ${cIdx < 3 ? 'border-r' : ''}`} style={{backgroundColor: cellColor}}>
-                                                         <input 
-                                                             type="text" 
-                                                             value={row[cIdx]} 
-                                                             onChange={(e) => updateMajorGroup(rIdx, cIdx, e.target.value)} 
-                                                             className={`w-full h-11 px-3 bg-transparent border-none outline-none font-medium transition-colors ${repL < 50 ? 'text-white' : 'text-black'} ${isCellActive ? 'ring-2 ring-inset ring-blue-500 bg-white/20 dark:bg-black/20 font-bold' : 'hover:bg-white/10 dark:hover:bg-black/10'}`}
-                                                             style={{textShadow: repL < 50 ? '0 1px 3px rgba(0,0,0,0.8)' : 'none'}}
-                                                         />
+                                                     <td key={cIdx} className={`p-0 border-b border-slate-100 dark:border-neutral-900 ${cIdx < 3 ? 'border-r' : ''}`} style={{backgroundColor: cellData.bg}}>
+                                                        <div className="relative w-full h-full flex flex-col justify-center">
+                                                             <input 
+                                                                 type="text" 
+                                                                 value={row[cIdx]} 
+                                                                 onChange={(e) => updateMajorGroup(rIdx, cIdx, e.target.value)} 
+                                                                 className={`w-full h-11 px-3 pb-3 pt-2 bg-transparent border-none outline-none font-medium transition-colors ${cellData.l < 50 ? 'text-white' : 'text-black'} ${isCellActive ? 'ring-2 ring-inset ring-blue-500 bg-white/20 dark:bg-black/20 font-bold' : 'hover:bg-white/10 dark:hover:bg-black/10'}`}
+                                                                 style={{textShadow: cellData.l < 50 ? '0 1px 3px rgba(0,0,0,0.8)' : 'none'}}
+                                                             />
+                                                             {count !== undefined && <span className={`absolute bottom-1 right-2 text-[8px] font-mono font-bold pointer-events-none ${count > 0 ? (cellData.l < 50 ? 'text-white opacity-60' : 'text-black opacity-60') : 'text-red-400 opacity-100 drop-shadow-md'}`}>
+                                                                 {count} in-gamut
+                                                             </span>}
+                                                         </div>
                                                      </td>
                                                  )
                                              })}
@@ -1484,6 +2215,61 @@ L01 (Darkest),Darkened,Blackened,Shadowed,Obscured,Masked,Cloaked,Shrouded,Toned
                  </div>
              </div> 
             )} 
+            {activeView === 'locked_cells' && (
+             <div className="h-full w-full overflow-auto rounded-xl border border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 shadow-sm transition-colors duration-300 custom-scroll flex flex-col p-4 md:p-6">
+                 <div className="flex justify-between items-center mb-4">
+                     <h3 className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-2"><Lock className="w-4 h-4"/> Locked Colors</h3>
+                     <span className="text-[10px] font-bold text-slate-500 bg-slate-100 dark:bg-neutral-900 px-3 py-1 rounded-full">{lockedList.length} Total</span>
+                 </div>
+                 {lockedList.length === 0 ? (
+                     <div className="flex-1 flex flex-col items-center justify-center text-slate-400 dark:text-neutral-600 space-y-3 opacity-60">
+                         <Unlock className="w-12 h-12" />
+                         <p className="text-sm font-medium">No locked colors currently.</p>
+                     </div>
+                 ) : (
+                     <div className="border border-slate-200 dark:border-neutral-800 rounded-xl overflow-hidden shadow-sm">
+                         <table className="w-full text-xs text-left table-auto border-separate border-spacing-0">
+                             <thead className="bg-slate-50 dark:bg-neutral-900/50">
+                                 <tr>
+                                     <th className="p-3 font-bold text-slate-500 border-b border-r border-slate-200 dark:border-neutral-800 w-16 text-center">Color</th>
+                                     <th className="p-3 font-bold text-slate-500 border-b border-r border-slate-200 dark:border-neutral-800">Coordinates</th>
+                                     <th className="p-3 font-bold text-slate-500 border-b border-r border-slate-200 dark:border-neutral-800 w-[25%]">Adjective</th>
+                                     <th className="p-3 font-bold text-slate-500 border-b border-slate-200 dark:border-neutral-800 w-[35%]">Noun</th>
+                                     <th className="p-3 font-bold text-slate-500 border-b border-slate-200 dark:border-neutral-800 w-16 text-center">Action</th>
+                                 </tr>
+                             </thead>
+                             <tbody>
+                                 {lockedList.map((item) => (
+                                     <tr key={item.key} className="hover:bg-slate-50/50 dark:hover:bg-neutral-900/30 transition-colors">
+                                         <td className="p-2 border-b border-r border-slate-100 dark:border-neutral-900 text-center">
+                                             <div className="w-8 h-8 rounded-md mx-auto shadow-inner border border-black/10 dark:border-white/10" style={{backgroundColor: item.color, backgroundImage: item.isOut ? 'repeating-linear-gradient(45deg, var(--hatch-dark) 0px, var(--hatch-dark) 4px, var(--hatch-light) 4px, var(--hatch-light) 8px)' : 'none'}}></div>
+                                         </td>
+                                         <td className="p-3 border-b border-r border-slate-100 dark:border-neutral-900 font-mono text-[10px] text-slate-500 dark:text-neutral-400">
+                                             <div className="flex gap-2 font-bold"><span className="w-6">L {Math.round(item.lVal)}</span> <span className="w-6">C {Math.round(item.cVal)}</span> <span className="w-6">H {Math.round(item.hVal)}</span></div>
+                                         </td>
+                                         <td className="p-3 border-b border-r border-slate-100 dark:border-neutral-900 font-bold text-slate-700 dark:text-neutral-200">
+                                             {item.adj || <span className="opacity-30">-</span>}
+                                         </td>
+                                         <td className="p-3 border-b border-r border-slate-100 dark:border-neutral-900 font-black text-slate-800 dark:text-neutral-100">
+                                             {item.noun}
+                                         </td>
+                                         <td className="p-2 border-b border-slate-100 dark:border-neutral-900 text-center">
+                                             <button 
+                                                 onClick={() => setLockedCells(prev => prev.filter(k => k !== item.key))}
+                                                 className="p-1.5 rounded-md hover:bg-red-100 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400 text-slate-400 transition-colors mx-auto flex items-center justify-center"
+                                                 title="Unlock"
+                                             >
+                                                 <Unlock className="w-4 h-4" />
+                                             </button>
+                                         </td>
+                                     </tr>
+                                 ))}
+                             </tbody>
+                         </table>
+                     </div>
+                 )}
+             </div>
+            )}
         </div> 
         </div> 
     </div> 
