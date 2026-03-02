@@ -1997,11 +1997,14 @@ L01,Blackhole,Final,Last,Terminal,Concluding,Closing,Ending,Ceasing,Finishing,Co
             const locL = parseInt(parts[1]);
             const locC = parseInt(parts[3]);
             const locH = parseInt(parts[5]);
-            if (locL === 0 || locL === 21 || locC === 0) return false;
+            
+            const cVal = chromaRanges[locC]?.mid ?? 0;
+            if (locL === 0 || locL === 21 || cVal <= 5) return false;
+            
             const locLightBand = locL < 11 ? 0 : 1;
             return locH === hIdx && locLightBand === currentLightBand;
         });
-    }, [lockedCells, safeLIdx, hIdx]);
+    }, [lockedCells, safeLIdx, hIdx, chromaRanges]);
 
     const isCurrentlyNeutral = useMemo(() => {
         const rowLIdx = getRangeIndex(l, lightRanges);
@@ -2921,7 +2924,8 @@ L01,Blackhole,Final,Last,Terminal,Concluding,Closing,Ending,Ceasing,Finishing,Co
                          const locL = parseInt(pts[1]);
                          const locC = parseInt(pts[3]);
                          const locH = parseInt(pts[5]);
-                         return locC !== 0 && locL !== 0 && locL !== 21 && locH === idx && locL < 11;
+                         const cVal = chromaRanges[locC]?.mid ?? 0;
+                         return cVal > 5 && locL !== 0 && locL !== 21 && locH === idx && locL < 11;
                      });
                      
                      const isNounLightLocked = lockedCells.some(k => {
@@ -2929,7 +2933,8 @@ L01,Blackhole,Final,Last,Terminal,Concluding,Closing,Ending,Ceasing,Finishing,Co
                          const locL = parseInt(pts[1]);
                          const locC = parseInt(pts[3]);
                          const locH = parseInt(pts[5]);
-                         return locC !== 0 && locL !== 0 && locL !== 21 && locH === idx && locL >= 11;
+                         const cVal = chromaRanges[locC]?.mid ?? 0;
+                         return cVal > 5 && locL !== 0 && locL !== 21 && locH === idx && locL >= 11;
                      });
                      
                      return (
