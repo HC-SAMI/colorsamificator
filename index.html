@@ -35,7 +35,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 
     <!-- Plotly -->
-    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style id="plotly.js-style-global"></style><style>.maplibregl-map{font:12px/20px Helvetica Neue,Arial,Helvetica,sans-serif;overflow:hidden;position:relative;-webkit-tap-highlight-color:rgb(0 0 0/0)}.maplibregl-canvas{left:0;position:absolute;top:0}.maplibregl-map:fullscreen{height:100%;width:100%}.maplibregl-ctrl-group button.maplibregl-ctrl-compass{touch-action:none}.maplibregl-canvas-container.maplibregl-interactive,.maplibregl-ctrl-group button.maplibregl-ctrl-compass{cursor:grab;-webkit-user-select:none;-moz-user-select:none;user-select:none}.maplibregl-canvas-container.maplibregl-interactive.maplibregl-track-pointer{cursor:pointer}.maplibregl-canvas-container.maplibregl-interactive:active,.maplibregl-ctrl-group button.maplibregl-ctrl-compass:active{cursor:grabbing}.maplibregl-canvas-container.maplibregl-touch-zoom-rotate,.maplibregl-canvas-container.maplibregl-touch-zoom-rotate .maplibregl-canvas{touch-action:pan-x pan-y}.maplibregl-canvas-container.maplibregl-touch-drag-pan,.maplibregl-canvas-container.maplibregl-touch-drag-pan .maplibregl-canvas{touch-action:pinch-zoom}.maplibregl-canvas-container.maplibregl-touch-zoom-rotate.maplibregl-touch-drag-pan,.maplibregl-canvas-container.maplibregl-touch-zoom-rotate.maplibregl-touch-drag-pan .maplibregl-canvas{touch-action:none}.maplibregl-canvas-container.maplibregl-touch-drag-pan.maplibregl-cooperative-gestures,.maplibregl-canvas-container.maplibregl-touch-drag-pan.maplibregl-cooperative-gestures .maplibregl-canvas{touch-action:pan-x pan-y}.maplibregl-ctrl-bottom-left,.maplibregl-ctrl-bottom-right,.maplibregl-ctrl-top-left,.maplibregl-ctrl-top-right{pointer-events:none;position:absolute;z-index:2}.maplibregl-ctrl-top-left{left:0;top:0}.maplibregl-ctrl-top-right{right:0;top:0}.maplibregl-ctrl-bottom-left{bottom:0;left:0}.maplibregl-ctrl-bottom-right{bottom:0;right:0}.maplibregl-ctrl{clear:both;pointer-events:auto;transform:translate(0)}.maplibregl-ctrl-top-left .maplibregl-ctrl{float:left;margin:10px 0 0 10px}.maplibregl-ctrl-top-right .maplibregl-ctrl{float:right;margin:10px 10px 0 0}.maplibregl-ctrl-bottom-left .maplibregl-ctrl{float:left;margin:0 0 10px 10px}.maplibregl-ctrl-bottom-right .maplibregl-ctrl{float:right;margin:0 10px 10px 0}.maplibregl-ctrl-group{background:#fff;border-radius:4px}.maplibregl-ctrl-group:not(:empty){box-shadow:0 0 0 2px rgba(0,0,0,.1)}@media (forced-colors:active){.maplibregl-ctrl-group:not(:empty){box-shadow:0 0 0 2px ButtonText}}.maplibregl-ctrl-group button{background-color:transparent;border:0;box-sizing:border-box;cursor:pointer;display:block;height:29px;outline:none;padding:0;width:29px}.maplibregl-ctrl-group button+button{border-top:1px solid #ddd}.maplibregl-ctrl button .maplibregl-ctrl-icon{background-position:50%;background-repeat:no-repeat;display:block;height:100%;width:100%}@media (forced-colors:active){.maplibregl-ctrl-icon{background-color:transparent}.maplibregl-ctrl-group button+button{border-top:1px solid ButtonText}}.maplibregl-ctrl button::-moz-focus-inner{border:0;padding:0}.maplibregl-ctrl-attrib-button:focus,.maplibregl-ctrl-group button:focus{box-shadow:0 0 2px 2px #0096ff}.maplibregl-ctrl button:disabled{cursor:not-allowed}.maplibregl-ctrl button:disabled .maplibregl-ctrl-icon{opacity:.25}.maplibregl-ctrl button:not(:disabled):hover{background-color:rgb(0 0 0/5%)}.maplibregl-ctrl-group button:focus:focus-visible{box-shadow:0 0 2px 2px #0096ff}.maplibregl-ctrl-group button:focus:not(:focus-visible){box-shadow:none}.maplibregl-ctrl-group button:focus:first-child{border-radius:4px 4px 0 0}.maplibregl-ctrl-group button:focus:last-child{border-radius:0 0 4px 4px}.maplibregl-ctrl-group button:focus:only-child{border-radius:inherit}.maplibregl-ctrl button.maplibregl-ctrl-zoom-out .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23333%27 viewBox=%270 0 29 29%27%3E%3Cpath d=%27M10 13c-.75 0-1.5.75-1.5 1.5S9.25 16 10 16h9c.75 0 1.5-.75 1.5-1.5S19.75 13 19 13z%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-zoom-in .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23333%27 viewBox=%270 0 29 29%27%3E%3Cpath d=%27M14.5 8.5c-.75 0-1.5.75-1.5 1.5v3h-3c-.75 0-1.5.75-1.5 1.5S9.25 16 10 16h3v3c0 .75.75 1.5 1.5 1.5S16 19.75 16 19v-3h3c.75 0 1.5-.75 1.5-1.5S19.75 13 19 13h-3v-3c0-.75-.75-1.5-1.5-1.5%27/%3E%3C/svg%3E")}@media (forced-colors:active){.maplibregl-ctrl button.maplibregl-ctrl-zoom-out .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23fff%27 viewBox=%270 0 29 29%27%3E%3Cpath d=%27M10 13c-.75 0-1.5.75-1.5 1.5S9.25 16 10 16h9c.75 0 1.5-.75 1.5-1.5S19.75 13 19 13z%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-zoom-in .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23fff%27 viewBox=%270 0 29 29%27%3E%3Cpath d=%27M14.5 8.5c-.75 0-1.5.75-1.5 1.5v3h-3c-.75 0-1.5.75-1.5 1.5S9.25 16 10 16h3v3c0 .75.75 1.5 1.5 1.5S16 19.75 16 19v-3h3c.75 0 1.5-.75 1.5-1.5S19.75 13 19 13h-3v-3c0-.75-.75-1.5-1.5-1.5%27/%3E%3C/svg%3E")}}@media (forced-colors:active) and (prefers-color-scheme:light){.maplibregl-ctrl button.maplibregl-ctrl-zoom-out .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 viewBox=%270 0 29 29%27%3E%3Cpath d=%27M10 13c-.75 0-1.5.75-1.5 1.5S9.25 16 10 16h9c.75 0 1.5-.75 1.5-1.5S19.75 13 19 13z%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-zoom-in .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 viewBox=%270 0 29 29%27%3E%3Cpath d=%27M14.5 8.5c-.75 0-1.5.75-1.5 1.5v3h-3c-.75 0-1.5.75-1.5 1.5S9.25 16 10 16h3v3c0 .75.75 1.5 1.5 1.5S16 19.75 16 19v-3h3c.75 0 1.5-.75 1.5-1.5S19.75 13 19 13h-3v-3c0-.75-.75-1.5-1.5-1.5%27/%3E%3C/svg%3E")}}.maplibregl-ctrl button.maplibregl-ctrl-fullscreen .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23333%27 viewBox=%270 0 29 29%27%3E%3Cpath d=%27M24 16v5.5c0 1.75-.75 2.5-2.5 2.5H16v-1l3-1.5-4-5.5 1-1 5.5 4 1.5-3zM6 16l1.5 3 5.5-4 1 1-4 5.5 3 1.5v1H7.5C5.75 24 5 23.25 5 21.5V16zm7-11v1l-3 1.5 4 5.5-1 1-5.5-4L6 13H5V7.5C5 5.75 5.75 5 7.5 5zm11 2.5c0-1.75-.75-2.5-2.5-2.5H16v1l3 1.5-4 5.5 1 1 5.5-4 1.5 3h1z%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-shrink .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 viewBox=%270 0 29 29%27%3E%3Cpath d=%27M18.5 16c-1.75 0-2.5.75-2.5 2.5V24h1l1.5-3 5.5 4 1-1-4-5.5 3-1.5v-1zM13 18.5c0-1.75-.75-2.5-2.5-2.5H5v1l3 1.5L4 24l1 1 5.5-4 1.5 3h1zm3-8c0 1.75.75 2.5 2.5 2.5H24v-1l-3-1.5L25 5l-1-1-5.5 4L17 5h-1zM10.5 13c1.75 0 2.5-.75 2.5-2.5V5h-1l-1.5 3L5 4 4 5l4 5.5L5 12v1z%27/%3E%3C/svg%3E")}@media (forced-colors:active){.maplibregl-ctrl button.maplibregl-ctrl-fullscreen .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23fff%27 viewBox=%270 0 29 29%27%3E%3Cpath d=%27M24 16v5.5c0 1.75-.75 2.5-2.5 2.5H16v-1l3-1.5-4-5.5 1-1 5.5 4 1.5-3zM6 16l1.5 3 5.5-4 1 1-4 5.5 3 1.5v1H7.5C5.75 24 5 23.25 5 21.5V16zm7-11v1l-3 1.5 4 5.5-1 1-5.5-4L6 13H5V7.5C5 5.75 5.75 5 7.5 5zm11 2.5c0-1.75-.75-2.5-2.5-2.5H16v1l3 1.5-4 5.5 1 1 5.5-4 1.5 3h1z%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-shrink .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23fff%27 viewBox=%270 0 29 29%27%3E%3Cpath d=%27M18.5 16c-1.75 0-2.5.75-2.5 2.5V24h1l1.5-3 5.5 4 1-1-4-5.5 3-1.5v-1zM13 18.5c0-1.75-.75-2.5-2.5-2.5H5v1l3 1.5L4 24l1 1 5.5-4 1.5 3h1zm3-8c0 1.75.75 2.5 2.5 2.5H24v-1l-3-1.5L25 5l-1-1-5.5 4L17 5h-1zM10.5 13c1.75 0 2.5-.75 2.5-2.5V5h-1l-1.5 3L5 4 4 5l4 5.5L5 12v1z%27/%3E%3C/svg%3E")}}@media (forced-colors:active) and (prefers-color-scheme:light){.maplibregl-ctrl button.maplibregl-ctrl-fullscreen .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 viewBox=%270 0 29 29%27%3E%3Cpath d=%27M24 16v5.5c0 1.75-.75 2.5-2.5 2.5H16v-1l3-1.5-4-5.5 1-1 5.5 4 1.5-3zM6 16l1.5 3 5.5-4 1 1-4 5.5 3 1.5v1H7.5C5.75 24 5 23.25 5 21.5V16zm7-11v1l-3 1.5 4 5.5-1 1-5.5-4L6 13H5V7.5C5 5.75 5.75 5 7.5 5zm11 2.5c0-1.75-.75-2.5-2.5-2.5H16v1l3 1.5-4 5.5 1 1 5.5-4 1.5 3h1z%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-shrink .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 viewBox=%270 0 29 29%27%3E%3Cpath d=%27M18.5 16c-1.75 0-2.5.75-2.5 2.5V24h1l1.5-3 5.5 4 1-1-4-5.5 3-1.5v-1zM13 18.5c0-1.75-.75-2.5-2.5-2.5H5v1l3 1.5L4 24l1 1 5.5-4 1.5 3h1zm3-8c0 1.75.75 2.5 2.5 2.5H24v-1l-3-1.5L25 5l-1-1-5.5 4L17 5h-1zM10.5 13c1.75 0 2.5-.75 2.5-2.5V5h-1l-1.5 3L5 4 4 5l4 5.5L5 12v1z%27/%3E%3C/svg%3E")}}.maplibregl-ctrl button.maplibregl-ctrl-compass .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23333%27 viewBox=%270 0 29 29%27%3E%3Cpath d=%27m10.5 14 4-8 4 8z%27/%3E%3Cpath fill=%27%23ccc%27 d=%27m10.5 16 4 8 4-8z%27/%3E%3C/svg%3E")}@media (forced-colors:active){.maplibregl-ctrl button.maplibregl-ctrl-compass .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23fff%27 viewBox=%270 0 29 29%27%3E%3Cpath d=%27m10.5 14 4-8 4 8z%27/%3E%3Cpath fill=%27%23ccc%27 d=%27m10.5 16 4 8 4-8z%27/%3E%3C/svg%3E")}}@media (forced-colors:active) and (prefers-color-scheme:light){.maplibregl-ctrl button.maplibregl-ctrl-compass .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 viewBox=%270 0 29 29%27%3E%3Cpath d=%27m10.5 14 4-8 4 8z%27/%3E%3Cpath fill=%27%23ccc%27 d=%27m10.5 16 4 8 4-8z%27/%3E%3C/svg%3E")}}.maplibregl-ctrl button.maplibregl-ctrl-terrain .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2722%27 height=%2722%27 fill=%27%23333%27 viewBox=%270 0 22 22%27%3E%3Cpath d=%27m1.754 13.406 4.453-4.851 3.09 3.09 3.281 3.277.969-.969-3.309-3.312 3.844-4.121 6.148 6.886h1.082v-.855l-7.207-8.07-4.84 5.187L6.169 6.57l-5.48 5.965v.871ZM.688 16.844h20.625v1.375H.688Zm0 0%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-terrain-enabled .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2722%27 height=%2722%27 fill=%27%2333b5e5%27 viewBox=%270 0 22 22%27%3E%3Cpath d=%27m1.754 13.406 4.453-4.851 3.09 3.09 3.281 3.277.969-.969-3.309-3.312 3.844-4.121 6.148 6.886h1.082v-.855l-7.207-8.07-4.84 5.187L6.169 6.57l-5.48 5.965v.871ZM.688 16.844h20.625v1.375H.688Zm0 0%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-geolocate .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23333%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M10 4C9 4 9 5 9 5v.1A5 5 0 0 0 5.1 9H5s-1 0-1 1 1 1 1 1h.1A5 5 0 0 0 9 14.9v.1s0 1 1 1 1-1 1-1v-.1a5 5 0 0 0 3.9-3.9h.1s1 0 1-1-1-1-1-1h-.1A5 5 0 0 0 11 5.1V5s0-1-1-1m0 2.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 1 1 0-7%27/%3E%3Ccircle cx=%2710%27 cy=%2710%27 r=%272%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-geolocate:disabled .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23aaa%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M10 4C9 4 9 5 9 5v.1A5 5 0 0 0 5.1 9H5s-1 0-1 1 1 1 1 1h.1A5 5 0 0 0 9 14.9v.1s0 1 1 1 1-1 1-1v-.1a5 5 0 0 0 3.9-3.9h.1s1 0 1-1-1-1-1-1h-.1A5 5 0 0 0 11 5.1V5s0-1-1-1m0 2.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 1 1 0-7%27/%3E%3Ccircle cx=%2710%27 cy=%2710%27 r=%272%27/%3E%3Cpath fill=%27red%27 d=%27m14 5 1 1-9 9-1-1z%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-geolocate.maplibregl-ctrl-geolocate-active .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%2333b5e5%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M10 4C9 4 9 5 9 5v.1A5 5 0 0 0 5.1 9H5s-1 0-1 1 1 1 1 1h.1A5 5 0 0 0 9 14.9v.1s0 1 1 1 1-1 1-1v-.1a5 5 0 0 0 3.9-3.9h.1s1 0 1-1-1-1-1-1h-.1A5 5 0 0 0 11 5.1V5s0-1-1-1m0 2.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 1 1 0-7%27/%3E%3Ccircle cx=%2710%27 cy=%2710%27 r=%272%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-geolocate.maplibregl-ctrl-geolocate-active-error .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23e58978%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M10 4C9 4 9 5 9 5v.1A5 5 0 0 0 5.1 9H5s-1 0-1 1 1 1 1 1h.1A5 5 0 0 0 9 14.9v.1s0 1 1 1 1-1 1-1v-.1a5 5 0 0 0 3.9-3.9h.1s1 0 1-1-1-1-1-1h-.1A5 5 0 0 0 11 5.1V5s0-1-1-1m0 2.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 1 1 0-7%27/%3E%3Ccircle cx=%2710%27 cy=%2710%27 r=%272%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-geolocate.maplibregl-ctrl-geolocate-background .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%2333b5e5%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M10 4C9 4 9 5 9 5v.1A5 5 0 0 0 5.1 9H5s-1 0-1 1 1 1 1 1h.1A5 5 0 0 0 9 14.9v.1s0 1 1 1 1-1 1-1v-.1a5 5 0 0 0 3.9-3.9h.1s1 0 1-1-1-1-1-1h-.1A5 5 0 0 0 11 5.1V5s0-1-1-1m0 2.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 1 1 0-7%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-geolocate.maplibregl-ctrl-geolocate-background-error .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23e54e33%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M10 4C9 4 9 5 9 5v.1A5 5 0 0 0 5.1 9H5s-1 0-1 1 1 1 1 1h.1A5 5 0 0 0 9 14.9v.1s0 1 1 1 1-1 1-1v-.1a5 5 0 0 0 3.9-3.9h.1s1 0 1-1-1-1-1-1h-.1A5 5 0 0 0 11 5.1V5s0-1-1-1m0 2.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 1 1 0-7%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-geolocate.maplibregl-ctrl-geolocate-waiting .maplibregl-ctrl-icon{animation:maplibregl-spin 2s linear infinite}@media (forced-colors:active){.maplibregl-ctrl button.maplibregl-ctrl-geolocate .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23fff%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M10 4C9 4 9 5 9 5v.1A5 5 0 0 0 5.1 9H5s-1 0-1 1 1 1 1 1h.1A5 5 0 0 0 9 14.9v.1s0 1 1 1 1-1 1-1v-.1a5 5 0 0 0 3.9-3.9h.1s1 0 1-1-1-1-1-1h-.1A5 5 0 0 0 11 5.1V5s0-1-1-1m0 2.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 1 1 0-7%27/%3E%3Ccircle cx=%2710%27 cy=%2710%27 r=%272%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-geolocate:disabled .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23999%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M10 4C9 4 9 5 9 5v.1A5 5 0 0 0 5.1 9H5s-1 0-1 1 1 1 1 1h.1A5 5 0 0 0 9 14.9v.1s0 1 1 1 1-1 1-1v-.1a5 5 0 0 0 3.9-3.9h.1s1 0 1-1-1-1-1-1h-.1A5 5 0 0 0 11 5.1V5s0-1-1-1m0 2.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 1 1 0-7%27/%3E%3Ccircle cx=%2710%27 cy=%2710%27 r=%272%27/%3E%3Cpath fill=%27red%27 d=%27m14 5 1 1-9 9-1-1z%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-geolocate.maplibregl-ctrl-geolocate-active .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%2333b5e5%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M10 4C9 4 9 5 9 5v.1A5 5 0 0 0 5.1 9H5s-1 0-1 1 1 1 1 1h.1A5 5 0 0 0 9 14.9v.1s0 1 1 1 1-1 1-1v-.1a5 5 0 0 0 3.9-3.9h.1s1 0 1-1-1-1-1-1h-.1A5 5 0 0 0 11 5.1V5s0-1-1-1m0 2.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 1 1 0-7%27/%3E%3Ccircle cx=%2710%27 cy=%2710%27 r=%272%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-geolocate.maplibregl-ctrl-geolocate-active-error .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23e58978%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M10 4C9 4 9 5 9 5v.1A5 5 0 0 0 5.1 9H5s-1 0-1 1 1 1 1 1h.1A5 5 0 0 0 9 14.9v.1s0 1 1 1 1-1 1-1v-.1a5 5 0 0 0 3.9-3.9h.1s1 0 1-1-1-1-1-1h-.1A5 5 0 0 0 11 5.1V5s0-1-1-1m0 2.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 1 1 0-7%27/%3E%3Ccircle cx=%2710%27 cy=%2710%27 r=%272%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-geolocate.maplibregl-ctrl-geolocate-background .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%2333b5e5%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M10 4C9 4 9 5 9 5v.1A5 5 0 0 0 5.1 9H5s-1 0-1 1 1 1 1 1h.1A5 5 0 0 0 9 14.9v.1s0 1 1 1 1-1 1-1v-.1a5 5 0 0 0 3.9-3.9h.1s1 0 1-1-1-1-1-1h-.1A5 5 0 0 0 11 5.1V5s0-1-1-1m0 2.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 1 1 0-7%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-geolocate.maplibregl-ctrl-geolocate-background-error .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23e54e33%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M10 4C9 4 9 5 9 5v.1A5 5 0 0 0 5.1 9H5s-1 0-1 1 1 1 1 1h.1A5 5 0 0 0 9 14.9v.1s0 1 1 1 1-1 1-1v-.1a5 5 0 0 0 3.9-3.9h.1s1 0 1-1-1-1-1-1h-.1A5 5 0 0 0 11 5.1V5s0-1-1-1m0 2.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 1 1 0-7%27/%3E%3C/svg%3E")}}@media (forced-colors:active) and (prefers-color-scheme:light){.maplibregl-ctrl button.maplibregl-ctrl-geolocate .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M10 4C9 4 9 5 9 5v.1A5 5 0 0 0 5.1 9H5s-1 0-1 1 1 1 1 1h.1A5 5 0 0 0 9 14.9v.1s0 1 1 1 1-1 1-1v-.1a5 5 0 0 0 3.9-3.9h.1s1 0 1-1-1-1-1-1h-.1A5 5 0 0 0 11 5.1V5s0-1-1-1m0 2.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 1 1 0-7%27/%3E%3Ccircle cx=%2710%27 cy=%2710%27 r=%272%27/%3E%3C/svg%3E")}.maplibregl-ctrl button.maplibregl-ctrl-geolocate:disabled .maplibregl-ctrl-icon{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2729%27 height=%2729%27 fill=%27%23666%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M10 4C9 4 9 5 9 5v.1A5 5 0 0 0 5.1 9H5s-1 0-1 1 1 1 1 1h.1A5 5 0 0 0 9 14.9v.1s0 1 1 1 1-1 1-1v-.1a5 5 0 0 0 3.9-3.9h.1s1 0 1-1-1-1-1-1h-.1A5 5 0 0 0 11 5.1V5s0-1-1-1m0 2.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 1 1 0-7%27/%3E%3Ccircle cx=%2710%27 cy=%2710%27 r=%272%27/%3E%3Cpath fill=%27red%27 d=%27m14 5 1 1-9 9-1-1z%27/%3E%3C/svg%3E")}}@keyframes maplibregl-spin{0%{transform:rotate(0deg)}to{transform:rotate(1turn)}}a.maplibregl-ctrl-logo{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2788%27 height=%2723%27 fill=%27none%27%3E%3Cpath fill=%27%23000%27 fill-opacity=%27.4%27 fill-rule=%27evenodd%27 d=%27M17.408 16.796h-1.827l2.501-12.095h.198l3.324 6.533.988 2.19.988-2.19 3.258-6.533h.181l2.6 12.095h-1.81l-1.218-5.644-.362-1.71-.658 1.71-2.929 5.644h-.098l-2.914-5.644-.757-1.71-.345 1.71zm1.958-3.42-.726 3.663a1.255 1.255 0 0 1-1.232 1.011h-1.827a1.255 1.255 0 0 1-1.229-1.509l2.501-12.095a1.255 1.255 0 0 1 1.23-1.001h.197a1.25 1.25 0 0 1 1.12.685l3.19 6.273 3.125-6.263a1.25 1.25 0 0 1 1.123-.695h.181a1.255 1.255 0 0 1 1.227.991l1.443 6.71a5 5 0 0 1 .314-.787l.009-.016a4.6 4.6 0 0 1 1.777-1.887c.782-.46 1.668-.667 2.611-.667a4.6 4.6 0 0 1 1.7.32l.306.134c.21-.16.474-.256.759-.256h1.694a1.255 1.255 0 0 1 1.212.925 1.255 1.255 0 0 1 1.212-.925h1.711c.284 0 .545.094.755.252.613-.3 1.312-.45 2.075-.45 1.356 0 2.557.445 3.482 1.4q.47.48.763 1.064V4.701a1.255 1.255 0 0 1 1.255-1.255h1.86A1.255 1.255 0 0 1 54.44 4.7v9.194h2.217c.19 0 .37.043.532.118v-4.77c0-.356.147-.678.385-.906a2.42 2.42 0 0 1-.682-1.71c0-.665.267-1.253.735-1.7a2.45 2.45 0 0 1 1.722-.674 2.43 2.43 0 0 1 1.705.675q.318.302.504.683V4.7a1.255 1.255 0 0 1 1.255-1.255h1.744A1.255 1.255 0 0 1 65.812 4.7v3.335a4.8 4.8 0 0 1 1.526-.246c.938 0 1.817.214 2.59.69a4.47 4.47 0 0 1 1.67 1.743v-.98a1.255 1.255 0 0 1 1.256-1.256h1.777c.233 0 .451.064.639.174a3.4 3.4 0 0 1 1.567-.372c.346 0 .861.02 1.285.232a1.25 1.25 0 0 1 .689 1.004 4.7 4.7 0 0 1 .853-.588c.795-.44 1.675-.647 2.61-.647 1.385 0 2.65.39 3.525 1.396.836.938 1.168 2.173 1.168 3.528q-.001.515-.056 1.051a1.255 1.255 0 0 1-.947 1.09l.408.952a1.255 1.255 0 0 1-.477 1.552c-.418.268-.92.463-1.458.612-.613.171-1.304.244-2.049.244-1.06 0-2.043-.207-2.886-.698l-.015-.008c-.798-.48-1.419-1.135-1.818-1.963l-.004-.008a5.8 5.8 0 0 1-.548-2.512q0-.429.053-.843a1.3 1.3 0 0 1-.333-.086l-.166-.004c-.223 0-.426.062-.643.228-.03.024-.142.139-.142.59v3.883a1.255 1.255 0 0 1-1.256 1.256h-1.777a1.255 1.255 0 0 1-1.256-1.256V15.69l-.032.057a4.8 4.8 0 0 1-1.86 1.833 5.04 5.04 0 0 1-2.484.634 4.5 4.5 0 0 1-1.935-.424 1.25 1.25 0 0 1-.764.258h-1.71a1.255 1.255 0 0 1-1.256-1.255V7.687a2.4 2.4 0 0 1-.428.625c.253.23.412.561.412.93v7.553a1.255 1.255 0 0 1-1.256 1.255h-1.843a1.25 1.25 0 0 1-.894-.373c-.228.23-.544.373-.894.373H51.32a1.255 1.255 0 0 1-1.256-1.255v-1.251l-.061.117a4.7 4.7 0 0 1-1.782 1.884 4.77 4.77 0 0 1-2.485.67 5.6 5.6 0 0 1-1.485-.188l.009 2.764a1.255 1.255 0 0 1-1.255 1.259h-1.729a1.255 1.255 0 0 1-1.255-1.255v-3.537a1.255 1.255 0 0 1-1.167.793h-1.679a1.25 1.25 0 0 1-.77-.263 4.5 4.5 0 0 1-1.945.429c-.885 0-1.724-.21-2.495-.632l-.017-.01a5 5 0 0 1-1.081-.836 1.255 1.255 0 0 1-1.254 1.312h-1.81a1.255 1.255 0 0 1-1.228-.99l-.782-3.625-2.044 3.939a1.25 1.25 0 0 1-1.115.676h-.098a1.25 1.25 0 0 1-1.116-.68l-2.061-3.994zM35.92 16.63l.207-.114.223-.15q.493-.356.735-.785l.061-.118.033 1.332h1.678V9.242h-1.694l-.033 1.267q-.133-.329-.526-.658l-.032-.028a3.2 3.2 0 0 0-.668-.428l-.27-.12a3.3 3.3 0 0 0-1.235-.23q-1.136-.001-1.974.493a3.36 3.36 0 0 0-1.3 1.382q-.445.89-.444 2.074 0 1.2.51 2.107a3.8 3.8 0 0 0 1.382 1.381 3.9 3.9 0 0 0 1.893.477q.795 0 1.455-.33zm-2.789-5.38q-.576.675-.575 1.762 0 1.102.559 1.794.576.675 1.645.675a2.25 2.25 0 0 0 .934-.19 2.2 2.2 0 0 0 .468-.29l.178-.161a2.2 2.2 0 0 0 .397-.561q.244-.5.244-1.15v-.115q0-.708-.296-1.267l-.043-.077a2.2 2.2 0 0 0-.633-.709l-.13-.086-.047-.028a2.1 2.1 0 0 0-1.073-.285q-1.052 0-1.629.692zm2.316 2.706c.163-.17.28-.407.28-.83v-.114c0-.292-.06-.508-.15-.68a.96.96 0 0 0-.353-.389.85.85 0 0 0-.464-.127c-.4 0-.56.114-.664.239l-.01.012c-.148.174-.275.45-.275.945 0 .506.122.801.27.99.097.11.266.224.68.224.303 0 .504-.09.687-.269zm7.545 1.705a2.6 2.6 0 0 0 .331.423q.319.33.755.548l.173.074q.65.255 1.49.255 1.02 0 1.844-.493a3.45 3.45 0 0 0 1.316-1.4q.493-.904.493-2.089 0-1.909-.988-2.913-.988-1.02-2.584-1.02-.898 0-1.575.347a3 3 0 0 0-.415.262l-.199.166a3.4 3.4 0 0 0-.64.82V9.242h-1.712v11.553h1.729l-.017-5.134zm.53-1.138q.206.29.48.5l.155.11.053.034q.51.296 1.119.297 1.07 0 1.645-.675.577-.69.576-1.762 0-1.119-.576-1.777-.558-.675-1.645-.675-.435 0-.835.16a2 2 0 0 0-.284.136 2 2 0 0 0-.363.254 2.2 2.2 0 0 0-.46.569l-.082.162a2.6 2.6 0 0 0-.213 1.072v.115q0 .707.296 1.267l.135.211zm.964-.818a1.1 1.1 0 0 0 .367.385.94.94 0 0 0 .476.118c.423 0 .59-.117.687-.23.159-.194.28-.478.28-.95 0-.53-.133-.8-.266-.952l-.021-.025c-.078-.094-.231-.221-.68-.221a1 1 0 0 0-.503.135l-.012.007a.86.86 0 0 0-.335.343c-.073.133-.132.324-.132.614v.115a1.4 1.4 0 0 0 .14.66zm15.7-6.222q.347-.346.346-.856a1.05 1.05 0 0 0-.345-.79 1.18 1.18 0 0 0-.84-.329q-.51 0-.855.33a1.05 1.05 0 0 0-.346.79q0 .51.346.855.345.346.856.346.51 0 .839-.346zm4.337 9.314.033-1.332q.191.403.59.747l.098.081a4 4 0 0 0 .316.224l.223.122a3.2 3.2 0 0 0 1.44.322 3.8 3.8 0 0 0 1.875-.477 3.5 3.5 0 0 0 1.382-1.366q.527-.89.526-2.09 0-1.184-.444-2.073a3.24 3.24 0 0 0-1.283-1.399q-.823-.51-1.942-.51a3.5 3.5 0 0 0-1.527.344l-.086.043-.165.09a3 3 0 0 0-.33.214q-.432.315-.656.707a2 2 0 0 0-.099.198l.082-1.283V4.701h-1.744v12.095zm.473-2.509a2.5 2.5 0 0 0 .566.7q.117.098.245.18l.144.08a2.1 2.1 0 0 0 .975.232q1.07 0 1.645-.675.576-.69.576-1.778 0-1.102-.576-1.777-.56-.691-1.645-.692a2.2 2.2 0 0 0-1.015.235q-.22.113-.415.282l-.15.142a2.1 2.1 0 0 0-.42.594q-.223.479-.223 1.1v.115q0 .705.293 1.26zm2.616-.293c.157-.191.28-.479.28-.967 0-.51-.13-.79-.276-.961l-.021-.026c-.082-.1-.232-.225-.67-.225a.87.87 0 0 0-.681.279l-.012.011c-.154.155-.274.38-.274.807v.115c0 .285.057.499.144.669a1.1 1.1 0 0 0 .367.405c.137.082.28.123.455.123.423 0 .59-.118.686-.23zm8.266-3.013q.345-.13.724-.14l.069-.002q.493 0 .642.099l.247-1.794q-.196-.099-.717-.099a2.3 2.3 0 0 0-.545.063 2 2 0 0 0-.411.148 2.2 2.2 0 0 0-.4.249 2.5 2.5 0 0 0-.485.499 2.7 2.7 0 0 0-.32.581l-.05.137v-1.48h-1.778v7.553h1.777v-3.884q0-.546.159-.943a1.5 1.5 0 0 1 .466-.636 2.5 2.5 0 0 1 .399-.253 2 2 0 0 1 .224-.099zm9.784 2.656.05-.922q0-1.743-.856-2.698-.838-.97-2.584-.97-1.119-.001-2.007.493a3.46 3.46 0 0 0-1.4 1.382q-.493.906-.493 2.106 0 1.07.428 1.975.428.89 1.332 1.432.906.526 2.255.526.973 0 1.668-.185l.044-.012.135-.04q.613-.184.984-.421l-.542-1.267q-.3.162-.642.274l-.297.087q-.51.131-1.3.131-.954 0-1.497-.444a1.6 1.6 0 0 1-.192-.193q-.366-.44-.512-1.234l-.004-.021zm-5.427-1.256-.003.022h3.752v-.138q-.011-.727-.288-1.118a1 1 0 0 0-.156-.176q-.46-.428-1.316-.428-.986 0-1.494.604-.379.45-.494 1.234zm-27.053 2.77V4.7h-1.86v12.095h5.333V15.15zm7.103-5.908v7.553h-1.843V9.242h1.843z%27/%3E%3Cpath fill=%27%23fff%27 d=%27m19.63 11.151-.757-1.71-.345 1.71-1.12 5.644h-1.827L18.083 4.7h.197l3.325 6.533.988 2.19.988-2.19L26.839 4.7h.181l2.6 12.095h-1.81l-1.218-5.644-.362-1.71-.658 1.71-2.93 5.644h-.098l-2.913-5.644zm14.836 5.81q-1.02 0-1.893-.478a3.8 3.8 0 0 1-1.381-1.382q-.51-.906-.51-2.106 0-1.185.444-2.074a3.36 3.36 0 0 1 1.3-1.382q.839-.494 1.974-.494a3.3 3.3 0 0 1 1.234.231 3.3 3.3 0 0 1 .97.575q.396.33.527.659l.033-1.267h1.694v7.553H37.18l-.033-1.332q-.279.593-1.02 1.053a3.17 3.17 0 0 1-1.662.444zm.296-1.482q.938 0 1.58-.642.642-.66.642-1.711v-.115q0-.708-.296-1.267a2.2 2.2 0 0 0-.807-.872 2.1 2.1 0 0 0-1.119-.313q-1.053 0-1.629.692-.575.675-.575 1.76 0 1.103.559 1.795.577.675 1.645.675zm6.521-6.237h1.711v1.4q.906-1.597 2.83-1.597 1.596 0 2.584 1.02.988 1.005.988 2.914 0 1.185-.493 2.09a3.46 3.46 0 0 1-1.316 1.399 3.5 3.5 0 0 1-1.844.493q-.954 0-1.662-.329a2.67 2.67 0 0 1-1.086-.97l.017 5.134h-1.728zm4.048 6.22q1.07 0 1.645-.674.577-.69.576-1.762 0-1.119-.576-1.777-.558-.675-1.645-.675-.592 0-1.12.296-.51.28-.822.823-.296.527-.296 1.234v.115q0 .708.296 1.267.313.543.823.855.51.296 1.119.297z%27/%3E%3Cpath fill=%27%23e1e3e9%27 d=%27M51.325 4.7h1.86v10.45h3.473v1.646h-5.333zm7.12 4.542h1.843v7.553h-1.843zm.905-1.415a1.16 1.16 0 0 1-.856-.346 1.17 1.17 0 0 1-.346-.856 1.05 1.05 0 0 1 .346-.79q.346-.329.856-.329.494 0 .839.33a1.05 1.05 0 0 1 .345.79 1.16 1.16 0 0 1-.345.855q-.33.346-.84.346zm7.875 9.133a3.17 3.17 0 0 1-1.662-.444q-.723-.46-1.004-1.053l-.033 1.332h-1.71V4.701h1.743v4.657l-.082 1.283q.279-.658 1.086-1.119a3.5 3.5 0 0 1 1.778-.477q1.119 0 1.942.51a3.24 3.24 0 0 1 1.283 1.4q.445.888.444 2.072 0 1.201-.526 2.09a3.5 3.5 0 0 1-1.382 1.366 3.8 3.8 0 0 1-1.876.477zm-.296-1.481q1.069 0 1.645-.675.577-.69.577-1.778 0-1.102-.577-1.776-.56-.691-1.645-.692a2.12 2.12 0 0 0-1.58.659q-.642.641-.642 1.694v.115q0 .71.296 1.267a2.4 2.4 0 0 0 .807.872 2.1 2.1 0 0 0 1.119.313zm5.927-6.237h1.777v1.481q.263-.757.856-1.217a2.14 2.14 0 0 1 1.349-.46q.527 0 .724.098l-.247 1.794q-.149-.099-.642-.099-.774 0-1.416.494-.626.493-.626 1.58v3.883h-1.777V9.242zm9.534 7.718q-1.35 0-2.255-.526-.904-.543-1.332-1.432a4.6 4.6 0 0 1-.428-1.975q0-1.2.493-2.106a3.46 3.46 0 0 1 1.4-1.382q.889-.495 2.007-.494 1.744 0 2.584.97.855.956.856 2.7 0 .444-.05.92h-5.43q.18 1.005.708 1.45.542.443 1.497.443.79 0 1.3-.131a4 4 0 0 0 .938-.362l.542 1.267q-.411.263-1.119.46-.708.198-1.711.197zm1.596-4.558q.016-1.02-.444-1.432-.46-.428-1.316-.428-1.728 0-1.991 1.86z%27/%3E%3Cpath d=%27M5.074 15.948a.484.657 0 0 0-.486.659v1.84a.484.657 0 0 0 .486.659h4.101a.484.657 0 0 0 .486-.659v-1.84a.484.657 0 0 0-.486-.659zm3.56 1.16H5.617v.838h3.017z%27 style=%27fill:%23fff;fill-rule:evenodd;stroke-width:1.03600001%27/%3E%3Cg style=%27stroke-width:1.12603545%27%3E%3Cpath d=%27M-9.408-1.416c-3.833-.025-7.056 2.912-7.08 6.615-.02 3.08 1.653 4.832 3.107 6.268.903.892 1.721 1.74 2.32 2.902l-.525-.004c-.543-.003-.992.304-1.24.639a1.87 1.87 0 0 0-.362 1.121l-.011 1.877c-.003.402.104.787.347 1.125.244.338.688.653 1.23.656l4.142.028c.542.003.99-.306 1.238-.641a1.87 1.87 0 0 0 .363-1.121l.012-1.875a1.87 1.87 0 0 0-.348-1.127c-.243-.338-.688-.653-1.23-.656l-.518-.004c.597-1.145 1.425-1.983 2.348-2.87 1.473-1.414 3.18-3.149 3.2-6.226-.016-3.59-2.923-6.684-6.993-6.707m-.006 1.1v.002c3.274.02 5.92 2.532 5.9 5.6-.017 2.706-1.39 4.026-2.863 5.44-1.034.994-2.118 2.033-2.814 3.633-.018.041-.052.055-.075.065q-.013.004-.02.01a.34.34 0 0 1-.226.084.34.34 0 0 1-.224-.086l-.092-.077c-.699-1.615-1.768-2.669-2.781-3.67-1.454-1.435-2.797-2.762-2.78-5.478.02-3.067 2.7-5.545 5.975-5.523m-.02 2.826c-1.62-.01-2.944 1.315-2.955 2.96-.01 1.646 1.295 2.988 2.916 2.999h.002c1.621.01 2.943-1.316 2.953-2.961.011-1.646-1.294-2.988-2.916-2.998m-.005 1.1c1.017.006 1.829.83 1.822 1.89s-.83 1.874-1.848 1.867c-1.018-.006-1.829-.83-1.822-1.89s.83-1.874 1.848-1.868m-2.155 11.857 4.14.025c.271.002.49.305.487.676l-.013 1.875c-.003.37-.224.67-.495.668l-4.14-.025c-.27-.002-.487-.306-.485-.676l.012-1.875c.003-.37.224-.67.494-.668%27 style=%27color:%23000;font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:medium;line-height:normal;font-family:sans-serif;font-variant-ligatures:normal;font-variant-position:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-alternates:normal;font-feature-settings:normal;text-indent:0;text-align:start;text-decoration:none;text-decoration-line:none;text-decoration-style:solid;text-decoration-color:%23000;letter-spacing:normal;word-spacing:normal;text-transform:none;writing-mode:lr-tb;direction:ltr;text-orientation:mixed;dominant-baseline:auto;baseline-shift:baseline;text-anchor:start;white-space:normal;shape-padding:0;clip-rule:evenodd;display:inline;overflow:visible;visibility:visible;opacity:1;isolation:auto;mix-blend-mode:normal;color-interpolation:sRGB;color-interpolation-filters:linearRGB;solid-color:%23000;solid-opacity:1;vector-effect:none;fill:%23000;fill-opacity:.4;fill-rule:evenodd;stroke:none;stroke-width:2.47727823;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;color-rendering:auto;image-rendering:auto;shape-rendering:auto;text-rendering:auto%27 transform=%27translate%2815.553 2.85%29scale%28.88807%29%27/%3E%3Cpath d=%27M-9.415-.316C-12.69-.338-15.37 2.14-15.39 5.207c-.017 2.716 1.326 4.041 2.78 5.477 1.013 1 2.081 2.055 2.78 3.67l.092.076a.34.34 0 0 0 .225.086.34.34 0 0 0 .227-.083l.019-.01c.022-.009.057-.024.074-.064.697-1.6 1.78-2.64 2.814-3.634 1.473-1.414 2.847-2.733 2.864-5.44.02-3.067-2.627-5.58-5.901-5.601m-.057 8.784c1.621.011 2.944-1.315 2.955-2.96.01-1.646-1.295-2.988-2.916-2.999-1.622-.01-2.945 1.315-2.955 2.96s1.295 2.989 2.916 3%27 style=%27clip-rule:evenodd;fill:%23e1e3e9;fill-opacity:1;fill-rule:evenodd;stroke:none;stroke-width:2.47727823;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:.4%27 transform=%27translate%2815.553 2.85%29scale%28.88807%29%27/%3E%3Cpath d=%27M-11.594 15.465c-.27-.002-.492.297-.494.668l-.012 1.876c-.003.371.214.673.485.675l4.14.027c.271.002.492-.298.495-.668l.012-1.877c.003-.37-.215-.672-.485-.674z%27 style=%27clip-rule:evenodd;fill:%23fff;fill-opacity:1;fill-rule:evenodd;stroke:none;stroke-width:2.47727823;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:.4%27 transform=%27translate%2815.553 2.85%29scale%28.88807%29%27/%3E%3C/g%3E%3C/svg%3E");background-repeat:no-repeat;cursor:pointer;display:block;height:23px;margin:0 0 -4px -4px;overflow:hidden;width:88px}a.maplibregl-ctrl-logo.maplibregl-compact{width:14px}@media (forced-colors:active){a.maplibregl-ctrl-logo{background-color:transparent;background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2788%27 height=%2723%27 fill=%27none%27%3E%3Cpath fill=%27%23000%27 fill-opacity=%27.4%27 fill-rule=%27evenodd%27 d=%27M17.408 16.796h-1.827l2.501-12.095h.198l3.324 6.533.988 2.19.988-2.19 3.258-6.533h.181l2.6 12.095h-1.81l-1.218-5.644-.362-1.71-.658 1.71-2.929 5.644h-.098l-2.914-5.644-.757-1.71-.345 1.71zm1.958-3.42-.726 3.663a1.255 1.255 0 0 1-1.232 1.011h-1.827a1.255 1.255 0 0 1-1.229-1.509l2.501-12.095a1.255 1.255 0 0 1 1.23-1.001h.197a1.25 1.25 0 0 1 1.12.685l3.19 6.273 3.125-6.263a1.25 1.25 0 0 1 1.123-.695h.181a1.255 1.255 0 0 1 1.227.991l1.443 6.71a5 5 0 0 1 .314-.787l.009-.016a4.6 4.6 0 0 1 1.777-1.887c.782-.46 1.668-.667 2.611-.667a4.6 4.6 0 0 1 1.7.32l.306.134c.21-.16.474-.256.759-.256h1.694a1.255 1.255 0 0 1 1.212.925 1.255 1.255 0 0 1 1.212-.925h1.711c.284 0 .545.094.755.252.613-.3 1.312-.45 2.075-.45 1.356 0 2.557.445 3.482 1.4q.47.48.763 1.064V4.701a1.255 1.255 0 0 1 1.255-1.255h1.86A1.255 1.255 0 0 1 54.44 4.7v9.194h2.217c.19 0 .37.043.532.118v-4.77c0-.356.147-.678.385-.906a2.42 2.42 0 0 1-.682-1.71c0-.665.267-1.253.735-1.7a2.45 2.45 0 0 1 1.722-.674 2.43 2.43 0 0 1 1.705.675q.318.302.504.683V4.7a1.255 1.255 0 0 1 1.255-1.255h1.744A1.255 1.255 0 0 1 65.812 4.7v3.335a4.8 4.8 0 0 1 1.526-.246c.938 0 1.817.214 2.59.69a4.47 4.47 0 0 1 1.67 1.743v-.98a1.255 1.255 0 0 1 1.256-1.256h1.777c.233 0 .451.064.639.174a3.4 3.4 0 0 1 1.567-.372c.346 0 .861.02 1.285.232a1.25 1.25 0 0 1 .689 1.004 4.7 4.7 0 0 1 .853-.588c.795-.44 1.675-.647 2.61-.647 1.385 0 2.65.39 3.525 1.396.836.938 1.168 2.173 1.168 3.528q-.001.515-.056 1.051a1.255 1.255 0 0 1-.947 1.09l.408.952a1.255 1.255 0 0 1-.477 1.552c-.418.268-.92.463-1.458.612-.613.171-1.304.244-2.049.244-1.06 0-2.043-.207-2.886-.698l-.015-.008c-.798-.48-1.419-1.135-1.818-1.963l-.004-.008a5.8 5.8 0 0 1-.548-2.512q0-.429.053-.843a1.3 1.3 0 0 1-.333-.086l-.166-.004c-.223 0-.426.062-.643.228-.03.024-.142.139-.142.59v3.883a1.255 1.255 0 0 1-1.256 1.256h-1.777a1.255 1.255 0 0 1-1.256-1.256V15.69l-.032.057a4.8 4.8 0 0 1-1.86 1.833 5.04 5.04 0 0 1-2.484.634 4.5 4.5 0 0 1-1.935-.424 1.25 1.25 0 0 1-.764.258h-1.71a1.255 1.255 0 0 1-1.256-1.255V7.687a2.4 2.4 0 0 1-.428.625c.253.23.412.561.412.93v7.553a1.255 1.255 0 0 1-1.256 1.255h-1.843a1.25 1.25 0 0 1-.894-.373c-.228.23-.544.373-.894.373H51.32a1.255 1.255 0 0 1-1.256-1.255v-1.251l-.061.117a4.7 4.7 0 0 1-1.782 1.884 4.77 4.77 0 0 1-2.485.67 5.6 5.6 0 0 1-1.485-.188l.009 2.764a1.255 1.255 0 0 1-1.255 1.259h-1.729a1.255 1.255 0 0 1-1.255-1.255v-3.537a1.255 1.255 0 0 1-1.167.793h-1.679a1.25 1.25 0 0 1-.77-.263 4.5 4.5 0 0 1-1.945.429c-.885 0-1.724-.21-2.495-.632l-.017-.01a5 5 0 0 1-1.081-.836 1.255 1.255 0 0 1-1.254 1.312h-1.81a1.255 1.255 0 0 1-1.228-.99l-.782-3.625-2.044 3.939a1.25 1.25 0 0 1-1.115.676h-.098a1.25 1.25 0 0 1-1.116-.68l-2.061-3.994zM35.92 16.63l.207-.114.223-.15q.493-.356.735-.785l.061-.118.033 1.332h1.678V9.242h-1.694l-.033 1.267q-.133-.329-.526-.658l-.032-.028a3.2 3.2 0 0 0-.668-.428l-.27-.12a3.3 3.3 0 0 0-1.235-.23q-1.136-.001-1.974.493a3.36 3.36 0 0 0-1.3 1.382q-.445.89-.444 2.074 0 1.2.51 2.107a3.8 3.8 0 0 0 1.382 1.381 3.9 3.9 0 0 0 1.893.477q.795 0 1.455-.33zm-2.789-5.38q-.576.675-.575 1.762 0 1.102.559 1.794.576.675 1.645.675a2.25 2.25 0 0 0 .934-.19 2.2 2.2 0 0 0 .468-.29l.178-.161a2.2 2.2 0 0 0 .397-.561q.244-.5.244-1.15v-.115q0-.708-.296-1.267l-.043-.077a2.2 2.2 0 0 0-.633-.709l-.13-.086-.047-.028a2.1 2.1 0 0 0-1.073-.285q-1.052 0-1.629.692zm2.316 2.706c.163-.17.28-.407.28-.83v-.114c0-.292-.06-.508-.15-.68a.96.96 0 0 0-.353-.389.85.85 0 0 0-.464-.127c-.4 0-.56.114-.664.239l-.01.012c-.148.174-.275.45-.275.945 0 .506.122.801.27.99.097.11.266.224.68.224.303 0 .504-.09.687-.269zm7.545 1.705a2.6 2.6 0 0 0 .331.423q.319.33.755.548l.173.074q.65.255 1.49.255 1.02 0 1.844-.493a3.45 3.45 0 0 0 1.316-1.4q.493-.904.493-2.089 0-1.909-.988-2.913-.988-1.02-2.584-1.02-.898 0-1.575.347a3 3 0 0 0-.415.262l-.199.166a3.4 3.4 0 0 0-.64.82V9.242h-1.712v11.553h1.729l-.017-5.134zm.53-1.138q.206.29.48.5l.155.11.053.034q.51.296 1.119.297 1.07 0 1.645-.675.577-.69.576-1.762 0-1.119-.576-1.777-.558-.675-1.645-.675-.435 0-.835.16a2 2 0 0 0-.284.136 2 2 0 0 0-.363.254 2.2 2.2 0 0 0-.46.569l-.082.162a2.6 2.6 0 0 0-.213 1.072v.115q0 .707.296 1.267l.135.211zm.964-.818a1.1 1.1 0 0 0 .367.385.94.94 0 0 0 .476.118c.423 0 .59-.117.687-.23.159-.194.28-.478.28-.95 0-.53-.133-.8-.266-.952l-.021-.025c-.078-.094-.231-.221-.68-.221a1 1 0 0 0-.503.135l-.012.007a.86.86 0 0 0-.335.343c-.073.133-.132.324-.132.614v.115a1.4 1.4 0 0 0 .14.66zm15.7-6.222q.347-.346.346-.856a1.05 1.05 0 0 0-.345-.79 1.18 1.18 0 0 0-.84-.329q-.51 0-.855.33a1.05 1.05 0 0 0-.346.79q0 .51.346.855.345.346.856.346.51 0 .839-.346zm4.337 9.314.033-1.332q.191.403.59.747l.098.081a4 4 0 0 0 .316.224l.223.122a3.2 3.2 0 0 0 1.44.322 3.8 3.8 0 0 0 1.875-.477 3.5 3.5 0 0 0 1.382-1.366q.527-.89.526-2.09 0-1.184-.444-2.073a3.24 3.24 0 0 0-1.283-1.399q-.823-.51-1.942-.51a3.5 3.5 0 0 0-1.527.344l-.086.043-.165.09a3 3 0 0 0-.33.214q-.432.315-.656.707a2 2 0 0 0-.099.198l.082-1.283V4.701h-1.744v12.095zm.473-2.509a2.5 2.5 0 0 0 .566.7q.117.098.245.18l.144.08a2.1 2.1 0 0 0 .975.232q1.07 0 1.645-.675.576-.69.576-1.778 0-1.102-.576-1.777-.56-.691-1.645-.692a2.2 2.2 0 0 0-1.015.235q-.22.113-.415.282l-.15.142a2.1 2.1 0 0 0-.42.594q-.223.479-.223 1.1v.115q0 .705.293 1.26zm2.616-.293c.157-.191.28-.479.28-.967 0-.51-.13-.79-.276-.961l-.021-.026c-.082-.1-.232-.225-.67-.225a.87.87 0 0 0-.681.279l-.012.011c-.154.155-.274.38-.274.807v.115c0 .285.057.499.144.669a1.1 1.1 0 0 0 .367.405c.137.082.28.123.455.123.423 0 .59-.118.686-.23zm8.266-3.013q.345-.13.724-.14l.069-.002q.493 0 .642.099l.247-1.794q-.196-.099-.717-.099a2.3 2.3 0 0 0-.545.063 2 2 0 0 0-.411.148 2.2 2.2 0 0 0-.4.249 2.5 2.5 0 0 0-.485.499 2.7 2.7 0 0 0-.32.581l-.05.137v-1.48h-1.778v7.553h1.777v-3.884q0-.546.159-.943a1.5 1.5 0 0 1 .466-.636 2.5 2.5 0 0 1 .399-.253 2 2 0 0 1 .224-.099zm9.784 2.656.05-.922q0-1.743-.856-2.698-.838-.97-2.584-.97-1.119-.001-2.007.493a3.46 3.46 0 0 0-1.4 1.382q-.493.906-.493 2.106 0 1.07.428 1.975.428.89 1.332 1.432.906.526 2.255.526.973 0 1.668-.185l.044-.012.135-.04q.613-.184.984-.421l-.542-1.267q-.3.162-.642.274l-.297.087q-.51.131-1.3.131-.954 0-1.497-.444a1.6 1.6 0 0 1-.192-.193q-.366-.44-.512-1.234l-.004-.021zm-5.427-1.256-.003.022h3.752v-.138q-.011-.727-.288-1.118a1 1 0 0 0-.156-.176q-.46-.428-1.316-.428-.986 0-1.494.604-.379.45-.494 1.234zm-27.053 2.77V4.7h-1.86v12.095h5.333V15.15zm7.103-5.908v7.553h-1.843V9.242h1.843z%27/%3E%3Cpath fill=%27%23fff%27 d=%27m19.63 11.151-.757-1.71-.345 1.71-1.12 5.644h-1.827L18.083 4.7h.197l3.325 6.533.988 2.19.988-2.19L26.839 4.7h.181l2.6 12.095h-1.81l-1.218-5.644-.362-1.71-.658 1.71-2.93 5.644h-.098l-2.913-5.644zm14.836 5.81q-1.02 0-1.893-.478a3.8 3.8 0 0 1-1.381-1.382q-.51-.906-.51-2.106 0-1.185.444-2.074a3.36 3.36 0 0 1 1.3-1.382q.839-.494 1.974-.494a3.3 3.3 0 0 1 1.234.231 3.3 3.3 0 0 1 .97.575q.396.33.527.659l.033-1.267h1.694v7.553H37.18l-.033-1.332q-.279.593-1.02 1.053a3.17 3.17 0 0 1-1.662.444zm.296-1.482q.938 0 1.58-.642.642-.66.642-1.711v-.115q0-.708-.296-1.267a2.2 2.2 0 0 0-.807-.872 2.1 2.1 0 0 0-1.119-.313q-1.053 0-1.629.692-.575.675-.575 1.76 0 1.103.559 1.795.577.675 1.645.675zm6.521-6.237h1.711v1.4q.906-1.597 2.83-1.597 1.596 0 2.584 1.02.988 1.005.988 2.914 0 1.185-.493 2.09a3.46 3.46 0 0 1-1.316 1.399 3.5 3.5 0 0 1-1.844.493q-.954 0-1.662-.329a2.67 2.67 0 0 1-1.086-.97l.017 5.134h-1.728zm4.048 6.22q1.07 0 1.645-.674.577-.69.576-1.762 0-1.119-.576-1.777-.558-.675-1.645-.675-.592 0-1.12.296-.51.28-.822.823-.296.527-.296 1.234v.115q0 .708.296 1.267.313.543.823.855.51.296 1.119.297z%27/%3E%3Cpath fill=%27%23e1e3e9%27 d=%27M51.325 4.7h1.86v10.45h3.473v1.646h-5.333zm7.12 4.542h1.843v7.553h-1.843zm.905-1.415a1.16 1.16 0 0 1-.856-.346 1.17 1.17 0 0 1-.346-.856 1.05 1.05 0 0 1 .346-.79q.346-.329.856-.329.494 0 .839.33a1.05 1.05 0 0 1 .345.79 1.16 1.16 0 0 1-.345.855q-.33.346-.84.346zm7.875 9.133a3.17 3.17 0 0 1-1.662-.444q-.723-.46-1.004-1.053l-.033 1.332h-1.71V4.701h1.743v4.657l-.082 1.283q.279-.658 1.086-1.119a3.5 3.5 0 0 1 1.778-.477q1.119 0 1.942.51a3.24 3.24 0 0 1 1.283 1.4q.445.888.444 2.072 0 1.201-.526 2.09a3.5 3.5 0 0 1-1.382 1.366 3.8 3.8 0 0 1-1.876.477zm-.296-1.481q1.069 0 1.645-.675.577-.69.577-1.778 0-1.102-.577-1.776-.56-.691-1.645-.692a2.12 2.12 0 0 0-1.58.659q-.642.641-.642 1.694v.115q0 .71.296 1.267a2.4 2.4 0 0 0 .807.872 2.1 2.1 0 0 0 1.119.313zm5.927-6.237h1.777v1.481q.263-.757.856-1.217a2.14 2.14 0 0 1 1.349-.46q.527 0 .724.098l-.247 1.794q-.149-.099-.642-.099-.774 0-1.416.494-.626.493-.626 1.58v3.883h-1.777V9.242zm9.534 7.718q-1.35 0-2.255-.526-.904-.543-1.332-1.432a4.6 4.6 0 0 1-.428-1.975q0-1.2.493-2.106a3.46 3.46 0 0 1 1.4-1.382q.889-.495 2.007-.494 1.744 0 2.584.97.855.956.856 2.7 0 .444-.05.92h-5.43q.18 1.005.708 1.45.542.443 1.497.443.79 0 1.3-.131a4 4 0 0 0 .938-.362l.542 1.267q-.411.263-1.119.46-.708.198-1.711.197zm1.596-4.558q.016-1.02-.444-1.432-.46-.428-1.316-.428-1.728 0-1.991 1.86z%27/%3E%3Cpath d=%27M5.074 15.948a.484.657 0 0 0-.486.659v1.84a.484.657 0 0 0 .486.659h4.101a.484.657 0 0 0 .486-.659v-1.84a.484.657 0 0 0-.486-.659zm3.56 1.16H5.617v.838h3.017z%27 style=%27fill:%23fff;fill-rule:evenodd;stroke-width:1.03600001%27/%3E%3Cg style=%27stroke-width:1.12603545%27%3E%3Cpath d=%27M-9.408-1.416c-3.833-.025-7.056 2.912-7.08 6.615-.02 3.08 1.653 4.832 3.107 6.268.903.892 1.721 1.74 2.32 2.902l-.525-.004c-.543-.003-.992.304-1.24.639a1.87 1.87 0 0 0-.362 1.121l-.011 1.877c-.003.402.104.787.347 1.125.244.338.688.653 1.23.656l4.142.028c.542.003.99-.306 1.238-.641a1.87 1.87 0 0 0 .363-1.121l.012-1.875a1.87 1.87 0 0 0-.348-1.127c-.243-.338-.688-.653-1.23-.656l-.518-.004c.597-1.145 1.425-1.983 2.348-2.87 1.473-1.414 3.18-3.149 3.2-6.226-.016-3.59-2.923-6.684-6.993-6.707m-.006 1.1v.002c3.274.02 5.92 2.532 5.9 5.6-.017 2.706-1.39 4.026-2.863 5.44-1.034.994-2.118 2.033-2.814 3.633-.018.041-.052.055-.075.065q-.013.004-.02.01a.34.34 0 0 1-.226.084.34.34 0 0 1-.224-.086l-.092-.077c-.699-1.615-1.768-2.669-2.781-3.67-1.454-1.435-2.797-2.762-2.78-5.478.02-3.067 2.7-5.545 5.975-5.523m-.02 2.826c-1.62-.01-2.944 1.315-2.955 2.96-.01 1.646 1.295 2.988 2.916 2.999h.002c1.621.01 2.943-1.316 2.953-2.961.011-1.646-1.294-2.988-2.916-2.998m-.005 1.1c1.017.006 1.829.83 1.822 1.89s-.83 1.874-1.848 1.867c-1.018-.006-1.829-.83-1.822-1.89s.83-1.874 1.848-1.868m-2.155 11.857 4.14.025c.271.002.49.305.487.676l-.013 1.875c-.003.37-.224.67-.495.668l-4.14-.025c-.27-.002-.487-.306-.485-.676l.012-1.875c.003-.37.224-.67.494-.668%27 style=%27color:%23000;font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:medium;line-height:normal;font-family:sans-serif;font-variant-ligatures:normal;font-variant-position:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-alternates:normal;font-feature-settings:normal;text-indent:0;text-align:start;text-decoration:none;text-decoration-line:none;text-decoration-style:solid;text-decoration-color:%23000;letter-spacing:normal;word-spacing:normal;text-transform:none;writing-mode:lr-tb;direction:ltr;text-orientation:mixed;dominant-baseline:auto;baseline-shift:baseline;text-anchor:start;white-space:normal;shape-padding:0;clip-rule:evenodd;display:inline;overflow:visible;visibility:visible;opacity:1;isolation:auto;mix-blend-mode:normal;color-interpolation:sRGB;color-interpolation-filters:linearRGB;solid-color:%23000;solid-opacity:1;vector-effect:none;fill:%23000;fill-opacity:.4;fill-rule:evenodd;stroke:none;stroke-width:2.47727823;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;color-rendering:auto;image-rendering:auto;shape-rendering:auto;text-rendering:auto%27 transform=%27translate%2815.553 2.85%29scale%28.88807%29%27/%3E%3Cpath d=%27M-9.415-.316C-12.69-.338-15.37 2.14-15.39 5.207c-.017 2.716 1.326 4.041 2.78 5.477 1.013 1 2.081 2.055 2.78 3.67l.092.076a.34.34 0 0 0 .225.086.34.34 0 0 0 .227-.083l.019-.01c.022-.009.057-.024.074-.064.697-1.6 1.78-2.64 2.814-3.634 1.473-1.414 2.847-2.733 2.864-5.44.02-3.067-2.627-5.58-5.901-5.601m-.057 8.784c1.621.011 2.944-1.315 2.955-2.96.01-1.646-1.295-2.988-2.916-2.999-1.622-.01-2.945 1.315-2.955 2.96s1.295 2.989 2.916 3%27 style=%27clip-rule:evenodd;fill:%23e1e3e9;fill-opacity:1;fill-rule:evenodd;stroke:none;stroke-width:2.47727823;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:.4%27 transform=%27translate%2815.553 2.85%29scale%28.88807%29%27/%3E%3Cpath d=%27M-11.594 15.465c-.27-.002-.492.297-.494.668l-.012 1.876c-.003.371.214.673.485.675l4.14.027c.271.002.492-.298.495-.668l.012-1.877c.003-.37-.215-.672-.485-.674z%27 style=%27clip-rule:evenodd;fill:%23fff;fill-opacity:1;fill-rule:evenodd;stroke:none;stroke-width:2.47727823;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:.4%27 transform=%27translate%2815.553 2.85%29scale%28.88807%29%27/%3E%3C/g%3E%3C/svg%3E")}}@media (forced-colors:active) and (prefers-color-scheme:light){a.maplibregl-ctrl-logo{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2788%27 height=%2723%27 fill=%27none%27%3E%3Cpath fill=%27%23000%27 fill-opacity=%27.4%27 fill-rule=%27evenodd%27 d=%27M17.408 16.796h-1.827l2.501-12.095h.198l3.324 6.533.988 2.19.988-2.19 3.258-6.533h.181l2.6 12.095h-1.81l-1.218-5.644-.362-1.71-.658 1.71-2.929 5.644h-.098l-2.914-5.644-.757-1.71-.345 1.71zm1.958-3.42-.726 3.663a1.255 1.255 0 0 1-1.232 1.011h-1.827a1.255 1.255 0 0 1-1.229-1.509l2.501-12.095a1.255 1.255 0 0 1 1.23-1.001h.197a1.25 1.25 0 0 1 1.12.685l3.19 6.273 3.125-6.263a1.25 1.25 0 0 1 1.123-.695h.181a1.255 1.255 0 0 1 1.227.991l1.443 6.71a5 5 0 0 1 .314-.787l.009-.016a4.6 4.6 0 0 1 1.777-1.887c.782-.46 1.668-.667 2.611-.667a4.6 4.6 0 0 1 1.7.32l.306.134c.21-.16.474-.256.759-.256h1.694a1.255 1.255 0 0 1 1.212.925 1.255 1.255 0 0 1 1.212-.925h1.711c.284 0 .545.094.755.252.613-.3 1.312-.45 2.075-.45 1.356 0 2.557.445 3.482 1.4q.47.48.763 1.064V4.701a1.255 1.255 0 0 1 1.255-1.255h1.86A1.255 1.255 0 0 1 54.44 4.7v9.194h2.217c.19 0 .37.043.532.118v-4.77c0-.356.147-.678.385-.906a2.42 2.42 0 0 1-.682-1.71c0-.665.267-1.253.735-1.7a2.45 2.45 0 0 1 1.722-.674 2.43 2.43 0 0 1 1.705.675q.318.302.504.683V4.7a1.255 1.255 0 0 1 1.255-1.255h1.744A1.255 1.255 0 0 1 65.812 4.7v3.335a4.8 4.8 0 0 1 1.526-.246c.938 0 1.817.214 2.59.69a4.47 4.47 0 0 1 1.67 1.743v-.98a1.255 1.255 0 0 1 1.256-1.256h1.777c.233 0 .451.064.639.174a3.4 3.4 0 0 1 1.567-.372c.346 0 .861.02 1.285.232a1.25 1.25 0 0 1 .689 1.004 4.7 4.7 0 0 1 .853-.588c.795-.44 1.675-.647 2.61-.647 1.385 0 2.65.39 3.525 1.396.836.938 1.168 2.173 1.168 3.528q-.001.515-.056 1.051a1.255 1.255 0 0 1-.947 1.09l.408.952a1.255 1.255 0 0 1-.477 1.552c-.418.268-.92.463-1.458.612-.613.171-1.304.244-2.049.244-1.06 0-2.043-.207-2.886-.698l-.015-.008c-.798-.48-1.419-1.135-1.818-1.963l-.004-.008a5.8 5.8 0 0 1-.548-2.512q0-.429.053-.843a1.3 1.3 0 0 1-.333-.086l-.166-.004c-.223 0-.426.062-.643.228-.03.024-.142.139-.142.59v3.883a1.255 1.255 0 0 1-1.256 1.256h-1.777a1.255 1.255 0 0 1-1.256-1.256V15.69l-.032.057a4.8 4.8 0 0 1-1.86 1.833 5.04 5.04 0 0 1-2.484.634 4.5 4.5 0 0 1-1.935-.424 1.25 1.25 0 0 1-.764.258h-1.71a1.255 1.255 0 0 1-1.256-1.255V7.687a2.4 2.4 0 0 1-.428.625c.253.23.412.561.412.93v7.553a1.255 1.255 0 0 1-1.256 1.255h-1.843a1.25 1.25 0 0 1-.894-.373c-.228.23-.544.373-.894.373H51.32a1.255 1.255 0 0 1-1.256-1.255v-1.251l-.061.117a4.7 4.7 0 0 1-1.782 1.884 4.77 4.77 0 0 1-2.485.67 5.6 5.6 0 0 1-1.485-.188l.009 2.764a1.255 1.255 0 0 1-1.255 1.259h-1.729a1.255 1.255 0 0 1-1.255-1.255v-3.537a1.255 1.255 0 0 1-1.167.793h-1.679a1.25 1.25 0 0 1-.77-.263 4.5 4.5 0 0 1-1.945.429c-.885 0-1.724-.21-2.495-.632l-.017-.01a5 5 0 0 1-1.081-.836 1.255 1.255 0 0 1-1.254 1.312h-1.81a1.255 1.255 0 0 1-1.228-.99l-.782-3.625-2.044 3.939a1.25 1.25 0 0 1-1.115.676h-.098a1.25 1.25 0 0 1-1.116-.68l-2.061-3.994zM35.92 16.63l.207-.114.223-.15q.493-.356.735-.785l.061-.118.033 1.332h1.678V9.242h-1.694l-.033 1.267q-.133-.329-.526-.658l-.032-.028a3.2 3.2 0 0 0-.668-.428l-.27-.12a3.3 3.3 0 0 0-1.235-.23q-1.136-.001-1.974.493a3.36 3.36 0 0 0-1.3 1.382q-.445.89-.444 2.074 0 1.2.51 2.107a3.8 3.8 0 0 0 1.382 1.381 3.9 3.9 0 0 0 1.893.477q.795 0 1.455-.33zm-2.789-5.38q-.576.675-.575 1.762 0 1.102.559 1.794.576.675 1.645.675a2.25 2.25 0 0 0 .934-.19 2.2 2.2 0 0 0 .468-.29l.178-.161a2.2 2.2 0 0 0 .397-.561q.244-.5.244-1.15v-.115q0-.708-.296-1.267l-.043-.077a2.2 2.2 0 0 0-.633-.709l-.13-.086-.047-.028a2.1 2.1 0 0 0-1.073-.285q-1.052 0-1.629.692zm2.316 2.706c.163-.17.28-.407.28-.83v-.114c0-.292-.06-.508-.15-.68a.96.96 0 0 0-.353-.389.85.85 0 0 0-.464-.127c-.4 0-.56.114-.664.239l-.01.012c-.148.174-.275.45-.275.945 0 .506.122.801.27.99.097.11.266.224.68.224.303 0 .504-.09.687-.269zm7.545 1.705a2.6 2.6 0 0 0 .331.423q.319.33.755.548l.173.074q.65.255 1.49.255 1.02 0 1.844-.493a3.45 3.45 0 0 0 1.316-1.4q.493-.904.493-2.089 0-1.909-.988-2.913-.988-1.02-2.584-1.02-.898 0-1.575.347a3 3 0 0 0-.415.262l-.199.166a3.4 3.4 0 0 0-.64.82V9.242h-1.712v11.553h1.729l-.017-5.134zm.53-1.138q.206.29.48.5l.155.11.053.034q.51.296 1.119.297 1.07 0 1.645-.675.577-.69.576-1.762 0-1.119-.576-1.777-.558-.675-1.645-.675-.435 0-.835.16a2 2 0 0 0-.284.136 2 2 0 0 0-.363.254 2.2 2.2 0 0 0-.46.569l-.082.162a2.6 2.6 0 0 0-.213 1.072v.115q0 .707.296 1.267l.135.211zm.964-.818a1.1 1.1 0 0 0 .367.385.94.94 0 0 0 .476.118c.423 0 .59-.117.687-.23.159-.194.28-.478.28-.95 0-.53-.133-.8-.266-.952l-.021-.025c-.078-.094-.231-.221-.68-.221a1 1 0 0 0-.503.135l-.012.007a.86.86 0 0 0-.335.343c-.073.133-.132.324-.132.614v.115a1.4 1.4 0 0 0 .14.66zm15.7-6.222q.347-.346.346-.856a1.05 1.05 0 0 0-.345-.79 1.18 1.18 0 0 0-.84-.329q-.51 0-.855.33a1.05 1.05 0 0 0-.346.79q0 .51.346.855.345.346.856.346.51 0 .839-.346zm4.337 9.314.033-1.332q.191.403.59.747l.098.081a4 4 0 0 0 .316.224l.223.122a3.2 3.2 0 0 0 1.44.322 3.8 3.8 0 0 0 1.875-.477 3.5 3.5 0 0 0 1.382-1.366q.527-.89.526-2.09 0-1.184-.444-2.073a3.24 3.24 0 0 0-1.283-1.399q-.823-.51-1.942-.51a3.5 3.5 0 0 0-1.527.344l-.086.043-.165.09a3 3 0 0 0-.33.214q-.432.315-.656.707a2 2 0 0 0-.099.198l.082-1.283V4.701h-1.744v12.095zm.473-2.509a2.5 2.5 0 0 0 .566.7q.117.098.245.18l.144.08a2.1 2.1 0 0 0 .975.232q1.07 0 1.645-.675.576-.69.576-1.778 0-1.102-.576-1.777-.56-.691-1.645-.692a2.2 2.2 0 0 0-1.015.235q-.22.113-.415.282l-.15.142a2.1 2.1 0 0 0-.42.594q-.223.479-.223 1.1v.115q0 .705.293 1.26zm2.616-.293c.157-.191.28-.479.28-.967 0-.51-.13-.79-.276-.961l-.021-.026c-.082-.1-.232-.225-.67-.225a.87.87 0 0 0-.681.279l-.012.011c-.154.155-.274.38-.274.807v.115c0 .285.057.499.144.669a1.1 1.1 0 0 0 .367.405c.137.082.28.123.455.123.423 0 .59-.118.686-.23zm8.266-3.013q.345-.13.724-.14l.069-.002q.493 0 .642.099l.247-1.794q-.196-.099-.717-.099a2.3 2.3 0 0 0-.545.063 2 2 0 0 0-.411.148 2.2 2.2 0 0 0-.4.249 2.5 2.5 0 0 0-.485.499 2.7 2.7 0 0 0-.32.581l-.05.137v-1.48h-1.778v7.553h1.777v-3.884q0-.546.159-.943a1.5 1.5 0 0 1 .466-.636 2.5 2.5 0 0 1 .399-.253 2 2 0 0 1 .224-.099zm9.784 2.656.05-.922q0-1.743-.856-2.698-.838-.97-2.584-.97-1.119-.001-2.007.493a3.46 3.46 0 0 0-1.4 1.382q-.493.906-.493 2.106 0 1.07.428 1.975.428.89 1.332 1.432.906.526 2.255.526.973 0 1.668-.185l.044-.012.135-.04q.613-.184.984-.421l-.542-1.267q-.3.162-.642.274l-.297.087q-.51.131-1.3.131-.954 0-1.497-.444a1.6 1.6 0 0 1-.192-.193q-.366-.44-.512-1.234l-.004-.021zm-5.427-1.256-.003.022h3.752v-.138q-.011-.727-.288-1.118a1 1 0 0 0-.156-.176q-.46-.428-1.316-.428-.986 0-1.494.604-.379.45-.494 1.234zm-27.053 2.77V4.7h-1.86v12.095h5.333V15.15zm7.103-5.908v7.553h-1.843V9.242h1.843z%27/%3E%3Cpath fill=%27%23fff%27 d=%27m19.63 11.151-.757-1.71-.345 1.71-1.12 5.644h-1.827L18.083 4.7h.197l3.325 6.533.988 2.19.988-2.19L26.839 4.7h.181l2.6 12.095h-1.81l-1.218-5.644-.362-1.71-.658 1.71-2.93 5.644h-.098l-2.913-5.644zm14.836 5.81q-1.02 0-1.893-.478a3.8 3.8 0 0 1-1.381-1.382q-.51-.906-.51-2.106 0-1.185.444-2.074a3.36 3.36 0 0 1 1.3-1.382q.839-.494 1.974-.494a3.3 3.3 0 0 1 1.234.231 3.3 3.3 0 0 1 .97.575q.396.33.527.659l.033-1.267h1.694v7.553H37.18l-.033-1.332q-.279.593-1.02 1.053a3.17 3.17 0 0 1-1.662.444zm.296-1.482q.938 0 1.58-.642.642-.66.642-1.711v-.115q0-.708-.296-1.267a2.2 2.2 0 0 0-.807-.872 2.1 2.1 0 0 0-1.119-.313q-1.053 0-1.629.692-.575.675-.575 1.76 0 1.103.559 1.795.577.675 1.645.675zm6.521-6.237h1.711v1.4q.906-1.597 2.83-1.597 1.596 0 2.584 1.02.988 1.005.988 2.914 0 1.185-.493 2.09a3.46 3.46 0 0 1-1.316 1.399 3.5 3.5 0 0 1-1.844.493q-.954 0-1.662-.329a2.67 2.67 0 0 1-1.086-.97l.017 5.134h-1.728zm4.048 6.22q1.07 0 1.645-.674.577-.69.576-1.762 0-1.119-.576-1.777-.558-.675-1.645-.675-.592 0-1.12.296-.51.28-.822.823-.296.527-.296 1.234v.115q0 .708.296 1.267.313.543.823.855.51.296 1.119.297z%27/%3E%3Cpath fill=%27%23e1e3e9%27 d=%27M51.325 4.7h1.86v10.45h3.473v1.646h-5.333zm7.12 4.542h1.843v7.553h-1.843zm.905-1.415a1.16 1.16 0 0 1-.856-.346 1.17 1.17 0 0 1-.346-.856 1.05 1.05 0 0 1 .346-.79q.346-.329.856-.329.494 0 .839.33a1.05 1.05 0 0 1 .345.79 1.16 1.16 0 0 1-.345.855q-.33.346-.84.346zm7.875 9.133a3.17 3.17 0 0 1-1.662-.444q-.723-.46-1.004-1.053l-.033 1.332h-1.71V4.701h1.743v4.657l-.082 1.283q.279-.658 1.086-1.119a3.5 3.5 0 0 1 1.778-.477q1.119 0 1.942.51a3.24 3.24 0 0 1 1.283 1.4q.445.888.444 2.072 0 1.201-.526 2.09a3.5 3.5 0 0 1-1.382 1.366 3.8 3.8 0 0 1-1.876.477zm-.296-1.481q1.069 0 1.645-.675.577-.69.577-1.778 0-1.102-.577-1.776-.56-.691-1.645-.692a2.12 2.12 0 0 0-1.58.659q-.642.641-.642 1.694v.115q0 .71.296 1.267a2.4 2.4 0 0 0 .807.872 2.1 2.1 0 0 0 1.119.313zm5.927-6.237h1.777v1.481q.263-.757.856-1.217a2.14 2.14 0 0 1 1.349-.46q.527 0 .724.098l-.247 1.794q-.149-.099-.642-.099-.774 0-1.416.494-.626.493-.626 1.58v3.883h-1.777V9.242zm9.534 7.718q-1.35 0-2.255-.526-.904-.543-1.332-1.432a4.6 4.6 0 0 1-.428-1.975q0-1.2.493-2.106a3.46 3.46 0 0 1 1.4-1.382q.889-.495 2.007-.494 1.744 0 2.584.97.855.956.856 2.7 0 .444-.05.92h-5.43q.18 1.005.708 1.45.542.443 1.497.443.79 0 1.3-.131a4 4 0 0 0 .938-.362l.542 1.267q-.411.263-1.119.46-.708.198-1.711.197zm1.596-4.558q.016-1.02-.444-1.432-.46-.428-1.316-.428-1.728 0-1.991 1.86z%27/%3E%3Cpath d=%27M5.074 15.948a.484.657 0 0 0-.486.659v1.84a.484.657 0 0 0 .486.659h4.101a.484.657 0 0 0 .486-.659v-1.84a.484.657 0 0 0-.486-.659zm3.56 1.16H5.617v.838h3.017z%27 style=%27fill:%23fff;fill-rule:evenodd;stroke-width:1.03600001%27/%3E%3Cg style=%27stroke-width:1.12603545%27%3E%3Cpath d=%27M-9.408-1.416c-3.833-.025-7.056 2.912-7.08 6.615-.02 3.08 1.653 4.832 3.107 6.268.903.892 1.721 1.74 2.32 2.902l-.525-.004c-.543-.003-.992.304-1.24.639a1.87 1.87 0 0 0-.362 1.121l-.011 1.877c-.003.402.104.787.347 1.125.244.338.688.653 1.23.656l4.142.028c.542.003.99-.306 1.238-.641a1.87 1.87 0 0 0 .363-1.121l.012-1.875a1.87 1.87 0 0 0-.348-1.127c-.243-.338-.688-.653-1.23-.656l-.518-.004c.597-1.145 1.425-1.983 2.348-2.87 1.473-1.414 3.18-3.149 3.2-6.226-.016-3.59-2.923-6.684-6.993-6.707m-.006 1.1v.002c3.274.02 5.92 2.532 5.9 5.6-.017 2.706-1.39 4.026-2.863 5.44-1.034.994-2.118 2.033-2.814 3.633-.018.041-.052.055-.075.065q-.013.004-.02.01a.34.34 0 0 1-.226.084.34.34 0 0 1-.224-.086l-.092-.077c-.699-1.615-1.768-2.669-2.781-3.67-1.454-1.435-2.797-2.762-2.78-5.478.02-3.067 2.7-5.545 5.975-5.523m-.02 2.826c-1.62-.01-2.944 1.315-2.955 2.96-.01 1.646 1.295 2.988 2.916 2.999h.002c1.621.01 2.943-1.316 2.953-2.961.011-1.646-1.294-2.988-2.916-2.998m-.005 1.1c1.017.006 1.829.83 1.822 1.89s-.83 1.874-1.848 1.867c-1.018-.006-1.829-.83-1.822-1.89s.83-1.874 1.848-1.868m-2.155 11.857 4.14.025c.271.002.49.305.487.676l-.013 1.875c-.003.37-.224.67-.495.668l-4.14-.025c-.27-.002-.487-.306-.485-.676l.012-1.875c.003-.37.224-.67.494-.668%27 style=%27color:%23000;font-style:normal;font-variant:normal;font-weight:400;font-stretch:normal;font-size:medium;line-height:normal;font-family:sans-serif;font-variant-ligatures:normal;font-variant-position:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-alternates:normal;font-feature-settings:normal;text-indent:0;text-align:start;text-decoration:none;text-decoration-line:none;text-decoration-style:solid;text-decoration-color:%23000;letter-spacing:normal;word-spacing:normal;text-transform:none;writing-mode:lr-tb;direction:ltr;text-orientation:mixed;dominant-baseline:auto;baseline-shift:baseline;text-anchor:start;white-space:normal;shape-padding:0;clip-rule:evenodd;display:inline;overflow:visible;visibility:visible;opacity:1;isolation:auto;mix-blend-mode:normal;color-interpolation:sRGB;color-interpolation-filters:linearRGB;solid-color:%23000;solid-opacity:1;vector-effect:none;fill:%23000;fill-opacity:.4;fill-rule:evenodd;stroke:none;stroke-width:2.47727823;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;color-rendering:auto;image-rendering:auto;shape-rendering:auto;text-rendering:auto%27 transform=%27translate%2815.553 2.85%29scale%28.88807%29%27/%3E%3Cpath d=%27M-9.415-.316C-12.69-.338-15.37 2.14-15.39 5.207c-.017 2.716 1.326 4.041 2.78 5.477 1.013 1 2.081 2.055 2.78 3.67l.092.076a.34.34 0 0 0 .225.086.34.34 0 0 0 .227-.083l.019-.01c.022-.009.057-.024.074-.064.697-1.6 1.78-2.64 2.814-3.634 1.473-1.414 2.847-2.733 2.864-5.44.02-3.067-2.627-5.58-5.901-5.601m-.057 8.784c1.621.011 2.944-1.315 2.955-2.96.01-1.646-1.295-2.988-2.916-2.999-1.622-.01-2.945 1.315-2.955 2.96s1.295 2.989 2.916 3%27 style=%27clip-rule:evenodd;fill:%23e1e3e9;fill-opacity:1;fill-rule:evenodd;stroke:none;stroke-width:2.47727823;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:.4%27 transform=%27translate%2815.553 2.85%29scale%28.88807%29%27/%3E%3Cpath d=%27M-11.594 15.465c-.27-.002-.492.297-.494.668l-.012 1.876c-.003.371.214.673.485.675l4.14.027c.271.002.492-.298.495-.668l.012-1.877c.003-.37-.215-.672-.485-.674z%27 style=%27clip-rule:evenodd;fill:%23fff;fill-opacity:1;fill-rule:evenodd;stroke:none;stroke-width:2.47727823;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:.4%27 transform=%27translate%2815.553 2.85%29scale%28.88807%29%27/%3E%3C/g%3E%3C/svg%3E")}}.maplibregl-ctrl.maplibregl-ctrl-attrib{background-color:hsla(0,0%,100%,.5);margin:0;padding:0 5px}@media screen{.maplibregl-ctrl-attrib.maplibregl-compact{background-color:#fff;border-radius:12px;box-sizing:content-box;color:#000;margin:10px;min-height:20px;padding:2px 24px 2px 0;position:relative}.maplibregl-ctrl-attrib.maplibregl-compact-show{padding:2px 28px 2px 8px;visibility:visible}.maplibregl-ctrl-bottom-left>.maplibregl-ctrl-attrib.maplibregl-compact-show,.maplibregl-ctrl-top-left>.maplibregl-ctrl-attrib.maplibregl-compact-show{border-radius:12px;padding:2px 8px 2px 28px}.maplibregl-ctrl-attrib.maplibregl-compact .maplibregl-ctrl-attrib-inner{display:none}.maplibregl-ctrl-attrib-button{background-color:hsla(0,0%,100%,.5);background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 fill-rule=%27evenodd%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M4 10a6 6 0 1 0 12 0 6 6 0 1 0-12 0m5-3a1 1 0 1 0 2 0 1 1 0 1 0-2 0m0 3a1 1 0 1 1 2 0v3a1 1 0 1 1-2 0%27/%3E%3C/svg%3E");border:0;border-radius:12px;box-sizing:border-box;cursor:pointer;display:none;height:24px;outline:none;position:absolute;right:0;top:0;width:24px}.maplibregl-ctrl-attrib summary.maplibregl-ctrl-attrib-button{-webkit-appearance:none;-moz-appearance:none;appearance:none;list-style:none}.maplibregl-ctrl-attrib summary.maplibregl-ctrl-attrib-button::-webkit-details-marker{display:none}.maplibregl-ctrl-bottom-left .maplibregl-ctrl-attrib-button,.maplibregl-ctrl-top-left .maplibregl-ctrl-attrib-button{left:0}.maplibregl-ctrl-attrib.maplibregl-compact .maplibregl-ctrl-attrib-button,.maplibregl-ctrl-attrib.maplibregl-compact-show .maplibregl-ctrl-attrib-inner{display:block}.maplibregl-ctrl-attrib.maplibregl-compact-show .maplibregl-ctrl-attrib-button{background-color:rgb(0 0 0/5%)}.maplibregl-ctrl-bottom-right>.maplibregl-ctrl-attrib.maplibregl-compact:after{bottom:0;right:0}.maplibregl-ctrl-top-right>.maplibregl-ctrl-attrib.maplibregl-compact:after{right:0;top:0}.maplibregl-ctrl-top-left>.maplibregl-ctrl-attrib.maplibregl-compact:after{left:0;top:0}.maplibregl-ctrl-bottom-left>.maplibregl-ctrl-attrib.maplibregl-compact:after{bottom:0;left:0}}@media screen and (forced-colors:active){.maplibregl-ctrl-attrib.maplibregl-compact:after{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 fill=%27%23fff%27 fill-rule=%27evenodd%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M4 10a6 6 0 1 0 12 0 6 6 0 1 0-12 0m5-3a1 1 0 1 0 2 0 1 1 0 1 0-2 0m0 3a1 1 0 1 1 2 0v3a1 1 0 1 1-2 0%27/%3E%3C/svg%3E")}}@media screen and (forced-colors:active) and (prefers-color-scheme:light){.maplibregl-ctrl-attrib.maplibregl-compact:after{background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 fill-rule=%27evenodd%27 viewBox=%270 0 20 20%27%3E%3Cpath d=%27M4 10a6 6 0 1 0 12 0 6 6 0 1 0-12 0m5-3a1 1 0 1 0 2 0 1 1 0 1 0-2 0m0 3a1 1 0 1 1 2 0v3a1 1 0 1 1-2 0%27/%3E%3C/svg%3E")}}.maplibregl-ctrl-attrib a{color:rgba(0,0,0,.75);text-decoration:none}.maplibregl-ctrl-attrib a:hover{color:inherit;text-decoration:underline}.maplibregl-attrib-empty{display:none}.maplibregl-ctrl-scale{background-color:hsla(0,0%,100%,.75);border:2px solid #333;border-top:#333;box-sizing:border-box;color:#333;font-size:10px;padding:0 5px}.maplibregl-popup{display:flex;left:0;pointer-events:none;position:absolute;top:0;will-change:transform}.maplibregl-popup-anchor-top,.maplibregl-popup-anchor-top-left,.maplibregl-popup-anchor-top-right{flex-direction:column}.maplibregl-popup-anchor-bottom,.maplibregl-popup-anchor-bottom-left,.maplibregl-popup-anchor-bottom-right{flex-direction:column-reverse}.maplibregl-popup-anchor-left{flex-direction:row}.maplibregl-popup-anchor-right{flex-direction:row-reverse}.maplibregl-popup-tip{border:10px solid transparent;height:0;width:0;z-index:1}.maplibregl-popup-anchor-top .maplibregl-popup-tip{align-self:center;border-bottom-color:#fff;border-top:none}.maplibregl-popup-anchor-top-left .maplibregl-popup-tip{align-self:flex-start;border-bottom-color:#fff;border-left:none;border-top:none}.maplibregl-popup-anchor-top-right .maplibregl-popup-tip{align-self:flex-end;border-bottom-color:#fff;border-right:none;border-top:none}.maplibregl-popup-anchor-bottom .maplibregl-popup-tip{align-self:center;border-bottom:none;border-top-color:#fff}.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip{align-self:flex-start;border-bottom:none;border-left:none;border-top-color:#fff}.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip{align-self:flex-end;border-bottom:none;border-right:none;border-top-color:#fff}.maplibregl-popup-anchor-left .maplibregl-popup-tip{align-self:center;border-left:none;border-right-color:#fff}.maplibregl-popup-anchor-right .maplibregl-popup-tip{align-self:center;border-left-color:#fff;border-right:none}.maplibregl-popup-close-button{background-color:transparent;border:0;border-radius:0 3px 0 0;cursor:pointer;position:absolute;right:0;top:0}.maplibregl-popup-close-button:hover{background-color:rgb(0 0 0/5%)}.maplibregl-popup-content{background:#fff;border-radius:3px;box-shadow:0 1px 2px rgba(0,0,0,.1);padding:15px 10px;pointer-events:auto;position:relative}.maplibregl-popup-anchor-top-left .maplibregl-popup-content{border-top-left-radius:0}.maplibregl-popup-anchor-top-right .maplibregl-popup-content{border-top-right-radius:0}.maplibregl-popup-anchor-bottom-left .maplibregl-popup-content{border-bottom-left-radius:0}.maplibregl-popup-anchor-bottom-right .maplibregl-popup-content{border-bottom-right-radius:0}.maplibregl-popup-track-pointer{display:none}.maplibregl-popup-track-pointer *{pointer-events:none;-webkit-user-select:none;-moz-user-select:none;user-select:none}.maplibregl-map:hover .maplibregl-popup-track-pointer{display:flex}.maplibregl-map:active .maplibregl-popup-track-pointer{display:none}.maplibregl-marker{left:0;position:absolute;top:0;transition:opacity .2s;will-change:transform}.maplibregl-user-location-dot,.maplibregl-user-location-dot:before{background-color:#1da1f2;border-radius:50%;height:15px;width:15px}.maplibregl-user-location-dot:before{animation:maplibregl-user-location-dot-pulse 2s infinite;content:"";position:absolute}.maplibregl-user-location-dot:after{border:2px solid #fff;border-radius:50%;box-shadow:0 0 3px rgba(0,0,0,.35);box-sizing:border-box;content:"";height:19px;left:-2px;position:absolute;top:-2px;width:19px}@keyframes maplibregl-user-location-dot-pulse{0%{opacity:1;transform:scale(1)}70%{opacity:0;transform:scale(3)}to{opacity:0;transform:scale(1)}}.maplibregl-user-location-dot-stale{background-color:#aaa}.maplibregl-user-location-dot-stale:after{display:none}.maplibregl-user-location-accuracy-circle{background-color:#1da1f233;border-radius:100%;height:1px;width:1px}.maplibregl-crosshair,.maplibregl-crosshair .maplibregl-interactive,.maplibregl-crosshair .maplibregl-interactive:active{cursor:crosshair}.maplibregl-boxzoom{background:#fff;border:2px dotted #202020;height:0;left:0;opacity:.5;position:absolute;top:0;width:0}.maplibregl-cooperative-gesture-screen{align-items:center;background:rgba(0,0,0,.4);color:#fff;display:flex;font-size:1.4em;inset:0;justify-content:center;line-height:1.2;opacity:0;padding:1rem;pointer-events:none;position:absolute;transition:opacity 1s ease 1s;z-index:99999}.maplibregl-cooperative-gesture-screen.maplibregl-show{opacity:1;transition:opacity .05s}.maplibregl-cooperative-gesture-screen .maplibregl-mobile-message{display:none}@media (hover:none),(width <= 480px){.maplibregl-cooperative-gesture-screen .maplibregl-desktop-message{display:none}.maplibregl-cooperative-gesture-screen .maplibregl-mobile-message{display:block}}.maplibregl-pseudo-fullscreen{height:100%!important;left:0!important;position:fixed!important;top:0!important;width:100%!important;z-index:99999}</style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
@@ -96,7 +96,7 @@
         }
 
         .plotly-wrapper { width: 100%; height: 100%; }
-        .js-plotly-plot, .plot-container, .gl-container, canvas {
+        .plotly-wrapper, canvas {
             touch-action: none !important;
             border-radius: 0.75rem;
         }
@@ -1118,34 +1118,48 @@ var PlotlyChart = function PlotlyChart(_ref9) {
       }
     };
     var leftPointerDown = null;
+    var _activePointers = new Set();
+    var _wasMultiTouch = false;
     var handleLeftDown = function handleLeftDown(e) {
-      if (e.button === 0 && !e.__proxied) leftPointerDown = {
-        x: e.clientX,
-        y: e.clientY
-      };
+      if (e.button === 0 && !e.__proxied) {
+        var pid = e.pointerId != null ? e.pointerId : 0;
+        _activePointers.add(pid);
+        if (_activePointers.size > 1) { _wasMultiTouch = true; }
+        if (_activePointers.size === 1) {
+          leftPointerDown = { x: e.clientX, y: e.clientY };
+          _wasMultiTouch = false;
+        }
+      }
     };
     var handleLeftUp = function handleLeftUp(e) {
-      if (e.button === 0 && !e.__proxied && leftPointerDown && onBgClick && !is3D) {
-        var dx = e.clientX - leftPointerDown.x;
-        var dy = e.clientY - leftPointerDown.y;
-        if (Math.sqrt(dx * dx + dy * dy) < 10) {
-          if (gd._fullLayout && gd._fullLayout.xaxis && gd._fullLayout.yaxis) {
-            var rect = gd.getBoundingClientRect();
-            var xAxis = gd._fullLayout.xaxis;
-            var yAxis = gd._fullLayout.yaxis;
-            var xPx = e.clientX - rect.left - xAxis._offset;
-            var yPx = e.clientY - rect.top - yAxis._offset;
-            if (xPx >= 0 && xPx <= xAxis._length && yPx >= 0 && yPx <= yAxis._length) {
-              var xData = xAxis.p2d(xPx);
-              var yData = yAxis.p2d(yPx);
-              setTimeout(function () {
-                if (!gd.__pointClicked) onBgClick(xData, yData);
-              }, 50);
+      if (e.button === 0 && !e.__proxied) {
+        var pid = e.pointerId != null ? e.pointerId : 0;
+        _activePointers.delete(pid);
+        if (!_wasMultiTouch && leftPointerDown && onBgClick && !is3D) {
+          var dx = e.clientX - leftPointerDown.x;
+          var dy = e.clientY - leftPointerDown.y;
+          if (Math.sqrt(dx * dx + dy * dy) < 10) {
+            if (gd._fullLayout && gd._fullLayout.xaxis && gd._fullLayout.yaxis) {
+              var rect = gd.getBoundingClientRect();
+              var xAxis = gd._fullLayout.xaxis;
+              var yAxis = gd._fullLayout.yaxis;
+              var xPx = e.clientX - rect.left - xAxis._offset;
+              var yPx = e.clientY - rect.top - yAxis._offset;
+              if (xPx >= 0 && xPx <= xAxis._length && yPx >= 0 && yPx <= yAxis._length) {
+                var xData = xAxis.p2d(xPx);
+                var yData = yAxis.p2d(yPx);
+                setTimeout(function () {
+                  if (!gd.__pointClicked) onBgClick(xData, yData);
+                }, 50);
+              }
             }
           }
         }
+        if (_activePointers.size === 0) {
+          leftPointerDown = null;
+          _wasMultiTouch = false;
+        }
       }
-      leftPointerDown = null;
     };
     var upEv = !!window.PointerEvent ? 'pointerup' : 'mouseup';
     gd.addEventListener(!!window.PointerEvent ? 'pointerdown' : 'mousedown', handleMidDown, {
@@ -1154,11 +1168,11 @@ var PlotlyChart = function PlotlyChart(_ref9) {
     });
     window.addEventListener(!!window.PointerEvent ? 'pointermove' : 'mousemove', handleMidMoveUp, {
       capture: true,
-      passive: false
+      passive: true
     });
     window.addEventListener(upEv, handleMidMoveUp, {
       capture: true,
-      passive: false
+      passive: true
     });
     gd.addEventListener(!!window.PointerEvent ? 'pointerdown' : 'mousedown', handleLeftDown, {
       capture: true
@@ -5055,9 +5069,12 @@ var App = function App() {
         if (filteredSavedColors[k].type !== 'pin') delete filteredSavedColors[k];
       });
     } else if (viewportFilter === 'anchors') {
+      // Remove pin entries from savedColors (no 'anchor' type exists in savedColors)
       Object.keys(filteredSavedColors).forEach(function (k) {
         if (filteredSavedColors[k].type !== 'anchor') delete filteredSavedColors[k];
       });
+      // Also strip pin-associated points so views only receive pure grid anchors
+      points = points.filter(function (p) { return !p.isPin; });
     }
 
     // 2. Filter Points and SavedColors by Tags and Search Query
@@ -8579,11 +8596,657 @@ root.render(/*#__PURE__*/React.createElement(App, null));
     <div id="root"></div>
     
 
-<svg id="js-plotly-tester" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" style="position: absolute; left: -10000px; top: -10000px; width: 9000px; height: 9000px; z-index: 1;"><path class="js-reference-point" d="M0,0H1V1H0Z" style="stroke-width: 0; fill: black;"></path></svg><script type="text/babel" data-compact="true">
+<svg id="js-plotly-tester" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" style="position: absolute; left: -10000px; top: -10000px; width: 9000px; height: 9000px; z-index: 1;"><path class="js-reference-point" d="M0,0H1V1H0Z" style="stroke-width: 0; fill: black;"></path></svg>
+<script>
+// ═══════════════════════════════════════════════════════════════════════
+// Canvas + Three.js chart engine v2
+// Exposes: window.CanvasScatter, window.ThreeScatter, window.CanvasLine
+// ═══════════════════════════════════════════════════════════════════════
+(function () {
+  'use strict';
+  var ce = React.createElement;
+  var useState = React.useState, useEffect = React.useEffect,
+      useRef = React.useRef, useCallback = React.useCallback;
+
+  function strip(s){ return (s||'').replace(/<b>|<\/b>|<br>/gi,' ').replace(/<[^>]+>/g,'').replace(/\s+/,' ').trim(); }
+
+  // ── CanvasScatter ──────────────────────────────────────────────────
+  // 2D scatter: pan/pinch, tap to select, hover labels, equal-aspect option
+  window.CanvasScatter = function CanvasScatter(props) {
+    var data      = props.data   || [];
+    var layout    = props.layout || {};
+    var onPointClick = props.onPointClick;
+    var onBgClick    = props.onBgClick;
+    var theme        = props.theme;
+
+    var containerRef = useRef(null);
+    var canvasRef    = useRef(null);
+    var rafRef       = useRef(null);
+
+    var xr = (layout.xaxis && layout.xaxis.range) || [-1, 1];
+    var yr = (layout.yaxis && layout.yaxis.range) || [-1, 1];
+    // Equal-aspect when layout has scaleanchor
+    var equalAspect = !!(layout.xaxis && layout.xaxis.scaleanchor);
+    var xMin = xr[0], xMax = xr[1], yMin = yr[0], yMax = yr[1];
+
+    // View state
+    var st = useRef({ tx:0, ty:0, scale:1,
+      ptrs: new Map(), pinchDist:null, pinchCenter:null,
+      panStart:null, viewAtPan:null, wasPinch:false, downPos:null });
+
+    var isDark = theme === 'dark';
+
+    var draw = useCallback(function(){
+      var canvas = canvasRef.current, cont = containerRef.current;
+      if(!canvas || !cont || !data) return;
+      var dpr = window.devicePixelRatio || 1;
+      var W = cont.clientWidth, H = cont.clientHeight;
+      if(!W || !H) return;
+      if(canvas.width !== W*dpr || canvas.height !== H*dpr){
+        canvas.width = W*dpr; canvas.height = H*dpr;
+        canvas.style.width = W+'px'; canvas.style.height = H+'px';
+      }
+      var ctx = canvas.getContext('2d');
+      var s = st.current;
+
+      // For equal-aspect: compute unified px-per-data-unit
+      var xSpan = xMax - xMin, ySpan = yMax - yMin;
+      var ppu; // pixels per data unit (before zoom)
+      if(equalAspect){
+        ppu = Math.min(W / xSpan, H / ySpan);
+        // Center the data space in the canvas
+        var baseOffX = (W - ppu * xSpan) / 2;
+        var baseOffY = (H - ppu * ySpan) / 2;
+      }
+
+      // data → screen (with pan/zoom)
+      function ts(dx, dy){
+        if(equalAspect){
+          var bx = baseOffX + (dx - xMin) * ppu;
+          var by = baseOffY + (yMax - dy) * ppu;
+          return { x: bx * s.scale + s.tx, y: by * s.scale + s.ty };
+        }
+        var bx2 = (dx - xMin) / xSpan * W;
+        var by2 = (1 - (dy - yMin) / ySpan) * H;
+        return { x: bx2 * s.scale + s.tx, y: by2 * s.scale + s.ty };
+      }
+      // screen → data (for click)
+      function fromScreen(sx, sy){
+        var lx = (sx - s.tx) / s.scale;
+        var ly = (sy - s.ty) / s.scale;
+        if(equalAspect){
+          return { x: (lx - baseOffX) / ppu + xMin, y: yMax - (ly - baseOffY) / ppu };
+        }
+        return { x: lx / W * xSpan + xMin, y: (1 - ly / H) * ySpan + yMin };
+      }
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.save(); ctx.scale(dpr, dpr);
+      ctx.fillStyle = isDark ? '#0a0a0a' : '#f8fafc';
+      ctx.fillRect(0, 0, W, H);
+
+      // ── Concentric chroma rings (for equal-aspect / top-down view) ──
+      if(equalAspect){
+        var originPx = ts(0, 0);
+        ctx.setLineDash([2, 4]);
+        for(var ring = 0.02; ring <= 0.32; ring += 0.02){
+          var edgePx = ts(ring, 0);
+          var radius = Math.abs(edgePx.x - originPx.x);
+          if(radius < 1) continue;
+          ctx.beginPath();
+          ctx.arc(originPx.x, originPx.y, radius, 0, Math.PI * 2);
+          ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
+          ctx.lineWidth = 0.8;
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      }
+
+      // ── Shapes (paths and lines) ──
+      var shapes = (layout && layout.shapes) || [];
+      for(var si = 0; si < shapes.length; si++){
+        var sh = shapes[si];
+        ctx.globalAlpha = sh.opacity != null ? sh.opacity : 1;
+        if(sh.type === 'line'){
+          var p0 = ts(sh.x0, sh.y0), p1 = ts(sh.x1, sh.y1);
+          ctx.beginPath();
+          ctx.strokeStyle = (sh.line && sh.line.color) || '#888';
+          ctx.lineWidth   = (sh.line && sh.line.width) || 1;
+          ctx.setLineDash(sh.line && sh.line.dash === 'dot' ? [3, 5] : []);
+          ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
+          ctx.setLineDash([]);
+        } else if(sh.type === 'path' && sh.path){
+          // Parse SVG path and transform each coordinate
+          try {
+            var segs = sh.path.match(/[MLZ][^MLZ]*/g) || [];
+            ctx.beginPath();
+            var pathStarted = false;
+            for(var si2 = 0; si2 < segs.length; si2++){
+              var seg = segs[si2].trim();
+              var cmd = seg[0];
+              if(cmd === 'Z'){ ctx.closePath(); continue; }
+              var nums = seg.slice(1).trim().split(/[\s,]+/).map(Number);
+              for(var ci = 0; ci + 1 < nums.length; ci += 2){
+                var sp = ts(nums[ci], nums[ci+1]);
+                if(cmd === 'M' && !pathStarted){ ctx.moveTo(sp.x, sp.y); pathStarted = true; }
+                else if(cmd === 'M'){ ctx.moveTo(sp.x, sp.y); }
+                else { ctx.lineTo(sp.x, sp.y); }
+              }
+            }
+            ctx.closePath();
+            if(sh.fillcolor){ ctx.fillStyle = sh.fillcolor; ctx.fill(); }
+            if(sh.line && sh.line.color){
+              ctx.strokeStyle = sh.line.color;
+              ctx.lineWidth = sh.line.width || 0.8;
+              ctx.stroke();
+            }
+          } catch(err){}
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      // ── Traces ──
+      // Two passes: first fill/stroke markers, then labels on top
+      var labelQueue = []; // [{x,y,text,color,fs}]
+
+      for(var ti = 0; ti < data.length; ti++){
+        var tr = data[ti];
+        if(!tr || !tr.x || tr.type === 'scatter3d') continue;
+        var n = tr.x.length;
+        var markerSize = (tr.marker && tr.marker.size) || 4;
+        var r = markerSize * 0.8 * Math.sqrt(s.scale); // scale-responsive dot size
+        r = Math.max(2, Math.min(markerSize * 2.5, r));
+        var sym = (tr.marker && tr.marker.symbol) || 'circle';
+        var op  = (tr.marker && tr.marker.opacity != null) ? tr.marker.opacity : 0.85;
+        var lc  = tr.marker && tr.marker.line && tr.marker.line.color;
+        var lw  = tr.marker && tr.marker.line && (tr.marker.line.width || 0);
+        var isX = sym === 'x';
+        var isCross = sym === 'cross';
+        var isSquare = sym === 'square';
+        var showText = tr.mode && tr.mode.indexOf('text') !== -1;
+
+        ctx.globalAlpha = op;
+        for(var pi = 0; pi < n; pi++){
+          if(tr.x[pi] == null) continue;
+          var sp = ts(tr.x[pi], tr.y[pi]);
+          if(sp.x < -r*4 || sp.x > W + r*4 || sp.y < -r*4 || sp.y > H + r*4) continue;
+          var col = Array.isArray(tr.marker && tr.marker.color)
+            ? tr.marker.color[pi]
+            : ((tr.marker && tr.marker.color) || '#888');
+
+          ctx.beginPath();
+          if(isSquare){ ctx.rect(sp.x - r, sp.y - r, r*2, r*2); }
+          else if(isX || isCross){
+            var xr2 = r * 0.9;
+            if(isX){
+              ctx.moveTo(sp.x - xr2, sp.y - xr2); ctx.lineTo(sp.x + xr2, sp.y + xr2);
+              ctx.moveTo(sp.x + xr2, sp.y - xr2); ctx.lineTo(sp.x - xr2, sp.y + xr2);
+            } else {
+              ctx.moveTo(sp.x - xr2, sp.y); ctx.lineTo(sp.x + xr2, sp.y);
+              ctx.moveTo(sp.x, sp.y - xr2); ctx.lineTo(sp.x, sp.y + xr2);
+            }
+          } else { ctx.arc(sp.x, sp.y, r, 0, Math.PI*2); }
+
+          if(isX || isCross){
+            ctx.strokeStyle = col;
+            ctx.lineWidth = Math.max(1.5, r * 0.5);
+            ctx.stroke();
+          } else {
+            ctx.fillStyle = col; ctx.fill();
+            if(lc && lw > 0){ ctx.strokeStyle = lc; ctx.lineWidth = lw; ctx.stroke(); }
+          }
+
+          // Queue label
+          if(showText){
+            var txt = strip((tr.text && tr.text[pi]) || '');
+            if(txt){
+              var fc = Array.isArray(tr.textfont && tr.textfont.color)
+                ? tr.textfont.color[pi]
+                : ((tr.textfont && tr.textfont.color) || (isDark ? '#fff' : '#000'));
+              var fs = (tr.textfont && tr.textfont.size) || 11;
+              labelQueue.push({ x: sp.x, y: sp.y, text: txt, color: fc, fs: fs,
+                                bins: tr.marker && tr.marker.opacity === 0 });
+            }
+          }
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      // ── Labels pass ──
+      // In bins mode: always show inside bin. In dots mode: show only when zoomed in.
+      var showDotLabels = s.scale > 2.5;
+      for(var li = 0; li < labelQueue.length; li++){
+        var lb = labelQueue[li];
+        if(!lb.bins && !showDotLabels) continue;
+        if(lb.x < -80 || lb.x > W + 80 || lb.y < -20 || lb.y > H + 20) continue;
+        ctx.globalAlpha = lb.bins ? 1 : Math.min(1, (s.scale - 2.5) / 1.5);
+        var lines = lb.text.split(/\s+/);
+        var fsize = lb.bins ? lb.fs : Math.min(lb.fs, 9);
+        ctx.font = 'bold ' + fsize + 'px Inter,sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        // Outline for readability
+        ctx.strokeStyle = isDark ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.7)';
+        ctx.lineWidth = 2.5; ctx.lineJoin = 'round';
+        var lineH = fsize * 1.25;
+        var totalH = lines.length * lineH;
+        var startY = lb.y - totalH / 2 + lineH / 2;
+        for(var lli = 0; lli < lines.length; lli++){
+          var ly3 = startY + lli * lineH;
+          ctx.strokeText(lines[lli], lb.x, ly3);
+          ctx.fillStyle = lb.color; ctx.fillText(lines[lli], lb.x, ly3);
+        }
+      }
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }, [data, layout, isDark, xMin, xMax, yMin, yMax, equalAspect]);
+
+    function sched(){ if(rafRef.current) cancelAnimationFrame(rafRef.current); rafRef.current = requestAnimationFrame(draw); }
+    useEffect(function(){
+      var cont = containerRef.current; if(!cont) return;
+      var ro = new ResizeObserver(sched); ro.observe(cont);
+      return function(){ ro.disconnect(); };
+    }, [draw]);
+    useEffect(sched, [draw]);
+
+    // ── Pointer interaction ──
+    function onDown(e){
+      var s = st.current, pos = {x: e.clientX, y: e.clientY};
+      s.ptrs.set(e.pointerId, pos);
+      e.currentTarget.setPointerCapture(e.pointerId);
+      if(s.ptrs.size === 1){ s.downPos = pos; s.panStart = pos; s.viewAtPan = {tx: s.tx, ty: s.ty}; s.wasPinch = false; }
+      else if(s.ptrs.size >= 2){
+        s.wasPinch = true;
+        var pts = Array.from(s.ptrs.values());
+        s.pinchDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+        s.pinchCenter = {x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2};
+      }
+    }
+    function onMove(e){
+      var s = st.current;
+      s.ptrs.set(e.pointerId, {x: e.clientX, y: e.clientY});
+      if(s.ptrs.size >= 2){
+        var pts = Array.from(s.ptrs.values());
+        var dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+        var cen  = {x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2};
+        var rect = e.currentTarget.getBoundingClientRect();
+        if(s.pinchDist && dist > 0){
+          var factor = dist / s.pinchDist;
+          var cx = cen.x - rect.left, cy = cen.y - rect.top;
+          s.tx = cx + (s.tx - cx) * factor;
+          s.ty = cy + (s.ty - cy) * factor;
+          s.scale = Math.max(0.1, Math.min(80, s.scale * factor));
+        }
+        if(s.pinchCenter){ s.tx += cen.x - s.pinchCenter.x; s.ty += cen.y - s.pinchCenter.y; }
+        s.pinchDist = dist; s.pinchCenter = cen;
+      } else if(s.ptrs.size === 1 && s.panStart && s.viewAtPan){
+        s.tx = s.viewAtPan.tx + (e.clientX - s.panStart.x);
+        s.ty = s.viewAtPan.ty + (e.clientY - s.panStart.y);
+      }
+      sched();
+    }
+    function onUp(e){
+      var s = st.current, wasMulti = s.ptrs.size > 1;
+      s.ptrs.delete(e.pointerId);
+      if(s.ptrs.size === 0){
+        if(!wasMulti && !s.wasPinch && s.downPos){
+          var dx = e.clientX - s.downPos.x, dy = e.clientY - s.downPos.y;
+          if(Math.sqrt(dx*dx + dy*dy) < 12) handleTap(e.clientX, e.clientY, e.currentTarget);
+        }
+        s.downPos = s.panStart = s.viewAtPan = s.pinchDist = s.pinchCenter = null;
+      }
+    }
+    function handleTap(sx, sy, el){
+      var s = st.current, rect = el.getBoundingClientRect();
+      var lx = sx - rect.left, ly = sy - rect.top;
+      var W = rect.width, H = rect.height;
+      var xSpan = xMax - xMin, ySpan = yMax - yMin;
+      var ppu2; var baseOffX2 = 0; var baseOffY2 = 0;
+      if(equalAspect){ ppu2 = Math.min(W/xSpan, H/ySpan); baseOffX2 = (W - ppu2*xSpan)/2; baseOffY2 = (H - ppu2*ySpan)/2; }
+      function screenToData(px, py){
+        var bx = (px - s.tx) / s.scale, by = (py - s.ty) / s.scale;
+        if(equalAspect) return { x: (bx - baseOffX2)/ppu2 + xMin, y: yMax - (by - baseOffY2)/ppu2 };
+        return { x: bx/W*xSpan + xMin, y: (1 - by/H)*ySpan + yMin };
+      }
+      var dxy = screenToData(lx, ly);
+      var minD = 28, bestCD = null;
+      for(var ti = 0; ti < data.length; ti++){
+        var tr = data[ti]; if(!tr || !tr.x || tr.type === 'scatter3d') continue;
+        var markerR = Math.max(20, (tr.marker && tr.marker.size || 4) * 2);
+        for(var pi = 0; pi < tr.x.length; pi++){
+          if(tr.x[pi] == null) continue;
+          var spx, spy;
+          if(equalAspect){
+            spx = (baseOffX2 + (tr.x[pi]-xMin)*ppu2)*s.scale + s.tx;
+            spy = (baseOffY2 + (yMax-tr.y[pi])*ppu2)*s.scale + s.ty;
+          } else {
+            spx = ((tr.x[pi]-xMin)/xSpan*W)*s.scale + s.tx;
+            spy = ((1-(tr.y[pi]-yMin)/ySpan)*H)*s.scale + s.ty;
+          }
+          var d = Math.sqrt((spx-lx)*(spx-lx) + (spy-ly)*(spy-ly));
+          if(d < markerR && d < minD){ minD = d; bestCD = tr.customdata && tr.customdata[pi]; }
+        }
+      }
+      if(bestCD != null && onPointClick) onPointClick(bestCD);
+      else if(onBgClick) onBgClick(dxy.x, dxy.y);
+    }
+    function onWheel(e){
+      e.preventDefault();
+      var s = st.current, rect = e.currentTarget.getBoundingClientRect();
+      var cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+      var f = e.deltaY < 0 ? 1.15 : 0.87;
+      s.tx = cx + (s.tx - cx) * f; s.ty = cy + (s.ty - cy) * f;
+      s.scale = Math.max(0.1, Math.min(80, s.scale * f));
+      sched();
+    }
+    function onDblClick(){ var s = st.current; s.tx = 0; s.ty = 0; s.scale = 1; sched(); }
+
+    return ce('div', {
+      ref: containerRef,
+      style: {width:'100%', height:'100%', position:'relative', borderRadius:'0.75rem', overflow:'hidden'}
+    }, ce('canvas', {
+      ref: canvasRef,
+      style: {touchAction:'none', display:'block', cursor:'crosshair'},
+      onPointerDown: onDown, onPointerMove: onMove,
+      onPointerUp: onUp, onPointerCancel: onUp,
+      onDoubleClick: onDblClick, onWheel: onWheel
+    }));
+  };
+
+  // ── ThreeScatter ───────────────────────────────────────────────────
+  // 3D scatter: drag-to-orbit (requires button/touch down), pinch-zoom
+  // Coordinate system: x=a, y=L (vertical), z=b — black at bottom, white at top
+  window.ThreeScatter = function ThreeScatter(props) {
+    var data = props.data || [], onPointClick = props.onPointClick, theme = props.theme;
+    var contRef = useRef(null);
+    var orb = useRef({theta: 0.6, phi: 1.1, r: 2.6}); // phi: angle from Y-up
+    var ptrRef = useRef({ptrs: new Map(), pinchDist: null, downPos: null,
+                          wasPinch: false, isDragging: false});
+    var cdRef = useRef([]);
+    var threeRef = useRef(null); // {scene,cam,renderer,pointCloud,animId}
+
+    useEffect(function(){
+      var cont = contRef.current;
+      if(!cont || !window.THREE) return;
+      var T = window.THREE;
+      var W = cont.clientWidth || 400, H = cont.clientHeight || 300;
+      var isDark = theme === 'dark';
+
+      var scene = new T.Scene();
+      scene.background = new T.Color(isDark ? 0x0a0a0a : 0xf8fafc);
+
+      var cam = new T.PerspectiveCamera(50, W/H, 0.01, 100);
+      var renderer = new T.WebGLRenderer({antialias: true});
+      renderer.setSize(W, H);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.domElement.style.touchAction = 'none';
+      renderer.domElement.style.borderRadius = '0.75rem';
+      renderer.domElement.style.display = 'block';
+      cont.appendChild(renderer.domElement);
+
+      // Axis lines — Y is lightness (vertical)
+      var axMat = new T.LineBasicMaterial({color: isDark ? 0x444444 : 0xbbbbbb});
+      [ [[-0.4,0,0],[0.4,0,0]],  // a axis
+        [[0,-0.05,0],[0,1.05,0]], // L axis (vertical, full range)
+        [[0,0,-0.4],[0,0,0.4]]    // b axis
+      ].forEach(function(pts){
+        var g = new T.BufferGeometry().setFromPoints(
+          pts.map(function(p){ return new T.Vector3(p[0], p[1], p[2]); }));
+        scene.add(new T.Line(g, axMat));
+      });
+      // L=0 (black) and L=1 (white) reference planes as faint circles
+      var ringMat = new T.LineBasicMaterial({color: isDark ? 0x333333 : 0xcccccc});
+      [0, 0.5, 1].forEach(function(lv){
+        var pts2 = [];
+        for(var a2 = 0; a2 <= 64; a2++){
+          var ang = (a2/64) * Math.PI * 2;
+          pts2.push(new T.Vector3(Math.cos(ang)*0.2, lv, Math.sin(ang)*0.2));
+        }
+        var g2 = new T.BufferGeometry().setFromPoints(pts2);
+        scene.add(new T.Line(g2, ringMat));
+      });
+
+      // Build point cloud: scatter3d uses x=a, y=b, z=L
+      // We remap to Three.js: x=p.x(a), y=p.z(L), z=p.y(b)
+      var pos = [], cols = [], allCD = [];
+      data.forEach(function(tr){
+        if(!tr || tr.type !== 'scatter3d' || !tr.x) return;
+        for(var i = 0; i < tr.x.length; i++){
+          if(tr.x[i] == null) continue;
+          // x=a → x, z=L → y (vertical), y=b → z
+          pos.push(tr.x[i], tr.z[i], tr.y[i]);
+          var col = new T.Color(
+            Array.isArray(tr.marker && tr.marker.color) ? tr.marker.color[i]
+            : ((tr.marker && tr.marker.color) || '#888888'));
+          cols.push(col.r, col.g, col.b);
+          allCD.push((tr.customdata && tr.customdata[i]) || null);
+        }
+      });
+      cdRef.current = allCD;
+
+      var pointCloud = null;
+      if(pos.length > 0){
+        var geo = new T.BufferGeometry();
+        geo.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+        geo.setAttribute('color',    new T.Float32BufferAttribute(cols, 3));
+        var mat = new T.PointsMaterial({size: 0.018, vertexColors: true, sizeAttenuation: true});
+        pointCloud = new T.Points(geo, mat);
+        scene.add(pointCloud);
+      }
+
+      // Camera looks at centre of L range (0.5)
+      var lookAt = new T.Vector3(0, 0.5, 0);
+      function updateCam(){
+        var o = orb.current;
+        // Spherical: phi from Y+ (north pole = straight down Y axis)
+        cam.position.set(
+          lookAt.x + o.r * Math.sin(o.phi) * Math.sin(o.theta),
+          lookAt.y + o.r * Math.cos(o.phi),
+          lookAt.z + o.r * Math.sin(o.phi) * Math.cos(o.theta)
+        );
+        cam.lookAt(lookAt);
+      }
+      updateCam();
+
+      var animId = null;
+      function loop(){ animId = requestAnimationFrame(loop); renderer.render(scene, cam); }
+      loop();
+
+      var ray = new T.Raycaster();
+      ray.params.Points = {threshold: 0.022};
+      var el = renderer.domElement;
+      threeRef.current = {scene, cam, renderer, pointCloud, animId};
+
+      function onDown(e){
+        var p = ptrRef.current, pos2 = {x: e.clientX, y: e.clientY};
+        p.ptrs.set(e.pointerId, pos2);
+        el.setPointerCapture(e.pointerId);
+        p.isDragging = true;
+        if(p.ptrs.size === 1){ p.downPos = pos2; p.wasPinch = false; }
+        else if(p.ptrs.size >= 2){
+          p.wasPinch = true;
+          var pts = Array.from(p.ptrs.values());
+          p.pinchDist = Math.hypot(pts[1].x-pts[0].x, pts[1].y-pts[0].y);
+        }
+      }
+      function onMove(e){
+        var p = ptrRef.current;
+        if(!p.isDragging) return; // only orbit/zoom while pointer is down
+        var prev = p.ptrs.get(e.pointerId) || {x: e.clientX, y: e.clientY};
+        p.ptrs.set(e.pointerId, {x: e.clientX, y: e.clientY});
+        if(p.ptrs.size >= 2){
+          var pts = Array.from(p.ptrs.values());
+          var dist = Math.hypot(pts[1].x-pts[0].x, pts[1].y-pts[0].y);
+          if(p.pinchDist && dist > 0)
+            orb.current.r = Math.max(0.6, Math.min(8, orb.current.r * (p.pinchDist/dist)));
+          p.pinchDist = dist;
+        } else if(p.ptrs.size === 1){
+          orb.current.theta -= (e.clientX - prev.x) * 0.008;
+          orb.current.phi    = Math.max(0.08, Math.min(Math.PI-0.08,
+            orb.current.phi - (e.clientY - prev.y) * 0.008));
+        }
+        updateCam();
+      }
+      function onUp(e){
+        var p = ptrRef.current, wasMulti = p.ptrs.size > 1;
+        p.ptrs.delete(e.pointerId);
+        if(p.ptrs.size === 0){
+          p.isDragging = false;
+          if(!wasMulti && !p.wasPinch && p.downPos && onPointClick && pointCloud){
+            var ddx = e.clientX-p.downPos.x, ddy = e.clientY-p.downPos.y;
+            if(Math.sqrt(ddx*ddx+ddy*ddy) < 12){
+              var rect = el.getBoundingClientRect();
+              var mouse = new T.Vector2(
+                (e.clientX-rect.left)/rect.width*2-1,
+                -((e.clientY-rect.top)/rect.height)*2+1);
+              ray.setFromCamera(mouse, cam);
+              var hits = ray.intersectObjects([pointCloud], false);
+              if(hits.length > 0){
+                var cd = cdRef.current[hits[0].index];
+                if(cd != null) onPointClick(cd);
+              }
+            }
+          }
+          p.downPos = p.pinchDist = null;
+        }
+      }
+      function onWhl(e){
+        e.preventDefault();
+        orb.current.r = Math.max(0.6, Math.min(8, orb.current.r * (e.deltaY > 0 ? 1.1 : 0.91)));
+        updateCam();
+      }
+
+      el.addEventListener('pointerdown',   onDown);
+      el.addEventListener('pointermove',   onMove);
+      el.addEventListener('pointerup',     onUp);
+      el.addEventListener('pointercancel', onUp);
+      el.addEventListener('wheel',         onWhl, {passive: false});
+
+      var ro = new ResizeObserver(function(){
+        var W2 = cont.clientWidth || 400, H2 = cont.clientHeight || 300;
+        cam.aspect = W2/H2; cam.updateProjectionMatrix(); renderer.setSize(W2, H2);
+      });
+      ro.observe(cont);
+
+      return function(){
+        cancelAnimationFrame(animId); ro.disconnect();
+        el.removeEventListener('pointerdown',   onDown);
+        el.removeEventListener('pointermove',   onMove);
+        el.removeEventListener('pointerup',     onUp);
+        el.removeEventListener('pointercancel', onUp);
+        el.removeEventListener('wheel',         onWhl);
+        renderer.dispose();
+        if(cont.contains(el)) cont.removeChild(el);
+      };
+    }, [data, theme]);
+
+    return ce('div', {ref: contRef, style: {width:'100%', height:'100%'}});
+  };
+
+  // ── CanvasLine ─────────────────────────────────────────────────────
+  // Static line/bar chart for spectral data
+  window.CanvasLine = function CanvasLine(props) {
+    var data = props.data || [], layout = props.layout || {}, theme = props.theme;
+    var contRef = useRef(null), canvasRef = useRef(null), rafRef = useRef(null);
+    var isDark = theme === 'dark';
+    var xr = (layout.xaxis && layout.xaxis.range) || [400, 700];
+    var yr = (layout.yaxis && layout.yaxis.range) || [0, 1.05];
+
+    var draw = useCallback(function(){
+      var canvas = canvasRef.current, cont = contRef.current;
+      if(!canvas || !cont) return;
+      var dpr = window.devicePixelRatio || 1;
+      var W = cont.clientWidth, H = cont.clientHeight;
+      if(!W || !H) return;
+      if(canvas.width !== W*dpr || canvas.height !== H*dpr){
+        canvas.width = W*dpr; canvas.height = H*dpr;
+        canvas.style.width = W+'px'; canvas.style.height = H+'px';
+      }
+      var ctx = canvas.getContext('2d');
+      var PAD = {l:40, r:12, t:12, b:30};
+      var PW = W - PAD.l - PAD.r, PH = H - PAD.t - PAD.b;
+      var xMin = xr[0], xMax = xr[1], yMin = yr[0], yMax = yr[1];
+      var xSpan = xMax - xMin, ySpan = yMax - yMin;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.save(); ctx.scale(dpr, dpr);
+      ctx.fillStyle = isDark ? '#171717' : '#ffffff'; ctx.fillRect(0, 0, W, H);
+
+      function ts(dx, dy){ return {x: PAD.l + (dx-xMin)/xSpan*PW, y: PAD.t + (1-(dy-yMin)/ySpan)*PH}; }
+
+      // Grid
+      ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)';
+      ctx.lineWidth = 1; ctx.setLineDash([3, 4]);
+      for(var gx = Math.ceil(xMin/50)*50; gx <= xMax; gx += 50){
+        var gp = ts(gx, 0); ctx.beginPath(); ctx.moveTo(gp.x, PAD.t); ctx.lineTo(gp.x, PAD.t+PH); ctx.stroke();
+      }
+      for(var gy = 0; gy <= 1.01; gy += 0.25){
+        var gyp = ts(0, gy); ctx.beginPath(); ctx.moveTo(PAD.l, gyp.y); ctx.lineTo(PAD.l+PW, gyp.y); ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.15)';
+      ctx.strokeRect(PAD.l, PAD.t, PW, PH);
+
+      // Labels
+      ctx.fillStyle = isDark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.4)';
+      ctx.font = '9px Inter,sans-serif'; ctx.textAlign = 'center';
+      for(var lx = 400; lx <= 700; lx += 100){ var lp = ts(lx, yMin); ctx.fillText(lx, lp.x, PAD.t+PH+16); }
+      ctx.textAlign = 'right';
+      for(var ly2 = 0; ly2 <= 1.01; ly2 += 0.25){
+        var lp2 = ts(xMin, ly2); ctx.fillText(ly2.toFixed(2), PAD.l-4, lp2.y+3);
+      }
+
+      ctx.save(); ctx.beginPath(); ctx.rect(PAD.l, PAD.t, PW, PH); ctx.clip();
+      for(var ti = 0; ti < data.length; ti++){
+        var tr = data[ti]; if(!tr || !tr.x) continue;
+        var col = (tr.line && tr.line.color) ||
+          (Array.isArray(tr.marker && tr.marker.color) ? tr.marker.color[0] : (tr.marker && tr.marker.color)) ||
+          '#38bdf8';
+        ctx.strokeStyle = col; ctx.lineWidth = (tr.line && tr.line.width) || 1.5;
+        if(tr.type === 'bar'){
+          var bw = PW / Math.max(tr.x.length, 1) * 0.55;
+          ctx.fillStyle = col + '99'; ctx.globalAlpha = 0.8;
+          for(var bi = 0; bi < tr.x.length; bi++){
+            var bp = ts(tr.x[bi], tr.y[bi]||0), bp0 = ts(tr.x[bi], 0);
+            ctx.fillRect(bp.x - bw/2, bp.y, bw, bp0.y - bp.y);
+          }
+          ctx.globalAlpha = 1;
+        } else {
+          ctx.beginPath(); var started = false;
+          for(var li2 = 0; li2 < tr.x.length; li2++){
+            if(tr.x[li2] == null){ started = false; continue; }
+            var lp3 = ts(tr.x[li2], tr.y[li2]);
+            if(!started){ ctx.moveTo(lp3.x, lp3.y); started = true; } else ctx.lineTo(lp3.x, lp3.y);
+          }
+          ctx.stroke();
+        }
+      }
+      ctx.restore(); ctx.restore();
+    }, [data, layout, isDark]);
+
+    function sched(){ if(rafRef.current) cancelAnimationFrame(rafRef.current); rafRef.current = requestAnimationFrame(draw); }
+    useEffect(function(){
+      var cont = contRef.current; if(!cont) return;
+      var ro = new ResizeObserver(sched); ro.observe(cont);
+      return function(){ ro.disconnect(); };
+    }, [draw]);
+    useEffect(sched, [draw]);
+
+    return ce('div', {ref: contRef, style:{width:'100%', height:'100%', position:'relative', borderRadius:'0.75rem', overflow:'hidden'}},
+      ce('canvas', {ref: canvasRef, style:{display:'block'}}));
+  };
+
+})();
+
+</script>
+<script type="text/babel" data-compact="true">
 
 
 
         const { useState, useEffect, useMemo, useRef, useCallback } = React;
+        // Chart component bindings (resolved after engine script runs)
+        const CanvasScatter = window.CanvasScatter;
+        const ThreeScatter  = window.ThreeScatter;
+        const CanvasLine    = window.CanvasLine;
          
 
         // --- UTILITIES --- //
@@ -9180,78 +9843,12 @@ root.render(/*#__PURE__*/React.createElement(App, null));
             );
         };
 
-        const PlotlyChart = ({ data, layout, config = {}, onPointClick, onBgClick, onRelayout, theme }) => {
-            const chartRef = useRef(null);
-            useEffect(() => {
-                const gd = chartRef.current; if (!gd || !Plotly) return;
-                let activeLayout = JSON.parse(JSON.stringify(layout)); const is3D = !!activeLayout.scene;
-                if (gd._fullLayout) {
-                    if (is3D && gd._fullLayout.scene) {
-                        if (gd._fullLayout.scene._scene && typeof gd._fullLayout.scene._scene.getCamera === 'function') {
-                            activeLayout.scene.camera = gd._fullLayout.scene._scene.getCamera();
-                        } else if (gd._fullLayout.scene.camera) {
-                            activeLayout.scene.camera = JSON.parse(JSON.stringify(gd._fullLayout.scene.camera));
-                        }
-                    }
-                    if (gd._fullLayout.xaxis && gd._fullLayout.xaxis.range && activeLayout.xaxis) {
-                        activeLayout.xaxis.range = JSON.parse(JSON.stringify(gd._fullLayout.xaxis.range));
-                    }
-                    if (gd._fullLayout.yaxis && gd._fullLayout.yaxis.range && activeLayout.yaxis) {
-                        activeLayout.yaxis.range = JSON.parse(JSON.stringify(gd._fullLayout.yaxis.range));
-                    }
-                }
-                Plotly.react(gd, data, activeLayout, { responsive: true, displayModeBar: false, scrollZoom: true, ...config }).then(() => {
-                    gd.removeAllListeners('plotly_click');
-                    gd.removeAllListeners('plotly_relayout');
-                    if (onPointClick) { 
-                        gd.on('plotly_click', (e) => { 
-                            gd.__pointClicked = true; 
-                            if (e.points && e.points[0] && e.points[0].customdata) {
-                                onPointClick(e.points[0].customdata); 
-                            }
-                            setTimeout(() => { gd.__pointClicked = false; }, 50); 
-                        }); 
-                    }
-                    if (onRelayout) { gd.on('plotly_relayout', onRelayout); }
-                });
-                let isMiddleProxying = false;
-                const proxyEvent = (e) => { if (e.__proxied) return; e.preventDefault(); e.stopPropagation(); const targetButton = is3D ? 2 : 0; const targetButtons = is3D ? 2 : 1; const clone = new (window.PointerEvent ? PointerEvent : MouseEvent)(e.type, { bubbles: true, cancelable: e.type !== 'pointermove' && e.type !== 'mousemove', view: window, clientX: e.clientX, clientY: e.clientY, screenX: e.screenX, screenY: e.screenY, movementX: e.movementX, movementY: e.movementY, button: (e.type.includes('move')) ? -1 : targetButton, buttons: targetButtons, pointerId: e.pointerId, pointerType: e.pointerType, isPrimary: e.isPrimary, relatedTarget: e.relatedTarget }); clone.__proxied = true; e.target.dispatchEvent(clone); };
-                const handleMidDown = (e) => { if (e.button === 1 && !e.__proxied) { isMiddleProxying = true; proxyEvent(e); } };
-                const handleMidMoveUp = (e) => { if (isMiddleProxying && !e.__proxied) { if ((e.buttons & 4) || (e.type.endsWith('up') && e.button === 1)) { proxyEvent(e); if (e.type.endsWith('up')) isMiddleProxying = false; } else if (e.buttons === 0) isMiddleProxying = false; } };
-                let leftPointerDown = null;
-                const handleLeftDown = (e) => { if (e.button === 0 && !e.__proxied) leftPointerDown = { x: e.clientX, y: e.clientY }; };
-                const handleLeftUp = (e) => { 
-                    if (e.button === 0 && !e.__proxied && leftPointerDown && onBgClick && !is3D) { 
-                        const dx = e.clientX - leftPointerDown.x; 
-                        const dy = e.clientY - leftPointerDown.y; 
-                        if (Math.sqrt(dx * dx + dy * dy) < 10) { 
-                            if (gd._fullLayout && gd._fullLayout.xaxis && gd._fullLayout.yaxis) { 
-                                const rect = gd.getBoundingClientRect(); 
-                                const xAxis = gd._fullLayout.xaxis; 
-                                const yAxis = gd._fullLayout.yaxis; 
-                                const xPx = e.clientX - rect.left - xAxis._offset; 
-                                const yPx = e.clientY - rect.top - yAxis._offset; 
-                                if (xPx >= 0 && xPx <= xAxis._length && yPx >= 0 && yPx <= yAxis._length) { 
-                                    const xData = xAxis.p2d(xPx); 
-                                    const yData = yAxis.p2d(yPx); 
-                                    setTimeout(() => { 
-                                        if (!gd.__pointClicked) onBgClick(xData, yData); 
-                                    }, 50); 
-                                } 
-                            } 
-                        } 
-                    } 
-                    leftPointerDown = null; 
-                };
-                const upEv = !!window.PointerEvent ? 'pointerup' : 'mouseup';
-                gd.addEventListener(!!window.PointerEvent ? 'pointerdown' : 'mousedown', handleMidDown, { capture: true, passive: false });
-                window.addEventListener(!!window.PointerEvent ? 'pointermove' : 'mousemove', handleMidMoveUp, { capture: true, passive: false });
-                window.addEventListener(upEv, handleMidMoveUp, { capture: true, passive: false });
-                gd.addEventListener(!!window.PointerEvent ? 'pointerdown' : 'mousedown', handleLeftDown, { capture: true });
-                window.addEventListener(upEv, handleLeftUp, { capture: true });
-                return () => { gd.removeEventListener(!!window.PointerEvent ? 'pointerdown' : 'mousedown', handleMidDown, { capture: true }); window.removeEventListener(!!window.PointerEvent ? 'pointermove' : 'mousemove', handleMidMoveUp, { capture: true }); window.removeEventListener(upEv, handleMidMoveUp, { capture: true }); gd.removeEventListener(!!window.PointerEvent ? 'pointerdown' : 'mousedown', handleLeftDown, { capture: true }); window.removeEventListener(upEv, handleLeftUp, { capture: true }); };
-            }, [data, layout, theme, onPointClick, onBgClick, config]);
-            return <div ref={chartRef} className="plotly-wrapper"></div>;
+        const PlotlyChart = ({ data, layout, config={}, onPointClick, onBgClick, onRelayout, theme }) => {
+            const is3D = data && data.some(t => t && t.type === 'scatter3d');
+            const isLine = !is3D && data && data.length > 0 && data.every(t => !t || t.type === 'bar' || (t.mode && (t.mode === 'lines' || t.mode.startsWith('lines+'))));
+            if (is3D)   return <ThreeScatter  data={data} layout={layout} onPointClick={onPointClick} theme={theme} />;
+            if (isLine) return <CanvasLine     data={data} layout={layout} theme={theme} />;
+            return          <CanvasScatter  data={data} layout={layout} onPointClick={onPointClick} onBgClick={onBgClick} theme={theme} />;
         };
 
         const View3D = ({ points, crosshair, handlePointClick, theme, names, adjectives, savedColors = {}, lockedNouns, lockedAdjectives, tetheringPinId }) => {
@@ -9262,7 +9859,7 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                 const lockedNodes = points.filter(p => { const prefix = getNounPrefix(p.L, p.C); return !p.isPin && lockedNouns[`${prefix}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]; }).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed' }; });
                 const pinNodes = Object.values(savedColors).filter(sc => sc.type === 'pin').map(p => { const displayName = `${p.adjOverride || adjectives[p.adjId] || ''} ${p.nameOverride || names[p.anchorId] || ''}`.trim() || 'Unnamed Pin'; return { ...p, displayName }; });
                 traces.push({ type: 'scatter3d', mode: 'markers', x: lockedNodes.map(p => p.a), y: lockedNodes.map(p => p.b), z: lockedNodes.map(p => p.L), text: lockedNodes.map(p => `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`), hovertemplate: "%{text}<extra></extra>", customdata: lockedNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'square', size: 6, color: lockedNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
-                traces.push({ type: 'scatter3d', mode: 'markers', x: pinNodes.map(p => p.a), y: pinNodes.map(p => p.b), z: pinNodes.map(p => p.L), text: pinNodes.map(p => `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`), hovertemplate: "%{text}<extra></extra>", customdata: pinNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'x', size: 6, color: pinNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
+                traces.push({ type: 'scatter3d', mode: 'markers', x: pinNodes.map(p => p.a), y: pinNodes.map(p => p.b), z: pinNodes.map(p => p.L), text: pinNodes.map(p => `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`), hovertemplate: "%{text}<extra></extra>", customdata: pinNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'x', size: 14, color: pinNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
                 traces.push({ type: 'scatter3d', mode: 'lines', x: crosshair?.snapTarget ? [crosshair.a, crosshair.snapTarget.a] : [], y: crosshair?.snapTarget ? [crosshair.b, crosshair.snapTarget.b] : [], z: crosshair?.snapTarget ? [crosshair.rawL, crosshair.snapTarget.L] : [], line: { color: isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.3)', width: 2, dash: 'dot' }, hoverinfo: 'skip' });
                 traces.push({ type: 'scatter3d', mode: 'markers', x: [crosshair?.a], y: [crosshair?.b], z: [crosshair?.rawL], text: [`<b>Cursor</b><br>L: ${crosshair?.rawL.toFixed(3)} C: ${crosshair?.rawC.toFixed(3)} H: ${crosshair?.rawH.toFixed(1)}°`], hovertemplate: "%{text}<extra></extra>", marker: { symbol: 'cross', size: 8, color: isDark ? '#fff' : '#000', line: { color: isDark ? '#fff' : '#000', width: 2 } }, hoverinfo: 'skip' });
                 return traces;
@@ -9300,7 +9897,7 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                 const filtered = points.filter(p => !p.isPin && filterFn(p));
                 const filteredBurnt = Object.values(savedColors).filter(p => p.type === 'pin' && filterFn(p));
                 const traces = [];
-                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers', x: filtered.map(p => p.C), y: filtered.map(p => p.L), text: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[p.lStr] || ''; const noun = names[nounId] || ''; const fullName = `${adj} ${noun}`.trim() || 'Unnamed'; const binText = adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`; return viewMode === 'bins' ? binText : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), textposition: 'middle center', textfont: { size: 12, family: 'Inter, sans-serif', color: filtered.map(p => p.L > 0.55 ? '#000000' : '#ffffff') }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>L: %{y:.3f} C: %{x:.3f}<extra></extra>" : "%{text}<extra></extra>", customdata: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 10, color: filtered.map(p => p.color), opacity: viewMode === 'bins' ? 0 : 0.8, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
+                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers+text', x: filtered.map(p => p.C), y: filtered.map(p => p.L), text: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[p.lStr] || ''; const noun = names[nounId] || ''; const fullName = `${adj} ${noun}`.trim() || 'Unnamed'; const binText = adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`; return viewMode === 'bins' ? binText : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), textposition: 'middle center', textfont: { size: 12, family: 'Inter, sans-serif', color: filtered.map(p => p.L > 0.55 ? '#000000' : '#ffffff') }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>L: %{y:.3f} C: %{x:.3f}<extra></extra>" : "%{text}<extra></extra>", customdata: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 10, color: filtered.map(p => p.color), opacity: viewMode === 'bins' ? 0 : 0.8, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
                 const lockedNodes = filtered.filter(p => { const prefix = getNounPrefix(p.L, p.C); return lockedNouns[`${prefix}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]; }).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed' }; });
                 const pinNodes = filteredBurnt.map(p => { const displayName = `${p.adjOverride || adjectives[p.adjId] || ''} ${p.nameOverride || names[p.anchorId] || ''}`.trim() || 'Unnamed Pin'; return { ...p, displayName }; });
                 traces.push({ type: 'scatter', mode: 'markers', x: lockedNodes.map(p => p.C), y: lockedNodes.map(p => p.L), text: lockedNodes.map(p => `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`), hovertemplate: "%{text}<extra></extra>", customdata: lockedNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'square', size: 10, color: lockedNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
@@ -9432,7 +10029,7 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                 const filtered = points.filter(p => !p.isPin && p.C > 0 && Math.abs(p.C - targetC) <= 0.001);
                 const filteredBurnt = Object.values(savedColors).filter(p => p.type === 'pin' && p.C > 0 && Math.abs(p.C - targetC) <= 0.001);
                 const traces = [];
-                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers', x: filtered.map(p => p.H), y: filtered.map(p => p.L), text: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[p.lStr] || ''; const noun = names[nounId] || ''; const fullName = `${adj} ${noun}`.trim() || 'Unnamed'; const binText = adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`; return viewMode === 'bins' ? binText : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), textposition: 'middle center', textfont: { size: 12, family: 'Inter, sans-serif', color: filtered.map(p => p.L > 0.55 ? '#000000' : '#ffffff') }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>L: %{y:.3f} H: %{x:.1f}°<extra></extra>" : "%{text}<extra></extra>", customdata: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 10, color: filtered.map(p => p.color), opacity: viewMode === 'bins' ? 0 : 0.8, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
+                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers+text', x: filtered.map(p => p.H), y: filtered.map(p => p.L), text: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[p.lStr] || ''; const noun = names[nounId] || ''; const fullName = `${adj} ${noun}`.trim() || 'Unnamed'; const binText = adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`; return viewMode === 'bins' ? binText : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), textposition: 'middle center', textfont: { size: 12, family: 'Inter, sans-serif', color: filtered.map(p => p.L > 0.55 ? '#000000' : '#ffffff') }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>L: %{y:.3f} H: %{x:.1f}°<extra></extra>" : "%{text}<extra></extra>", customdata: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 10, color: filtered.map(p => p.color), opacity: viewMode === 'bins' ? 0 : 0.8, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
                 const lockedNodes = filtered.filter(p => { const prefix = getNounPrefix(p.L, p.C); return lockedNouns[`${prefix}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]; }).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed' }; });
                 const pinNodes = filteredBurnt.map(p => { const displayName = `${p.adjOverride || adjectives[p.adjId] || ''} ${p.nameOverride || names[p.anchorId] || ''}`.trim() || 'Unnamed Pin'; return { ...p, displayName }; });
                 traces.push({ type: 'scatter', mode: 'markers', x: lockedNodes.map(p => p.H), y: lockedNodes.map(p => p.L), text: lockedNodes.map(p => `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`), hovertemplate: "%{text}<extra></extra>", customdata: lockedNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'square', size: 10, color: lockedNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
@@ -9489,26 +10086,31 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                                 });
                                 const delaunay = d3.Delaunay.from(paddedVoronoi.map(p => [p.H * scaleX, p.L * scaleY]));
                                 const voronoi = delaunay.voronoi([-360 * scaleX, -0.1 * scaleY, 720 * scaleX, 1.15 * scaleY]);
+                                // paddedVoronoi layout: for allVoronoiPoints[i],
+                                // its center copy in paddedVoronoi is at index i*3+1
+                                // We must track padded index including dummies
                                 allVoronoiPoints.forEach((p, i) => {
                                     if (p.isDummy) return;
-                                    const path = voronoi.renderCell(3 * i + 1);
+                                    const paddedIdx = i * 3 + 1;
+                                    const path = voronoi.renderCell(paddedIdx);
                                     if (path) {
-                                        const pts = [];
-                                    path.replace(/([ML])([^,]+),([^MLZ]+)/g, (match, cmd, x, y) => {
-                                        pts.push([parseFloat(x), parseFloat(y)]);
-                                        return match;
-                                    });
-                                    if (pts.length > 2) {
-                                        const unscaledPts = pts.map(pt => [pt[0] / scaleX, pt[1] / scaleY]);
-                                        const unscaledPath = 'M' + unscaledPts.map(pt => pt.join(',')).join('L') + 'Z';
-                                        shapes.push({
-                                            type: 'path',
-                                            path: unscaledPath,
-                                            fillcolor: p.color,
-                                            line: { width: 1.5, color: p.color },
-                                            layer: 'below'
-                                        });
-                                    }
+                                        // Parse SVG path segments manually
+                                        const segs = path.match(/[ML][^MLZ]*/g) || [];
+                                        const pts = segs.map(seg => {
+                                            const parts = seg.slice(1).trim().split(/[\s,]+/);
+                                            return [parseFloat(parts[0]), parseFloat(parts[1])];
+                                        }).filter(pt => !isNaN(pt[0]) && !isNaN(pt[1]));
+                                        if (pts.length > 2) {
+                                            const unscaledPts = pts.map(pt => [pt[0] / scaleX, pt[1] / scaleY]);
+                                            const unscaledPath = 'M' + unscaledPts.map(pt => pt.join(',')).join('L') + 'Z';
+                                            shapes.push({
+                                                type: 'path',
+                                                path: unscaledPath,
+                                                fillcolor: p.color,
+                                                line: { width: 0.8, color: p.color },
+                                                layer: 'below'
+                                            });
+                                        }
                                     }
                                 });
                             }
@@ -9563,7 +10165,7 @@ root.render(/*#__PURE__*/React.createElement(App, null));
             
             const data = useMemo(() => {
                 const traces = [];
-                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers', x: validAnchors.map(p => p.a), y: validAnchors.map(p => p.b), text: validAnchors.map(p => { const prefix = getNounPrefix(p.L, p.C); const lStr = getLStr(p.L); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[lStr] || ''; const noun = names[nounId] || ''; const fullName = `${adj} ${noun}`.trim() || 'Unnamed'; const binText = adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`; return viewMode === 'bins' ? (p.C === 0 ? `<b>${adj}</b>` : binText) : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), textposition: 'middle center', textfont: { size: 12, family: 'Inter, sans-serif', color: validAnchors.map(p => p.L > 0.55 ? '#000000' : '#ffffff') }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>C: %{customdata[1]:.3f} H: %{customdata[2]:.1f}°<extra></extra>" : "%{text}<extra></extra>", customdata: validAnchors.map(p => { const prefix = getNounPrefix(p.L, p.C); const lStr = getLStr(p.L); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 14, color: validAnchors.map(p => p.color), opacity: viewMode === 'bins' ? 0 : 1, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
+                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers+text', x: validAnchors.map(p => p.a), y: validAnchors.map(p => p.b), text: validAnchors.map(p => { const prefix = getNounPrefix(p.L, p.C); const lStr = getLStr(p.L); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[lStr] || ''; const noun = names[nounId] || ''; const fullName = `${adj} ${noun}`.trim() || 'Unnamed'; const binText = adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`; return viewMode === 'bins' ? (p.C === 0 ? `<b>${adj}</b>` : binText) : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), textposition: 'middle center', textfont: { size: 12, family: 'Inter, sans-serif', color: validAnchors.map(p => p.L > 0.55 ? '#000000' : '#ffffff') }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>C: %{customdata[1]:.3f} H: %{customdata[2]:.1f}°<extra></extra>" : "%{text}<extra></extra>", customdata: validAnchors.map(p => { const prefix = getNounPrefix(p.L, p.C); const lStr = getLStr(p.L); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 14, color: validAnchors.map(p => p.color), opacity: viewMode === 'bins' ? 0 : 1, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
                 const lockedNodes = baseAnchors.map(p => ({...p, L: crosshair.rawL, lStr: getLStr(crosshair.rawL)})).filter(p => { const prefix = getNounPrefix(p.L, p.C); return !p.isPin && lockedNouns[`${prefix}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]; }).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const c = new Color("oklch", [p.L, p.C, p.H]); const nodeColor = c.inGamut("srgb") || p.C === 0 ? c.clone().toGamut({space: "srgb"}).toString({format: "hex"}) : '#000'; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed', color: nodeColor }; });
                 const pinNodes = Object.values(savedColors).filter(sc => sc.type === 'pin' && Math.abs(sc.L - crosshair.rawL) < 0.005).map(p => { const displayName = `${p.adjOverride || adjectives[p.adjId] || ''} ${p.nameOverride || names[p.anchorId] || ''}`.trim() || 'Unnamed Pin'; return { ...p, displayName }; });
                 traces.push({ type: 'scatter', mode: 'markers', x: lockedNodes.map(p => p.a), y: lockedNodes.map(p => p.b), text: lockedNodes.map(p => `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`), hovertemplate: "%{text}<extra></extra>", customdata: lockedNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'square', size: 10, color: lockedNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
@@ -9617,9 +10219,12 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                                 const path = voronoi.renderCell(i);
                                 if (path) {
                                     const pts = [];
-                                    path.replace(/([ML])([^,]+),([^MLZ]+)/g, (match, cmd, x, y) => {
-                                        pts.push([parseFloat(x), parseFloat(y)]);
-                                        return match;
+                                    // Robust SVG path segment parsing
+                                    const segs2 = path.match(/[ML][^MLZ]*/g) || [];
+                                    segs2.forEach(seg => {
+                                        const parts = seg.slice(1).trim().split(/[\s,]+/);
+                                        const px = parseFloat(parts[0]), py = parseFloat(parts[1]);
+                                        if (!isNaN(px) && !isNaN(py)) pts.push([px, py]);
                                     });
                                     if (pts.length > 2) {
                                         const unscaledPath = 'M' + pts.map(pt => pt.join(',')).join('L') + 'Z';
@@ -9666,7 +10271,7 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                         });
                     }
                 }
-                return { uirevision: 'true', paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', dragmode: 'pan', xaxis: { title: 'a', range: [-0.3, 0.3], showgrid: viewMode !== 'bins', zeroline: viewMode !== 'bins', gridcolor: isDark ? '#262626' : '#e2e8f0', scaleanchor: 'y', titlefont: {color: isDark ? '#a3a3a3' : '#64748b'}, tickfont: {color: isDark ? '#a3a3a3' : '#64748b'} }, yaxis: { title: 'b', range: [-0.3, 0.3], showgrid: viewMode !== 'bins', zeroline: viewMode !== 'bins', gridcolor: isDark ? '#262626' : '#e2e8f0', titlefont: {color: isDark ? '#a3a3a3' : '#64748b'}, tickfont: {color: isDark ? '#a3a3a3' : '#64748b'} }, margin: { l: 50, r: 50, b: 50, t: 50 }, showlegend: false, shapes };
+                return { uirevision: 'true', paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', dragmode: 'pan', xaxis: { title: 'a', range: [-0.3, 0.3], showgrid: viewMode !== 'bins', zeroline: viewMode !== 'bins', gridcolor: isDark ? '#262626' : '#e2e8f0', scaleanchor: 'y', scaleratio: 1, titlefont: {color: isDark ? '#a3a3a3' : '#64748b'}, tickfont: {color: isDark ? '#a3a3a3' : '#64748b'} }, yaxis: { title: 'b', range: [-0.3, 0.3], showgrid: viewMode !== 'bins', zeroline: viewMode !== 'bins', gridcolor: isDark ? '#262626' : '#e2e8f0', titlefont: {color: isDark ? '#a3a3a3' : '#64748b'}, tickfont: {color: isDark ? '#a3a3a3' : '#64748b'} }, margin: { l: 50, r: 50, b: 50, t: 50 }, showlegend: false, shapes };
             }, [isDark, viewMode, stableAnchors, stableL]);
             const handleBgClick = (a, b) => { const C = Math.min(0.3, Math.sqrt(a * a + b * b)); let H = Math.atan2(a, b) * (180 / Math.PI); if (H < 0) H += 360; handlePointClick([crosshair?.rawL, C, H]); };
             return <PlotlyChart data={data} layout={layout} onPointClick={handlePointClick} onBgClick={handleBgClick} onRelayout={handleRelayout} theme={theme} />;
@@ -10507,7 +11112,7 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                     let currentSavedColors = savedColors;
 
                     const filesToLoad = initialState?.linkedFiles || [
-                        'pins.csv',
+                        'pins.csv', 'anchors.csv',
                         'pantone.csv', 'ral.csv', 'ncs.csv', 'behr.csv', 'benjaminMoore.csv', 
                         'farrowBall.csv', 'ppg.csv', 'sherwinWilliams.csv', 'dulux.csv', 
                         'tafisa.csv', 'uniboard.csv', 'agt.csv', 'egger.csv', 'finsa.csv', 
@@ -10758,9 +11363,12 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                         if (filteredSavedColors[k].type !== 'pin') delete filteredSavedColors[k];
                     });
                 } else if (viewportFilter === 'anchors') {
+                    // Remove pin entries from savedColors (no 'anchor' type exists in savedColors)
                     Object.keys(filteredSavedColors).forEach(k => {
                         if (filteredSavedColors[k].type !== 'anchor') delete filteredSavedColors[k];
                     });
+                    // Also strip pin-associated points so views only receive pure grid anchors
+                    points = points.filter(p => !p.isPin);
                 }
 
                 // 2. Filter Points and SavedColors by Tags and Search Query
@@ -12926,6 +13534,184 @@ root.render(/*#__PURE__*/React.createElement(App, null));
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<App />);
 </script>
+
+<!-- ═══════════════════════════════════════════════════════
+     Mobile UX improvements for ColorSAMIficator
+     - Collapsible sidebar drawer
+     - Bigger touch targets
+     - Viewport fills screen when sidebar is closed
+     ═══════════════════════════════════════════════════════ -->
+<style id="mobile-ux-styles">
+@media (max-width: 767px) {
+
+  /* ── Sidebar: hide by default, slide up on open ── */
+  aside {
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    top: auto !important;
+    height: 0 !important;
+    width: 100% !important;
+    max-height: 65vh;
+    overflow: hidden !important;
+    border-bottom: none !important;
+    border-top: 1px solid rgba(255,255,255,0.1) !important;
+    transition: height 0.3s cubic-bezier(0.4,0,0.2,1) !important;
+    z-index: 500 !important;
+    border-radius: 16px 16px 0 0 !important;
+    box-shadow: 0 -8px 30px rgba(0,0,0,0.3) !important;
+  }
+  aside.sb-open {
+    height: 65vh !important;
+    overflow-y: auto !important;
+  }
+  /* Drag handle bar at top of sidebar */
+  aside::before {
+    content: '';
+    display: block;
+    width: 36px;
+    height: 4px;
+    background: rgba(128,128,128,0.4);
+    border-radius: 2px;
+    margin: 10px auto 6px;
+    flex-shrink: 0;
+  }
+
+  /* ── Main area: fill full viewport height ── */
+  main {
+    height: 100vh !important;
+    height: 100dvh !important;
+  }
+
+  /* ── The outer flex container: column, full height ── */
+  .flex.flex-col.md\\:flex-row.h-screen {
+    flex-direction: column !important;
+    height: 100vh !important;
+    height: 100dvh !important;
+  }
+
+  /* ── Tab bar: shorter, scrollable ── */
+  .px-6.py-2\\.5 {
+    padding-left: 14px !important;
+    padding-right: 14px !important;
+    padding-top: 10px !important;
+    padding-bottom: 10px !important;
+  }
+
+  /* ── Toolbar icon buttons: bigger tap targets ── */
+  button[title], button.p-2 {
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  /* ── Scrubber sliders: taller track for easier touch ── */
+  input[type=range]::-webkit-slider-thumb {
+    height: 22px !important;
+    width: 22px !important;
+    margin-top: -9px !important;
+  }
+
+  /* ── Push content above the mobile sidebar toggle ── */
+  main > div:last-child {
+    padding-bottom: 64px;
+  }
+}
+</style>
+
+<script>
+(function () {
+  'use strict';
+
+  /* Only apply on mobile widths */
+  function isMobile() { return window.innerWidth < 768; }
+
+  var OPEN_CLASS = 'sb-open';
+  var toggleBtn = null;
+  var aside = null;
+
+  /* ── Build the floating sidebar toggle button ── */
+  function buildToggleBtn() {
+    var btn = document.createElement('button');
+    btn.id = 'mobile-panel-toggle';
+    btn.setAttribute('aria-label', 'Toggle editor panel');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.style.cssText = [
+      'display:none',                         /* hidden until mobile confirmed */
+      'position:fixed;bottom:72px;left:16px', /* left side — GitHub btn is bottom-right */
+      'z-index:99996',
+      'width:46px;height:46px;border-radius:50%',
+      'background:#0f172a;color:white',       /* slate-900 */
+      'border:1.5px solid rgba(255,255,255,0.15)',
+      'cursor:pointer;align-items:center;justify-content:center',
+      'box-shadow:0 4px 18px rgba(0,0,0,0.45)',
+      'transition:transform 0.18s,background 0.18s',
+      'font-family:Inter,sans-serif'
+    ].join(';');
+
+    /* SVG: sliders icon (closed state) */
+    var iconClosed = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="9" cy="6" r="2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="9" cy="18" r="2" fill="currentColor" stroke="none"/></svg>';
+    /* SVG: chevron-down (open state) */
+    var iconOpen  = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>';
+
+    btn.innerHTML = iconClosed;
+
+    btn.addEventListener('mouseenter', function () { btn.style.transform = 'scale(1.1)'; });
+    btn.addEventListener('mouseleave', function () { btn.style.transform = 'scale(1)'; });
+
+    btn.addEventListener('click', function () {
+      if (!aside) return;
+      var isOpen = aside.classList.toggle(OPEN_CLASS);
+      btn.setAttribute('aria-expanded', String(isOpen));
+      btn.innerHTML = isOpen ? iconOpen : iconClosed;
+      btn.style.background = isOpen ? '#10b981' : '#0f172a'; /* emerald when open */
+    });
+
+    document.body.appendChild(btn);
+    return btn;
+  }
+
+  /* ── Show or hide the toggle button based on screen width ── */
+  function syncVisibility() {
+    if (!toggleBtn) return;
+    if (isMobile()) {
+      toggleBtn.style.display = 'flex';
+    } else {
+      toggleBtn.style.display = 'none';
+      /* Restore aside to normal when returning to desktop */
+      if (aside) aside.classList.remove(OPEN_CLASS);
+    }
+  }
+
+  /* ── Wait for React to render the <aside> ── */
+  function waitForAside(cb) {
+    var el = document.querySelector('aside');
+    if (el) { cb(el); return; }
+    var obs = new MutationObserver(function () {
+      var el = document.querySelector('aside');
+      if (el) { obs.disconnect(); cb(el); }
+    });
+    obs.observe(document.body, { childList: true, subtree: true });
+  }
+
+  /* ── Init ── */
+  function init() {
+    toggleBtn = buildToggleBtn();
+    waitForAside(function (el) {
+      aside = el;
+      syncVisibility();
+    });
+    window.addEventListener('resize', syncVisibility, { passive: true });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+
 <!-- ═══════════════════════════════════════════════════════
      GitHub Sync for ColorSAMIficator
      Adds: window.githubSaveCSV(), settings modal, floating button
