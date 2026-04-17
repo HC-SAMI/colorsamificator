@@ -11082,11 +11082,13 @@ root.render(/*#__PURE__*/React.createElement(App, null));
             return result;
         };
 
-        const processCSVData = (parsedData, currentColorData, currentSavedColors, currentNames = {}, currentAdjectives = {}) => {
+        const processCSVData = (parsedData, currentColorData, currentSavedColors, currentNames = {}, currentAdjectives = {}, currentDictNotes = {}, currentDictTags = {}) => {
             const newColorData = currentColorData ? JSON.parse(JSON.stringify(currentColorData)) : {};
             const newSavedColors = currentSavedColors ? JSON.parse(JSON.stringify(currentSavedColors)) : {};
             const newNames = currentNames ? { ...currentNames } : {};
             const newAdjectives = currentAdjectives ? { ...currentAdjectives } : {};
+            const newDictNotes = currentDictNotes ? { ...currentDictNotes } : {};
+            const newDictTags = currentDictTags ? { ...currentDictTags } : {};
             let colorsAdded = 0, pinsAdded = 0, adjsAdded = 0, nounsAdded = 0;
 
             parsedData.forEach(row => {
@@ -11158,31 +11160,43 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                     };
                     if (spectral.length > 0) newSavedColors[id].spectral = spectral;
                     pinsAdded++;
-                } else if (targetType === 'ADJ') {
-                    // Lightness-level adjective: Adjective field + OKLCH_L to derive lStr
+                } else if (targetType === 'ADJECTIVE') {
+                    // Lightness-level adjective — export writes ID=lStr, Adjective=name
                     const adj = (row.Adjective || '').trim();
-                    const rawL = parseFloat(row.OKLCH_L);
-                    if (adj && !isNaN(rawL)) {
-                        newAdjectives[getLStr(rawL)] = adj;
-                        adjsAdded++;
+                    if (adj) {
+                        const lKey = (row.ID || '').trim();
+                        const rawL = parseFloat(row.OKLCH_L);
+                        const key  = lKey || (!isNaN(rawL) ? getLStr(rawL) : null);
+                        if (key) { newAdjectives[key] = adj; adjsAdded++; }
                     }
-                } else if (targetType === 'NOUN') {
-                    // Grid-anchor noun: Noun field + OKLCH_L/C/H to derive nounId
+                } else if (targetType === 'ANCHOR') {
+                    // Named grid anchor — matches export format
+                    // Adjective goes to adjectives[lStr], Noun goes to names[nounId]
+                    const adj  = (row.Adjective || '').trim();
                     const noun = (row.Noun || '').trim();
                     const rawL = parseFloat(row.OKLCH_L);
                     const rawC = parseFloat(row.OKLCH_C);
                     const rawH = parseFloat(row.OKLCH_H);
-                    if (noun && !isNaN(rawL) && !isNaN(rawC) && !isNaN(rawH)) {
-                        const prefix = getNounPrefix(rawL, rawC);
-                        const cStr2 = Math.round(rawC * 100).toString().padStart(2, '0');
-                        const hStr2 = Math.round(rawH).toString().padStart(3, '0');
-                        newNames[`${prefix}-${cStr2}-${hStr2}`] = noun;
-                        nounsAdded++;
+                    if (!isNaN(rawL)) {
+                        if (adj) { newAdjectives[getLStr(rawL)] = adj; adjsAdded++; }
+                        if (noun) {
+                            // Prefer the ID directly (export writes prefix-cStr-hStr as ID)
+                            const anchorId = (row.ID || '').trim();
+                            let nounKey = anchorId;
+                            if (!nounKey && !isNaN(rawC) && !isNaN(rawH)) {
+                                const prefix = getNounPrefix(rawL, rawC);
+                                const cStr2  = Math.round(rawC * 100).toString().padStart(2, '0');
+                                const hStr2  = Math.round(rawH).toString().padStart(3, '0');
+                                nounKey = `${prefix}-${cStr2}-${hStr2}`;
+                            }
+                            if (nounKey) newNames[nounKey] = noun;
+                            nounsAdded++;
+                        }
                     }
                 }
             });
 
-            return { newColorData, newSavedColors, newNames, newAdjectives, colorsAdded, pinsAdded, adjsAdded, nounsAdded };
+            return { newColorData, newSavedColors, newNames, newAdjectives, newDictNotes, newDictTags, colorsAdded, pinsAdded, adjsAdded, nounsAdded };
         };
 
         const App = () => {
@@ -11280,6 +11294,8 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                     let currentSavedColors = savedColors;
                     let currentNames = { ...names };
                     let currentAdjectives = { ...adjectives };
+                    let currentDictNotes = { ...dictNotes };
+                    let currentDictTags = { ...dictTags };
 
                     const filesToLoad = initialState?.linkedFiles || [
                         'pins.csv', 'anchors.csv',
@@ -11302,10 +11318,14 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                                 }
                                 const parsed = parseCSV(csvText);
                                 if (parsed.length > 0) {
-                                    const { newColorData, newSavedColors, newNames, newAdjectives, adjsAdded, nounsAdded } =
-                                        processCSVData(parsed, currentColorData, currentSavedColors, currentNames, currentAdjectives);
+                                    const { newColorData, newSavedColors, newNames: csvNames, newAdjectives: csvAdjs, newDictNotes: csvNotes, newDictTags: csvTags, adjsAdded, nounsAdded } =
+                                        processCSVData(parsed, currentColorData, currentSavedColors, currentNames, currentAdjectives, currentDictNotes, currentDictTags);
                                     currentColorData = newColorData;
                                     currentSavedColors = newSavedColors;
+                                    currentNames = csvNames;
+                                    currentAdjectives = csvAdjs;
+                                    currentDictNotes = csvNotes;
+                                    currentDictTags = csvTags;
                                     currentNames = newNames;
                                     currentAdjectives = newAdjectives;
                                     console.log(`Loaded ${file}: ${parsed.length} rows (${adjsAdded} adjectives, ${nounsAdded} nouns)`);
@@ -11323,6 +11343,8 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                     setSavedColors(currentSavedColors);
                     setNames(prev => ({ ...prev, ...currentNames }));
                     setAdjectives(prev => ({ ...prev, ...currentAdjectives }));
+                    setDictNotes(prev => ({ ...prev, ...currentDictNotes }));
+                    setDictTags(prev => ({ ...prev, ...currentDictTags }));
                 };
                 
                 loadInitialData();
@@ -12628,10 +12650,14 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                                         try {
                                             const text = await file.text();
                                             const parsed = parseCSV(text);
-                                            const { newColorData, newSavedColors, colorsAdded, pinsAdded } = processCSVData(parsed, colorData || {}, savedColors || {});
+                                            const { newColorData, newSavedColors, newNames: csvNames, newAdjectives: csvAdjs, newDictNotes: csvNotes, newDictTags: csvTags, colorsAdded, pinsAdded, adjsAdded, nounsAdded } = processCSVData(parsed, colorData || {}, savedColors || {}, names || {}, adjectives || {}, dictNotes || {}, dictTags || {});
                                             updateColorData(newColorData);
                                             setSavedColors(newSavedColors);
-                                            alert(`CSV imported successfully!\nAdded ${colorsAdded} commercial colors and ${pinsAdded} pins.`);
+                                            if (csvNames && Object.keys(csvNames).length > 0) setNames(prev => ({ ...prev, ...csvNames }));
+                                            if (csvAdjs && Object.keys(csvAdjs).length > 0) setAdjectives(prev => ({ ...prev, ...csvAdjs }));
+                                            if (csvNotes && Object.keys(csvNotes).length > 0) setDictNotes(prev => ({ ...prev, ...csvNotes }));
+                                            if (csvTags && Object.keys(csvTags).length > 0) setDictTags(prev => ({ ...prev, ...csvTags }));
+                                            alert(`CSV imported successfully!\nAdded ${colorsAdded} colors, ${pinsAdded} pins, ${adjsAdded} adjectives, ${nounsAdded} nouns.`);
                                         } catch (err) {
                                             console.error('Failed to parse CSV', err);
                                             alert('Failed to parse CSV file.');
