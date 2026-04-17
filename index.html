@@ -8952,166 +8952,276 @@ root.render(/*#__PURE__*/React.createElement(App, null));
     }));
   };
 
-  // ── ThreeScatter ───────────────────────────────────────────────────
-  // 3D scatter: drag-to-orbit (requires button/touch down), pinch-zoom
-  // Coordinate system: x=a, y=L (vertical), z=b — black at bottom, white at top
+  // ── ThreeScatter v3 ────────────────────────────────────────────────
+  // Uses THREE.Points per opacity bucket — crash-free, one draw call each.
+  // Circles for anchors/locked, X for pins. Cursor L-layer full opacity.
+  // Left-drag=orbit, right-drag=pan, scroll/pinch=zoom.
   window.ThreeScatter = function ThreeScatter(props) {
     var data = props.data || [], onPointClick = props.onPointClick, theme = props.theme;
-    var contRef = useRef(null);
-    var orb = useRef({theta: 0.6, phi: 1.1, r: 2.6}); // phi: angle from Y-up
-    var ptrRef = useRef({ptrs: new Map(), pinchDist: null, downPos: null,
-                          wasPinch: false, isDragging: false});
-    var cdRef = useRef([]);
-    var threeRef = useRef(null); // {scene,cam,renderer,pointCloud,animId}
+    var contRef  = useRef(null);
+    var stateRef = useRef({
+      orb: { theta: 0.5, phi: 1.2, r: 2.8 },
+      pan: { x: 0, y: 0 },
+      ptrs: new Map(), pinchDist: null, pinchCenter: null,
+      downPos: null, wasPinch: false, isDragging: false, rightDown: false,
+    });
+    var cdBuf  = useRef([]);
+    var posBuf = useRef([]);
 
-    useEffect(function(){
+    useEffect(function () {
       var cont = contRef.current;
-      if(!cont || !window.THREE) return;
+      if (!cont || !window.THREE) return;
       var T = window.THREE;
       var W = cont.clientWidth || 400, H = cont.clientHeight || 300;
       var isDark = theme === 'dark';
 
-      var scene = new T.Scene();
+      var scene    = new T.Scene();
       scene.background = new T.Color(isDark ? 0x0a0a0a : 0xf8fafc);
-
-      var cam = new T.PerspectiveCamera(50, W/H, 0.01, 100);
-      var renderer = new T.WebGLRenderer({antialias: true});
+      var cam      = new T.PerspectiveCamera(48, W / H, 0.01, 100);
+      var renderer = new T.WebGLRenderer({ antialias: true });
       renderer.setSize(W, H);
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-      renderer.domElement.style.touchAction = 'none';
-      renderer.domElement.style.borderRadius = '0.75rem';
-      renderer.domElement.style.display = 'block';
+      renderer.domElement.style.cssText = 'touch-action:none;border-radius:0.75rem;display:block;';
       cont.appendChild(renderer.domElement);
 
-      // Axis lines — Y is lightness (vertical)
-      var axMat = new T.LineBasicMaterial({color: isDark ? 0x444444 : 0xbbbbbb});
-      [ [[-0.4,0,0],[0.4,0,0]],  // a axis
-        [[0,-0.05,0],[0,1.05,0]], // L axis (vertical, full range)
-        [[0,0,-0.4],[0,0,0.4]]    // b axis
-      ].forEach(function(pts){
-        var g = new T.BufferGeometry().setFromPoints(
-          pts.map(function(p){ return new T.Vector3(p[0], p[1], p[2]); }));
-        scene.add(new T.Line(g, axMat));
-      });
-      // L=0 (black) and L=1 (white) reference planes as faint circles
-      var ringMat = new T.LineBasicMaterial({color: isDark ? 0x333333 : 0xcccccc});
-      [0, 0.5, 1].forEach(function(lv){
-        var pts2 = [];
-        for(var a2 = 0; a2 <= 64; a2++){
-          var ang = (a2/64) * Math.PI * 2;
-          pts2.push(new T.Vector3(Math.cos(ang)*0.2, lv, Math.sin(ang)*0.2));
+      // Reference rings at each L=0,0.25,0.5,0.75,1
+      var ringMat = new T.LineBasicMaterial({ color: isDark ? 0x2a2a2a : 0xcccccc });
+      [0, 0.25, 0.5, 0.75, 1].forEach(function (lv) {
+        var rpts = [];
+        for (var a = 0; a <= 64; a++) {
+          var ang = (a / 64) * Math.PI * 2;
+          rpts.push(new T.Vector3(Math.cos(ang) * 0.22, lv, Math.sin(ang) * 0.22));
         }
-        var g2 = new T.BufferGeometry().setFromPoints(pts2);
-        scene.add(new T.Line(g2, ringMat));
+        scene.add(new T.Line(new T.BufferGeometry().setFromPoints(rpts), ringMat));
       });
+      scene.add(new T.Line(
+        new T.BufferGeometry().setFromPoints(
+          [new T.Vector3(0,-0.02,0), new T.Vector3(0,1.06,0)]),
+        new T.LineBasicMaterial({ color: isDark ? 0x444444 : 0xaaaaaa })));
 
-      // Build point cloud: scatter3d uses x=a, y=b, z=L
-      // We remap to Three.js: x=p.x(a), y=p.z(L), z=p.y(b)
-      var pos = [], cols = [], allCD = [];
-      data.forEach(function(tr){
-        if(!tr || tr.type !== 'scatter3d' || !tr.x) return;
-        for(var i = 0; i < tr.x.length; i++){
-          if(tr.x[i] == null) continue;
-          // x=a → x, z=L → y (vertical), y=b → z
-          pos.push(tr.x[i], tr.z[i], tr.y[i]);
-          var col = new T.Color(
-            Array.isArray(tr.marker && tr.marker.color) ? tr.marker.color[i]
-            : ((tr.marker && tr.marker.color) || '#888888'));
-          cols.push(col.r, col.g, col.b);
-          allCD.push((tr.customdata && tr.customdata[i]) || null);
+      // Circle texture (white disc, transparent bg)
+      function makeCircleTex() {
+        var cv = document.createElement('canvas'); cv.width = cv.height = 64;
+        var ctx = cv.getContext('2d');
+        ctx.clearRect(0, 0, 64, 64);
+        ctx.beginPath(); ctx.arc(32, 32, 29, 0, Math.PI * 2);
+        ctx.fillStyle = '#fff'; ctx.fill();
+        return new T.CanvasTexture(cv);
+      }
+      // X texture (white strokes, transparent bg)
+      function makeXTex() {
+        var cv = document.createElement('canvas'); cv.width = cv.height = 64;
+        var ctx = cv.getContext('2d');
+        ctx.clearRect(0, 0, 64, 64);
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 14; ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(12, 12); ctx.lineTo(52, 52);
+        ctx.moveTo(52, 12); ctx.lineTo(12, 52);
+        ctx.stroke();
+        return new T.CanvasTexture(cv);
+      }
+      var circTex = makeCircleTex();
+      var xTex    = makeXTex();
+
+      // Find cursor L from the cross-symbol trace
+      var cursorL = 0.5;
+      for (var di = 0; di < data.length; di++) {
+        var t0 = data[di];
+        if (t0 && t0.marker && t0.marker.symbol === 'cross' && t0.z && t0.z[0] != null) {
+          cursorL = t0.z[0]; break;
         }
-      });
-      cdRef.current = allCD;
-
-      var pointCloud = null;
-      if(pos.length > 0){
-        var geo = new T.BufferGeometry();
-        geo.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
-        geo.setAttribute('color',    new T.Float32BufferAttribute(cols, 3));
-        var mat = new T.PointsMaterial({size: 0.018, vertexColors: true, sizeAttenuation: true});
-        pointCloud = new T.Points(geo, mat);
-        scene.add(pointCloud);
       }
 
-      // Camera looks at centre of L range (0.5)
+      // 5 opacity buckets: [maxDistFromCursorL, opacity, pointSize]
+      var BUCKETS = [
+        [0.001,    1.00, 0.050],
+        [0.06,     0.75, 0.038],
+        [0.15,     0.45, 0.032],
+        [0.30,     0.25, 0.028],
+        [Infinity, 0.12, 0.024],
+      ];
+
+      var circleBuckets = BUCKETS.map(function() { return []; });
+      var xBuckets      = BUCKETS.map(function() { return []; });
+      var allCD  = [];
+      var allPos = [];
+
+      for (var ti = 0; ti < data.length; ti++) {
+        var tr = data[ti];
+        // Guard: must have x array and marker object
+        if (!tr || !tr.x || !tr.marker) continue;
+        if (tr.type !== 'scatter3d') continue;
+        var sym = tr.marker.symbol;
+        // Skip cursor cross and snap lines
+        if (sym === 'cross' || tr.mode === 'lines') continue;
+        var isX = sym === 'x';
+        var buckets = isX ? xBuckets : circleBuckets;
+
+        for (var i = 0; i < tr.x.length; i++) {
+          if (tr.x[i] == null) continue;
+          // Guard: z array must exist and have a value at i
+          var lv = (tr.z && tr.z[i] != null) ? tr.z[i] : 0;
+          var ax = tr.x[i];
+          var bz = (tr.y && tr.y[i] != null) ? tr.y[i] : 0;
+          var colStr = Array.isArray(tr.marker.color)
+            ? tr.marker.color[i] : (tr.marker.color || '#888888');
+          var col = new T.Color(colStr);
+          var distL = Math.abs(lv - cursorL);
+          var bIdx = BUCKETS.length - 1;
+          for (var bi = 0; bi < BUCKETS.length; bi++) {
+            if (distL <= BUCKETS[bi][0]) { bIdx = bi; break; }
+          }
+          var cd = (tr.customdata && tr.customdata[i] !== undefined) ? tr.customdata[i] : null;
+          buckets[bIdx].push({ x: ax, y: lv, z: bz, r: col.r, g: col.g, b: col.b, cd: cd });
+        }
+      }
+
+      function buildPoints(buckets, tex, sizeScale) {
+        for (var bi = 0; bi < buckets.length; bi++) {
+          var pts = buckets[bi];
+          if (pts.length === 0) continue;
+          var bk = BUCKETS[bi];
+          var pos = new Float32Array(pts.length * 3);
+          var col = new Float32Array(pts.length * 3);
+          for (var pi = 0; pi < pts.length; pi++) {
+            var p = pts[pi];
+            pos[pi*3]=p.x; pos[pi*3+1]=p.y; pos[pi*3+2]=p.z;
+            col[pi*3]=p.r; col[pi*3+1]=p.g; col[pi*3+2]=p.b;
+            allCD.push(p.cd);
+            allPos.push(p);
+          }
+          var geo = new T.BufferGeometry();
+          geo.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+          geo.setAttribute('color',    new T.Float32BufferAttribute(col, 3));
+          var mat = new T.PointsMaterial({
+            size: bk[2] * sizeScale,
+            map: tex,
+            alphaTest: 0.4,
+            vertexColors: true,
+            transparent: bk[1] < 1,
+            opacity: bk[1],
+            sizeAttenuation: true,
+            depthWrite: false,
+          });
+          scene.add(new T.Points(geo, mat));
+        }
+      }
+      buildPoints(circleBuckets, circTex, 1.0);
+      buildPoints(xBuckets,      xTex,    1.4);
+
+      cdBuf.current  = allCD;
+      posBuf.current = allPos;
+
+      // Cursor sphere at current color position
+      var crossTr = null;
+      for (var di2 = 0; di2 < data.length; di2++) {
+        var t2 = data[di2];
+        if (t2 && t2.marker && t2.marker.symbol === 'cross' && t2.z && t2.z[0] != null) {
+          crossTr = t2; break;
+        }
+      }
+      if (crossTr) {
+        var cMesh = new T.Mesh(
+          new T.SphereGeometry(0.026, 14, 14),
+          new T.MeshBasicMaterial({ color: isDark ? 0xffffff : 0x111111 }));
+        cMesh.position.set(crossTr.x[0]||0, crossTr.z[0]||0.5, crossTr.y[0]||0);
+        scene.add(cMesh);
+      }
+
+      // Camera setup
       var lookAt = new T.Vector3(0, 0.5, 0);
-      function updateCam(){
-        var o = orb.current;
-        // Spherical: phi from Y+ (north pole = straight down Y axis)
+      function updateCam() {
+        var s = stateRef.current, o = s.orb;
         cam.position.set(
-          lookAt.x + o.r * Math.sin(o.phi) * Math.sin(o.theta),
-          lookAt.y + o.r * Math.cos(o.phi),
-          lookAt.z + o.r * Math.sin(o.phi) * Math.cos(o.theta)
-        );
-        cam.lookAt(lookAt);
+          lookAt.x + s.pan.x + o.r * Math.sin(o.phi) * Math.sin(o.theta),
+          lookAt.y + s.pan.y + o.r * Math.cos(o.phi),
+          lookAt.z            + o.r * Math.sin(o.phi) * Math.cos(o.theta));
+        cam.lookAt(lookAt.x + s.pan.x, lookAt.y + s.pan.y, lookAt.z);
       }
       updateCam();
 
       var animId = null;
-      function loop(){ animId = requestAnimationFrame(loop); renderer.render(scene, cam); }
+      function loop() { animId = requestAnimationFrame(loop); renderer.render(scene, cam); }
       loop();
 
-      var ray = new T.Raycaster();
-      ray.params.Points = {threshold: 0.022};
       var el = renderer.domElement;
-      threeRef.current = {scene, cam, renderer, pointCloud, animId};
 
-      function onDown(e){
-        var p = ptrRef.current, pos2 = {x: e.clientX, y: e.clientY};
-        p.ptrs.set(e.pointerId, pos2);
+      function onDown(e) {
+        var s = stateRef.current;
+        s.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
         el.setPointerCapture(e.pointerId);
-        p.isDragging = true;
-        if(p.ptrs.size === 1){ p.downPos = pos2; p.wasPinch = false; }
-        else if(p.ptrs.size >= 2){
-          p.wasPinch = true;
-          var pts = Array.from(p.ptrs.values());
-          p.pinchDist = Math.hypot(pts[1].x-pts[0].x, pts[1].y-pts[0].y);
+        s.isDragging = true;
+        if (s.ptrs.size === 1) {
+          s.downPos = { x: e.clientX, y: e.clientY };
+          s.wasPinch = false;
+          s.rightDown = (e.button === 2);
+        } else if (s.ptrs.size >= 2) {
+          s.wasPinch = true;
+          var pts = Array.from(s.ptrs.values());
+          s.pinchDist   = Math.hypot(pts[1].x-pts[0].x, pts[1].y-pts[0].y);
+          s.pinchCenter = { x:(pts[0].x+pts[1].x)/2, y:(pts[0].y+pts[1].y)/2 };
         }
       }
-      function onMove(e){
-        var p = ptrRef.current;
-        if(!p.isDragging) return; // only orbit/zoom while pointer is down
-        var prev = p.ptrs.get(e.pointerId) || {x: e.clientX, y: e.clientY};
-        p.ptrs.set(e.pointerId, {x: e.clientX, y: e.clientY});
-        if(p.ptrs.size >= 2){
-          var pts = Array.from(p.ptrs.values());
+      function onMove(e) {
+        var s = stateRef.current;
+        if (!s.isDragging) return;
+        var prev = s.ptrs.get(e.pointerId) || { x: e.clientX, y: e.clientY };
+        s.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (s.ptrs.size >= 2) {
+          var pts = Array.from(s.ptrs.values());
           var dist = Math.hypot(pts[1].x-pts[0].x, pts[1].y-pts[0].y);
-          if(p.pinchDist && dist > 0)
-            orb.current.r = Math.max(0.6, Math.min(8, orb.current.r * (p.pinchDist/dist)));
-          p.pinchDist = dist;
-        } else if(p.ptrs.size === 1){
-          orb.current.theta -= (e.clientX - prev.x) * 0.008;
-          orb.current.phi    = Math.max(0.08, Math.min(Math.PI-0.08,
-            orb.current.phi - (e.clientY - prev.y) * 0.008));
+          var cen  = { x:(pts[0].x+pts[1].x)/2, y:(pts[0].y+pts[1].y)/2 };
+          if (s.pinchDist && dist > 0)
+            s.orb.r = Math.max(0.5, Math.min(8, s.orb.r*(s.pinchDist/dist)));
+          if (s.pinchCenter) {
+            var spd = s.orb.r * 0.002;
+            s.pan.x -= (cen.x-s.pinchCenter.x)*spd;
+            s.pan.y += (cen.y-s.pinchCenter.y)*spd;
+          }
+          s.pinchDist = dist; s.pinchCenter = cen;
+        } else if (s.ptrs.size === 1) {
+          var dx = e.clientX-prev.x, dy = e.clientY-prev.y;
+          if (s.rightDown) {
+            var ps = s.orb.r * 0.002;
+            s.pan.x -= dx*ps; s.pan.y += dy*ps;
+          } else {
+            s.orb.theta -= dx * 0.008;
+            s.orb.phi = Math.max(0.08, Math.min(Math.PI-0.08, s.orb.phi - dy*0.008));
+          }
         }
         updateCam();
       }
-      function onUp(e){
-        var p = ptrRef.current, wasMulti = p.ptrs.size > 1;
-        p.ptrs.delete(e.pointerId);
-        if(p.ptrs.size === 0){
-          p.isDragging = false;
-          if(!wasMulti && !p.wasPinch && p.downPos && onPointClick && pointCloud){
-            var ddx = e.clientX-p.downPos.x, ddy = e.clientY-p.downPos.y;
-            if(Math.sqrt(ddx*ddx+ddy*ddy) < 12){
+      function onUp(e) {
+        var s = stateRef.current, wasMulti = s.ptrs.size > 1;
+        s.ptrs.delete(e.pointerId);
+        if (s.ptrs.size === 0) {
+          s.isDragging = false; s.rightDown = false;
+          if (!wasMulti && !s.wasPinch && s.downPos && onPointClick) {
+            var ddx = e.clientX-s.downPos.x, ddy = e.clientY-s.downPos.y;
+            if (Math.sqrt(ddx*ddx+ddy*ddy) < 12) {
               var rect = el.getBoundingClientRect();
-              var mouse = new T.Vector2(
-                (e.clientX-rect.left)/rect.width*2-1,
-                -((e.clientY-rect.top)/rect.height)*2+1);
-              ray.setFromCamera(mouse, cam);
-              var hits = ray.intersectObjects([pointCloud], false);
-              if(hits.length > 0){
-                var cd = cdRef.current[hits[0].index];
-                if(cd != null) onPointClick(cd);
+              var sx = e.clientX-rect.left, sy = e.clientY-rect.top;
+              var best = -1, bestD2 = 28*28;
+              var plist = posBuf.current;
+              for (var pi2 = 0; pi2 < plist.length; pi2++) {
+                var p2 = plist[pi2];
+                var v = new T.Vector3(p2.x, p2.y, p2.z).project(cam);
+                var spx = (v.x+1)/2*rect.width, spy = (1-v.y)/2*rect.height;
+                var d2 = (spx-sx)*(spx-sx)+(spy-sy)*(spy-sy);
+                if (d2 < bestD2) { bestD2=d2; best=pi2; }
               }
+              if (best >= 0 && cdBuf.current[best] != null)
+                onPointClick(cdBuf.current[best]);
             }
           }
-          p.downPos = p.pinchDist = null;
+          s.downPos = s.pinchDist = s.pinchCenter = null;
         }
       }
-      function onWhl(e){
+      function onCtx(e) { e.preventDefault(); }
+      function onWhl(e) {
         e.preventDefault();
-        orb.current.r = Math.max(0.6, Math.min(8, orb.current.r * (e.deltaY > 0 ? 1.1 : 0.91)));
+        stateRef.current.orb.r = Math.max(0.5, Math.min(8,
+          stateRef.current.orb.r*(e.deltaY>0?1.1:0.91)));
         updateCam();
       }
 
@@ -9119,28 +9229,31 @@ root.render(/*#__PURE__*/React.createElement(App, null));
       el.addEventListener('pointermove',   onMove);
       el.addEventListener('pointerup',     onUp);
       el.addEventListener('pointercancel', onUp);
-      el.addEventListener('wheel',         onWhl, {passive: false});
+      el.addEventListener('contextmenu',   onCtx);
+      el.addEventListener('wheel',         onWhl, { passive: false });
 
-      var ro = new ResizeObserver(function(){
-        var W2 = cont.clientWidth || 400, H2 = cont.clientHeight || 300;
-        cam.aspect = W2/H2; cam.updateProjectionMatrix(); renderer.setSize(W2, H2);
+      var ro = new ResizeObserver(function () {
+        var W2=cont.clientWidth||400, H2=cont.clientHeight||300;
+        cam.aspect=W2/H2; cam.updateProjectionMatrix(); renderer.setSize(W2,H2);
       });
       ro.observe(cont);
 
-      return function(){
+      return function () {
         cancelAnimationFrame(animId); ro.disconnect();
         el.removeEventListener('pointerdown',   onDown);
         el.removeEventListener('pointermove',   onMove);
         el.removeEventListener('pointerup',     onUp);
         el.removeEventListener('pointercancel', onUp);
+        el.removeEventListener('contextmenu',   onCtx);
         el.removeEventListener('wheel',         onWhl);
-        renderer.dispose();
-        if(cont.contains(el)) cont.removeChild(el);
+        renderer.dispose(); circTex.dispose(); xTex.dispose();
+        if (cont.contains(el)) cont.removeChild(el);
       };
     }, [data, theme]);
 
-    return ce('div', {ref: contRef, style: {width:'100%', height:'100%'}});
+    return ce('div', { ref: contRef, style: { width:'100%', height:'100%' } });
   };
+
 
   // ── CanvasLine ─────────────────────────────────────────────────────
   // Static line/bar chart for spectral data
@@ -9338,7 +9451,7 @@ root.render(/*#__PURE__*/React.createElement(App, null));
         }
 
         function getLStr(L) {
-            const lVal = Math.round(L * 50) * 2; // Round to nearest 0.02 interval (even number)
+            const lVal = Math.round(L * 100); // Round to nearest 0.01 interval (every integer 0-100)
             return Math.min(100, Math.max(0, lVal)).toString().padStart(2, '0');
         }
 
@@ -9855,11 +9968,11 @@ root.render(/*#__PURE__*/React.createElement(App, null));
             const isDark = theme === 'dark';
             const data = useMemo(() => {
                 const traces = [];
-                traces.push({ type: 'scatter3d', mode: 'markers', x: points.map(p => p.a), y: points.map(p => p.b), z: points.map(p => p.L), text: points.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const name = `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return `<b>${name}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), hovertemplate: "%{text}<extra></extra>", customdata: points.map(p => [p.L, p.C, p.H]), marker: { size: 4, color: points.map(p => p.color), opacity: 0.8, line: { width: 0 } } });
+                traces.push({ type: 'scatter3d', mode: 'markers', x: points.map(p => p.a), y: points.map(p => p.b), z: points.map(p => p.L), text: points.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; return `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || ''; }), hovertemplate: "%{text}<extra></extra>", customdata: points.map(p => [p.L, p.C, p.H]), marker: { size: 4, color: points.map(p => p.color), opacity: 0.8, line: { width: 0 } } });
                 const lockedNodes = points.filter(p => { const prefix = getNounPrefix(p.L, p.C); return !p.isPin && lockedNouns[`${prefix}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]; }).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed' }; });
                 const pinNodes = Object.values(savedColors).filter(sc => sc.type === 'pin').map(p => { const displayName = `${p.adjOverride || adjectives[p.adjId] || ''} ${p.nameOverride || names[p.anchorId] || ''}`.trim() || 'Unnamed Pin'; return { ...p, displayName }; });
-                traces.push({ type: 'scatter3d', mode: 'markers', x: lockedNodes.map(p => p.a), y: lockedNodes.map(p => p.b), z: lockedNodes.map(p => p.L), text: lockedNodes.map(p => `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`), hovertemplate: "%{text}<extra></extra>", customdata: lockedNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'square', size: 6, color: lockedNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
-                traces.push({ type: 'scatter3d', mode: 'markers', x: pinNodes.map(p => p.a), y: pinNodes.map(p => p.b), z: pinNodes.map(p => p.L), text: pinNodes.map(p => `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`), hovertemplate: "%{text}<extra></extra>", customdata: pinNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'x', size: 14, color: pinNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
+                traces.push({ type: 'scatter3d', mode: 'markers', x: lockedNodes.map(p => p.a), y: lockedNodes.map(p => p.b), z: lockedNodes.map(p => p.L), text: lockedNodes.map(p => p.displayName), hovertemplate: "%{text}<extra></extra>", customdata: lockedNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'square', size: 6, color: lockedNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
+                traces.push({ type: 'scatter3d', mode: 'markers', x: pinNodes.map(p => p.a), y: pinNodes.map(p => p.b), z: pinNodes.map(p => p.L), text: pinNodes.map(p => p.displayName || p.nameOverride || ''), hovertemplate: "%{text}<extra></extra>", customdata: pinNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'x', size: 14, color: pinNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
                 traces.push({ type: 'scatter3d', mode: 'lines', x: crosshair?.snapTarget ? [crosshair.a, crosshair.snapTarget.a] : [], y: crosshair?.snapTarget ? [crosshair.b, crosshair.snapTarget.b] : [], z: crosshair?.snapTarget ? [crosshair.rawL, crosshair.snapTarget.L] : [], line: { color: isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.3)', width: 2, dash: 'dot' }, hoverinfo: 'skip' });
                 traces.push({ type: 'scatter3d', mode: 'markers', x: [crosshair?.a], y: [crosshair?.b], z: [crosshair?.rawL], text: [`<b>Cursor</b><br>L: ${crosshair?.rawL.toFixed(3)} C: ${crosshair?.rawC.toFixed(3)} H: ${crosshair?.rawH.toFixed(1)}°`], hovertemplate: "%{text}<extra></extra>", marker: { symbol: 'cross', size: 8, color: isDark ? '#fff' : '#000', line: { color: isDark ? '#fff' : '#000', width: 2 } }, hoverinfo: 'skip' });
                 return traces;
@@ -9894,14 +10007,23 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                     const h2 = (closestH + 360) % 360;
                     return Math.abs(p.H - h1) < 0.1 || Math.abs(p.H - h2) < 0.1;
                 };
-                const filtered = points.filter(p => !p.isPin && filterFn(p));
-                const filteredBurnt = Object.values(savedColors).filter(p => p.type === 'pin' && filterFn(p));
+                let filtered = points.filter(p => !p.isPin && filterFn(p));
+                // Fallback: if scrubbing produces empty set, show nearest-H column
+                if (filtered.length === 0 && points.length > 0) {
+                    const nonPins = points.filter(p => !p.isPin && p.C > 0);
+                    if (nonPins.length > 0) {
+                        let minHDist = Infinity;
+                        nonPins.forEach(p => { const d = Math.min(Math.abs(p.H - targetH), 360 - Math.abs(p.H - targetH)); if (d < minHDist) minHDist = d; });
+                        filtered = nonPins.filter(p => { const d = Math.min(Math.abs(p.H - targetH), 360 - Math.abs(p.H - targetH)); return d <= minHDist + 0.01; });
+                    }
+                }
+                let filteredBurnt = Object.values(savedColors).filter(p => p.type === 'pin' && filterFn(p));
                 const traces = [];
-                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers+text', x: filtered.map(p => p.C), y: filtered.map(p => p.L), text: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[p.lStr] || ''; const noun = names[nounId] || ''; const fullName = `${adj} ${noun}`.trim() || 'Unnamed'; const binText = adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`; return viewMode === 'bins' ? binText : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), textposition: 'middle center', textfont: { size: 12, family: 'Inter, sans-serif', color: filtered.map(p => p.L > 0.55 ? '#000000' : '#ffffff') }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>L: %{y:.3f} C: %{x:.3f}<extra></extra>" : "%{text}<extra></extra>", customdata: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 10, color: filtered.map(p => p.color), opacity: viewMode === 'bins' ? 0 : 0.8, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
+                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers+text', x: filtered.map(p => p.C), y: filtered.map(p => p.L), text: filtered.map(p => { if (p._pinNameOverride) return `${p._pinAdjOverride || ''} ${p._pinNameOverride}`.trim(); const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[p.lStr] || ''; const noun = names[nounId] || ''; return `${adj} ${noun}`.trim() || ''; }), textposition: 'top center', textfont: { size: 10, family: 'Inter, sans-serif', color: isDark ? '#ffffff' : '#000000' }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>L: %{y:.3f} C: %{x:.3f}<extra></extra>" : "%{text}<extra></extra>", customdata: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 10, color: filtered.map(p => p.color), opacity: viewMode === 'bins' ? 0 : 0.8, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
                 const lockedNodes = filtered.filter(p => { const prefix = getNounPrefix(p.L, p.C); return lockedNouns[`${prefix}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]; }).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed' }; });
                 const pinNodes = filteredBurnt.map(p => { const displayName = `${p.adjOverride || adjectives[p.adjId] || ''} ${p.nameOverride || names[p.anchorId] || ''}`.trim() || 'Unnamed Pin'; return { ...p, displayName }; });
-                traces.push({ type: 'scatter', mode: 'markers', x: lockedNodes.map(p => p.C), y: lockedNodes.map(p => p.L), text: lockedNodes.map(p => `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`), hovertemplate: "%{text}<extra></extra>", customdata: lockedNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'square', size: 10, color: lockedNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
-                traces.push({ type: 'scatter', mode: 'markers', x: pinNodes.map(p => p.C), y: pinNodes.map(p => p.L), text: pinNodes.map(p => `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`), hovertemplate: "%{text}<extra></extra>", customdata: pinNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'x', size: 12, color: pinNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
+                traces.push({ type: 'scatter', mode: 'markers', x: lockedNodes.map(p => p.C), y: lockedNodes.map(p => p.L), text: lockedNodes.map(p => p.displayName), hovertemplate: "%{text}<extra></extra>", customdata: lockedNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'square', size: 10, color: lockedNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
+                traces.push({ type: 'scatter', mode: 'markers', x: pinNodes.map(p => p.C), y: pinNodes.map(p => p.L), text: pinNodes.map(p => p.displayName || p.nameOverride || ''), hovertemplate: "%{text}<extra></extra>", customdata: pinNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'x', size: 12, color: pinNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
                 traces.push({ type: 'scatter', mode: 'lines', x: crosshair?.snapTarget ? [crosshair.rawC, crosshair.snapTarget.C] : [], y: crosshair?.snapTarget ? [crosshair.rawL, crosshair.snapTarget.L] : [], line: { color: isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.3)', width: 2, dash: 'dot' }, hoverinfo: 'skip' });
                 traces.push({ type: 'scatter', mode: 'markers', x: [crosshair?.rawC], y: [crosshair?.rawL], text: [`<b>Cursor</b><br>L: ${crosshair?.rawL.toFixed(3)} C: ${crosshair?.rawC.toFixed(3)} H: ${crosshair?.rawH.toFixed(1)}°`], hovertemplate: "%{text}<extra></extra>", marker: { symbol: 'cross', size: 12, color: isDark ? '#fff' : '#000', line: { color: isDark ? '#fff' : '#000', width: 2 } }, hoverinfo: 'skip' });
                 
@@ -10026,14 +10148,22 @@ root.render(/*#__PURE__*/React.createElement(App, null));
             }, [crosshair?.rawC, points, savedColors]);
             const data = useMemo(() => {
                 const targetC = stableC;
-                const filtered = points.filter(p => !p.isPin && p.C > 0 && Math.abs(p.C - targetC) <= 0.001);
-                const filteredBurnt = Object.values(savedColors).filter(p => p.type === 'pin' && p.C > 0 && Math.abs(p.C - targetC) <= 0.001);
+                // Include C=0 neutrals always + exact C ring + fallback to nearest C if empty
+                let filtered = points.filter(p => !p.isPin && (p.C === 0 || Math.abs(p.C - targetC) <= 0.001));
+                if (filtered.filter(p => p.C > 0).length === 0 && points.filter(p => p.C > 0).length > 0) {
+                    const nonZero = points.filter(p => !p.isPin && p.C > 0);
+                    let minCDist = Infinity;
+                    nonZero.forEach(p => { const d = Math.abs(p.C - targetC); if (d < minCDist) minCDist = d; });
+                    const fallback = nonZero.filter(p => Math.abs(p.C - targetC) <= minCDist + 0.001);
+                    filtered = [...points.filter(p => !p.isPin && p.C === 0), ...fallback];
+                }
+                let filteredBurnt = Object.values(savedColors).filter(p => p.type === 'pin' && Math.abs(p.C - targetC) <= 0.001);
                 const traces = [];
-                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers+text', x: filtered.map(p => p.H), y: filtered.map(p => p.L), text: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[p.lStr] || ''; const noun = names[nounId] || ''; const fullName = `${adj} ${noun}`.trim() || 'Unnamed'; const binText = adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`; return viewMode === 'bins' ? binText : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), textposition: 'middle center', textfont: { size: 12, family: 'Inter, sans-serif', color: filtered.map(p => p.L > 0.55 ? '#000000' : '#ffffff') }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>L: %{y:.3f} H: %{x:.1f}°<extra></extra>" : "%{text}<extra></extra>", customdata: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 10, color: filtered.map(p => p.color), opacity: viewMode === 'bins' ? 0 : 0.8, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
+                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers+text', x: filtered.map(p => p.H), y: filtered.map(p => p.L), text: filtered.map(p => { if (p._pinNameOverride) return `${p._pinAdjOverride || ''} ${p._pinNameOverride}`.trim(); const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[p.lStr] || ''; const noun = names[nounId] || ''; return `${adj} ${noun}`.trim() || ''; }), textposition: 'top center', textfont: { size: 10, family: 'Inter, sans-serif', color: isDark ? '#ffffff' : '#000000' }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>L: %{y:.3f} H: %{x:.1f}°<extra></extra>" : "%{text}<extra></extra>", customdata: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 10, color: filtered.map(p => p.color), opacity: viewMode === 'bins' ? 0 : 0.8, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
                 const lockedNodes = filtered.filter(p => { const prefix = getNounPrefix(p.L, p.C); return lockedNouns[`${prefix}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]; }).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed' }; });
                 const pinNodes = filteredBurnt.map(p => { const displayName = `${p.adjOverride || adjectives[p.adjId] || ''} ${p.nameOverride || names[p.anchorId] || ''}`.trim() || 'Unnamed Pin'; return { ...p, displayName }; });
-                traces.push({ type: 'scatter', mode: 'markers', x: lockedNodes.map(p => p.H), y: lockedNodes.map(p => p.L), text: lockedNodes.map(p => `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`), hovertemplate: "%{text}<extra></extra>", customdata: lockedNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'square', size: 10, color: lockedNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
-                traces.push({ type: 'scatter', mode: 'markers', x: pinNodes.map(p => p.H), y: pinNodes.map(p => p.L), text: pinNodes.map(p => `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`), hovertemplate: "%{text}<extra></extra>", customdata: pinNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'x', size: 12, color: pinNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
+                traces.push({ type: 'scatter', mode: 'markers', x: lockedNodes.map(p => p.H), y: lockedNodes.map(p => p.L), text: lockedNodes.map(p => p.displayName), hovertemplate: "%{text}<extra></extra>", customdata: lockedNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'square', size: 10, color: lockedNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
+                traces.push({ type: 'scatter', mode: 'markers', x: pinNodes.map(p => p.H), y: pinNodes.map(p => p.L), text: pinNodes.map(p => p.displayName || p.nameOverride || ''), hovertemplate: "%{text}<extra></extra>", customdata: pinNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'x', size: 12, color: pinNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
                 traces.push({ type: 'scatter', mode: 'lines', x: crosshair?.snapTarget ? [crosshair.rawH, crosshair.snapTarget.H] : [], y: crosshair?.snapTarget ? [crosshair.rawL, crosshair.snapTarget.L] : [], line: { color: isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.3)', width: 2, dash: 'dot' }, hoverinfo: 'skip' });
                 traces.push({ type: 'scatter', mode: 'markers', x: [crosshair?.rawH], y: [crosshair?.rawL], text: [`<b>Cursor</b><br>L: ${crosshair?.rawL.toFixed(3)} C: ${crosshair?.rawC.toFixed(3)} H: ${crosshair?.rawH.toFixed(1)}°`], hovertemplate: "%{text}<extra></extra>", marker: { symbol: 'cross', size: 12, color: isDark ? '#fff' : '#000', line: { color: isDark ? '#fff' : '#000', width: 2 } }, hoverinfo: 'skip' });
                 
@@ -10165,11 +10295,11 @@ root.render(/*#__PURE__*/React.createElement(App, null));
             
             const data = useMemo(() => {
                 const traces = [];
-                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers+text', x: validAnchors.map(p => p.a), y: validAnchors.map(p => p.b), text: validAnchors.map(p => { const prefix = getNounPrefix(p.L, p.C); const lStr = getLStr(p.L); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[lStr] || ''; const noun = names[nounId] || ''; const fullName = `${adj} ${noun}`.trim() || 'Unnamed'; const binText = adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`; return viewMode === 'bins' ? (p.C === 0 ? `<b>${adj}</b>` : binText) : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), textposition: 'middle center', textfont: { size: 12, family: 'Inter, sans-serif', color: validAnchors.map(p => p.L > 0.55 ? '#000000' : '#ffffff') }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>C: %{customdata[1]:.3f} H: %{customdata[2]:.1f}°<extra></extra>" : "%{text}<extra></extra>", customdata: validAnchors.map(p => { const prefix = getNounPrefix(p.L, p.C); const lStr = getLStr(p.L); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 14, color: validAnchors.map(p => p.color), opacity: viewMode === 'bins' ? 0 : 1, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
+                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers+text', x: validAnchors.map(p => p.a), y: validAnchors.map(p => p.b), text: validAnchors.map(p => { if (p._pinNameOverride) return `${p._pinAdjOverride || ''} ${p._pinNameOverride}`.trim(); const prefix = getNounPrefix(p.L, p.C); const lStr = getLStr(p.L); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[lStr] || ''; const noun = names[nounId] || ''; return `${adj} ${noun}`.trim() || ''; }), textposition: 'top center', textfont: { size: 10, family: 'Inter, sans-serif', color: isDark ? '#ffffff' : '#000000' }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>C: %{customdata[1]:.3f} H: %{customdata[2]:.1f}°<extra></extra>" : "%{text}<extra></extra>", customdata: validAnchors.map(p => { const prefix = getNounPrefix(p.L, p.C); const lStr = getLStr(p.L); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 14, color: validAnchors.map(p => p._pinColor || p.color), opacity: viewMode === 'bins' ? 0 : 1, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
                 const lockedNodes = baseAnchors.map(p => ({...p, L: crosshair.rawL, lStr: getLStr(crosshair.rawL)})).filter(p => { const prefix = getNounPrefix(p.L, p.C); return !p.isPin && lockedNouns[`${prefix}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]; }).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const c = new Color("oklch", [p.L, p.C, p.H]); const nodeColor = c.inGamut("srgb") || p.C === 0 ? c.clone().toGamut({space: "srgb"}).toString({format: "hex"}) : '#000'; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed', color: nodeColor }; });
                 const pinNodes = Object.values(savedColors).filter(sc => sc.type === 'pin' && Math.abs(sc.L - crosshair.rawL) < 0.005).map(p => { const displayName = `${p.adjOverride || adjectives[p.adjId] || ''} ${p.nameOverride || names[p.anchorId] || ''}`.trim() || 'Unnamed Pin'; return { ...p, displayName }; });
-                traces.push({ type: 'scatter', mode: 'markers', x: lockedNodes.map(p => p.a), y: lockedNodes.map(p => p.b), text: lockedNodes.map(p => `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`), hovertemplate: "%{text}<extra></extra>", customdata: lockedNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'square', size: 10, color: lockedNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
-                traces.push({ type: 'scatter', mode: 'markers', x: pinNodes.map(p => p.a), y: pinNodes.map(p => p.b), text: pinNodes.map(p => `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`), hovertemplate: "%{text}<extra></extra>", customdata: pinNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'x', size: 12, color: pinNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
+                traces.push({ type: 'scatter', mode: 'markers', x: lockedNodes.map(p => p.a), y: lockedNodes.map(p => p.b), text: lockedNodes.map(p => p.displayName), hovertemplate: "%{text}<extra></extra>", customdata: lockedNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'square', size: 10, color: lockedNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
+                traces.push({ type: 'scatter', mode: 'markers', x: pinNodes.map(p => p.a), y: pinNodes.map(p => p.b), text: pinNodes.map(p => p.displayName || p.nameOverride || ''), hovertemplate: "%{text}<extra></extra>", customdata: pinNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'x', size: 12, color: pinNodes.map(p => p.color), line: { color: isDark ? '#fff' : '#000', width: 2 } } });
                 traces.push({ type: 'scatter', mode: 'lines', x: crosshair?.snapTarget ? [crosshair.a, crosshair.snapTarget.a] : [], y: crosshair?.snapTarget ? [crosshair.b, crosshair.snapTarget.b] : [], line: { color: isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.3)', width: 2, dash: 'dot' }, hoverinfo: 'skip' });
                 traces.push({ type: 'scatter', mode: 'markers', x: [crosshair?.a], y: [crosshair?.b], text: [`<b>Cursor</b><br>L: ${crosshair?.rawL.toFixed(3)} C: ${crosshair?.rawC.toFixed(3)} H: ${crosshair?.rawH.toFixed(1)}°`], hovertemplate: "%{text}<extra></extra>", marker: { symbol: 'cross', size: 12, color: isDark ? '#fff' : '#38bdf8', line: { color: isDark ? '#fff' : '#38bdf8', width: 2 } }, hoverinfo: 'skip' });
                 
@@ -10231,8 +10361,8 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                                         shapes.push({
                                             type: 'path',
                                             path: unscaledPath,
-                                            fillcolor: p.color,
-                                            line: { width: 1.5, color: p.color },
+                                            fillcolor: p._pinColor || p.color,
+                                            line: { width: 1.5, color: p._pinColor || p.color },
                                             layer: 'below'
                                         });
                                     }
@@ -11351,6 +11481,27 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                         });
                     }
                 });
+
+                // Pin gravity: within 0.01 Euclidean OKLab radius,
+                // anchor grid points inherit the pin's name/adj overrides
+                const pinList = Object.values(savedColors).filter(sc => sc.type === 'pin');
+                if (pinList.length > 0) {
+                    points.forEach(pt => {
+                        if (pt.isPin) return;
+                        let minDist = 0.01, closestPin = null;
+                        for (const pin of pinList) {
+                            const dL = pt.L - pin.L, da = pt.a - pin.a, db = pt.b - pin.b;
+                            const dist = Math.sqrt(dL*dL + da*da + db*db);
+                            if (dist < minDist) { minDist = dist; closestPin = pin; }
+                        }
+                        if (closestPin) {
+                            if (closestPin.nameOverride) pt._pinNameOverride = closestPin.nameOverride;
+                            if (closestPin.adjOverride)  pt._pinAdjOverride  = closestPin.adjOverride;
+                            if (closestPin.color)         pt._pinColor        = closestPin.color;
+                            pt._pinId = closestPin.id;
+                        }
+                    });
+                }
                 
                 const filterTags = viewportTagFilter.toLowerCase().split(',').map(t => t.trim()).filter(t => t);
                 const q = viewportSearchQuery.toLowerCase().trim();
@@ -11498,7 +11649,8 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                 }
 
                 const exactErpCode = getExactErpCode(scrubL, scrubC, scrubH);
-                const activeErpCode = activeSavedColor?.erpCode || (isGridSnapped && closestGridPt ? closestGridPt.erpCode : exactErpCode);
+                // Always show the live cursor position code; only override when a saved color is explicitly active
+                const activeErpCode = activeSavedColor?.erpCode || exactErpCode;
                 return {
                     rawL: scrubL, rawC: scrubC, rawH: scrubH, a, b, activeSavedColor, exactSavedColor, isGridSnapped, closestGridPt, activeErpCode,
                     nearestAdjId,
