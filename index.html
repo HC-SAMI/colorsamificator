@@ -11082,11 +11082,12 @@ root.render(/*#__PURE__*/React.createElement(App, null));
             return result;
         };
 
-        const processCSVData = (parsedData, currentColorData, currentSavedColors) => {
+        const processCSVData = (parsedData, currentColorData, currentSavedColors, currentNames = {}, currentAdjectives = {}) => {
             const newColorData = currentColorData ? JSON.parse(JSON.stringify(currentColorData)) : {};
             const newSavedColors = currentSavedColors ? JSON.parse(JSON.stringify(currentSavedColors)) : {};
-            let colorsAdded = 0;
-            let pinsAdded = 0;
+            const newNames = currentNames ? { ...currentNames } : {};
+            const newAdjectives = currentAdjectives ? { ...currentAdjectives } : {};
+            let colorsAdded = 0, pinsAdded = 0, adjsAdded = 0, nounsAdded = 0;
 
             parsedData.forEach(row => {
                 const targetType = String(row.Type || '').toUpperCase().trim();
@@ -11157,10 +11158,31 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                     };
                     if (spectral.length > 0) newSavedColors[id].spectral = spectral;
                     pinsAdded++;
+                } else if (targetType === 'ADJ') {
+                    // Lightness-level adjective: Adjective field + OKLCH_L to derive lStr
+                    const adj = (row.Adjective || '').trim();
+                    const rawL = parseFloat(row.OKLCH_L);
+                    if (adj && !isNaN(rawL)) {
+                        newAdjectives[getLStr(rawL)] = adj;
+                        adjsAdded++;
+                    }
+                } else if (targetType === 'NOUN') {
+                    // Grid-anchor noun: Noun field + OKLCH_L/C/H to derive nounId
+                    const noun = (row.Noun || '').trim();
+                    const rawL = parseFloat(row.OKLCH_L);
+                    const rawC = parseFloat(row.OKLCH_C);
+                    const rawH = parseFloat(row.OKLCH_H);
+                    if (noun && !isNaN(rawL) && !isNaN(rawC) && !isNaN(rawH)) {
+                        const prefix = getNounPrefix(rawL, rawC);
+                        const cStr2 = Math.round(rawC * 100).toString().padStart(2, '0');
+                        const hStr2 = Math.round(rawH).toString().padStart(3, '0');
+                        newNames[`${prefix}-${cStr2}-${hStr2}`] = noun;
+                        nounsAdded++;
+                    }
                 }
             });
 
-            return { newColorData, newSavedColors, colorsAdded, pinsAdded };
+            return { newColorData, newSavedColors, newNames, newAdjectives, colorsAdded, pinsAdded, adjsAdded, nounsAdded };
         };
 
         const App = () => {
@@ -11256,6 +11278,8 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                     // Try to fetch companion CSV files
                     let currentColorData = loadedColorData || {};
                     let currentSavedColors = savedColors;
+                    let currentNames = { ...names };
+                    let currentAdjectives = { ...adjectives };
 
                     const filesToLoad = initialState?.linkedFiles || [
                         'pins.csv', 'anchors.csv',
@@ -11278,10 +11302,13 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                                 }
                                 const parsed = parseCSV(csvText);
                                 if (parsed.length > 0) {
-                                    const { newColorData, newSavedColors } = processCSVData(parsed, currentColorData, currentSavedColors);
+                                    const { newColorData, newSavedColors, newNames, newAdjectives, adjsAdded, nounsAdded } =
+                                        processCSVData(parsed, currentColorData, currentSavedColors, currentNames, currentAdjectives);
                                     currentColorData = newColorData;
                                     currentSavedColors = newSavedColors;
-                                    console.log(`Loaded ${file}: ${parsed.length} rows`);
+                                    currentNames = newNames;
+                                    currentAdjectives = newAdjectives;
+                                    console.log(`Loaded ${file}: ${parsed.length} rows (${adjsAdded} adjectives, ${nounsAdded} nouns)`);
                                 }
                             } else {
                                 // 404 or other error — skip silently (file not in repo)
@@ -11294,6 +11321,8 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                     setColorData(currentColorData);
                     localStorage.setItem('samificator-color-data', JSON.stringify(currentColorData));
                     setSavedColors(currentSavedColors);
+                    setNames(prev => ({ ...prev, ...currentNames }));
+                    setAdjectives(prev => ({ ...prev, ...currentAdjectives }));
                 };
                 
                 loadInitialData();
