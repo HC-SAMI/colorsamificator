@@ -11198,7 +11198,14 @@ root.render(/*#__PURE__*/React.createElement(App, null));
             const [adjectives, setAdjectives] = useState(initialState?.adjectives || {}); 
             const [dictNotes, setDictNotes] = useState(initialState?.dictNotes || {}); 
             const [dictTags, setDictTags] = useState(initialState?.dictTags || {}); 
-            const [savedColors, setSavedColors] = useState(initialState?.savedColors || {}); 
+            const [savedColors, setSavedColors] = useState(() => {
+                // Restore pins from localStorage on mount
+                try {
+                    const stored = localStorage.getItem('samificator-saved-colors');
+                    if (stored) return JSON.parse(stored);
+                } catch(e) {}
+                return initialState?.savedColors || {};
+            }); 
             const [tetheringPinId, setTetheringPinId] = useState(null);
             const lockedNouns = useMemo(() => { const res = {}; Object.values(savedColors).forEach(sc => { if (sc.type === 'anchor') res[sc.anchorId] = true; }); return res; }, [savedColors]);
             const lockedAdjectives = useMemo(() => { const res = {}; Object.values(savedColors).forEach(sc => { if (sc.type === 'anchor') res[sc.adjId] = true; }); return res; }, [savedColors]);
@@ -11254,13 +11261,24 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                             const res = await fetch(file);
                             if (res.ok) {
                                 const csvText = await res.text();
+                                // Skip if response looks like an HTML error page
+                                const firstChars = csvText.trimStart().slice(0, 5).toLowerCase();
+                                if (firstChars === '<!doc' || firstChars === '<html') {
+                                    console.warn(`Skipping ${file}: received HTML instead of CSV`);
+                                    continue;
+                                }
                                 const parsed = parseCSV(csvText);
-                                const { newColorData, newSavedColors } = processCSVData(parsed, currentColorData, currentSavedColors);
-                                currentColorData = newColorData;
-                                currentSavedColors = newSavedColors;
+                                if (parsed.length > 0) {
+                                    const { newColorData, newSavedColors } = processCSVData(parsed, currentColorData, currentSavedColors);
+                                    currentColorData = newColorData;
+                                    currentSavedColors = newSavedColors;
+                                    console.log(`Loaded ${file}: ${parsed.length} rows`);
+                                }
+                            } else {
+                                // 404 or other error — skip silently (file not in repo)
                             }
                         } catch (e) {
-                            console.warn(`Failed to load linked file: ${file}`);
+                            console.warn(`Failed to load linked file: ${file}`, e);
                         }
                     }
 
@@ -11271,6 +11289,12 @@ root.render(/*#__PURE__*/React.createElement(App, null));
                 
                 loadInitialData();
             }, []);
+            useEffect(() => {
+                try {
+                    localStorage.setItem('samificator-saved-colors', JSON.stringify(savedColors));
+                } catch(e) {}
+            }, [savedColors]);
+
             const getComparable = (obj) => {
                 if (!obj) return null;
                 const { createdAt, createdBy, updatedAt, updatedBy, ...rest } = obj;
