@@ -11219,13 +11219,22 @@ root.render(/*#__PURE__*/React.createElement(App, null));
             const [selectedIds, setSelectedIds] = useState([]);
             const [observer, setObserver] = useState(initialState?.observer || 10);
             const [illuminant, setIlluminant] = useState(initialState?.illuminant || 'D65');
-            const [linkedFiles, setLinkedFiles] = useState(initialState?.linkedFiles || [
-                'pins.csv',
-                'pantone.csv', 'ral.csv', 'ncs.csv', 'behr.csv', 'benjaminMoore.csv', 
-                'farrowBall.csv', 'ppg.csv', 'sherwinWilliams.csv', 'dulux.csv', 
-                'tafisa.csv', 'uniboard.csv', 'agt.csv', 'egger.csv', 'finsa.csv', 
-                'arborite.csv', 'pionite.csv', 'swissKrono.csv'
-            ]);
+            const [linkedFiles, setLinkedFiles] = useState(() => {
+                const REQUIRED = ['pins.csv', 'anchors.csv'];
+                const saved = initialState?.linkedFiles || [];
+                const defaults = ['pins.csv', 'anchors.csv',
+                    'pantone.csv', 'ral.csv', 'ncs.csv', 'behr.csv', 'benjaminMoore.csv',
+                    'farrowBall.csv', 'ppg.csv', 'sherwinWilliams.csv', 'dulux.csv',
+                    'tafisa.csv', 'uniboard.csv', 'agt.csv', 'egger.csv', 'finsa.csv',
+                    'arborite.csv', 'pionite.csv', 'swissKrono.csv'];
+                const base = saved.length > 0 ? saved : defaults;
+                // Always ensure required files are present
+                const merged = [...base];
+                for (const f of REQUIRED) {
+                    if (!merged.includes(f)) merged.unshift(f);
+                }
+                return merged;
+            })
 
             useEffect(() => {
                 const loadInitialData = async () => {
