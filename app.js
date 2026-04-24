@@ -519,7 +519,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
                                 <div className="text-[11px] font-medium text-slate-800 dark:text-neutral-200 truncate">{match.name}</div>
                                 {isVerified && <Icon name="check-circle" className="w-3.5 h-3.5 text-emerald-500 shrink-0" title="Verified with Spectral Data" />}
                             </div>
-                            <div className="text-[9px] text-slate-500 dark:text-neutral-500 uppercase tracking-wider">{label} &middot; ΔEok {fmt(match.d, 1)}</div>
+                            <div className="text-[9px] text-slate-500 dark:text-neutral-500 uppercase tracking-wider">{label} &middot; ΔEok {fmt(match.d, 2)}</div>
                         </div>
                     </div>
                 );
@@ -681,7 +681,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
                     traces.push({
                         type: 'scatter3d', mode: 'lines',
                         x: [nc.a, nc.a], y: [nc.b, nc.b], z: [nc.minL, nc.maxL],
-                        line: { color: isDark ? '#F2E8DF' : '#010D00', width: 6 },
+                        line: { color: isDark ? 'rgba(242, 232, 223, 0)' : 'rgba(1, 13, 0, 0)', width: 0 },
                         hoverinfo: 'text',
                         text: [`<b>[Range] ${ncName}</b><br>L: ${nc.minL.toFixed(2)} - ${nc.maxL.toFixed(2)}`, `<b>[Range] ${ncName}</b><br>L: ${nc.minL.toFixed(2)} - ${nc.maxL.toFixed(2)}`]
                     });
@@ -693,7 +693,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
                 traces.push({ type: 'scatter3d', mode: 'markers', x: [crosshair?.a], y: [crosshair?.b], z: [crosshair?.rawL], text: [`<b>Cursor</b><br>L: ${crosshair?.rawL.toFixed(3)} C: ${crosshair?.rawC.toFixed(3)} H: ${crosshair?.rawH.toFixed(1)}°`], hovertemplate: "%{text}<extra></extra>", marker: { symbol: 'cross', size: 8, color: isDark ? '#F2E8DF' : '#010D00', line: { color: isDark ? '#F2E8DF' : '#010D00', width: 2 } }, hoverinfo: 'skip' });
                 return traces;
             }, [points, crosshair, isDark, names, adjectives, savedColors, lockedNouns, lockedAdjectives]);
-            const layout = useMemo(() => ({ uirevision: 'true', paper_bgcolor: 'rgba(0,0,0,0)', margin: { l: 0, r: 0, b: 0, t: 0 }, scene: { xaxis: { title: 'a', range: [-0.3, 0.3], backgroundcolor: isDark ? '#052212' : '#F2E8DF', gridcolor: isDark ? 'rgba(177,188,131,0.12)' : 'rgba(43,64,50,0.10)', titlefont: {color: isDark ? '#B1BC83' : '#2B4032'}, tickfont: {color: isDark ? '#B1BC83' : '#2B4032'} }, yaxis: { title: 'b', range: [-0.3, 0.3], backgroundcolor: isDark ? '#052212' : '#F2E8DF', gridcolor: isDark ? 'rgba(177,188,131,0.12)' : 'rgba(43,64,50,0.10)', titlefont: {color: isDark ? '#B1BC83' : '#2B4032'}, tickfont: {color: isDark ? '#B1BC83' : '#2B4032'} }, zaxis: { title: 'L', range: [0, 1], backgroundcolor: isDark ? '#052212' : '#F2E8DF', gridcolor: isDark ? 'rgba(177,188,131,0.12)' : 'rgba(43,64,50,0.10)', titlefont: {color: isDark ? '#B1BC83' : '#2B4032'}, tickfont: {color: isDark ? '#B1BC83' : '#2B4032'} }, camera: { eye: { x: 1.5, y: 1.5, z: 0.5 } } }, showlegend: false }), [isDark]);
+            const layout = useMemo(() => ({ uirevision: 'true', paper_bgcolor: 'rgba(0,0,0,0)', margin: { l: 0, r: 0, b: 0, t: 0 }, scene: { xaxis: { title: 'a', range: [-0.3, 0.3], backgroundcolor: isDark ? '#052212' : '#F2E8DF', gridcolor: isDark ? 'rgba(177,188,131,0.12)' : 'rgba(43,64,50,0.10)', zerolinecolor: isDark ? 'rgba(177,188,131,0.25)' : 'rgba(43,64,50,0.15)', showspikes: false, titlefont: {color: isDark ? '#B1BC83' : '#2B4032'}, tickfont: {color: isDark ? '#B1BC83' : '#2B4032'} }, yaxis: { title: 'b', range: [-0.3, 0.3], backgroundcolor: isDark ? '#052212' : '#F2E8DF', gridcolor: isDark ? 'rgba(177,188,131,0.12)' : 'rgba(43,64,50,0.10)', zerolinecolor: isDark ? 'rgba(177,188,131,0.25)' : 'rgba(43,64,50,0.15)', showspikes: false, titlefont: {color: isDark ? '#B1BC83' : '#2B4032'}, tickfont: {color: isDark ? '#B1BC83' : '#2B4032'} }, zaxis: { title: 'L', range: [0, 1], backgroundcolor: isDark ? '#052212' : '#F2E8DF', gridcolor: isDark ? 'rgba(177,188,131,0.12)' : 'rgba(43,64,50,0.10)', zerolinecolor: isDark ? 'rgba(177,188,131,0.25)' : 'rgba(43,64,50,0.15)', showspikes: false, titlefont: {color: isDark ? '#B1BC83' : '#2B4032'}, tickfont: {color: isDark ? '#B1BC83' : '#2B4032'} }, camera: { eye: { x: 1.5, y: 1.5, z: 0.5 } } }, showlegend: false }), [isDark]);
             return <PlotlyChart data={data} layout={layout} onPointClick={handlePointClick} theme={theme} />;
         };
         const ViewVertical = ({ points, crosshair, handlePointClick, theme, names, adjectives, savedColors = {}, lockedNouns, lockedAdjectives, viewMode, tetheringPinId, swatchLayout, swatchZoom, viewportFilter, viewportSearchQuery, viewportTagFilter }) => {
@@ -1294,7 +1294,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
                                                     </div>
                                                 )}
                                             </td>
-                                            <td className="p-2 text-right font-mono text-emerald-600 font-bold">{item._d !== undefined ? item._d.toFixed(1) : '-'}</td>
+                                            <td className="p-2 text-right font-mono text-emerald-600 font-bold">{item._d !== undefined ? item._d.toFixed(2) : '-'}</td>
                                             <td className="p-2 text-right font-mono text-slate-500">{item.L.toFixed(3)}</td>
                                             <td className="p-2 text-right font-mono text-slate-500">{item.C.toFixed(3)}</td>
                                             <td className="p-2 text-right font-mono text-slate-500">{item.H.toFixed(1)}</td>
@@ -2728,7 +2728,7 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                         // Strategy 3: "Locally offline" via fetch directory listing parse
                         // (Works for local simple HTTP servers, or Firefox file:// dir listings)
                         try {
-                            const res = await fetch('./');
+                            const res = await fetch('./data/');
                             if (res.ok) {
                                 const text = await res.text();
                                 // Ignore if this is actually the app's index.html being served back
@@ -2756,7 +2756,7 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                         const initial = initialState?.linkedFiles || [];
                         if (initial.length > 0) return initial.filter(f => f.toLowerCase().endsWith('.csv'));
                         
-                        return ['anchors.csv', 'pins.csv'];
+                        return ['anchors.csv', 'pins.csv', 'Reference Colors.csv', 'agt.csv', 'arborite.csv', 'behr.csv', 'benjaminMoore.csv', 'dulux.csv', 'egger.csv', 'farrowBall.csv', 'finsa.csv', 'munsell.csv', 'ncs.csv', 'pantone.csv', 'pionite.csv', 'ppg.csv', 'ral.csv', 'sherwinWilliams.csv', 'swissKrono.csv', 'tafisa.csv', 'uniboard.csv'];
                     };
 
                     let discoveredFiles = await discoverCSVFiles();
@@ -2779,7 +2779,7 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                             // Safely resolve resource URL: use bundler blob if available, else plain filename
                             const csvKey = window.__CSV_FILE_MAP__ && window.__CSV_FILE_MAP__[file];
                             const blobUrl = csvKey && window.__resources && window.__resources[csvKey];
-                            const resolvedUrl = blobUrl || file;
+                            const resolvedUrl = blobUrl || (file.startsWith('data/') ? file : 'data/' + file);
                             const res = await fetch(resolvedUrl);
                             if (res.ok) {
                                 const csvText = await res.text();
@@ -3541,15 +3541,20 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                     const stateData = { palette, savedPalettes, groupSettings, observer, illuminant, linkedFiles }; 
                     
                     let appCode = '';
+                    let styleCode = '';
                     const inlineScript = document.querySelector('script[type="text/babel"]:not([src])');
                     if (inlineScript && inlineScript.textContent && inlineScript.textContent.trim().length > 100) {
                         appCode = inlineScript.textContent;
                     } else {
                         try {
-                            const r2 = await fetch('app.jsx');
+                            const r2 = await fetch('app.js');
                             if (r2.ok) appCode = await r2.text();
                             else throw new Error('Cannot locate app code');
                         } catch(e2) { throw new Error('Export failed: ' + e2.message); }
+                        try {
+                            const rs = await fetch('styles.css');
+                            if (rs.ok) styleCode = await rs.text();
+                        } catch(e2) { console.warn('Could not fetch styles.css'); }
                     }
 
                     const clone = document.documentElement.cloneNode(true); 
@@ -3587,6 +3592,16 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                     appScript.setAttribute('data-compact', 'true');
                     appScript.textContent = appCode.replace(/<\/script>/gi, '<\\/script>');
                     clone.querySelector('body').appendChild(appScript);
+
+                    if (styleCode) {
+                        const styleNode = document.createElement('style');
+                        styleNode.textContent = styleCode;
+                        clone.querySelector('head').appendChild(styleNode);
+                        
+                        // remove the link to styles.css since it's now embedded
+                        const linkNode = clone.querySelector('link[href*="styles.css"]');
+                        if (linkNode) linkNode.remove();
+                    }
 
                     const htmlContent = "<!DOCTYPE html>\n" + clone.outerHTML; 
                     const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' }); const url = URL.createObjectURL(blob); 
@@ -3690,8 +3705,8 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                         });
                     });
                     
-                    zip.file('anchors.csv', Papa.unparse(anchorsCsv));
-                    zip.file('pins.csv', Papa.unparse(pinsCsv));
+                    zip.file('data/anchors.csv', Papa.unparse(anchorsCsv));
+                    zip.file('data/pins.csv', Papa.unparse(pinsCsv));
 
                     Object.keys(colorData).forEach((brand) => {
                         const brandData = colorData[brand].map(color => {
@@ -3709,7 +3724,7 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                             row.Spectral = color.spectral ? JSON.stringify(color.spectral) : '';
                             return row;
                         });
-                        zip.file(`${brand}.csv`, Papa.unparse(brandData));
+                        zip.file(`data/${brand}.csv`, Papa.unparse(brandData));
                     });
                     
                     const content = await zip.generateAsync({ type: 'blob' });
@@ -4040,7 +4055,7 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
             if (compSlotA && compSlotB) { 
                 const cA = new Color("oklch", [compSlotA.L, compSlotA.C, compSlotA.H]); 
                 const cB = new Color("oklch", [compSlotB.L, compSlotB.C, compSlotB.H]); 
-                deltaEOK = cA.deltaE(cB, "OK").toFixed(3); 
+                deltaEOK = cA.deltaE(cB, "OK").toFixed(2); 
                 deltaE2000 = cA.deltaE(cB, "2000").toFixed(2); 
             }
 
@@ -4418,7 +4433,7 @@ const ViewDatabase = ({ colorData, updateColorData, swatchLayout, swatchZoom, ha
                                             )}
                                         </div>
                                         <div className="flex flex-col justify-center text-right text-[10px] font-mono text-slate-500 dark:text-neutral-400 flex-shrink-0 bg-slate-50 dark:bg-neutral-900 p-2 rounded">
-                                            {enableDeltaE && item._d !== undefined && <div className="text-emerald-500 font-bold mb-1 border-b border-emerald-500/20 pb-0.5">ΔEok {item._d.toFixed(3)}</div>}
+                                            {enableDeltaE && item._d !== undefined && <div className="text-emerald-500 font-bold mb-1 border-b border-emerald-500/20 pb-0.5">ΔEok {item._d.toFixed(2)}</div>}
                                             <div>L: {item.L.toFixed(3)}</div>
                                             <div>C: {item.C.toFixed(3)}</div>
                                             <div>H: {item.H.toFixed(1)}°</div>
@@ -4462,7 +4477,7 @@ const ViewDatabase = ({ colorData, updateColorData, swatchLayout, swatchZoom, ha
                                                 <td className="p-2 max-w-[120px] truncate text-[9px] font-mono">
                                                     {item.erpCode?.startsWith('http') ? <a href={item.erpCode} target="_blank" rel="noopener noreferrer" className="text-sky-500 hover:underline" onClick={e=>e.stopPropagation()}>Link</a> : item.erpCode}
                                                 </td>
-                                                {enableDeltaE && <td className="p-2 text-right text-emerald-600 font-bold font-mono">{item._d?.toFixed(3)}</td>}
+                                                {enableDeltaE && <td className="p-2 text-right text-emerald-600 font-bold font-mono">{item._d?.toFixed(2)}</td>}
                                                 <td className="p-2 text-right font-mono text-slate-500">{item.L.toFixed(3)}</td>
                                                 <td className="p-2 text-right font-mono text-slate-500">{item.C.toFixed(3)}</td>
                                                 <td className="p-2 text-right font-mono text-slate-500">{item.H.toFixed(1)}</td>
@@ -4508,7 +4523,7 @@ const ViewDatabase = ({ colorData, updateColorData, swatchLayout, swatchZoom, ha
                                             )}
                                         </div>
                                         <div className="flex flex-col items-center text-center px-0.5 pb-2 w-full">
-                                            {enableDeltaE && item._d !== undefined && <div className="text-[9px] text-emerald-500 font-bold flex items-center gap-0.5 justify-center"><Icon name="target" className="w-2.5 h-2.5" /> ΔE {item._d.toFixed(1)}</div>}
+                                            {enableDeltaE && item._d !== undefined && <div className="text-[9px] text-emerald-500 font-bold flex items-center gap-0.5 justify-center"><Icon name="target" className="w-2.5 h-2.5" /> ΔEok {item._d.toFixed(2)}</div>}
                                             <span style={{ fontSize: `${Math.max(5, 6 * swatchZoom)}px` }} className="w-full font-mono text-slate-500 dark:text-neutral-400 truncate mt-0.5 group-hover:text-slate-800 dark:group-hover:text-neutral-200 transition-colors" title={item.erpCode}>
                                                 {item.erpCode?.startsWith('http') ? (
                                                     <a href={item.erpCode} target="_blank" rel="noopener noreferrer" className="hover:text-sky-500 flex items-center justify-center gap-1 drop-shadow-sm" onClick={(e) => e.stopPropagation()}>
@@ -4791,7 +4806,7 @@ const FileManager = ({ linkedFiles, setLinkedFiles, onClose }) => {
                                             </div>
                                             {crosshair?.snapDist > 0.0001 && crosshair?.snapTarget && !crosshair.exactSavedColor && ( 
                                                 <button onClick={() => handleUpdate([crosshair.snapTarget.L, crosshair.snapTarget.C, crosshair.snapTarget.H])} className={`mt-2 px-3 py-1 text-[9px] font-bold uppercase tracking-widest rounded-full border transition-all flex items-center justify-center gap-1.5 active:scale-95 pointer-events-auto`} style={{ color: isLight ? '#010D00' : '#F2E8DF', borderColor: isLight ? 'rgba(1,13,0,0.35)' : 'rgba(242,232,223,0.50)', backgroundColor: 'transparent' }}>
-                                                    <Icon name="magnet" className="w-3 h-3" /> Snap ΔE: {crosshair.snapDist.toFixed(3)}
+                                                    <Icon name="magnet" className="w-3 h-3" /> Snap ΔEok: {crosshair.snapDist.toFixed(2)}
                                                 </button> 
                                             )}
                                         </div>
