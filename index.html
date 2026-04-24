@@ -1,44 +1,77 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>The ColorSAMificator</title>
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="https://cdn.tailwindcss.com"></script>
-<script>
-tailwind.config = {
-  darkMode:'class',
-  theme:{
-    colors:{
-      transparent:'transparent',current:'currentColor',
-      white:'#F2E8DF',black:'#010D00',
-      slate:{50:'var(--surface)',100:'var(--surface-2)',200:'var(--border)',300:'var(--border-hover)',400:'var(--text-muted)',500:'var(--text-muted)',600:'var(--text)',700:'var(--text)',800:'var(--text-strong)',900:'var(--surface-card)',950:'var(--bg)'},
-      gray:{50:'var(--surface)',100:'var(--surface-2)',200:'var(--border)',300:'var(--border-hover)',400:'var(--text-muted)',500:'var(--text-muted)',600:'var(--text)',700:'var(--text)',800:'var(--text-strong)',900:'var(--surface-card)',950:'var(--bg)'},
-      neutral:{50:'var(--surface)',100:'var(--surface-2)',200:'var(--border)',300:'var(--border-hover)',400:'var(--text-muted)',500:'var(--text-muted)',600:'var(--text)',700:'var(--text)',800:'var(--text-strong)',900:'var(--surface-card)',950:'var(--bg)'},
-      sky:{50:'var(--accent-sub)',100:'var(--accent-sub)',200:'var(--border)',300:'var(--border-hover)',400:'var(--accent)',500:'var(--accent)',600:'var(--accent-hover)'},
-      blue:{50:'var(--accent-sub)',400:'var(--accent)',500:'var(--accent)',600:'var(--accent-hover)'},
-      indigo:{400:'var(--accent)',500:'var(--accent)',600:'var(--accent-hover)'},
-      emerald:{50:'var(--accent-sub)',100:'var(--accent-sub)',400:'var(--accent)',500:'var(--accent)',600:'var(--accent-hover)',900:'var(--surface-card)'},
-      red:{50:'#fef2f2',100:'#fee2e2',200:'#fecaca',400:'#f87171',500:'#ef4444',600:'#dc2626',700:'#b91c1c',900:'#7f1d1d'},
-      amber:{50:'#fffbeb',200:'#fde68a',400:'#fbbf24',500:'#f59e0b',600:'#d97706',700:'#b45309',800:'#92400e',900:'#78350f'},
-    },
-    extend:{fontFamily:{sans:['Bicyclette','Inter','ui-sans-serif','sans-serif'],mono:['JetBrains Mono','ui-monospace','monospace']}}
-  }
-}
-</script>
-<script src="https://colorjs.io/dist/color.global.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-<script src="https://unpkg.com/lucide@latest"></script>
-<script src="https://cdn.jsdelivr.net/npm/d3-delaunay@6"></script>
-<link rel="stylesheet" href="styles.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The ColorSAMificator</title>
+    
+    <base href="./">
+    
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+    tailwind.config = {
+      darkMode:'class',
+      theme:{
+        colors:{
+          transparent:'transparent',current:'currentColor',
+          white:'#F2E8DF',black:'#010D00',
+          slate:{50:'var(--surface)',100:'var(--surface-2)',200:'var(--border)',300:'var(--border-hover)',400:'var(--text-muted)',500:'var(--text-muted)',600:'var(--text)',700:'var(--text)',800:'var(--text-strong)',900:'var(--surface-card)',950:'var(--bg)'},
+          gray:{50:'var(--surface)',100:'var(--surface-2)',200:'var(--border)',300:'var(--border-hover)',400:'var(--text-muted)',500:'var(--text-muted)',600:'var(--text)',700:'var(--text)',800:'var(--text-strong)',900:'var(--surface-card)',950:'var(--bg)'},
+          neutral:{50:'var(--surface)',100:'var(--surface-2)',200:'var(--border)',300:'var(--border-hover)',400:'var(--text-muted)',500:'var(--text-muted)',600:'var(--text)',700:'var(--text)',800:'var(--text-strong)',900:'var(--surface-card)',950:'var(--bg)'},
+          sky:{50:'var(--accent-sub)',100:'var(--accent-sub)',200:'var(--border)',300:'var(--border-hover)',400:'var(--accent)',500:'var(--accent)',600:'var(--accent-hover)'},
+          blue:{50:'var(--accent-sub)',400:'var(--accent)',500:'var(--accent)',600:'var(--accent-hover)'},
+          indigo:{400:'var(--accent)',500:'var(--accent)',600:'var(--accent-hover)'},
+          emerald:{50:'var(--accent-sub)',100:'var(--accent-sub)',400:'var(--accent)',500:'var(--accent)',600:'var(--accent-hover)',900:'var(--surface-card)'},
+          red:{50:'#fef2f2',100:'#fee2e2',200:'#fecaca',400:'#f87171',500:'#ef4444',600:'#dc2626',700:'#b91c1c',900:'#7f1d1d'},
+          amber:{50:'#fffbeb',200:'#fde68a',400:'#fbbf24',500:'#f59e0b',600:'#d97706',700:'#b45309',800:'#92400e',900:'#78350f'},
+        },
+        extend:{fontFamily:{sans:['Inter','ui-sans-serif','sans-serif'],mono:['JetBrains Mono','ui-monospace','monospace']}}
+      }
+    }
+    </script>
+    
+    <script>
+      window.__CSV_FILE_MAP__ = {
+        'anchors.csv': true,
+        'pins.csv': true,
+        'Reference Colors.csv': true,
+        'agt.csv': true,
+        'arborite.csv': true,
+        'behr.csv': true,
+        'benjaminMoore.csv': true,
+        'dulux.csv': true,
+        'egger.csv': true,
+        'farrowBall.csv': true,
+        'finsa.csv': true,
+        'munsell.csv': true,
+        'ncs.csv': true,
+        'pantone.csv': true,
+        'pionite.csv': true,
+        'ppg.csv': true,
+        'ral.csv': true,
+        'sherwinWilliams.csv': true,
+        'swissKrono.csv': true,
+        'tafisa.csv': true,
+        'uniboard.csv': true
+      };
+    </script>
+
+    <script src="https://colorjs.io/dist/color.global.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/d3-delaunay@6"></script>
+    
+    <link rel="stylesheet" href="./styles.css">
+
 </head>
 <body>
-<div id="root"></div>
-<script type="text/babel" src="app.js"></script>
+    <div id="root"></div>
+    
+    <script type="text/babel" data-compact="true" src="./app.js"></script>
 </body>
 </html>
