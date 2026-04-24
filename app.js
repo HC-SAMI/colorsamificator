@@ -4,58 +4,16 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
 const Icon = ({ name, className = "w-4 h-4" }) => {
     const ref = useRef(null);
     useEffect(() => {
-        if (ref.current && window.lucide) {
-            const temp = document.createElement('div');
-            // Correctly escaped template literal for the Icon generator
-            temp.innerHTML = \`<i data-lucide="${name}" class="${className}"></i>\`;
-            window.lucide.createIcons({ root: temp });
-            ref.current.innerHTML = temp.innerHTML;
-        }
-    }, [name, className]);
-    return <span ref={ref} style={{ display: 'contents' }} />;
-};
-
-// ... ALL ORIGINAL CONSTANTS AND MATH ...
-
-const App = () => {
-    const [colorData, setColorData] = useState([]);
-    const [linkedFiles, setLinkedFiles] = useState([]);
-    const [savedColors, setSavedColors] = useState([]);
-    const [showFileManager, setShowFileManager] = useState(false);
-    const [showDatabaseManager, setShowDatabaseManager] = useState(false);
-
-    // GITHUB-READY AUTO-LOADER WITH FALLBACK
-    useEffect(() => {
-        const filesToLoad = ["./data/egger_decorative_collection_24_26.csv"];
-        filesToLoad.forEach(filePath => {
-            window.Papa.parse(filePath, {
-                download: true,
-                header: true,
-                skipEmptyLines: true,
-                complete: (results) => {
-                    if (results.data && results.data.length > 0) {
-                        setColorData(prev => [...(prev || []), ...results.data]);
-                        console.log("Auto-loaded from data folder");
-                    }
-                },
-                error: () => {
-                    // Check root fallback if data folder is missing
-                    const fallback = "./" + filePath.split('/').pop();
-                    window.Papa.parse(fallback, {
-                        download: true,
-                        header: true,
-                        skipEmptyLines: true,
-                        complete: (r) => {
-                            if (r.data && r.data.length > 0) {
-                                setColorData(prev => [...(prev || []), ...r.data]);
-                                console.log("Auto-loaded from root fallback");
-                            }
-                        }
-                    });
-                }
-            });
-        });
-    }, []);
+                        const files = ["./data/egger_decorative_collection_24_26.csv", "./egger_decorative_collection_24_26.csv"];
+                        files.forEach(path => {
+                            window.Papa.parse(path, {
+                                download: true, header: true, skipEmptyLines: true,
+                                complete: (r) => {
+                                    if (r.data?.length > 0) setColorData(prev => [...(prev || []), ...r.data]);
+                                }
+                            });
+                        });
+                    }, []);
 
     const handleNixUpload = (event) => {
         const file = event.target.files[0];
