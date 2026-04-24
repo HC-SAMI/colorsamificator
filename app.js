@@ -212,13 +212,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
             return (
                 <div className="border-b border-slate-200 dark:border-neutral-800">
                     <button onClick={() => setIsOpen(!isOpen)} className="w-full flex items-center justify-between p-4 hover:bg-slate-50 dark:hover:bg-neutral-800/50 transition-colors">
-                        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-700 dark:text-neutral-200"> 
- 
-                    <label className="ml-4 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded-md cursor-pointer text-sm shadow-sm transition-colors border border-slate-600 flex items-center gap-2">
-                        <Icon name="upload" className="w-4 h-4" />
-                        Import Nix CSV
-                        <input type="file" accept=".csv" className="hidden" onChange={handleNixUpload} />
-                    </label><Icon name={icon} className="w-4 h-4 slider-icon" /> {title}</div>
+                        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-700 dark:text-neutral-200"><Icon name={icon} className="w-4 h-4 slider-icon" /> {title}</div>
                         <Icon name={isOpen ? "chevron-up" : "chevron-down"} className="w-4 h-4 text-slate-400" />
                     </button>
                     {isOpen && <div className="p-4 pt-0">{children}</div>}
@@ -534,7 +528,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
             return (
                 <div className="flex flex-col gap-2">
                     <div className="flex flex-col gap-2 p-2 bg-slate-50 dark:bg-neutral-800/50 rounded border border-slate-100 dark:border-neutral-800">
-                        <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-2">
                             <Icon name="search" className="w-3.5 h-3.5 text-slate-400" />
                             <input 
                                 type="text" 
@@ -2566,40 +2560,6 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
         };
 
         const App = () => {
-
-        const handleNixUpload = (event) => {
-            const file = event.target.files[0];
-            if (!file) return;
-            window.Papa.parse(file, {
-                header: true,
-                skipEmptyLines: true,
-                complete: function(results) {
-                    const newColors = results.data.map((row, i) => {
-                        // Handle various Nix export column names
-                        const hex = row['HEX'] || row['Hex'] || row['hex'] || row['HEX Color'];
-                        const name = row['Name'] || row['Sample Name'] || row['Color Name'] || `Nix Scan ${i+1}`;
-                        if (!hex) return null;
-                        
-                        // Let ColorSAMIficator's existing processing handle the OKLCH math
-                        return { 
-                            id: 'nix-' + Date.now() + '-' + i, 
-                            name: name, 
-                            hex: hex.startsWith('#') ? hex : '#' + hex, 
-                            source: 'Nix Sensor',
-                            collection: 'Scans'
-                        };
-                    }).filter(Boolean);
-                    
-                    if(newColors.length > 0) {
-                        updateColorData(prev => [...(prev || []), ...newColors]);
-                        alert(`Successfully imported ${newColors.length} colors from Nix!`);
-                    } else {
-                        alert("Could not find valid HEX columns in this Nix CSV.");
-                    }
-                }
-            });
-        };
-                    
             const [theme, setTheme] = useState('light'); 
             const [activeTab, setActiveTab] = useState('top'); 
             const [colorData, setColorData] = useState(null);
