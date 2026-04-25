@@ -296,7 +296,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
             const labB = xyzToLab(xyzB, wp);
             const cA = new Color("lab", labA);
             const cB = new Color("lab", labB);
-            return cA.deltaE(cB, "2000") * 100;
+            return cA.deltaE(cB, "2000");
         };
 
         const ColorConverter = ({ crosshair, onEdit, observer, setObserver, illuminant, setIlluminant, colorData }) => {
@@ -2393,19 +2393,49 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
             return window.Papa.parse(csvText, { header: true, skipEmptyLines: true }).data;
         };
 
-        const processCSVData = (parsedData, currentColorData, currentSavedColors, currentNames = {}, currentAdjs = {}, currentNotes = {}, currentTags = {}) => {
+        const processCSVData = (parsedData, currentColorData, currentSavedColors, currentNames = {}, currentAdjs = {}, currentNotes = {}, currentTags = {}, currentGroupSettings = null) => {
             const newColorData = currentColorData ? JSON.parse(JSON.stringify(currentColorData)) : {};
             const newSavedColors = currentSavedColors ? JSON.parse(JSON.stringify(currentSavedColors)) : {};
             const newNames = currentNames ? JSON.parse(JSON.stringify(currentNames)) : {};
             const newAdjs = currentAdjs ? JSON.parse(JSON.stringify(currentAdjs)) : {};
             const newNotes = currentNotes ? JSON.parse(JSON.stringify(currentNotes)) : {};
             const newTags = currentTags ? JSON.parse(JSON.stringify(currentTags)) : {};
+            let newGroupSettings = currentGroupSettings ? JSON.parse(JSON.stringify(currentGroupSettings)) : null;
             let colorsAdded = 0;
             let pinsAdded = 0;
+            let hasNeutrals = false;
+            let hasHues = false;
+            let hasOverrides = false;
 
             parsedData.forEach(row => {
                 const targetType = String(row.Type || '').toUpperCase().trim();
                 if (!targetType) return;
+                
+                if (targetType === 'SETTING') {
+                    if (!newGroupSettings) newGroupSettings = { lightL: 0.5, neutralC: 0.02, vividC: 0.1, neutrals: [], hues: [], overrides: [] };
+                    if (row.ID === 'lightL' && row.OKLCH_L) newGroupSettings.lightL = parseFloat(row.OKLCH_L);
+                    if (row.ID === 'neutralC' && row.OKLCH_C) newGroupSettings.neutralC = parseFloat(row.OKLCH_C);
+                    if (row.ID === 'vividC' && row.OKLCH_C) newGroupSettings.vividC = parseFloat(row.OKLCH_C);
+                    return;
+                }
+                if (targetType === 'NEUTRAL_REGION') {
+                    if (!newGroupSettings) newGroupSettings = { lightL: 0.5, neutralC: 0.02, vividC: 0.1, neutrals: [], hues: [], overrides: [] };
+                    if (!hasNeutrals) { newGroupSettings.neutrals = []; hasNeutrals = true; }
+                    newGroupSettings.neutrals.push({ id: row.ID || crypto.randomUUID(), name: row.Noun || '', maxL: parseFloat(row.OKLCH_L) || 0 });
+                    return;
+                }
+                if (targetType === 'HUE_REGION') {
+                    if (!newGroupSettings) newGroupSettings = { lightL: 0.5, neutralC: 0.02, vividC: 0.1, neutrals: [], hues: [], overrides: [] };
+                    if (!hasHues) { newGroupSettings.hues = []; hasHues = true; }
+                    newGroupSettings.hues.push({ id: row.ID || crypto.randomUUID(), name: row.Noun || '', maxH: parseFloat(row.OKLCH_H) || 0 });
+                    return;
+                }
+                if (targetType === 'OVERRIDE') {
+                    if (!newGroupSettings) newGroupSettings = { lightL: 0.5, neutralC: 0.02, vividC: 0.1, neutrals: [], hues: [], overrides: [] };
+                    if (!hasOverrides) { newGroupSettings.overrides = []; hasOverrides = true; }
+                    newGroupSettings.overrides.push({ id: row.ID || crypto.randomUUID(), condition: row.Adjective || '', name: row.Noun || '' });
+                    return;
+                }
 
                 let pL = null, pC = null, pH = null;
                 
@@ -2556,7 +2586,7 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                 }
             });
 
-            return { newColorData, newSavedColors, newNames, newAdjs, newNotes, newTags, colorsAdded, pinsAdded };
+            return { newColorData, newSavedColors, newNames, newAdjs, newNotes, newTags, colorsAdded, pinsAdded, newGroupSettings };
         };
 
         const App = () => {
@@ -2681,6 +2711,7 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                     let currentAdjs = initialState?.adjectives || {};
                     let currentNotes = initialState?.dictNotes || {};
                     let currentTags = initialState?.dictTags || {};
+                    let currentGroupSettings = initialState?.groupSettings || defaultGroupSettings;
 
                     const discoverCSVFiles = async () => {
                         // Strategy 1: "Here" (Express API endpoint)
@@ -2786,10 +2817,11 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                                 if (fc === '<!doc' || fc === '<html') { console.warn('Skip ' + file + ': HTML response'); continue; }
                                 const parsed = parseCSV(csvText);
                                 if (!parsed.length) { continue; }
-                                const { newColorData, newSavedColors, newNames, newAdjs, newNotes, newTags } = processCSVData(parsed, currentColorData, currentSavedColors, currentNames, currentAdjs, currentNotes, currentTags);
+                                const { newColorData, newSavedColors, newNames, newAdjs, newNotes, newTags, newGroupSettings } = processCSVData(parsed, currentColorData, currentSavedColors, currentNames, currentAdjs, currentNotes, currentTags, currentGroupSettings);
                                 currentColorData = newColorData; currentSavedColors = newSavedColors;
                                 currentNames = newNames; currentAdjs = newAdjs;
                                 currentNotes = newNotes; currentTags = newTags;
+                                if (newGroupSettings) currentGroupSettings = newGroupSettings;
                             }
                         } catch (e) { console.warn('Failed: ' + file, e); }
                     }
@@ -2806,6 +2838,7 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                     setAdjectives(currentAdjs);
                     setDictNotes(currentNotes);
                     setDictTags(currentTags);
+                    setGroupSettings(currentGroupSettings);
                 };
                 
                 loadInitialData();
@@ -4055,7 +4088,7 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                 const cA = new Color("oklch", [compSlotA.L, compSlotA.C, compSlotA.H]); 
                 const cB = new Color("oklch", [compSlotB.L, compSlotB.C, compSlotB.H]); 
                 deltaEOK = (cA.deltaE(cB, "OK") * 100).toFixed(2); 
-                deltaE2000 = (cA.deltaE(cB, "2000") * 100).toFixed(2); 
+                deltaE2000 = cA.deltaE(cB, "2000").toFixed(2); 
             }
 
             return (
