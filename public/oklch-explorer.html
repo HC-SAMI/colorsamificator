@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>OkLCH Explorer</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #0a090c; touch-action: none; }
+body { font-family: 'SF Mono','Fira Code','Consolas',monospace; color: #fff; }
+canvas { display: block; touch-action: none; cursor: grab; }
+canvas.grabbing { cursor: grabbing; }
+
+#panel {
+  position: fixed; top: 0; right: 0; width: 224px; height: 100vh;
+  background: rgba(10,9,12,0.93); border-left: 1px solid rgba(255,255,255,0.07);
+  backdrop-filter: blur(22px); display: flex; flex-direction: column;
+  padding: 18px 16px 24px; overflow-y: auto; overflow-x: hidden; z-index: 20;
+}
+.panel-head { margin-bottom: 12px; }
+.panel-head h1 {
+  font-size: 21px; font-weight: 800; letter-spacing: 4px; text-transform: uppercase;
+  background: linear-gradient(120deg,#fff 0%,#555 100%);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}
+#gamut-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-top: 6px; font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; opacity: 0.45;
+}
+#gamut-dot { width: 6px; height: 6px; border-radius: 50%; background: #4f4; flex-shrink: 0; }
+
+#cur-row {
+  display: flex; align-items: center; gap: 9px;
+  background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 10px; padding: 9px 10px; margin-bottom: 14px; cursor: pointer;
+}
+#cur-row:active { background: rgba(255,255,255,0.09); }
+#cur-swatch { width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.14); }
+#cur-css { font-size: 9.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#cur-hex { font-size: 9px; opacity: 0.3; margin-top: 2px; }
+
+.sec {
+  font-size: 8px; letter-spacing: 2.5px; text-transform: uppercase; opacity: 0.28;
+  margin: 2px 0 10px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.07);
+}
+.sec.first { border-top: none; padding-top: 0; }
+.ctrl { margin-bottom: 13px; }
+.ctrl-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+.ctrl-label { font-size: 11px; font-weight: 600; opacity: 0.65; }
+.ctrl-val   { font-size: 10px; opacity: 0.38; }
+
+input[type=range] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 3px; border-radius: 2px; outline: none; cursor: pointer;
+  background: rgba(255,255,255,0.12);
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; cursor: pointer; box-shadow: 0 1px 5px rgba(0,0,0,0.55);
+  transition: transform 0.1s;
+}
+input[type=range]:hover::-webkit-slider-thumb { transform: scale(1.25); }
+input[type=range]::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 50%; background: #fff;
+  cursor: pointer; border: none; box-shadow: 0 1px 5px rgba(0,0,0,0.55);
+}
+#sl-l { background: linear-gradient(to right,#111,#fff); }
+#sl-c { background: linear-gradient(to right,#444,#f84); }
+#sl-h { background: linear-gradient(to right,
+  hsl(0,90%,55%) 0%,hsl(60,90%,55%) 17%,hsl(120,90%,55%) 33%,
+  hsl(180,90%,55%) 50%,hsl(240,90%,55%) 67%,hsl(300,90%,55%) 83%,hsl(360,90%,55%) 100%); }
+
+#popup {
+  position: fixed; bottom: 26px; left: 26px;
+  display: flex; align-items: center; gap: 12px;
+  background: rgba(10,9,12,0.93); border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 14px; padding: 11px 14px; backdrop-filter: blur(20px);
+  min-width: 240px; max-width: calc(100vw - 260px);
+  opacity: 0; transition: opacity 0.15s; pointer-events: none;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.6); z-index: 10;
+}
+#popup.on { opacity: 1; pointer-events: all; cursor: pointer; }
+#p-sw  { width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.12); }
+#p-css { font-size: 11px; font-weight: 600; margin-bottom: 3px; }
+#p-vals{ font-size: 9px; opacity: 0.4; line-height: 1.8; }
+#p-copy{ font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; opacity: 0.28; flex-shrink: 0; }
+#popup.on:hover #p-copy { opacity: 0.7; }
+
+#toast {
+  position: fixed; bottom: 84px; left: 50%; transform: translateX(-50%);
+  background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.18);
+  color: rgba(255,255,255,0.85); padding: 7px 18px; border-radius: 20px;
+  font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase;
+  opacity: 0; pointer-events: none; transition: opacity 0.25s; z-index: 40;
+}
+#toast.on { opacity: 1; }
+
+/* Mobile: panel → bottom sheet */
+@media (max-width: 600px) {
+  #panel {
+    width: 100%; height: auto; max-height: 78vh;
+    top: auto; bottom: 0; right: 0;
+    border-left: none; border-top: 1px solid rgba(255,255,255,0.07);
+    border-radius: 20px 20px 0 0;
+    transform: translateY(100%);
+    transition: transform 0.3s cubic-bezier(0.32,0.72,0,1);
+    padding-bottom: env(safe-area-inset-bottom,0px);
+  }
+  #panel.open { transform: translateY(0); }
+  #panel-btn  { display: flex !important; }
+  #popup      { max-width: calc(100vw - 78px); }
+  #panel-handle { display: block !important; }
+}
+#panel-handle {
+  display: none; width: 36px; height: 4px; border-radius: 2px;
+  background: rgba(255,255,255,0.18); margin: 0 auto 14px;
+}
+#panel-btn {
+  display: none;
+  position: fixed; bottom: calc(env(safe-area-inset-bottom,0px)+18px); right: 18px;
+  width: 46px; height: 46px; border-radius: 50%;
+  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.14);
+  backdrop-filter: blur(14px); cursor: pointer; z-index: 30;
+  align-items: center; justify-content: center;
+}
+#panel-btn svg { width: 20px; height: 20px; fill: none; stroke: #fff; stroke-width: 1.8; }
+</style>
+
+<!-- ── Voronoi vertex shader ──────────────────────────────────────────────────── -->
+<script id="vert" type="x-shader/x-vertex">
+#define PI 3.141592653589793
+
+// Per-instance (set divisor = 1 via InstancedBufferAttribute)
+attribute vec3  iBasePos;   // world-space centre at sep=1
+attribute float iCI;        // chroma ring index
+attribute float iLI;        // lightness level index
+attribute float iHI;        // hue index within ring
+attribute vec3  iColor;     // linear-ish sRGB
+attribute float iAlpha;     // per-instance opacity (0 = hidden)
+
+uniform float uFill;        // inflation   0..1
+uniform float uSep;         // 1 = touching, >1 = spread
+// Grid constants
+uniform float CW;           // C_WORLD  = 10
+uniform float LW;           // L_WORLD  = 7
+uniform float CS;           // C_STEP   = 0.02
+uniform float LS;           // L_STEP   = 0.02
+uniform float LMin;         // L_MIN    = 0.02
+uniform float LLvl;         // L_LEVELS (float)
+uniform float CRings;       // C_RINGS  (float)
+
+varying vec3  vColor;
+varying float vAlpha;
+varying vec3  vNormal;
+varying vec3  vViewPos;
+
+// Analytical centre of a grid cell
+vec3 cellCentre(float ci, float li, float hi) {
+  float Hc  = ci < 0.5 ? 1.0 : 6.0 * ci;
+  float ang = hi * (2.0 * PI / Hc);
+  float rw  = ci * CS * CW;
+  float y   = (LMin + li * LS - 0.5) * LW;
+  return vec3(rw * cos(ang), y, -rw * sin(ang));
+}
+
+// Distance to Voronoi bisector between P and Q in direction d
+float vBound(vec3 P, vec3 Q, vec3 d) {
+  vec3  v = Q - P;
+  float t = dot(v, d);
+  return t > 1e-6 ? dot(v, v) / (2.0 * t) : 1e9;
+}
+
+// Test one neighbour; update r (min bound) and winning normal
+void tryN(vec3 P, vec3 Q, vec3 d, inout float r, inout vec3 N) {
+  float rv = vBound(P, Q, d);
+  if (rv < r) { r = rv; N = normalize(Q - P); }
+}
+
+void main() {
+  // Invisible: collapse to off-screen point, skip all work
+  if (iAlpha < 0.005) {
+    gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
+    vAlpha = 0.0; vColor = vec3(0); vNormal = vec3(0,1,0); vViewPos = vec3(0);
+    return;
+  }
+
+  vec3  dir = normalize(position);   // unit-sphere vertex direction
+  float ci  = iCI, li = iLI, hi = iHI;
+  float Hc  = ci < 0.5 ? 1.0 : 6.0 * ci;
+  vec3  P   = iBasePos;              // base centre (sep=1 world coords)
+
+  float r   = 1e9;
+  vec3  wN  = dir;                   // winning normal, defaults to sphere
+
+  // ── L neighbours (above / below) ───────────────────────────────────────────
+  if (li > 0.5)
+    tryN(P, cellCentre(ci, li - 1.0, hi), dir, r, wN);
+  if (li < LLvl - 1.5)
+    tryN(P, cellCentre(ci, li + 1.0, hi), dir, r, wN);
+
+  // ── H neighbours (adjacent in same ring) ───────────────────────────────────
+  if (ci > 0.5) {
+    tryN(P, cellCentre(ci, li, mod(hi - 1.0 + Hc, Hc)), dir, r, wN);
+    tryN(P, cellCentre(ci, li, mod(hi + 1.0, Hc)),       dir, r, wN);
+  }
+
+  // ── Inward ring (ci-1) ─────────────────────────────────────────────────────
+  if (ci > 0.5) {
+    float ci2 = ci - 1.0;
+    float Hc2 = ci2 < 0.5 ? 1.0 : 6.0 * ci2;
+    float myA = hi * (360.0 / Hc);
+    float h2  = mod(floor(myA / (360.0 / Hc2) + 0.5), Hc2);
+    tryN(P, cellCentre(ci2, li, h2),                         dir, r, wN);
+    if (Hc2 > 1.5) tryN(P, cellCentre(ci2, li, mod(h2 + 1.0, Hc2)), dir, r, wN);
+  }
+
+  // ── Outward ring (ci+1) ────────────────────────────────────────────────────
+  if (ci < CRings - 1.5) {
+    float ci2 = ci + 1.0;
+    float Hc2 = 6.0 * ci2;
+    float myA = hi * (360.0 / Hc);
+    float h2  = mod(floor(myA / (360.0 / Hc2) + 0.5), Hc2);
+    tryN(P, cellCentre(ci2, li, h2),                    dir, r, wN);
+    tryN(P, cellCentre(ci2, li, mod(h2 + 1.0, Hc2)),   dir, r, wN);
+  }
+
+  // ── Diagonal L±1 cross-ring (sharper corners) ─────────────────────────────
+  if (ci > 0.5 && li > 0.5) {
+    float ci2=ci-1.0, Hc2=ci2<0.5?1.0:6.0*ci2;
+    float h2=mod(floor((hi*(360.0/Hc))/(360.0/Hc2)+0.5),Hc2);
+    tryN(P, cellCentre(ci2, li-1.0, h2), dir, r, wN);
+  }
+  if (ci > 0.5 && li < LLvl-1.5) {
+    float ci2=ci-1.0, Hc2=ci2<0.5?1.0:6.0*ci2;
+    float h2=mod(floor((hi*(360.0/Hc))/(360.0/Hc2)+0.5),Hc2);
+    tryN(P, cellCentre(ci2, li+1.0, h2), dir, r, wN);
+  }
+  if (ci < CRings-1.5 && li > 0.5) {
+    float ci2=ci+1.0, Hc2=6.0*ci2;
+    float h2=mod(floor((hi*(360.0/Hc))/(360.0/Hc2)+0.5),Hc2);
+    tryN(P, cellCentre(ci2, li-1.0, h2), dir, r, wN);
+  }
+  if (ci < CRings-1.5 && li < LLvl-1.5) {
+    float ci2=ci+1.0, Hc2=6.0*ci2;
+    float h2=mod(floor((hi*(360.0/Hc))/(360.0/Hc2)+0.5),Hc2);
+    tryN(P, cellCentre(ci2, li+1.0, h2), dir, r, wN);
+  }
+
+  // ── Cap at 0.03 ΔEok — prevents infinite growth at gamut boundary ──────────
+  // Displacement r in direction dir maps to OkLab distance:
+  //   ΔEok = r * sqrt( (dir.y / LW)^2 + (horiz / CW)^2 )
+  // So: r_max = 0.03 / sqrt(...)
+  {
+    float horiz_ = sqrt(dir.x*dir.x + dir.z*dir.z);
+    float denom_ = sqrt((dir.y/LW)*(dir.y/LW) + (horiz_/CW)*(horiz_/CW));
+    if (denom_ > 1e-6) r = min(r, 0.03 / denom_);
+  }
+
+  r = max(r, 0.001);
+
+  // World position: centre at iBasePos*sep, bubble extends by voronoi*fill
+  // (sep only moves centres; bubble size is independent)
+  vec3 worldPos = iBasePos * uSep + dir * r * uFill;
+
+  vec4 mv      = modelViewMatrix * vec4(worldPos, 1.0);
+  gl_Position  = projectionMatrix * mv;
+
+  vNormal  = normalMatrix * wN;
+  vViewPos = mv.xyz;
+  vColor   = iColor;
+  vAlpha   = iAlpha;
+}
+</script>
+
+<!-- ── Fragment shader ────────────────────────────────────────────────────────── -->
+<script id="frag" type="x-shader/x-fragment">
+precision highp float;
+varying vec3  vColor;
+varying float vAlpha;
+varying vec3  vNormal;
+varying vec3  vViewPos;
+
+uniform vec3 uL1, uL2;   // view-space light directions
+
+void main() {
+  if (vAlpha < 0.005) discard;
+  vec3 N  = normalize(vNormal);
+  vec3 V  = normalize(-vViewPos);
+  float d1 = max(dot(N, normalize(uL1)), 0.0);
+  float d2 = max(dot(N, normalize(uL2)), 0.0);
+  vec3  H  = normalize(normalize(uL1) + V);
+  float sp = pow(max(dot(N, H), 0.0), 55.0) * 0.32;
+  vec3 col = vColor * (0.32 + d1*0.58 + d2*0.20) + sp;
+  gl_FragColor = vec4(col, vAlpha);
+}
+</script>
+
+<body>
+<canvas id="c"></canvas>
+
+<div id="panel">
+  <div id="panel-handle"></div>
+  <div class="panel-head">
+    <h1>OkLCH</h1>
+    <div id="gamut-badge"><span id="gamut-dot"></span><span id="gamut-label">detecting…</span></div>
+  </div>
+
+  <div id="cur-row">
+    <div id="cur-swatch"></div>
+    <div style="min-width:0">
+      <div id="cur-css">oklch(50% 0.14 180)</div>
+      <div id="cur-hex">#------</div>
+    </div>
+  </div>
+
+  <div class="sec first">Cursor position</div>
+  <div class="ctrl">
+    <div class="ctrl-header"><span class="ctrl-label">L — Lightness</span><span class="ctrl-val" id="vl">0.50</span></div>
+    <input type="range" id="sl-l" min="0.02" max="0.98" step="0.01" value="0.50">
+  </div>
+  <div class="ctrl">
+    <div class="ctrl-header"><span class="ctrl-label">C — Chroma</span><span class="ctrl-val" id="vc">0.140</span></div>
+    <input type="range" id="sl-c" min="0" max="0.28" step="0.005" value="0.14">
+  </div>
+  <div class="ctrl">
+    <div class="ctrl-header"><span class="ctrl-label">H — Hue</span><span class="ctrl-val" id="vh">180°</span></div>
+    <input type="range" id="sl-h" min="0" max="359" step="1" value="180">
+  </div>
+
+  <div class="sec">Visible range</div>
+  <div class="ctrl">
+    <div class="ctrl-header"><span class="ctrl-label">ΔL</span><span class="ctrl-val" id="vdl">all</span></div>
+    <input type="range" id="sl-dl" min="0" max="1" step="0.01" value="1">
+  </div>
+  <div class="ctrl">
+    <div class="ctrl-header"><span class="ctrl-label">ΔC</span><span class="ctrl-val" id="vdc">all</span></div>
+    <input type="range" id="sl-dc" min="0" max="0.28" step="0.005" value="0.28">
+  </div>
+  <div class="ctrl">
+    <div class="ctrl-header"><span class="ctrl-label">ΔH</span><span class="ctrl-val" id="vdh">all</span></div>
+    <input type="range" id="sl-dh" min="0" max="180" step="1" value="180">
+  </div>
+
+  <div class="sec">Appearance</div>
+  <div class="ctrl">
+    <div class="ctrl-header"><span class="ctrl-label">Inflation</span><span class="ctrl-val" id="vsz">35%</span></div>
+    <input type="range" id="sl-sz" min="0.01" max="1" step="0.01" value="0.35">
+  </div>
+  <div class="ctrl">
+    <div class="ctrl-header"><span class="ctrl-label">Separation</span><span class="ctrl-val" id="vsp">0.00</span></div>
+    <input type="range" id="sl-sp" min="0" max="2" step="0.02" value="0">
+  </div>
+  <div class="ctrl">
+    <div class="ctrl-header"><span class="ctrl-label">Opacity</span><span class="ctrl-val" id="vop">100%</span></div>
+    <input type="range" id="sl-op" min="0" max="1" step="0.01" value="1">
+  </div>
+</div>
+
+<div id="panel-btn">
+  <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+</div>
+
+<div id="popup">
+  <div id="p-sw"></div>
+  <div style="flex:1;min-width:0"><div id="p-css"></div><div id="p-vals"></div></div>
+  <div id="p-copy">Copy</div>
+</div>
+<div id="toast">Copied!</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ── Gamut ──────────────────────────────────────────────────────────────────────
+const HAS_P3 = !!(window.matchMedia && window.matchMedia('(color-gamut: p3)').matches);
+document.getElementById('gamut-label').textContent = HAS_P3 ? 'Display P3' : 'sRGB';
+document.getElementById('gamut-dot').style.background = HAS_P3 ? '#4cf' : '#4f4';
+
+// ── Colour math ────────────────────────────────────────────────────────────────
+function oklchToLinear(L,C,H){
+  const h=H*Math.PI/180, a=C*Math.cos(h), b=C*Math.sin(h);
+  const l_=L+0.3963377774*a+0.2158037573*b;
+  const m_=L-0.1055613458*a-0.0638541728*b;
+  const s_=L-0.0894841775*a-1.2914855480*b;
+  const l3=l_*l_*l_,m3=m_*m_*m_,s3=s_*s_*s_;
+  return [
+    +4.0767416621*l3-3.3077115913*m3+0.2309699292*s3,
+    -1.2684380046*l3+2.6097574011*m3-0.3413193965*s3,
+    -0.0041960863*l3-0.7034186147*m3+1.7076147010*s3
+  ];
+}
+function linToP3(r,g,b){
+  const X=0.4124564*r+0.3575761*g+0.1804375*b;
+  const Y=0.2126729*r+0.7151522*g+0.0721750*b;
+  const Z=0.0193339*r+0.1191920*g+0.9503041*b;
+  return [+2.4934969*X-0.9313836*Y-0.4027108*Z,
+          -0.8294890*X+1.7626641*Y+0.0236247*Z,
+          +0.0358458*X-0.0761724*Y+0.9568845*Z];
+}
+function enc(v){const x=Math.max(0,Math.min(1,v));return x<=0.0031308?12.92*x:1.055*Math.pow(x,1/2.4)-0.055;}
+function oklchToRgb(L,C,H){const[r,g,b]=oklchToLinear(L,C,H);return[enc(r),enc(g),enc(b)];}
+function toHex(r,g,b){return '#'+[r,g,b].map(v=>Math.round(v*255).toString(16).padStart(2,'0')).join('');}
+function hueDist(a,b){const d=Math.abs(a-b)%360;return d>180?360-d:d;}
+
+const EPS=0.005;
+function inGamut(L,C,H){
+  const lin=oklchToLinear(L,C,H);
+  const[r,g,b]=HAS_P3?linToP3(...lin):lin;
+  return r>=-EPS&&r<=1+EPS&&g>=-EPS&&g<=1+EPS&&b>=-EPS&&b<=1+EPS;
+}
+
+// ── Grid ────────────────────────────────────────────────────────────────────────
+const C_WORLD=10, L_WORLD=7, C_STEP=0.02, L_STEP=0.02, L_MIN=0.02, L_CENTER=0.5;
+const C_MAX=0.28;
+const C_RINGS=Math.round(C_MAX/C_STEP)+1;   // 15
+const L_LEVELS=Math.round((0.98-L_MIN)/L_STEP)+1; // 49
+
+let TOTAL=0;
+for(let ci=0;ci<C_RINGS;ci++) TOTAL+=(ci===0?1:6*ci)*L_LEVELS;
+
+const pBX=new Float32Array(TOTAL), pBY=new Float32Array(TOTAL), pBZ=new Float32Array(TOTAL);
+const pL=new Float32Array(TOTAL),  pC=new Float32Array(TOTAL),  pH=new Float32Array(TOTAL);
+const pCI=new Float32Array(TOTAL), pLI=new Float32Array(TOTAL), pHI=new Float32Array(TOTAL);
+const pVR=new Float32Array(TOTAL);    // base voronoi radius (sep=1)
+const pIG=new Uint8Array(TOTAL);      // in-gamut flag
+
+// Analytical Voronoi radius at sep=1
+function baseVR(ci){
+  const V=L_STEP*L_WORLD, R=C_STEP*C_WORLD;
+  if(ci===0) return Math.min(V,R)/2;
+  const rw=ci*C_STEP*C_WORLD, Hc=6*ci;
+  return Math.min(V, 2*rw*Math.sin(Math.PI/Hc), R)/2;
+}
+
+let idx=0;
+for(let ci=0;ci<C_RINGS;ci++){
+  const Cv=ci*C_STEP, rw=ci*C_STEP*C_WORLD, Hcount=ci===0?1:6*ci, vr=baseVR(ci);
+  for(let li=0;li<L_LEVELS;li++){
+    const Lv=L_MIN+li*L_STEP, y=(Lv-L_CENTER)*L_WORLD;
+    for(let hi=0;hi<Hcount;hi++){
+      const Hv=hi*(360/Hcount), rad=Hv*Math.PI/180;
+      pBX[idx]=rw*Math.cos(rad); pBY[idx]=y; pBZ[idx]=-rw*Math.sin(rad);
+      pL[idx]=Lv; pC[idx]=Cv; pH[idx]=Hv;
+      pCI[idx]=ci; pLI[idx]=li; pHI[idx]=hi;
+      pVR[idx]=vr; pIG[idx]=inGamut(Lv,Cv,Hv)?1:0;
+      idx++;
+    }
+  }
+}
+console.log(`Total: ${TOTAL}, in-gamut: ${pIG.reduce((s,v)=>s+v,0)} (${HAS_P3?'P3':'sRGB'})`);
+
+// ── Three.js ───────────────────────────────────────────────────────────────────
+const canvas=document.getElementById('c');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x0a090c);
+scene.fog=new THREE.FogExp2(0x0a090c,0.016);
+
+const camera=new THREE.PerspectiveCamera(42,innerWidth/innerHeight,0.1,130);
+
+scene.add(new THREE.Line(
+  new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,-4.5,0),new THREE.Vector3(0,4.5,0)]),
+  new THREE.LineBasicMaterial({color:0x2a2a2a,transparent:true,opacity:0.6})
+));
+
+// Pre-bake per-instance colours (gamma-encoded, never change)
+const colorData=new Float32Array(TOTAL*3);
+for(let i=0;i<TOTAL;i++){
+  const[r,g,b]=oklchToRgb(pL[i],pC[i],pH[i]);
+  colorData[i*3]=r; colorData[i*3+1]=g; colorData[i*3+2]=b;
+}
+
+// Per-instance alpha (changes with visibility / opacity slider)
+const alphaData=new Float32Array(TOTAL).fill(0);
+const alphaAttr=new THREE.InstancedBufferAttribute(alphaData,1);
+alphaAttr.setUsage(THREE.DynamicDrawUsage);
+
+// ── InstancedBufferGeometry + custom shader ────────────────────────────────────
+const baseSphere=new THREE.SphereGeometry(1,12,8);
+const iGeo=new THREE.InstancedBufferGeometry();
+iGeo.index=baseSphere.index;
+iGeo.attributes.position=baseSphere.attributes.position;
+iGeo.instanceCount=TOTAL;
+baseSphere.dispose();
+
+iGeo.setAttribute('iBasePos', new THREE.InstancedBufferAttribute(new Float32Array(TOTAL*3).map((_,i)=>{
+  const ii=Math.floor(i/3), c=i%3;
+  return c===0?pBX[ii]:c===1?pBY[ii]:pBZ[ii];
+}), 3));
+iGeo.setAttribute('iCI',    new THREE.InstancedBufferAttribute(pCI.slice(),1));
+iGeo.setAttribute('iLI',    new THREE.InstancedBufferAttribute(pLI.slice(),1));
+iGeo.setAttribute('iHI',    new THREE.InstancedBufferAttribute(pHI.slice(),1));
+iGeo.setAttribute('iColor', new THREE.InstancedBufferAttribute(colorData,3));
+iGeo.setAttribute('iAlpha', alphaAttr);
+
+// Compute view-space light directions once (approximate, good enough)
+const L1world=new THREE.Vector3(8,16,6).normalize();
+const L2world=new THREE.Vector3(-6,-3,-5).normalize();
+
+const shaderMat=new THREE.ShaderMaterial({
+  vertexShader:   document.getElementById('vert').textContent,
+  fragmentShader: document.getElementById('frag').textContent,
+  uniforms: {
+    uFill: {value:0.35}, uSep: {value:1.0},
+    uL1: {value:new THREE.Vector3()}, uL2: {value:new THREE.Vector3()},
+    CW:{value:C_WORLD}, LW:{value:L_WORLD}, CS:{value:C_STEP},
+    LS:{value:L_STEP}, LMin:{value:L_MIN},
+    LLvl:{value:L_LEVELS}, CRings:{value:C_RINGS}
+  },
+  transparent: true,
+  depthTest: true,
+  depthWrite: true,
+  alphaTest: 0.01,
+  side: THREE.FrontSide,
+});
+
+const iMesh=new THREE.Mesh(iGeo,shaderMat);
+iMesh.frustumCulled=false;
+scene.add(iMesh);
+
+// Cursor marker (wireframe sphere)
+const mkG=new THREE.SphereGeometry(1,12,8);
+const marker=new THREE.LineSegments(
+  new THREE.EdgesGeometry(mkG),
+  new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0.7})
+);
+mkG.dispose(); marker.renderOrder=999; scene.add(marker);
+
+// ── Orbit ──────────────────────────────────────────────────────────────────────
+const orb={theta:-0.6,phi:1.15,r:13,tx:0,ty:0,tz:0,spin:true,drag:false,lx:0,ly:0};
+function applyOrbit(){
+  orb.phi=Math.max(0.15,Math.min(Math.PI-0.15,orb.phi));
+  const sp=Math.sin(orb.phi);
+  camera.position.set(orb.tx+orb.r*sp*Math.cos(orb.theta),orb.ty+orb.r*Math.cos(orb.phi),orb.tz+orb.r*sp*Math.sin(orb.theta));
+  camera.lookAt(orb.tx,orb.ty,orb.tz);
+  // Update light directions in view space
+  shaderMat.uniforms.uL1.value.copy(L1world).applyMatrix3(new THREE.Matrix3().setFromMatrix4(camera.matrixWorldInverse)).normalize();
+  shaderMat.uniforms.uL2.value.copy(L2world).applyMatrix3(new THREE.Matrix3().setFromMatrix4(camera.matrixWorldInverse)).normalize();
+}
+applyOrbit();
+
+const ptrs=new Map(); let lpDist=0,lpMid=null;
+// mode per pointer: 'rotate' | 'pan'
+const ptrMode=new Map();
+
+function doPan(dx,dy){
+  const px=dx*orb.r*0.0018, py=dy*orb.r*0.0018;
+  const right=new THREE.Vector3(),up=new THREE.Vector3();
+  right.crossVectors(camera.getWorldDirection(new THREE.Vector3()),camera.up).normalize();
+  up.copy(camera.up).normalize();
+  orb.tx-=right.x*px-up.x*py; orb.ty-=right.y*px-up.y*py; orb.tz-=right.z*px-up.z*py;
+}
+
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+canvas.addEventListener('pointerdown',e=>{
+  canvas.setPointerCapture(e.pointerId);
+  ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  orb.spin=false;
+  // Middle button (1) or right button (2) = pan; left (0) = rotate
+  const mode=(e.button===1||e.button===2)?'pan':'rotate';
+  ptrMode.set(e.pointerId,mode);
+  if(ptrs.size===1){orb.drag=true;orb.lx=e.clientX;orb.ly=e.clientY;}
+  else if(ptrs.size===2){
+    orb.drag=false;
+    const ps=[...ptrs.values()];
+    lpDist=Math.hypot(ps[1].x-ps[0].x,ps[1].y-ps[0].y);
+    lpMid={x:(ps[0].x+ps[1].x)/2,y:(ps[0].y+ps[1].y)/2};
+  }
+});
+canvas.addEventListener('pointermove',e=>{
+  if(!ptrs.has(e.pointerId))return;
+  ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(ptrs.size===1&&orb.drag){
+    const dx=e.clientX-orb.lx, dy=e.clientY-orb.ly;
+    if(ptrMode.get(e.pointerId)==='pan'){
+      doPan(dx,dy);
+    } else {
+      orb.theta+=dx*0.005; orb.phi-=dy*0.005;
+    }
+    orb.lx=e.clientX; orb.ly=e.clientY; applyOrbit();
+  } else if(ptrs.size===2){
+    const ps=[...ptrs.values()];
+    const nd=Math.hypot(ps[1].x-ps[0].x,ps[1].y-ps[0].y);
+    const nm={x:(ps[0].x+ps[1].x)/2,y:(ps[0].y+ps[1].y)/2};
+    orb.r=Math.max(3,Math.min(25,orb.r+(lpDist-nd)*0.035));
+    if(lpMid){ doPan(nm.x-lpMid.x, nm.y-lpMid.y); }
+    lpDist=nd; lpMid=nm; applyOrbit();
+  }
+});
+const stopPtr=e=>{
+  ptrs.delete(e.pointerId); ptrMode.delete(e.pointerId); orb.drag=false;
+  if(ptrs.size===1){const[p]=[...ptrs.values()];orb.lx=p.x;orb.ly=p.y;orb.drag=true;}
+  if(ptrs.size===2){const ps=[...ptrs.values()];lpDist=Math.hypot(ps[1].x-ps[0].x,ps[1].y-ps[0].y);lpMid={x:(ps[0].x+ps[1].x)/2,y:(ps[0].y+ps[1].y)/2};}
+};
+canvas.addEventListener('pointerup',stopPtr);
+canvas.addEventListener('pointercancel',stopPtr);
+canvas.addEventListener('wheel',e=>{
+  orb.spin=false;
+  if(e.shiftKey){
+    // Shift+scroll = pan vertically
+    doPan(0, e.deltaY*0.4); applyOrbit();
+  } else {
+    orb.r=Math.max(3,Math.min(25,orb.r+e.deltaY*0.013)); applyOrbit();
+  }
+},{passive:true});
+canvas.addEventListener('pointerdown',e=>canvas.style.cursor=e.button===1||e.button===2?'move':'grabbing');
+canvas.addEventListener('pointerup',()=>canvas.style.cursor='grab');
+
+// ── Sliders ────────────────────────────────────────────────────────────────────
+const slL=document.getElementById('sl-l'),slC=document.getElementById('sl-c'),slH=document.getElementById('sl-h');
+const slDL=document.getElementById('sl-dl'),slDC=document.getElementById('sl-dc'),slDH=document.getElementById('sl-dh');
+const slOp=document.getElementById('sl-op'),slSz=document.getElementById('sl-sz'),slSp=document.getElementById('sl-sp');
+
+function fillTrack(el){
+  const p=((+el.value-+el.min)/(+el.max-+el.min)*100).toFixed(1);
+  el.style.background=`linear-gradient(to right,rgba(255,255,255,.55) ${p}%,rgba(255,255,255,.11) ${p}%)`;
+}
+[slDL,slDC,slDH,slOp,slSz,slSp].forEach(s=>{s.addEventListener('input',()=>fillTrack(s));fillTrack(s);});
+
+let selIdx=-1;
+
+function updateScene(){
+  const lCur=+slL.value, cCur=+slC.value, hCur=+slH.value;
+  const dl=+slDL.value, dc=+slDC.value, dh=+slDH.value;
+  const bgOp=+slOp.value, fill=+slSz.value, sep=+slSp.value;
+
+  // Uniforms only: O(1) updates when sep/fill change
+  shaderMat.uniforms.uFill.value = fill;
+  shaderMat.uniforms.uSep.value  = 1.0 + sep; // sep=0 → uSep=1 (touching)
+
+  const lAll=dl>=+slDL.max-0.005, cAll=dc>=+slDC.max-0.003, hAll=dh>=+slDH.max-0.5;
+
+  document.getElementById('vl').textContent=lCur.toFixed(2);
+  document.getElementById('vc').textContent=cCur.toFixed(3);
+  document.getElementById('vh').textContent=Math.round(hCur)+'°';
+  document.getElementById('vdl').textContent=lAll?'all':`±${(dl/2).toFixed(2)}`;
+  document.getElementById('vdc').textContent=cAll?'all':`±${(dc/2).toFixed(3)}`;
+  document.getElementById('vdh').textContent=hAll?'all':`±${Math.round(dh/2)}°`;
+  document.getElementById('vop').textContent=Math.round(bgOp*100)+'%';
+  document.getElementById('vsz').textContent=Math.round(fill*100)+'%';
+  document.getElementById('vsp').textContent=sep.toFixed(2);
+
+  // Cursor: nearest in-gamut point in LCH space
+  let best=-1, bestD=1e9;
+  for(let i=0;i<TOTAL;i++){
+    if(!pIG[i]) continue;
+    const hw=Math.min(pC[i],cCur)/0.28;
+    const d=Math.abs(pL[i]-lCur)/0.96+Math.abs(pC[i]-cCur)/0.28+hw*hueDist(pH[i],hCur)/180;
+    if(d<bestD){bestD=d;best=i;}
+  }
+  selIdx=best;
+
+  // Per-instance alpha: 0=hidden, bgOp=visible, 1=selected
+  for(let i=0;i<TOTAL;i++){
+    if(!pIG[i]){alphaData[i]=0;continue;}
+    const lOk=lAll||Math.abs(pL[i]-lCur)<=dl/2+0.001;
+    const cOk=cAll||Math.abs(pC[i]-cCur)<=dc/2+0.001;
+    // C=0 (neutral axis) has no hue — always passes the H filter
+    const hOk=hAll||pCI[i]===0||hueDist(pH[i],hCur)<=dh/2+0.5;
+    alphaData[i]=(lOk&&cOk&&hOk)?(i===selIdx?1:bgOp):0;
+  }
+  if(selIdx>=0) alphaData[selIdx]=1;
+  alphaAttr.needsUpdate=true;
+
+  // Marker
+  if(selIdx>=0){
+    const uSep=1+sep;
+    marker.position.set(pBX[selIdx]*uSep, pBY[selIdx]*uSep, pBZ[selIdx]*uSep);
+    const markerR=pVR[selIdx]*fill*1.1;
+    marker.scale.setScalar(Math.max(markerR,0.01));
+    const[r,g,b]=oklchToRgb(pL[selIdx],pC[selIdx],pH[selIdx]);
+    const hex=toHex(r,g,b);
+    document.getElementById('cur-swatch').style.background=hex;
+    document.getElementById('cur-css').textContent=
+      `oklch(${(pL[selIdx]*100).toFixed(1)}% ${pC[selIdx].toFixed(3)} ${Math.round(pH[selIdx])})`;
+    document.getElementById('cur-hex').textContent=hex;
+  }
+}
+
+[slL,slC,slH,slDL,slDC,slDH,slOp,slSz,slSp].forEach(s=>s.addEventListener('input', (e) => {
+  updateScene();
+  if (['sl-l', 'sl-c', 'sl-h'].includes(e.target.id)) {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: 'EXPLORER_SLIDE', L: +slL.value, C: +slC.value, H: +slH.value }, '*');
+    }
+  }
+}));
+updateScene();
+
+document.getElementById('cur-row').addEventListener('click',()=>{
+  if(selIdx<0)return;
+  const css=`oklch(${(pL[selIdx]*100).toFixed(1)}% ${pC[selIdx].toFixed(3)} ${Math.round(pH[selIdx])})`;
+  navigator.clipboard?.writeText(css).then(()=>{toast.classList.add('on');setTimeout(()=>toast.classList.remove('on'),1800);});
+});
+
+// ── Panel (mobile) ─────────────────────────────────────────────────────────────
+const panel=document.getElementById('panel');
+document.getElementById('panel-btn').addEventListener('click',()=>panel.classList.toggle('open'));
+let sdy=null;
+panel.addEventListener('pointerdown',e=>{if(e.target.tagName!=='INPUT')sdy=e.clientY;});
+panel.addEventListener('pointermove',e=>{if(sdy!==null&&e.clientY-sdy>60){panel.classList.remove('open');sdy=null;}});
+panel.addEventListener('pointerup',()=>{sdy=null;});
+
+// ── CPU ray–sphere pick (uses base voronoi radii * fill as sphere radii) ──────
+const _rdir=new THREE.Vector3();
+function pickSphere(ex,ey){
+  const uSep=1.0+(+slSp.value), fill=+slSz.value;
+  const rc=canvas.getBoundingClientRect();
+  const nx=((ex-rc.left)/rc.width)*2-1, ny=-((ey-rc.top)/rc.height)*2+1;
+  const ro=camera.position;
+  _rdir.set(nx,ny,0.5).unproject(camera).sub(ro).normalize();
+  const ox=ro.x,oy=ro.y,oz=ro.z,dx=_rdir.x,dy=_rdir.y,dz=_rdir.z;
+  let bestT=1e9,bestI=-1;
+  for(let i=0;i<TOTAL;i++){
+    if(alphaData[i]<0.01) continue;
+    const sr=pVR[i]*fill;
+    const cx=pBX[i]*uSep-ox, cy=pBY[i]*uSep-oy, cz=pBZ[i]*uSep-oz;
+    const b=cx*dx+cy*dy+cz*dz;
+    const disc=b*b-(cx*cx+cy*cy+cz*cz-sr*sr);
+    if(disc<0) continue;
+    const t=b-Math.sqrt(disc);
+    if(t>0&&t<bestT){bestT=t;bestI=i;}
+  }
+  return bestI;
+}
+
+const popup=document.getElementById('popup'),toast=document.getElementById('toast');
+const pSw=document.getElementById('p-sw'),pCss=document.getElementById('p-css'),pVals=document.getElementById('p-vals');
+let hoverIdx=-1, mouseX=-9999, mouseY=-9999, mouseDirty=false;
+
+canvas.addEventListener('mousemove',e=>{
+  if(ptrs.size>0)return;
+  mouseX=e.clientX; mouseY=e.clientY; mouseDirty=true;
+});
+canvas.addEventListener('mouseleave',()=>{mouseX=-9999;mouseY=-9999;mouseDirty=true;});
+
+function showPopup(i){
+  if(i<0){popup.classList.remove('on');return;}
+  const[r,g,b]=oklchToRgb(pL[i],pC[i],pH[i]);
+  const hex=toHex(r,g,b);
+  pSw.style.background=hex;
+  pCss.textContent=`oklch(${(pL[i]*100).toFixed(1)}% ${pC[i].toFixed(3)} ${Math.round(pH[i])})`;
+  pVals.textContent=`L=${(pL[i]*100).toFixed(0)}%  ·  C=${pC[i].toFixed(3)}  ·  H=${Math.round(pH[i])}°  ·  ${hex}`;
+  popup.classList.add('on');
+}
+function copyIdx(i){
+  if(i<0)return;
+  const L = pL[i];
+  const C = pC[i];
+  const H = pH[i];
+  const css=`oklch(${(L*100).toFixed(1)}% ${C.toFixed(3)} ${Math.round(H)})`;
+  navigator.clipboard?.writeText(css).then(()=>{toast.classList.add('on');setTimeout(()=>toast.classList.remove('on'),1800);});
+  
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage({ type: 'EXPLORER_PICK', L, C, H }, '*');
+  }
+}
+let tapSt={x:0,y:0,t:0};
+
+window.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'SET_CROSSHAIR') {
+    slL.value = e.data.L;
+    slC.value = e.data.C;
+    slH.value = e.data.H;
+    updateScene();
+  }
+});
+
+canvas.addEventListener('pointerdown',e=>{tapSt={x:e.clientX,y:e.clientY,t:Date.now()};});
+canvas.addEventListener('pointerup',e=>{
+  const dx=e.clientX-tapSt.x,dy=e.clientY-tapSt.y;
+  if(Math.hypot(dx,dy)<10&&Date.now()-tapSt.t<250&&ptrs.size===0)
+    copyIdx(pickSphere(e.clientX,e.clientY));
+});
+popup.addEventListener('click',()=>copyIdx(hoverIdx));
+
+// ── Render loop ────────────────────────────────────────────────────────────────
+const t0=performance.now();
+function animate(){
+  requestAnimationFrame(animate);
+  const t=(performance.now()-t0)*0.001;
+  if(orb.spin){orb.theta-=0.003;applyOrbit();}
+  if(mouseDirty){
+    mouseDirty=false;
+    const nh=mouseX>-9000?pickSphere(mouseX,mouseY):-1;
+    if(nh!==hoverIdx){hoverIdx=nh;showPopup(hoverIdx);}
+  }
+  // Pulse cursor marker
+  if(selIdx>=0) marker.scale.setScalar(pVR[selIdx]*shaderMat.uniforms.uFill.value*(1+Math.sin(t*3.2)*0.06)*1.15*(1+shaderMat.uniforms.uSep.value-1));
+  renderer.render(scene,camera);
+}
+animate();
+
+window.addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>

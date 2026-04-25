@@ -669,32 +669,45 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
         };
 
         const View3D = ({ points, crosshair, handlePointClick, theme, names, adjectives, savedColors = {}, lockedNouns, lockedAdjectives, tetheringPinId }) => {
-            const isDark = theme === 'dark';
-            const data = useMemo(() => {
-                const traces = [];
-                traces.push({ type: 'scatter3d', mode: 'markers', x: points.map(p => p.a), y: points.map(p => p.b), z: points.map(p => p.L), text: points.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const name = `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return `<b>${name}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), hovertemplate: "%{text}<extra></extra>", customdata: points.map(p => [p.L, p.C, p.H]), marker: { size: 4, color: points.map(p => p.color), opacity: 0.8, line: { width: 0 } } });
-                const gridLockedNodes = points.filter(p => !p.isCustomAnchor).filter(p => { const prefix = getNounPrefix(p.L, p.C); return !p.isPin && lockedNouns[`${prefix}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]; }).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed' }; });
-                const customLockedNodes = Object.values(savedColors).filter(sc => sc.type === 'anchor').map(p => { const displayName = `${p.adjOverride || adjectives[p.adjId] || ''} ${p.nameOverride || names[p.anchorId] || ''}`.trim() || p.id || 'Custom Anchor'; return { ...p, a: p.C * Math.sin(p.H * Math.PI / 180), b: p.C * Math.cos(p.H * Math.PI / 180), displayName }; });
-                const lockedNodes = [...gridLockedNodes, ...customLockedNodes];
-                Object.values(savedColors).filter(sc => sc.type === 'nounColumn').forEach(nc => {
-                    const ncName = `${nc.nameOverride || names[nc.id] || 'Custom Noun'}`;
-                    traces.push({
-                        type: 'scatter3d', mode: 'lines',
-                        x: [nc.a, nc.a], y: [nc.b, nc.b], z: [nc.minL, nc.maxL],
-                        line: { color: isDark ? 'rgba(242, 232, 223, 0)' : 'rgba(1, 13, 0, 0)', width: 0 },
-                        hoverinfo: 'text',
-                        text: [`<b>[Range] ${ncName}</b><br>L: ${nc.minL.toFixed(2)} - ${nc.maxL.toFixed(2)}`, `<b>[Range] ${ncName}</b><br>L: ${nc.minL.toFixed(2)} - ${nc.maxL.toFixed(2)}`]
-                    });
-                });
-                const pinNodes = Object.values(savedColors).filter(sc => sc.type === 'pin').map(p => { const displayName = `${p.adjOverride || adjectives[p.adjId] || ''} ${p.nameOverride || names[p.anchorId] || ''}`.trim() || 'Unnamed Pin'; return { ...p, a: p.C * Math.sin(p.H * Math.PI / 180), b: p.C * Math.cos(p.H * Math.PI / 180), displayName }; });
-                traces.push({ type: 'scatter3d', mode: 'markers', x: lockedNodes.map(p => p.a), y: lockedNodes.map(p => p.b), z: lockedNodes.map(p => p.L), text: lockedNodes.map(p => `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`), hovertemplate: "%{text}<extra></extra>", customdata: lockedNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'square', size: 6, color: lockedNodes.map(p => p.color), line: { color: isDark ? '#F2E8DF' : '#010D00', width: 2 } } });
-                traces.push({ type: 'scatter3d', mode: 'markers', x: pinNodes.map(p => p.a), y: pinNodes.map(p => p.b), z: pinNodes.map(p => p.L), text: pinNodes.map(p => `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`), hovertemplate: "%{text}<extra></extra>", customdata: pinNodes.map(p => [p.L, p.C, p.H]), marker: { symbol: 'x', size: 6, color: pinNodes.map(p => p.color), line: { color: isDark ? '#F2E8DF' : '#010D00', width: 2 } } });
-                traces.push({ type: 'scatter3d', mode: 'lines', x: crosshair?.snapTarget ? [crosshair.a, crosshair.snapTarget.a] : [], y: crosshair?.snapTarget ? [crosshair.b, crosshair.snapTarget.b] : [], z: crosshair?.snapTarget ? [crosshair.rawL, crosshair.snapTarget.L] : [], line: { color: isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.3)', width: 2, dash: 'dot' }, hoverinfo: 'skip' });
-                traces.push({ type: 'scatter3d', mode: 'markers', x: [crosshair?.a], y: [crosshair?.b], z: [crosshair?.rawL], text: [`<b>Cursor</b><br>L: ${crosshair?.rawL.toFixed(3)} C: ${crosshair?.rawC.toFixed(3)} H: ${crosshair?.rawH.toFixed(1)}°`], hovertemplate: "%{text}<extra></extra>", marker: { symbol: 'cross', size: 8, color: isDark ? '#F2E8DF' : '#010D00', line: { color: isDark ? '#F2E8DF' : '#010D00', width: 2 } }, hoverinfo: 'skip' });
-                return traces;
-            }, [points, crosshair, isDark, names, adjectives, savedColors, lockedNouns, lockedAdjectives]);
-            const layout = useMemo(() => ({ uirevision: 'true', paper_bgcolor: 'rgba(0,0,0,0)', margin: { l: 0, r: 0, b: 0, t: 0 }, scene: { xaxis: { title: 'a', range: [-0.3, 0.3], backgroundcolor: isDark ? '#052212' : '#F2E8DF', gridcolor: isDark ? 'rgba(177,188,131,0.12)' : 'rgba(43,64,50,0.10)', zerolinecolor: isDark ? 'rgba(177,188,131,0.25)' : 'rgba(43,64,50,0.15)', showspikes: false, titlefont: {color: isDark ? '#B1BC83' : '#2B4032'}, tickfont: {color: isDark ? '#B1BC83' : '#2B4032'} }, yaxis: { title: 'b', range: [-0.3, 0.3], backgroundcolor: isDark ? '#052212' : '#F2E8DF', gridcolor: isDark ? 'rgba(177,188,131,0.12)' : 'rgba(43,64,50,0.10)', zerolinecolor: isDark ? 'rgba(177,188,131,0.25)' : 'rgba(43,64,50,0.15)', showspikes: false, titlefont: {color: isDark ? '#B1BC83' : '#2B4032'}, tickfont: {color: isDark ? '#B1BC83' : '#2B4032'} }, zaxis: { title: 'L', range: [0, 1], backgroundcolor: isDark ? '#052212' : '#F2E8DF', gridcolor: isDark ? 'rgba(177,188,131,0.12)' : 'rgba(43,64,50,0.10)', zerolinecolor: isDark ? 'rgba(177,188,131,0.25)' : 'rgba(43,64,50,0.15)', showspikes: false, titlefont: {color: isDark ? '#B1BC83' : '#2B4032'}, tickfont: {color: isDark ? '#B1BC83' : '#2B4032'} }, camera: { eye: { x: 1.5, y: 1.5, z: 0.5 } } }, showlegend: false }), [isDark]);
-            return <PlotlyChart data={data} layout={layout} onPointClick={handlePointClick} theme={theme} />;
+            const iframeRef = useRef(null);
+
+            useEffect(() => {
+                const handleMessage = (e) => {
+                    if (e.data && e.data.type === 'EXPLORER_PICK') {
+                        if (handlePointClick) {
+                            handlePointClick([e.data.L, e.data.C, e.data.H]);
+                        }
+                    } else if (e.data && e.data.type === 'EXPLORER_SLIDE') {
+                        if (handlePointClick) {
+                            handlePointClick([e.data.L, e.data.C, e.data.H]);
+                        }
+                    }
+                };
+                window.addEventListener('message', handleMessage);
+                return () => window.removeEventListener('message', handleMessage);
+            }, [handlePointClick]);
+
+            useEffect(() => {
+                if (iframeRef.current && iframeRef.current.contentWindow && crosshair && crosshair.color) {
+                    iframeRef.current.contentWindow.postMessage({
+                        type: 'SET_CROSSHAIR',
+                        L: crosshair.rawL,
+                        C: crosshair.rawC,
+                        H: crosshair.rawH !== undefined && !isNaN(crosshair.rawH) ? crosshair.rawH : 0
+                    }, '*');
+                }
+            }, [crosshair]);
+
+            return (
+                <div style={{ width: '100%', height: 'calc(100vh - 200px)', borderRadius: '12px', overflow: 'hidden' }}>
+                    <iframe 
+                        ref={iframeRef}
+                        src="./oklch-explorer.html" 
+                        style={{ width: '100%', height: '100%', border: 'none' }}
+                        title="3D OkLCH Explorer"
+                    />
+                </div>
+            );
         };
         const ViewVertical = ({ points, crosshair, handlePointClick, theme, names, adjectives, savedColors = {}, lockedNouns, lockedAdjectives, viewMode, tetheringPinId, swatchLayout, swatchZoom, viewportFilter, viewportSearchQuery, viewportTagFilter }) => {
             const isDark = theme === 'dark';
