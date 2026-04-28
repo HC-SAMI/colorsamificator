@@ -114,7 +114,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
                 if (key !== currentKey && key !== ignoreAnchorId && val && val.trim().toLowerCase() === normalizedVal) { return `Layer Adj (${key})`; }
             }
             for (const [id, pt] of Object.entries(savedColors)) {
-                if (id !== currentKey) {
+                if (id !== currentKey && pt.type === 'pin') {
                     if (pt.nameOverride && pt.nameOverride.trim().toLowerCase() === normalizedVal) {
                         if (pt.anchorId === currentKey || pt.anchorId === ignoreAnchorId) continue;
                         return `Pin Noun (${pt.erpCode})`;
@@ -129,66 +129,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
         }
 
         function generateGridPoints(maxC = 0.3, maxL = 1.0) {
-            const isMobile = window.innerWidth < 768;
-            const allPoints = [];
-            const baseAnchors = [];
-            const sectors = [
-                { minH: 0, maxH: 90.1, delta: isMobile ? 0.04 : 0.02 },
-                { minH: 90.1, maxH: 360, delta: isMobile ? 0.08 : 0.04 }
-            ];
-            sectors.forEach(sector => {
-                const baseDelta = sector.delta;
-                
-                const cValues = [];
-                for (let c = 0; c <= maxC + 0.001; c += 0.02) {
-                    if (c > 0.04 && Math.abs((c / baseDelta) - Math.round(c / baseDelta)) > 0.1) {
-                        continue;
-                    }
-                    cValues.push(c);
-                }
-                
-                cValues.forEach(C => {
-                    const d = (C <= 0.04) ? (isMobile ? 0.04 : 0.02) : baseDelta;
-                    const cStr = Math.round(C * 100).toString().padStart(2, '0');
-                    
-                    const cStepForH = Math.round(C / d);
-                    const nH = (C === 0) ? 1 : 6 * cStepForH;
-                    const stepH = 360 / nH;
-                    
-                    for (let hIndex = 0; hIndex < nH; hIndex++) {
-                        const H = (hIndex * stepH) % 360;
-                        if (H >= sector.minH - 0.001 && H < sector.maxH - 0.001) {
-                            const hStr = Math.round(H).toString().padStart(3, '0');
-                            const a = C * Math.sin(H * Math.PI / 180);
-                            const b = C * Math.cos(H * Math.PI / 180);
-                            let validUL = [], validL = [], validD = [], validUD = [];
-                            
-                            for (let L = 0; L <= maxL + 0.001; L += 0.02) {
-                                const lStr = getLStr(L);
-                                const cColor = new Color("oklch", [L, C, H]);
-                                if (cColor.inGamut("srgb") || (C === 0 && L >= 0 && L <= 1)) {
-                                    const pt = { L, C, H, a, b, lStr, cStr, hStr, erpCode: `${lStr}${cStr}${hStr}`, color: cColor.clone().toGamut({space: "srgb"}).toString({format: "hex"}), opacity: 1.0, ring: cStepForH, delta: d };
-                                    allPoints.push(pt);
-                                    if (C === 0) {
-                                        if (L >= 0.95) validUL.push(pt);
-                                        else if (L >= 0.5) validL.push(pt);
-                                        else if (L >= 0.2) validD.push(pt);
-                                        else validUD.push(pt);
-                                    } else {
-                                        if (L >= 0.5) validL.push(pt);
-                                        else validD.push(pt);
-                                    }
-                                }
-                            }
-                            if (validL.length > 0 || validD.length > 0 || validUL.length > 0 || validUD.length > 0) {
-                                const getBestDisplay = (pts, targetL) => { if (!pts || pts.length === 0) return null; return pts.reduce((prev, curr) => Math.abs(curr.L - targetL) < Math.abs(prev.L - targetL) ? curr : prev); };
-                                baseAnchors.push({ C, H, a, b, cStr, hStr, ultraLightRef: getBestDisplay(validUL, 0.975), lightRef: getBestDisplay(validL, C === 0 ? 0.725 : 0.75), darkRef: getBestDisplay(validD, C === 0 ? 0.35 : 0.25), ultraDarkRef: getBestDisplay(validUD, 0.1), ulCount: validUL.length, lightCount: validL.length, darkCount: validD.length, udCount: validUD.length, delta: d });
-                            }
-                        }
-                    }
-                });
-            });
-            return { baseAnchors, allPoints };
+            return { baseAnchors: [], allPoints: [] };
         }
 
         function generateGridData() {
@@ -672,8 +613,8 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
             const isDark = theme === 'dark';
             const data = useMemo(() => {
                 const traces = [];
-                traces.push({ type: 'scatter3d', mode: 'markers', x: points.map(p => p.a), y: points.map(p => p.b), z: points.map(p => p.L), text: points.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const name = `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return `<b>${name}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), hovertemplate: "%{text}<extra></extra>", customdata: points.map(p => [p.L, p.C, p.H]), marker: { size: 4, color: points.map(p => p.color), opacity: 0.8, line: { width: 0 } } });
-                const gridLockedNodes = points.filter(p => !p.isCustomAnchor).filter(p => { const prefix = getNounPrefix(p.L, p.C); return !p.isPin && lockedNouns[`${prefix}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]; }).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed' }; });
+                traces.push({ type: 'scatter3d', mode: 'markers', x: points.map(p => p.a), y: points.map(p => p.b), z: points.map(p => p.L), text: points.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`; const name = `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return `<b>${name}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), hovertemplate: "%{text}<extra></extra>", customdata: points.map(p => [p.L, p.C, p.H]), marker: { size: 4, color: points.map(p => p.color), opacity: 0.8, line: { width: 0 } } });
+                const gridLockedNodes = points.filter(p => !p.isCustomAnchor).filter(p => { const prefix = getNounPrefix(p.L, p.C); return !p.isPin && lockedNouns[p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]; }).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed' }; });
                 const customLockedNodes = Object.values(savedColors).filter(sc => sc.type === 'anchor').map(p => { const displayName = `${p.adjOverride || adjectives[p.adjId] || ''} ${p.nameOverride || names[p.anchorId] || ''}`.trim() || p.id || 'Custom Anchor'; return { ...p, a: p.C * Math.sin(p.H * Math.PI / 180), b: p.C * Math.cos(p.H * Math.PI / 180), displayName }; });
                 const lockedNodes = [...gridLockedNodes, ...customLockedNodes];
                 Object.values(savedColors).filter(sc => sc.type === 'nounColumn').forEach(nc => {
@@ -739,7 +680,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
                 const res = [];
                 points.filter(p => !p.isPin && filterFn(p)).forEach(p => {
                      const prefix = getNounPrefix(p.L, p.C);
-                     const nounId = `${prefix}-${p.cStr}-${p.hStr}`;
+                     const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
                      res.push({
                           ...p,
                           type: 'grid',
@@ -775,8 +716,8 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
                 const filtered = points.filter(p => !p.isPin && filterFn(p));
                 const filteredBurnt = Object.values(savedColors).filter(p => p.type === 'pin' && filterFn(p));
                 const traces = [];
-                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers', x: filtered.map(p => p.C), y: filtered.map(p => p.L), text: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[p.lStr] || ''; const noun = names[nounId] || ''; const fullName = `${adj} ${noun}`.trim() || 'Unnamed'; const binText = adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`; return viewMode === 'bins' ? binText : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), textposition: 'middle center', textfont: { size: 12, family: 'Inter, sans-serif', color: filtered.map(p => p.L > 0.55 ? '#010D00' : '#F2E8DF') }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>L: %{y:.3f} C: %{x:.3f}<extra></extra>" : "%{text}<extra></extra>", customdata: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 10, color: filtered.map(p => p.color), opacity: viewMode === 'bins' ? (showText ? 0 : 0.3) : 0.8, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
-                const gridLockedNodes = filtered.filter(p => !p.isCustomAnchor && lockedNouns[`${getNounPrefix(p.L, p.C)}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed' }; });
+                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers', x: filtered.map(p => p.C), y: filtered.map(p => p.L), text: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[p.lStr] || ''; const noun = names[nounId] || ''; const fullName = `${adj} ${noun}`.trim() || 'Unnamed'; const binText = adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`; return viewMode === 'bins' ? binText : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), textposition: 'middle center', textfont: { size: 12, family: 'Inter, sans-serif', color: filtered.map(p => p.L > 0.55 ? '#010D00' : '#F2E8DF') }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>L: %{y:.3f} C: %{x:.3f}<extra></extra>" : "%{text}<extra></extra>", customdata: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 10, color: filtered.map(p => p.color), opacity: viewMode === 'bins' ? (showText ? 0 : 0.3) : 0.8, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
+                const gridLockedNodes = filtered.filter(p => !p.isCustomAnchor && lockedNouns[p.parentNounId || `${getNounPrefix(p.L, p.C)}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed' }; });
                 const customLockedNodes = Object.values(savedColors).filter(sc => sc.type === 'anchor' && filterFn(sc)).map(p => { const displayName = `${p.adjOverride || adjectives[p.adjId] || ''} ${p.nameOverride || names[p.anchorId] || ''}`.trim() || p.id || 'Custom Anchor'; return { ...p, displayName }; });
                 const lockedNodes = [...gridLockedNodes, ...customLockedNodes];
                 const pinNodes = filteredBurnt.map(p => { const displayName = `${p.adjOverride || adjectives[p.adjId] || ''} ${p.nameOverride || names[p.anchorId] || ''}`.trim() || 'Unnamed Pin'; return { ...p, displayName }; });
@@ -928,7 +869,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
                 const targetC = stableC;
                 points.filter(p => !p.isPin && filterFn(p)).forEach(p => {
                      const prefix = getNounPrefix(p.L, p.C);
-                     const nounId = `${prefix}-${p.cStr}-${p.hStr}`;
+                     const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
                      res.push({ ...p, type: 'grid', displayName: `${adjectives[p.lStr]||''} ${names[nounId]||''}`.trim() || 'Unnamed', hex: p.color });
                 });
                 Object.values(savedColors).forEach(sc => {
@@ -959,8 +900,8 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
                 const filtered = points.filter(p => !p.isPin && filterFn(p));
                 const filteredBurnt = Object.values(savedColors).filter(p => p.type === 'pin' && filterFn(p));
                 const traces = [];
-                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers', x: filtered.map(p => p.H), y: filtered.map(p => p.L), text: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[p.lStr] || ''; const noun = names[nounId] || ''; const fullName = `${adj} ${noun}`.trim() || 'Unnamed'; const binText = adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`; return viewMode === 'bins' ? binText : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), textposition: 'middle center', textfont: { size: 12, family: 'Inter, sans-serif', color: filtered.map(p => p.L > 0.55 ? '#010D00' : '#F2E8DF') }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>L: %{y:.3f} H: %{x:.1f}°<extra></extra>" : "%{text}<extra></extra>", customdata: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 10, color: filtered.map(p => p.color), opacity: viewMode === 'bins' ? (showText ? 0 : 0.3) : 0.8, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
-                const gridLockedNodes = filtered.filter(p => !p.isCustomAnchor && lockedNouns[`${getNounPrefix(p.L, p.C)}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed' }; });
+                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers', x: filtered.map(p => p.H), y: filtered.map(p => p.L), text: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[p.lStr] || ''; const noun = names[nounId] || ''; const fullName = `${adj} ${noun}`.trim() || 'Unnamed'; const binText = adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`; return viewMode === 'bins' ? binText : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), textposition: 'middle center', textfont: { size: 12, family: 'Inter, sans-serif', color: filtered.map(p => p.L > 0.55 ? '#010D00' : '#F2E8DF') }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>L: %{y:.3f} H: %{x:.1f}°<extra></extra>" : "%{text}<extra></extra>", customdata: filtered.map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 10, color: filtered.map(p => p.color), opacity: viewMode === 'bins' ? (showText ? 0 : 0.3) : 0.8, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
+                const gridLockedNodes = filtered.filter(p => !p.isCustomAnchor && lockedNouns[p.parentNounId || `${getNounPrefix(p.L, p.C)}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed' }; });
                 const customLockedNodes = Object.values(savedColors).filter(sc => sc.type === 'anchor' && filterFn(sc)).map(p => { const displayName = `${p.adjOverride || adjectives[p.adjId] || ''} ${p.nameOverride || names[p.anchorId] || ''}`.trim() || p.id || 'Custom Anchor'; return { ...p, displayName }; });
                 const lockedNodes = [...gridLockedNodes, ...customLockedNodes];
                 const pinNodes = filteredBurnt.map(p => { const displayName = `${p.adjOverride || adjectives[p.adjId] || ''} ${p.nameOverride || names[p.anchorId] || ''}`.trim() || 'Unnamed Pin'; return { ...p, displayName }; });
@@ -1410,7 +1351,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
                 validAnchors.forEach(p => {
                      const prefix = getNounPrefix(p.L, p.C);
                      const lStr = getLStr(p.L);
-                     const nounId = `${prefix}-${p.cStr}-${p.hStr}`;
+                     const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
                      res.push({
                           ...p,
                           type: 'grid',
@@ -1444,8 +1385,8 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
             const data = useMemo(() => {
                 if (viewMode === 'swatches') return [];
                 const traces = [];
-                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers', x: validAnchors.map(p => p.a), y: validAnchors.map(p => p.b), text: validAnchors.map(p => { const prefix = getNounPrefix(p.L, p.C); const lStr = getLStr(p.L); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[lStr] || ''; const noun = names[nounId] || ''; const fullName = `${adj} ${noun}`.trim() || 'Unnamed'; const binText = adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`; return viewMode === 'bins' ? (p.C === 0 ? `<b>${adj}</b>` : binText) : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), textposition: 'middle center', textfont: { size: 12, family: 'Inter, sans-serif', color: validAnchors.map(p => p.L > 0.55 ? '#010D00' : '#F2E8DF') }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>C: %{customdata[1]:.3f} H: %{customdata[2]:.1f}°<extra></extra>" : "%{text}<extra></extra>", customdata: validAnchors.map(p => { const prefix = getNounPrefix(p.L, p.C); const lStr = getLStr(p.L); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 14, color: validAnchors.map(p => p.color), opacity: viewMode === 'bins' ? (showText ? 0 : 0.3) : 1, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
-                const gridLockedNodes = baseAnchors.filter(p => !p.isCustomAnchor).map(p => ({...p, L: crosshair.rawL, lStr: getLStr(crosshair.rawL)})).filter(p => { const prefix = getNounPrefix(p.L, p.C); return !p.isPin && lockedNouns[`${prefix}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]; }).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = `${prefix}-${p.cStr}-${p.hStr}`; const c = new Color("oklch", [p.L, p.C, p.H]); const nodeColor = c.inGamut("srgb") || p.C === 0 ? c.clone().toGamut({space: "srgb"}).toString({format: "hex"}) : '#010D00'; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed', color: nodeColor }; });
+                traces.push({ type: 'scatter', mode: viewMode === 'bins' ? (showText ? 'text' : 'markers') : 'markers', x: validAnchors.map(p => p.a), y: validAnchors.map(p => p.b), text: validAnchors.map(p => { const prefix = getNounPrefix(p.L, p.C); const lStr = getLStr(p.L); const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`; const adj = adjectives[lStr] || ''; const noun = names[nounId] || ''; const fullName = `${adj} ${noun}`.trim() || 'Unnamed'; const binText = adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`; return viewMode === 'bins' ? (p.C === 0 ? `<b>${adj}</b>` : binText) : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`; }), textposition: 'middle center', textfont: { size: 12, family: 'Inter, sans-serif', color: validAnchors.map(p => p.L > 0.55 ? '#010D00' : '#F2E8DF') }, hovertemplate: viewMode === 'bins' ? "<b>%{customdata[3]}</b><br>C: %{customdata[1]:.3f} H: %{customdata[2]:.1f}°<extra></extra>" : "%{text}<extra></extra>", customdata: validAnchors.map(p => { const prefix = getNounPrefix(p.L, p.C); const lStr = getLStr(p.L); const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`; const fullName = `${adjectives[lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed'; return [p.L, p.C, p.H, fullName]; }), marker: { size: 14, color: validAnchors.map(p => p.color), opacity: viewMode === 'bins' ? (showText ? 0 : 0.3) : 1, line: { width: 0.5, color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' } } });
+                const gridLockedNodes = baseAnchors.filter(p => !p.isCustomAnchor).map(p => ({...p, L: crosshair.rawL, lStr: getLStr(crosshair.rawL)})).filter(p => { const prefix = getNounPrefix(p.L, p.C); return !p.isPin && lockedNouns[p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`] && lockedAdjectives[p.lStr]; }).map(p => { const prefix = getNounPrefix(p.L, p.C); const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`; const c = new Color("oklch", [p.L, p.C, p.H]); const nodeColor = c.inGamut("srgb") || p.C === 0 ? c.clone().toGamut({space: "srgb"}).toString({format: "hex"}) : '#010D00'; return { ...p, displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed', color: nodeColor }; });
                 const customLockedNodes = Object.values(savedColors).filter(sc => sc.type === 'anchor' && filterFn(sc)).map(p => { const displayName = `${p.adjOverride || adjectives[p.adjId] || ''} ${p.nameOverride || names[p.anchorId] || ''}`.trim() || p.id || 'Custom Anchor'; return { ...p, a: p.C * Math.sin(p.H * Math.PI / 180), b: p.C * Math.cos(p.H * Math.PI / 180), displayName, color: p.color }; });
                 const lockedNodes = [...gridLockedNodes, ...customLockedNodes];
                 const pinNodes = Object.values(savedColors).filter(sc => sc.type === 'pin' && filterFn(sc)).map(p => { 
@@ -1805,14 +1746,14 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
             );
         };
 
-        const ViewAdjectives = ({ gridData, names, adjectives, setAdjectives, handlePointClick, crosshair, savedColors = {}, lockedAdjectives, onVisualize }) => {
+        const ViewAdjectives = ({ points, names, adjectives, setAdjectives, handlePointClick, crosshair, savedColors = {}, lockedAdjectives, onVisualize }) => {
             const [sortBy, setSortBy] = useState('lightness'); const [sortAsc, setSortAsc] = useState(false);
             const [searchTerm, setSearchTerm] = useState('');
             const sortedSteps = useMemo(() => { 
-                if (!gridData) return []; 
+                 
                 const counts = {}; 
-                gridData.allPoints.forEach(p => { counts[p.lStr] = (counts[p.lStr] || 0) + 1; }); 
-                const steps = gridData.allPoints.filter(p => p.C === 0); 
+                points.forEach(p => { if (!p.isPin) counts[p.lStr] = (counts[p.lStr] || 0) + 1; }); 
+                const steps = filteredViewData.points.filter(p => p.C === 0); 
                 const unique = []; 
                 const seen = new Set(); 
                 steps.forEach(p => { 
@@ -1849,7 +1790,7 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
                     if (valA === valB) return b.L - a.L; 
                     return sortAsc ? (valA < valB ? -1 : 1) : (valB < valA ? -1 : 1); 
                 }); 
-            }, [gridData, adjectives, sortBy, sortAsc, searchTerm]);
+            }, [points, adjectives, sortBy, sortAsc, searchTerm]);
             const SortButton = ({ field, label, icon }) => (<button onClick={() => { if (sortBy === field) setSortAsc(!sortAsc); else { setSortBy(field); setSortAsc(field !== 'lightness'); } }} className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-colors ${sortBy === field ? 'bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30' : 'text-slate-500 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-800 border border-transparent'}`}><Icon name={icon} className="w-3.5 h-3.5" />{label}{sortBy === field && <Icon name={sortAsc ? "chevron-up" : "chevron-down"} className="w-3 h-3" />}</button>);
             return (
                 <div className="h-full flex flex-col overflow-hidden pt-2">
@@ -2520,65 +2461,123 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                         }
                         colorsAdded++;
                     }
-                } else if (targetType === 'PIN') {
-                    const id = row.ID || crypto.randomUUID();
-                    const L = pL !== null ? pL : 0.5;
-                    const C = pC !== null ? pC : 0.1;
+                } else if (targetType === 'PIN' && pL !== null) { 
+                    const pinId = row.ID || crypto.randomUUID(); 
+                    const a = pC * Math.sin(pH * Math.PI / 180);
+                    const b = pC * Math.cos(pH * Math.PI / 180);
+                    const cStr = Math.round(pC * 100).toString().padStart(2, '0');
+                    const hStr = Math.round(pH).toString().padStart(3, '0');
+                    const gridPrefix = getNounPrefix(pL, pC);
+                    const anchorId = `${gridPrefix}-${cStr}-${hStr}`;
+                    const adjId = getLStr(pL);
+                    newSavedColors[pinId] = { 
+                        id: pinId, type: 'pin', L: pL, C: pC, H: pH, 
+                        nameOverride: row.Noun || '', adjOverride: row.Adjective || '', notes: row.Note || '', 
+                        erpCode: row.ERP_Code || getExactErpCode(pL, pC, pC === 0 ? 0 : pH), 
+                        adjId, anchorId, 
+                        color: row.HEX || new Color("oklch", [pL, pC, pH]).clone().toGamut({space: "srgb"}).toString({format: "hex"}), 
+                        a, b, spectral 
+                    }; 
+                    if (row.Illuminant) newSavedColors[pinId].illuminant = String(row.Illuminant).trim();
+                    if (row.Observer) newSavedColors[pinId].observer = parseInt(row.Observer, 10) || undefined;
+                    if (row.Measurement_Method) newSavedColors[pinId].measurementMethod = String(row.Measurement_Method).trim();
+                    if (row.Measurement_Date) newSavedColors[pinId].measurementDate = String(row.Measurement_Date).trim();
+                    if (row.Measurement_Device) newSavedColors[pinId].measurementDevice = String(row.Measurement_Device).trim();
+                    if (row.Tags) newTags[pinId] = row.Tags.split(',').map(t => t.trim()).filter(Boolean); 
+                    if (typeof pinsAdded !== 'undefined') pinsAdded++;
+                } else if (targetType === 'NOUN') {
+                    const parts = String(row.OKLCH_L || '').split('-');
+                    let minL = 0, maxL = 1;
+                    if (parts.length === 2) {
+                        minL = parseFloat(parts[0]) || 0;
+                        maxL = parseFloat(parts[1]) || 1;
+                    } else if (parts.length === 1 && parts[0] !== '') {
+                        minL = parseFloat(parts[0]) || 0;
+                        maxL = parseFloat(parts[0]) || 1;
+                    } else if (pL !== null) {
+                        minL = maxL = pL;
+                    }
+
+                    const C = pC !== null ? pC : 0;
                     const H = pH !== null ? pH : 0;
-                    const a = C * Math.sin(H * Math.PI / 180);
-                    const b = C * Math.cos(H * Math.PI / 180);
+                    let id = row.ID;
+                    if (!id) {
+                        id = `col-${minL}-${maxL}-${C.toFixed(2)}-${H.toFixed(2)}`;
+                    }
+
                     newSavedColors[id] = {
                         id,
-                        type: 'pin',
-                        L, C, H, a, b,
-                        erpCode: row.ERP_Code || '',
+                        type: 'nounColumn',
                         nameOverride: row.Noun || '',
-                        adjOverride: row.Adjective || '',
-                        notes: row.Note || '',
-                        color: hex
+                        C, H,
+                        minL, maxL,
+                        a: C * Math.sin(H * Math.PI / 180),
+                        b: C * Math.cos(H * Math.PI / 180),
+                        notes: row.Note || ''
                     };
-                    if (hasFullSpectral) newSavedColors[id].spectral = spectral;
-                    // Measurement metadata
-                    if (row.Illuminant) newSavedColors[id].illuminant = String(row.Illuminant).trim();
-                    if (row.Observer) newSavedColors[id].observer = parseInt(row.Observer, 10) || undefined;
-                    if (row.Measurement_Method) newSavedColors[id].measurementMethod = String(row.Measurement_Method).trim();
-                    if (row.Measurement_Date) newSavedColors[id].measurementDate = String(row.Measurement_Date).trim();
-                    if (row.Measurement_Device) newSavedColors[id].measurementDevice = String(row.Measurement_Device).trim();
+
+                    if (row.Noun !== undefined && row.Noun !== '') newNames[id] = row.Noun;
+                    if (row.Note !== undefined && row.Note !== '') newNotes[id] = row.Note;
                     if (row.Tags) newTags[id] = row.Tags.split(',').map(t => t.trim()).filter(Boolean);
-                    pinsAdded++;
-                } else if ((targetType === 'GRID' || targetType === 'ANCHOR') && row.ID) {
-                    if (row.Noun !== undefined && row.Noun !== '') newNames[row.ID] = row.Noun; 
-                    if (row.Note !== undefined && row.Note !== '') newNotes[row.ID] = row.Note; 
-                    if (row.Tags) newTags[row.ID] = row.Tags.split(',').map(t => t.trim()).filter(Boolean); 
-                    
-                    let lStr = null;
-                    if (row.Adjective !== undefined && row.Adjective !== '') {
-                        if (pL !== null) {
-                            lStr = getLStr(pL);
-                        } else if (row.ERP_Code && row.ERP_Code.length >= 2) {
-                            lStr = row.ERP_Code.substring(0, 2);
+                } else if ((targetType === 'GRID' || targetType === 'ANCHOR' || targetType === 'NOUN_COLUMN') && row.ID) { // "Custom Noun" / Legacy support
+                    const C = pC !== null ? pC : 0;
+                    const H = pH !== null ? pH : 0;
+                    if (targetType === 'NOUN_COLUMN') {
+                        const id = row.ID;
+                        const parts = (row.OKLCH_L || '').split('-');
+                        let minL = 0, maxL = 1;
+                        if (parts.length === 2) {
+                            minL = parseFloat(parts[0]);
+                            maxL = parseFloat(parts[1]);
                         }
-                        if (lStr) newAdjs[lStr] = row.Adjective;
-                    }
-                    
-                    if (String(row.Locked).toUpperCase() === 'TRUE' && pL !== null && pC !== null && pH !== null) {
-                        const anchorId = row.ID;
-                        const adjId = lStr || getLStr(pL);
-                        const a = pC * Math.sin(pH * Math.PI / 180);
-                        const b = pC * Math.cos(pH * Math.PI / 180);
-                        newSavedColors[anchorId] = {
-                            id: anchorId,
-                            type: 'anchor',
-                            L: pL, C: pC, H: pH, a, b,
-                            erpCode: row.ERP_Code || getExactErpCode(pL, pC, pH),
-                            adjId, anchorId,
-                            nameOverride: '', adjOverride: '', notes: '',
-                            color: new Color("oklch", [pL, pC, pH]).clone().toGamut({space: "srgb"}).toString({format: "hex"})
+                        newSavedColors[id] = {
+                            id,
+                            type: 'nounColumn',
+                            nameOverride: row.Noun || '',
+                            C, H,
+                            minL, maxL,
+                            a: C * Math.sin(H * Math.PI / 180),
+                            b: C * Math.cos(H * Math.PI / 180),
+                            notes: row.Note || ''
                         };
+                        if (row.Noun !== undefined && row.Noun !== '') newNames[id] = row.Noun;
+                        if (row.Note !== undefined && row.Note !== '') newNotes[id] = row.Note;
+                        if (row.Tags) newTags[id] = row.Tags.split(',').map(t => t.trim()).filter(Boolean);
+                    } else {
+                        if (row.Noun !== undefined && row.Noun !== '') newNames[row.ID] = row.Noun; 
+                        if (row.Note !== undefined && row.Note !== '') newNotes[row.ID] = row.Note; 
+                        if (row.Tags) newTags[row.ID] = row.Tags.split(',').map(t => t.trim()).filter(Boolean); 
+                        
+                        let lStr = null;
+                        if (row.Adjective !== undefined && row.Adjective !== '') {
+                            if (pL !== null) {
+                                lStr = getLStr(pL);
+                            } else if (row.ERP_Code && row.ERP_Code.length >= 2) {
+                                lStr = row.ERP_Code.substring(0, 2);
+                            }
+                            if (lStr) newAdjs[lStr] = row.Adjective;
+                        }
+                        
+                        if (String(row.Locked).toUpperCase() === 'TRUE' && pL !== null && pC !== null && pH !== null) {
+                            const anchorId = row.ID;
+                            const adjId = lStr || getLStr(pL);
+                            const a = pC * Math.sin(pH * Math.PI / 180);
+                            const b = pC * Math.cos(pH * Math.PI / 180);
+                            newSavedColors[anchorId] = {
+                                id: anchorId,
+                                type: 'anchor',
+                                L: pL, C: pC, H: pH, a, b,
+                                erpCode: row.ERP_Code || getExactErpCode(pL, pC, pH),
+                                adjId, anchorId,
+                                nameOverride: '', adjOverride: '', notes: '',
+                                color: new Color("oklch", [pL, pC, pH]).clone().toGamut({space: "srgb"}).toString({format: "hex"})
+                            };
+                        }
                     }
                 } else if (targetType === 'ADJECTIVE') {
                     if (row.Adjective !== undefined && row.Adjective !== '') {
                         const lStr = (row.ID && row.ID.trim())
+                            || (row.OKLCH_L && typeof row.OKLCH_L === 'string' && row.OKLCH_L.trim())
                             || (pL !== null ? getLStr(pL) : null)
                             || (row.ERP_Code && row.ERP_Code.length >= 2 ? row.ERP_Code.substring(0, 2) : null);
                         if (lStr) newAdjs[lStr.trim()] = row.Adjective;
@@ -2786,7 +2785,7 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                         const initial = initialState?.linkedFiles || [];
                         if (initial.length > 0) return initial.filter(f => f.toLowerCase().endsWith('.csv'));
                         
-                        return ['anchors.csv', 'pins.csv', 'Reference Colors.csv', 'agt.csv', 'arborite.csv', 'behr.csv', 'benjaminMoore.csv', 'dulux.csv', 'egger.csv', 'farrowBall.csv', 'finsa.csv', 'munsell.csv', 'ncs.csv', 'pantone.csv', 'pionite.csv', 'ppg.csv', 'ral.csv', 'sherwinWilliams.csv', 'swissKrono.csv', 'tafisa.csv', 'uniboard.csv'];
+                        return [];
                     };
 
                     let discoveredFiles = await discoverCSVFiles();
@@ -3047,20 +3046,40 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                         // This allows `occurrences` to accurately count even if C/H don't fall perfectly on generic grid
                         const dL = 0.02;
                         let countAdded = 0;
-                        for (let L = Math.ceil(sc.minL / dL) * dL; L <= sc.maxL; L += dL) {
+                        if (sc.minL === sc.maxL && sc.minL !== null) {
+                            const L = sc.minL;
                             const cColor = new Color("oklch", [L, sc.C, sc.H]);
-                            // Only inject if it doesn't already exist on the grid (prevents double items in ViewChroma!)
-                            const exists = points.some(p => Math.abs(p.L - L) < 0.001 && Math.abs(p.C - sc.C) < 0.001 && Math.abs(p.H - sc.H) < 0.001);
-                            if (!exists && cColor.inGamut("srgb")) {
-                                const pt = {
-                                    L, C: sc.C, H: sc.H, a: sc.a, b: sc.b,
-                                    lStr: getLStr(L), cStr: Math.round(sc.C*100).toString().padStart(2,'0'), hStr: Math.round(sc.H).toString().padStart(3,'0'),
-                                    erpCode: `NOUN-C${Math.round(sc.C*100).toString().padStart(2,'0')}-H${Math.round(sc.H).toString().padStart(3,'0')}`, 
-                                    color: cColor.clone().toGamut({space: "srgb"}).toString({format: "hex"}), opacity: 1.0, ring: 0, delta: 0,
-                                    isPin: false, isCustomNounGenerated: true, parentNounId: sc.id
-                                };
-                                points.push(pt);
+                            const existingIdx = points.findIndex(p => Math.abs(p.L - L) < 0.001 && Math.abs(p.C - sc.C) < 0.001 && Math.abs(p.H - sc.H) < 0.001);
+                            if (existingIdx >= 0) {
+                                points[existingIdx] = { ...points[existingIdx], parentNounId: sc.id, isCustomNounGenerated: true };
                                 countAdded++;
+                            } else if (cColor.inGamut("srgb")) {
+                                points.push({ L, C: sc.C, H: sc.H, a: sc.a, b: sc.b, lStr: getLStr(L), cStr: Math.round(sc.C*100).toString().padStart(2,'0'), hStr: Math.round(sc.H).toString().padStart(3,'0'), erpCode: `NOUN-C${Math.round(sc.C*100).toString().padStart(2,'0')}-H${Math.round(sc.H).toString().padStart(3,'0')}`, color: cColor.clone().toGamut({space: "srgb"}).toString({format: "hex"}), opacity: 1.0, ring: 0, delta: 0, isPin: false, isCustomNounGenerated: true, parentNounId: sc.id });
+                                countAdded++;
+                            }
+                        } else {
+                            for (let L = Math.ceil(sc.minL / dL) * dL; L <= sc.maxL; L += dL) {
+                                const cColor = new Color("oklch", [L, sc.C, sc.H]);
+                                // Update existing grid point if it exists, otherwise add new
+                                const existingIdx = points.findIndex(p => Math.abs(p.L - L) < 0.001 && Math.abs(p.C - sc.C) < 0.001 && Math.abs(p.H - sc.H) < 0.001);
+                                if (existingIdx >= 0) {
+                                    points[existingIdx] = {
+                                        ...points[existingIdx],
+                                        parentNounId: sc.id,
+                                        isCustomNounGenerated: true
+                                    };
+                                    countAdded++;
+                                } else if (cColor.inGamut("srgb")) {
+                                    const pt = {
+                                        L, C: sc.C, H: sc.H, a: sc.a, b: sc.b,
+                                        lStr: getLStr(L), cStr: Math.round(sc.C*100).toString().padStart(2,'0'), hStr: Math.round(sc.H).toString().padStart(3,'0'),
+                                        erpCode: `NOUN-C${Math.round(sc.C*100).toString().padStart(2,'0')}-H${Math.round(sc.H).toString().padStart(3,'0')}`, 
+                                        color: cColor.clone().toGamut({space: "srgb"}).toString({format: "hex"}), opacity: 1.0, ring: 0, delta: 0,
+                                        isPin: false, isCustomNounGenerated: true, parentNounId: sc.id
+                                    };
+                                    points.push(pt);
+                                    countAdded++;
+                                }
                             }
                         }
                         
@@ -3099,7 +3118,7 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                 if (filterTags.length > 0 || q) {
                     points = points.filter(p => {
                         const prefix = getNounPrefix(p.L, p.C);
-                        const nounId = `${prefix}-${p.cStr}-${p.hStr}`;
+                        const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
                         
                         if (filterTags.length > 0) {
                             const tags = dictTags[nounId] || [];
@@ -3345,9 +3364,9 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
             const handleVisualize = (type, id, displayName) => {
                 let items = [];
                 if (type === 'adjective') {
-                    items = gridData.allPoints.filter(p => p.lStr === id).map(p => {
+                    items = filteredViewData.points.filter(p => p.lStr === id).map(p => {
                         const prefix = getNounPrefix(p.L, p.C);
-                        const nounId = `${prefix}-${p.cStr}-${p.hStr}`;
+                        const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
                         return {
                             ...p,
                             displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || (p.erpCode ? `#${p.erpCode}` : '—'),
@@ -3358,7 +3377,7 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                     const sc = savedColors[id];
                     if (sc && sc.type === 'nounColumn') {
                         // include injected points for the custom column using parentNounId
-                        // We also need to get the gridData.allPoints, wait, we injected them into filteredViewData.points!
+                        // We also need to get the filteredViewData.points, wait, we injected them into filteredViewData.points!
                         // So we should filter filteredViewData.points instead of gridData.allPoints to see the dynamically generated occurrences!
                         items = filteredViewData.points.filter(p => {
                             return (p.parentNounId === sc.id) || (Math.abs(p.C - sc.C) < 0.01 && Math.abs(p.H - sc.H) < 0.01 && p.L >= sc.minL && p.L <= sc.maxL && !p.isPin);
@@ -3370,13 +3389,13 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                             };
                         });
                     } else {
-                        items = gridData.allPoints.filter(p => {
+                        items = filteredViewData.points.filter(p => {
                             const prefix = getNounPrefix(p.L, p.C);
-                            const nounId = `${prefix}-${p.cStr}-${p.hStr}`;
+                            const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
                             return nounId === id;
                         }).map(p => {
                             const prefix = getNounPrefix(p.L, p.C);
-                            const nounId = `${prefix}-${p.cStr}-${p.hStr}`;
+                            const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
                             return {
                                 ...p,
                                 displayName: `${adjectives[p.lStr] || ''} ${names[nounId] || ''}`.trim() || (p.erpCode ? `#${p.erpCode}` : '—'),
@@ -3406,7 +3425,7 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                 const results = []; const seenCodes = new Set(); 
                 Object.values(savedColors).forEach(sc => { 
                     const adj = (sc.type === 'nounColumn' ? `L ${sc.minL} - ${sc.maxL}` : (sc.adjOverride || adjectives[sc.adjId] || '')).toLowerCase(); 
-                    const name = (sc.type === 'nounColumn' ? (sc.nameOverride || names[sc.id] || '') : (sc.nameOverride || names[sc.anchorId] || '')).toLowerCase(); 
+                    const name = (sc.type === 'nounColumn' ? (names[sc.id] || sc.nameOverride || '') : (sc.nameOverride || names[sc.anchorId] || '')).toLowerCase(); 
                     const fullName = `${adj} ${name}`.trim(); 
                     const note = (sc.notes || (sc.type === 'nounColumn' ? dictNotes[sc.id] : dictNotes[sc.anchorId]) || '').toLowerCase(); 
                     const code = (sc.erpCode || '').toLowerCase(); 
@@ -3418,19 +3437,21 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                         } else {
                             dn = `${sc.adjOverride || adjectives[sc.adjId] || ''} ${sc.nameOverride || names[sc.anchorId] || ''}`.trim() || 'Unnamed';
                         }
+
                         const t = sc.type === 'pin' ? 'Pin' : (sc.type === 'nounColumn' ? 'Noun Column' : 'Locked Anchor');
                         const n = sc.type === 'nounColumn' ? (sc.notes || dictNotes[sc.id] || '') : (sc.notes || dictNotes[sc.anchorId] || '');
                         // use midpoint for L if nounColumn
                         const realL = sc.type === 'nounColumn' ? ((sc.minL + sc.maxL) / 2) : sc.L;
-                        results.push({ key: `saved-${sc.id}`, L: realL, C: sc.C, H: sc.H, color: sc.color || '#010D00', displayName: dn, erpCode: sc.erpCode, type: t, note: n }); 
+                        const cFallback = new Color("oklch", [realL, sc.C||0, sc.H||0]).toGamut({space: "srgb"}).toString({format: "hex"});
+                        results.push({ key: `saved-${sc.id}`, L: realL, C: sc.C, H: sc.H, color: sc.color || cFallback, displayName: dn, erpCode: sc.erpCode, type: t, note: n }); 
                         if (sc.erpCode) seenCodes.add(sc.erpCode); 
                     } 
                 }); 
-                for (const pt of gridData.allPoints) { 
+                for (const pt of filteredViewData.points) { 
                     if (results.length >= 100) break; 
                     if (seenCodes.has(pt.erpCode)) continue; 
                     const prefix = getNounPrefix(pt.L, pt.C); 
-                    const nounId = `${prefix}-${pt.cStr}-${pt.hStr}`; 
+                    const nounId = pt.parentNounId || `${prefix}-${pt.cStr}-${pt.hStr}`; 
                     const adjStr = (adjectives[pt.lStr] || '').toLowerCase(); 
                     const nameStr = (names[nounId] || '').toLowerCase(); 
                     const fullNameStr = `${adjStr} ${nameStr}`.trim(); 
@@ -3440,36 +3461,178 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                     const hasDictMatch = (adjStr && adjStr.includes(q)) || (nameStr && nameStr.includes(q)) || (fullNameStr && fullNameStr.includes(q)) || (noteStr && noteStr.includes(q)) || (tagsStr && tagsStr.includes(q)); 
                     const isCodeSearch = q.length >= 2 && !isNaN(q) && codeStr.includes(q); 
                     if (hasDictMatch || isCodeSearch) { 
-                        results.push({ key: `pt-${pt.erpCode}`, L: pt.L, C: pt.C, H: pt.H, color: pt.color, displayName: `${adjectives[pt.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed', erpCode: pt.erpCode, type: 'Coordinate', note: dictNotes[nounId] || '' }); 
+                        const validPtColor = new Color("oklch", [pt.L, pt.C, pt.H]).toGamut({space: "srgb"}).toString({format: "hex"});
+                        results.push({ key: `pt-${pt.erpCode}`, L: pt.L, C: pt.C, H: pt.H, color: validPtColor, displayName: `${adjectives[pt.lStr] || ''} ${names[nounId] || ''}`.trim() || 'Unnamed', erpCode: pt.erpCode, type: 'Coordinate', note: dictNotes[nounId] || '' }); 
                         seenCodes.add(pt.erpCode); 
                     } 
                 } 
+
+                // Search adjectives directly
+                for (const [adjId, adjName] of Object.entries(adjectives)) {
+                    if (results.length >= 100) break;
+                    const adjStr = (adjName || '').toLowerCase();
+                    const idStr = adjId.toLowerCase();
+                    if (adjStr.includes(q) || idStr.includes(q)) {
+                        let alreadyAdded = false;
+                        for (const r of results) {
+                            if (r.key === `adj-${adjId}`) {
+                                alreadyAdded = true; break;
+                            }
+                        }
+                        if (!alreadyAdded) {
+                            let lVal = 0.5;
+                            if (adjId.includes('-')) lVal = parseFloat(adjId.split('-')[1]) || 0.5;
+                            else if (!isNaN(parseFloat(adjId))) lVal = parseFloat(adjId) / 100;
+                            results.push({
+                                key: `adj-${adjId}`,
+                                L: lVal, C: 0, H: 0,
+                                color: new Color("oklch", [lVal, 0, 0]).toGamut({space: "srgb"}).toString({format: "hex"}),
+                                displayName: `${adjName} [Adjective]`.trim(),
+                                erpCode: '', type: 'Adjective Definition', note: ''
+                            });
+                        }
+                    }
+                }
+
+                // Search through names directly to catch any assigned nouns that don't fall neatly into filtered points
+                for (const [nId, nName] of Object.entries(names)) {
+                    if (results.length >= 200) break;
+                    const nameStr = (nName || '').toLowerCase();
+                    const idStr = nId.toLowerCase();
+                    const noteStr = (dictNotes[nId] || '').toLowerCase();
+                    const tagsStr = (dictTags[nId] || []).join(' ').toLowerCase();
+                    
+                    let cVal = 0.1, hVal = 180, baseL = 0.5;
+                    let sc = savedColors[nId];
+                    if (sc) {
+                        cVal = sc.C;
+                        hVal = sc.H;
+                        baseL = sc.type === 'nounColumn' ? ((sc.minL + sc.maxL) / 2) : sc.L;
+                    } else {
+                        const parts = nId.split('-');
+                        if (parts.length >= 3) {
+                            const rawC = parts[parts.length - 2].replace('C', '');
+                            const rawH = parts[parts.length - 1].replace('H', '');
+                            
+                            cVal = parseFloat(rawC) / 100;
+                            hVal = parseFloat(rawH);
+                            
+                            if (parts[0] === 'UL') baseL = 0.96;
+                            else if (parts[0] === 'L') baseL = 0.65;
+                            else if (parts[0] === 'D') baseL = 0.35;
+                            else if (parts[0] === 'UD') baseL = 0.15;
+                            else if (parts[0] === 'ALL' || cVal === 0) { cVal = 0; hVal = 0; }
+                            
+                            if (isNaN(cVal)) cVal = 0.1;
+                            if (isNaN(hVal)) hVal = 180;
+                        }
+                    }
+
+                    // Check combinations too!
+                    let matchedCombo = false;
+                    for (const [adjId, adjName] of Object.entries(adjectives)) {
+                        if (results.length >= 200) break;
+                        const comboName = `${adjName} ${nName}`.trim().toLowerCase();
+                        if (comboName.includes(q)) {
+                            matchedCombo = true;
+                            let lVal = baseL;
+                            if (adjId.includes('-')) lVal = parseFloat(adjId.split('-')[1]) || baseL;
+                            else if (!isNaN(parseFloat(adjId))) lVal = parseFloat(adjId) / 100;
+
+                            if (sc) {
+                                if (sc.type !== 'nounColumn') continue;
+                                if (lVal < sc.minL - 0.001 || lVal > sc.maxL + 0.001) continue;
+                            }
+
+                            const inferredC = new Color("oklch", [lVal, cVal, hVal]);
+                            if (cVal > 0 && !inferredC.inGamut('srgb', { epsilon: 0.01 })) continue;
+
+                            const validColor = inferredC.clone().toGamut({space: "srgb"}).toString({format: "hex"});
+                            
+                            results.push({
+                                key: `combo-${adjId}-${nId}`,
+                                L: lVal, C: cVal, H: hVal,
+                                color: validColor,
+                                displayName: `${adjName} ${nName}`.trim(),
+                                erpCode: `NOUN-C${Math.round(cVal*100).toString().padStart(2,'0')}-H${Math.round(hVal).toString().padStart(3,'0')}`,
+                                type: 'Coordinate',
+                                note: dictNotes[nId] || ''
+                            });
+                        }
+                    }
+
+                    if ((nameStr.includes(q) || idStr.includes(q) || noteStr.includes(q) || tagsStr.includes(q))) {
+                        let sc = savedColors[nId];
+                        let alreadyAdded = false;
+                        for (const r of results) {
+                            if (r.key === `noun-${nId}` || (sc && r.key === `saved-${sc.id}`)) {
+                                alreadyAdded = true; break;
+                            }
+                        }
+                        if (!alreadyAdded && !sc) {
+                            const inferredC = new Color("oklch", [baseL, cVal, hVal]);
+                            const validColor = inferredC.clone().toGamut({space: "srgb"}).toString({format: "hex"});
+                            
+                            results.push({
+                                key: `noun-${nId}`,
+                                L: baseL, C: cVal, H: hVal,
+                                color: validColor,
+                                displayName: nName.trim() || nId,
+                                erpCode: '',
+                                type: 'Noun Definition',
+                                note: dictNotes[nId] || ''
+                            });
+                        }
+                    }
+                }
                 
-                if (colorData && results.length < 100) {
-                    // Dynamic: search all brands in colorData
+                // Consolidated Commercial Search
+                if (colorData) {
                     for (const [brandKey, list] of Object.entries(colorData)) {
-                        if (results.length >= 100) break;
+                        if (results.length >= 200) break;
                         if (!list || !Array.isArray(list)) continue;
                         const brandName = getBrandDisplayName(brandKey);
                         
                         for (const item of list) {
-                            if (results.length >= 100) break;
+                            if (results.length >= 200) break;
+                            const idUrl = item.url || item.name.replace(/\s+/g, '-');
+                            const customId = `brand-${brandKey}-${idUrl}`;
+                            const customName = names[customId] || '';
+                            const customNote = dictNotes[customId] || '';
+
                             const matchesName = item.name && item.name.toLowerCase().includes(q);
+                            const matchesCustomName = customName.toLowerCase().includes(q);
                             const matchesBrand = brandName.toLowerCase().includes(q);
-                            if (matchesName || matchesBrand) {
+                            const itemTags = (item.tags || []).join(' ').toLowerCase();
+                            const matchesNote = (item.image && item.image.toLowerCase().includes(q)) || customNote.toLowerCase().includes(q) || itemTags.includes(q) || (item.url && item.url.toLowerCase().includes(q));
+                            const matchesHex = (item.hex || '').toLowerCase().includes(q);
+
+                            if (matchesName || matchesCustomName || matchesBrand || matchesNote || matchesHex) {
                                 try {
-                                    const c = new Color(item.hex).to('oklch');
+                                    let l=0.5, cVal=0, h=0;
+                                    let c;
+                                    if(item.spectral && item.spectral.length === 31) {
+                                         const xyzStandard = calculateXYZFromSpectral(item.spectral, 2, 'D65');
+                                         c = new Color('xyz-d65', xyzStandard).to('oklch');
+                                    } else {
+                                         c = new Color(item.hex).to('oklch');
+                                    }
+                                    
+                                    l = c.coords[0];
+                                    cVal = c.coords[1];
+                                    h = isNaN(c.coords[2]) ? 0 : c.coords[2];
+                                    
                                     results.push({
                                         key: `brand-${brandKey}-${item.name}`,
-                                        L: c.coords[0],
-                                        C: c.coords[1],
-                                        H: isNaN(c.coords[2]) ? 0 : c.coords[2],
-                                        color: item.hex,
+                                        L: l,
+                                        C: cVal,
+                                        H: h,
+                                        color: item.hex || '#000000',
                                         image: item.image || null,
-                                        displayName: item.name,
-                                        erpCode: '',
-                                        type: brandName,
-                                        note: item.spectral && item.spectral.length > 0 ? 'Verified Spectral Data' : ''
+                                        displayName: customName || item.name,
+                                        erpCode: brandKey === 'REFERENCE' ? 'REF' : brandKey,
+                                        type: 'Commercial Item',
+                                        note: customNote || (item.spectral && item.spectral.length > 0 ? 'Verified Spectral Data' : '')
                                     });
                                 } catch (e) {}
                             }
@@ -3503,7 +3666,7 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                     if (ptToLock && ptToLock.isPin) {
                         const cStr = anchorId.split('-')[1];
                         const hStr = anchorId.split('-')[2];
-                        ptToLock = gridData.allPoints.find(p => p.lStr === adjId && p.cStr === cStr && p.hStr === hStr) || ptToLock;
+                        ptToLock = filteredViewData.points.find(p => p.lStr === adjId && p.cStr === cStr && p.hStr === hStr) || ptToLock;
                     }
                     if (ptToLock) {
                         setSavedColors(prev => ({ ...prev, [newId]: { id: newId, type: 'anchor', L: ptToLock.L, C: ptToLock.C, H: ptToLock.H, a: ptToLock.a, b: ptToLock.b, erpCode: ptToLock.erpCode, adjId, anchorId, nameOverride: '', adjOverride: '', notes: '', color: ptToLock.color } })); 
@@ -3528,7 +3691,12 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
             
             const onAdjChange = (val) => { 
                 if (crosshair?.activeSavedColor?.type === 'pin') updateSavedColor('adjOverride', val); 
-                else setAdjectives({...adjectives, [crosshair?.nearestAdjId]: val}); 
+                else {
+                    setAdjectives({...adjectives, [crosshair?.nearestAdjId]: val}); 
+                    if (crosshair?.nearestAnchorId && savedColors[crosshair.nearestAnchorId] && savedColors[crosshair.nearestAnchorId].type === 'anchor') {
+                        setSavedColors(prev => ({ ...prev, [crosshair.nearestAnchorId]: { ...prev[crosshair.nearestAnchorId], adjOverride: val } }));
+                    }
+                }
             };
             
             const onNameChange = (val) => { 
@@ -3537,6 +3705,10 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                 } else if (crosshair?.nearestAnchorId) {
                     const id = crosshair.nearestAnchorId;
                     setNames({...names, [id]: val}); 
+                    
+                    if (savedColors[id] && (savedColors[id].type === 'nounColumn' || savedColors[id].type === 'anchor')) {
+                        setSavedColors(prev => ({ ...prev, [id]: { ...prev[id], nameOverride: val } }));
+                    }
                     
                     // If it's a grid slot and not yet a nounColumn, auto-recreate the nounColumn!
                     if (val && !savedColors[id] && !id.startsWith('custom-')) {
@@ -3563,14 +3735,20 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
             
             const onNotesChange = (val) => { 
                 if (crosshair?.activeSavedColor?.type === 'pin') updateSavedColor('notes', val); 
-                else setDictNotes({...dictNotes, [crosshair?.nearestAnchorId]: val}); 
+                else {
+                    setDictNotes({...dictNotes, [crosshair?.nearestAnchorId]: val}); 
+                    const id = crosshair?.nearestAnchorId;
+                    if (id && savedColors[id] && (savedColors[id].type === 'nounColumn' || savedColors[id].type === 'anchor')) {
+                        setSavedColors(prev => ({ ...prev, [id]: { ...prev[id], notes: val } }));
+                    }
+                }
             };
             
             const handleSaveApp = async () => { 
                 try {
                     const now = new Date(); const pad = (n) => String(n).padStart(2, '0'); const ts = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}-${pad(now.getMinutes())}`; 
                     const filename = `The ColorSAMIficator ${ts}.html`; 
-                    const stateData = { palette, savedPalettes, groupSettings, observer, illuminant, linkedFiles }; 
+                    const stateData = { names, adjectives, dictNotes, dictTags, savedColors, palette, savedPalettes, groupSettings, observer, illuminant, linkedFiles }; 
                     
                     let appCode = '';
                     let styleCode = '';
@@ -3642,121 +3820,88 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                     a.click(); 
                     document.body.removeChild(a);
                     URL.revokeObjectURL(url); 
+
+                    if (window.self !== window.top) {
+                        alert("Export completed. If your download did not start, it may be blocked by your browser's preview mode. Try opening the app in a new tab to download.");
+                    }
                 } catch (err) {
                     console.error("Export failed:", err);
                     alert("Export failed: " + err.message);
                 }
             };
             
-            const handleSystemExport = () => { 
-                if (!gridData) return; 
-                const fmt = (v, d = 4) => isNaN(v) ? "0" : Number(v).toFixed(d); 
-                const addRow = (type, id, L, C, H, erpCode, layer, adj, noun, note, locked, tags, spectral, measMeta) => { 
-                    const c = new Color("oklch", [L, C, H]); 
-                    const oklab = c.to('oklab').coords;
-                    const lab = c.to('lab').coords;
-                    const lch = c.to('lch').coords;
-                    const xyz50 = c.to('xyz-d50').coords;
-                    const xyz65 = c.to('xyz-d65').coords;
-                    const srgb = c.to('srgb').coords;
-                    const hsl = c.to('hsl').coords;
-                    const hex = c.clone().toGamut({space: "srgb"}).toString({format: "hex"}).toUpperCase();
-                    const majorGroup = getColorGroup(L, C, H, groupSettings); 
-                    const mm = measMeta || {};
-                    const row = { Type: type, ID: id, ERP_Code: erpCode, Major_Group: majorGroup, Layer: layer, Adjective: adj || '', Noun: noun || '', Note: note || '', Locked: locked ? 'TRUE' : 'FALSE', Tags: tags ? tags.join(', ') : '', Illuminant: mm.illuminant || illuminant, Observer: mm.observer || observer, Measurement_Method: mm.method || '', Measurement_Date: mm.date || '', Measurement_Device: mm.device || '', OKLCH_L: fmt(L, 5), OKLCH_C: fmt(C, 5), OKLCH_H: fmt(H, 5), OKLAB_L: fmt(oklab[0], 5), OKLAB_a: fmt(oklab[1], 5), OKLAB_b: fmt(oklab[2], 5), CIE_LAB_L: fmt(lab[0], 5), CIE_LAB_a: fmt(lab[1], 5), CIE_LAB_b: fmt(lab[2], 5), CIE_LCH_L: fmt(lch[0], 5), CIE_LCH_C: fmt(lch[1], 5), CIE_LCH_H: fmt(lch[2], 5), XYZ_D50_X: fmt(xyz50[0], 5), XYZ_D50_Y: fmt(xyz50[1], 5), XYZ_D50_Z: fmt(xyz50[2], 5), XYZ_D65_X: fmt(xyz65[0], 5), XYZ_D65_Y: fmt(xyz65[1], 5), XYZ_D65_Z: fmt(xyz65[2], 5), HEX: hex, sRGB_R: Math.round(srgb[0]*255), sRGB_G: Math.round(srgb[1]*255), sRGB_B: Math.round(srgb[2]*255), HSL_H: fmt(hsl[0], 2), HSL_S: fmt(hsl[1], 2), HSL_L: fmt(hsl[2], 2) }; 
-                    SPECTRAL_TABLES.wavelengths.forEach((w, i) => {
-                        row[`R${w} nm`] = (spectral && Array.isArray(spectral) && spectral[i] !== undefined) ? spectral[i].toExponential(8) : '';
-                    });
-                    return row;
-                };
-                const rows = []; 
-                gridData.baseAnchors.forEach(a => { 
-                    const processL = (ref, pref) => { 
-                        if (!ref) return; 
-                        const id = `${pref}-${a.cStr}-${a.hStr}`; 
-                        const lStr = ref.lStr;
-                        const isLocked = lockedNouns[id] && lockedAdjectives[lStr]; 
-                        rows.push(addRow('ANCHOR', id, ref.L, a.C, a.H, ref.erpCode, getLayerName(pref), adjectives[lStr] || '', names[id] || '', dictNotes[id] || '', isLocked, dictTags[id], ref.spectral)); 
-                    }; 
-                    processL(a.ultraLightRef, 'UL'); processL(a.lightRef, 'L'); processL(a.darkRef, 'D'); processL(a.ultraDarkRef, 'UD'); 
-                }); 
-                Object.entries(adjectives).forEach(([lStr, adj]) => {
-                    if (adj) {
-                        const L = parseInt(lStr, 10) / 100;
-                        rows.push(addRow('ADJECTIVE', lStr, L, 0, 0, `${lStr}00000`, 'Layer', adj, '', '', false, []));
-                    }
-                });
-                Object.values(savedColors).forEach(savedCol => { 
-                    if (savedCol.type === 'pin') { 
-                        rows.push(addRow('PIN', savedCol.id, savedCol.L, savedCol.C, savedCol.H, savedCol.erpCode, getLayerName(getNounPrefix(savedCol.L, savedCol.C)), savedCol.adjOverride, savedCol.nameOverride, savedCol.notes, true, dictTags[savedCol.id], savedCol.spectral, { illuminant: savedCol.illuminant, observer: savedCol.observer, method: savedCol.measurementMethod, date: savedCol.measurementDate, device: savedCol.measurementDevice })); 
-                    } 
-                }); 
-                if (groupSettings) { 
-                    rows.push({ Type: 'SETTING', ID: 'lightL', OKLCH_L: groupSettings.lightL }); 
-                    rows.push({ Type: 'SETTING', ID: 'neutralC', OKLCH_C: groupSettings.neutralC }); 
-                    rows.push({ Type: 'SETTING', ID: 'vividC', OKLCH_C: groupSettings.vividC }); 
-                    (groupSettings.neutrals || []).forEach(n => rows.push({ Type: 'NEUTRAL_REGION', ID: n.id, Noun: n.name, OKLCH_L: n.maxL })); 
-                    (groupSettings.hues || []).forEach(h => rows.push({ Type: 'HUE_REGION', ID: h.id, Noun: h.name, OKLCH_H: h.maxH })); 
-                    (groupSettings.overrides || []).forEach(o => rows.push({ Type: 'OVERRIDE', ID: o.id, Adjective: o.condition, Noun: o.name })); 
-                } 
-                (savedPalettes || []).forEach(p => {
-                    rows.push({ Type: 'PALETTE', ID: p.id, Noun: p.name, Note: JSON.stringify(p.colors) });
-                });
-                const csv = Papa.unparse(rows); 
-                const blob = new Blob([csv], { type: 'text/csv' }); const url = URL.createObjectURL(blob); 
-                const a = document.createElement('a'); a.href = url; a.download = `oklch_studio_system.csv`; a.click(); 
-            };
-            
-            const handleSyncToCSV = async () => {
-                if (!gridData || !colorData) return;
+            const handleSystemExport = async () => {
+                if (!gridData) { alert("Missing gridData!"); return; }
                 try {
-                    const zip = new JSZip();
-
                     const anchorsCsv = [];
                     const pinsCsv = [];
                     
-                    Object.values(savedColors).filter(sc => sc.type === 'anchor').forEach(sc => {
-                        anchorsCsv.push({
-                            Type: 'ANCHOR', ID: sc.anchorId, Noun: names[sc.anchorId] || '', Adjective: adjectives[sc.adjId] || '', Note: dictNotes[sc.anchorId] || '', Tags: (dictTags[sc.anchorId] || []).join(','), Locked: 'TRUE', OKLCH_L: sc.L, OKLCH_C: sc.C, OKLCH_H: sc.H, ERP_Code: sc.erpCode, Spectral: sc.spectral ? JSON.stringify(sc.spectral) : ''
-                        });
-                    });
-                    
+                    // Export all Nouns from `names`
                     Object.keys(names).forEach(id => {
-                        if (!anchorsCsv.find(a => a.ID === id && a.Type === 'ANCHOR')) {
-                            anchorsCsv.push({ Type: 'GRID', ID: id, Noun: names[id] || '', Note: dictNotes[id] || '', Tags: (dictTags[id] || []).join(',') });
+                        const name = names[id];
+                        if (!name) return; // skip empty
+
+                        const nc = savedColors[id];
+                        if (nc && nc.type === 'nounColumn') {
+                            anchorsCsv.push({
+                                Type: 'NOUN', Noun: name, Note: dictNotes[id] || '', Tags: (dictTags[id] || []).join(','), OKLCH_L: `${nc.minL}-${nc.maxL}`, OKLCH_C: nc.C, OKLCH_H: nc.H
+                            });
                         }
                     });
-                    
+
                     Object.keys(adjectives).forEach(adjId => {
-                        anchorsCsv.push({ Type: 'ADJECTIVE', ID: adjId, Adjective: adjectives[adjId] || '' });
+                        anchorsCsv.push({ Type: 'ADJECTIVE', Adjective: adjectives[adjId] || '', OKLCH_L: adjId });
                     });
 
                     Object.values(savedColors).filter(sc => sc.type === 'pin').forEach(sc => {
                         pinsCsv.push({
-                            Type: 'PIN', ID: sc.id, Noun: sc.nameOverride || '', Adjective: sc.adjOverride || '', Note: sc.notes || '', Tags: (dictTags[sc.id] || []).join(','), OKLCH_L: sc.L, OKLCH_C: sc.C, OKLCH_H: sc.H, ERP_Code: sc.erpCode, Spectral: sc.spectral ? JSON.stringify(sc.spectral) : '', Illuminant: sc.illuminant || '', Observer: sc.observer || '', Measurement_Method: sc.measurementMethod || '', Measurement_Date: sc.measurementDate || '', Measurement_Device: sc.measurementDevice || ''
+                            Type: 'PIN', Noun: sc.nameOverride || '', Adjective: sc.adjOverride || '', Note: sc.notes || '', Tags: (dictTags[sc.id] || []).join(','), OKLCH_L: sc.L, OKLCH_C: sc.C, OKLCH_H: sc.H, ERP_Code: sc.erpCode, Spectral: sc.spectral ? JSON.stringify(sc.spectral) : '', Illuminant: sc.illuminant || '', Observer: sc.observer || '', Measurement_Method: sc.measurementMethod || '', Measurement_Date: sc.measurementDate || '', Measurement_Device: sc.measurementDevice || ''
                         });
                     });
-                    
-                    zip.file('data/anchors.csv', Papa.unparse(anchorsCsv));
-                    zip.file('data/pins.csv', Papa.unparse(pinsCsv));
 
-                    Object.keys(colorData).forEach((brand) => {
+                    // Settings and Palettes
+                    if (groupSettings) { 
+                        anchorsCsv.push({ Type: 'SETTING', Noun: 'lightL', OKLCH_L: groupSettings.lightL }); 
+                        anchorsCsv.push({ Type: 'SETTING', Noun: 'neutralC', OKLCH_C: groupSettings.neutralC }); 
+                        anchorsCsv.push({ Type: 'SETTING', Noun: 'vividC', OKLCH_C: groupSettings.vividC }); 
+                        (groupSettings.neutrals || []).forEach(n => anchorsCsv.push({ Type: 'NEUTRAL_REGION', Adjective: n.id, Noun: n.name, OKLCH_L: n.maxL })); 
+                        (groupSettings.hues || []).forEach(h => anchorsCsv.push({ Type: 'HUE_REGION', Adjective: h.id, Noun: h.name, OKLCH_H: h.maxH })); 
+                        (groupSettings.overrides || []).forEach(o => anchorsCsv.push({ Type: 'OVERRIDE', Adjective: o.condition, Noun: o.name, Tags: o.id })); 
+                    } 
+                    (savedPalettes || []).forEach(p => {
+                        anchorsCsv.push({ Type: 'PALETTE', Noun: p.name, Note: JSON.stringify(p.colors), Tags: p.id });
+                    });
+                    
+                    const makeExportRow = (data) => Object.assign({ Type: '', Noun: '', Adjective: '', Note: '', Tags: '', Locked: '', HEX: '', OKLCH_L: '', OKLCH_C: '', OKLCH_H: '', ERP_Code: '', Spectral: '', Illuminant: '', Observer: '', Measurement_Method: '', Measurement_Date: '', Measurement_Device: '' }, data);
+                    
+                    const zip = new JSZip();
+
+                    zip.file('anchors.csv', Papa.unparse(anchorsCsv.map(makeExportRow)));
+                    zip.file('pins.csv', Papa.unparse(pinsCsv.map(makeExportRow)));
+
+                    Object.keys(colorData || {}).forEach((brand) => {
                         const brandData = colorData[brand].map(color => {
+                            const idUrl = color.url || color.name.replace(/\s+/g, '-');
+                            const customId = `brand-${brand}-${idUrl}`;
+                            const customName = names[customId] !== undefined ? names[customId] : color.name;
+                            const customNote = dictNotes[customId] !== undefined ? dictNotes[customId] : color.image;
                             const row = {
-                                Type: 'DB', Adjective: brand, Noun: color.name || '', HEX: color.hex || '', OKLCH_L: color.L !== undefined ? color.L : '', OKLCH_C: color.C !== undefined ? color.C : '', OKLCH_H: color.H !== undefined ? color.H : '', ERP_Code: color.url || '', Note: color.image || '',
+                                Type: 'DB', Adjective: brand, Noun: customName || '', HEX: color.hex || '', OKLCH_L: color.L !== undefined ? color.L : '', OKLCH_C: color.C !== undefined ? color.C : '', OKLCH_H: color.H !== undefined ? color.H : '', ERP_Code: color.url || '', Note: customNote || '',
                                 Illuminant: color.illuminant || '',
                                 Observer: color.observer || '',
                                 Measurement_Method: color.measurementMethod || '',
                                 Measurement_Date: color.measurementDate || '',
                                 Measurement_Device: color.measurementDevice || ''
                             };
-                            SPECTRAL_TABLES.wavelengths.forEach((w, i) => {
-                                row[`R${w} nm`] = (color.spectral && Array.isArray(color.spectral) && color.spectral[i] !== undefined) ? color.spectral[i].toExponential(8) : '';
-                            });
+                            if (SPECTRAL_TABLES) {
+                                SPECTRAL_TABLES.wavelengths.forEach((w, i) => {
+                                    row[`R${w} nm`] = (color.spectral && Array.isArray(color.spectral) && color.spectral[i] !== undefined) ? color.spectral[i].toExponential(8) : '';
+                                });
+                            }
                             row.Spectral = color.spectral ? JSON.stringify(color.spectral) : '';
                             return row;
                         });
-                        zip.file(`data/${brand}.csv`, Papa.unparse(brandData));
+                        zip.file(`${brand}.csv`, Papa.unparse(brandData));
                     });
                     
                     const content = await zip.generateAsync({ type: 'blob' });
@@ -3764,14 +3909,21 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                     const a = document.createElement('a');
                     a.href = url;
                     a.download = 'color_samificator_csvs.zip';
+                    document.body.appendChild(a);
                     a.click();
+                    document.body.removeChild(a);
                     URL.revokeObjectURL(url);
                     
+                    if (window.self !== window.top) {
+                        alert("Export completed. If your download did not start, it may be blocked by your browser's preview mode. Try opening the app in a new tab to download.");
+                    }
                 } catch (e) {
                     console.error(e);
                     alert('Failed downloading CSVs: ' + e.message);
                 }
             };
+            
+            const handleSyncToCSV = async () => {};
 
             const handleSystemImport = (e) => { 
                 const file = e.target.files[0]; 
@@ -3787,23 +3939,25 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                         results.data.forEach(row => { 
                             let targetType = String(row.Type || '').toUpperCase().trim();
                             if (targetType === 'SETTING') { 
-                                hasImportedSettings = true; 
-                                if (row.ID === 'lightL') parsedSettings.lightL = parseFloat(row.OKLCH_L); 
-                                if (row.ID === 'neutralC') parsedSettings.neutralC = parseFloat(row.OKLCH_C); 
-                                if (row.ID === 'vividC') parsedSettings.vividC = parseFloat(row.OKLCH_C); 
+                                hasImportedSettings = true;
+                                const prop = row.Noun || row.ID;
+                                if (prop === 'lightL') parsedSettings.lightL = parseFloat(row.OKLCH_L); 
+                                if (prop === 'neutralC') parsedSettings.neutralC = parseFloat(row.OKLCH_C); 
+                                if (prop === 'vividC') parsedSettings.vividC = parseFloat(row.OKLCH_C); 
                             } 
-                            else if (targetType === 'NEUTRAL_REGION') { hasImportedSettings = true; hasNeutrals = true; parsedSettings.neutrals.push({ id: row.ID || crypto.randomUUID(), name: row.Noun || '', maxL: parseFloat(row.OKLCH_L) || 0 }); } 
-                            else if (targetType === 'HUE_REGION') { hasImportedSettings = true; hasHues = true; parsedSettings.hues.push({ id: row.ID || crypto.randomUUID(), name: row.Noun || '', maxH: parseFloat(row.OKLCH_H) || 0 }); } 
-                            else if (targetType === 'OVERRIDE') { hasImportedSettings = true; hasOverrides = true; parsedSettings.overrides.push({ id: row.ID || crypto.randomUUID(), condition: row.Adjective || '', name: row.Noun || '' }); } 
+                            else if (targetType === 'NEUTRAL_REGION') { hasImportedSettings = true; hasNeutrals = true; parsedSettings.neutrals.push({ id: row.Adjective || row.ID || crypto.randomUUID(), name: row.Noun || '', maxL: parseFloat(row.OKLCH_L) || 0 }); } 
+                            else if (targetType === 'HUE_REGION') { hasImportedSettings = true; hasHues = true; parsedSettings.hues.push({ id: row.Adjective || row.ID || crypto.randomUUID(), name: row.Noun || '', maxH: parseFloat(row.OKLCH_H) || 0 }); } 
+                            else if (targetType === 'OVERRIDE') { hasImportedSettings = true; hasOverrides = true; parsedSettings.overrides.push({ id: row.Tags || row.ID || crypto.randomUUID(), condition: row.Adjective || '', name: row.Noun || '' }); } 
                             else if (targetType === 'PALETTE') { 
                                 hasImportedPalettes = true; 
                                 try { 
                                     const colors = JSON.parse(row.Note || '[]'); 
-                                    const existingIdx = newSavedPalettes.findIndex(p => p.id === row.ID); 
+                                    const paletteId = row.Tags || row.ID || crypto.randomUUID();
+                                    const existingIdx = newSavedPalettes.findIndex(p => p.id === paletteId); 
                                     if (existingIdx >= 0) { 
-                                        newSavedPalettes[existingIdx] = { id: row.ID, name: row.Noun || 'Imported Palette', colors }; 
+                                        newSavedPalettes[existingIdx] = { id: paletteId, name: row.Noun || 'Imported Palette', colors }; 
                                     } else { 
-                                        newSavedPalettes.push({ id: row.ID || crypto.randomUUID(), name: row.Noun || 'Imported Palette', colors }); 
+                                        newSavedPalettes.push({ id: paletteId, name: row.Noun || 'Imported Palette', colors }); 
                                     } 
                                 } catch (e) {} 
                             }
@@ -3862,63 +4016,126 @@ const ViewPins = ({ handlePointClick, names, adjectives, dictNotes, savedColors 
                                     if (existingIdx >= 0) newColorData[finalBrand][existingIdx] = { ...newColorData[finalBrand][existingIdx], ...colorObj };
                                     else newColorData[finalBrand].push(colorObj);
                                 }
-                            } else if (targetType === 'PIN' && pL !== null && importGridData) { 
-                                let pinId = row.ID || crypto.randomUUID(); 
-                                const a = pC * Math.sin(pH * Math.PI / 180);
-                                const b = pC * Math.cos(pH * Math.PI / 180);
-                                let minGridDist = Infinity, closestGridPt = null;
-                                for (const pt of importGridData.allPoints) {
-                                    const d = Math.sqrt(Math.pow(pL - pt.L, 2) + Math.pow(a - pt.a, 2) + Math.pow(b - pt.b, 2));
-                                    if (d < minGridDist) { minGridDist = d; closestGridPt = pt; }
-                                }
-                                if (closestGridPt) {
-                                    const gridPrefix = getNounPrefix(closestGridPt.L, closestGridPt.C);
-                                    const anchorId = `${gridPrefix}-${closestGridPt.cStr}-${closestGridPt.hStr}`;
-                                    const adjId = closestGridPt.lStr;
-                                    newSavedColors[pinId] = { id: pinId, type: 'pin', L: pL, C: pC, H: pH, nameOverride: row.Noun || '', adjOverride: row.Adjective || '', notes: row.Note || '', erpCode: getExactErpCode(pL, pC, pH), adjId, anchorId, color: new Color("oklch", [pL, pC, pH]).clone().toGamut({space: "srgb"}).toString({format: "hex"}), a, b, spectral }; 
-                                    if (row.Tags) newTags[pinId] = row.Tags.split(',').map(t => t.trim()).filter(Boolean); 
-                                }
-                            } else if ((targetType === 'GRID' || targetType === 'ANCHOR') && row.ID) { 
-                                if (row.Noun !== undefined && row.Noun !== '') newNames[row.ID] = row.Noun; 
-                                if (row.Note !== undefined && row.Note !== '') newNotes[row.ID] = row.Note; 
-                                if (row.Tags) newTags[row.ID] = row.Tags.split(',').map(t => t.trim()).filter(Boolean); 
-                                
-                                let lStr = null;
-                                if (row.Adjective !== undefined && row.Adjective !== '') {
-                                    if (pL !== null) {
-                                        lStr = getLStr(pL);
-                                    } else if (row.ERP_Code && row.ERP_Code.length >= 2) {
-                                        lStr = row.ERP_Code.substring(0, 2);
+                            } else if (targetType === 'PIN' && pL !== null) { 
+                    const pinId = row.ID || crypto.randomUUID(); 
+                    const a = pC * Math.sin(pH * Math.PI / 180);
+                    const b = pC * Math.cos(pH * Math.PI / 180);
+                    const cStr = Math.round(pC * 100).toString().padStart(2, '0');
+                    const hStr = Math.round(pH).toString().padStart(3, '0');
+                    const gridPrefix = getNounPrefix(pL, pC);
+                    const anchorId = `${gridPrefix}-${cStr}-${hStr}`;
+                    const adjId = getLStr(pL);
+                    newSavedColors[pinId] = { 
+                        id: pinId, type: 'pin', L: pL, C: pC, H: pH, 
+                        nameOverride: row.Noun || '', adjOverride: row.Adjective || '', notes: row.Note || '', 
+                        erpCode: row.ERP_Code || getExactErpCode(pL, pC, pC === 0 ? 0 : pH), 
+                        adjId, anchorId, 
+                        color: row.HEX || new Color("oklch", [pL, pC, pH]).clone().toGamut({space: "srgb"}).toString({format: "hex"}), 
+                        a, b, spectral 
+                    }; 
+                    if (row.Illuminant) newSavedColors[pinId].illuminant = String(row.Illuminant).trim();
+                    if (row.Observer) newSavedColors[pinId].observer = parseInt(row.Observer, 10) || undefined;
+                    if (row.Measurement_Method) newSavedColors[pinId].measurementMethod = String(row.Measurement_Method).trim();
+                    if (row.Measurement_Date) newSavedColors[pinId].measurementDate = String(row.Measurement_Date).trim();
+                    if (row.Measurement_Device) newSavedColors[pinId].measurementDevice = String(row.Measurement_Device).trim();
+                    if (row.Tags) newTags[pinId] = row.Tags.split(',').map(t => t.trim()).filter(Boolean); 
+                    if (typeof pinsAdded !== 'undefined') pinsAdded++;
+                } else if (targetType === 'NOUN') {
+                    const parts = String(row.OKLCH_L || '').split('-');
+                    let minL = 0, maxL = 1;
+                    if (parts.length === 2) {
+                        minL = parseFloat(parts[0]) || 0;
+                        maxL = parseFloat(parts[1]) || 1;
+                    } else if (parts.length === 1 && parts[0] !== '') {
+                        minL = parseFloat(parts[0]) || 0;
+                        maxL = parseFloat(parts[0]) || 1;
+                    } else if (pL !== null) {
+                        minL = maxL = pL;
+                    }
+
+                    const C = pC !== null ? pC : 0;
+                    const H = pH !== null ? pH : 0;
+                    let id = row.ID;
+                    if (!id) {
+                        id = `col-${minL}-${maxL}-${C.toFixed(2)}-${H.toFixed(2)}`;
+                    }
+
+                    newSavedColors[id] = {
+                        id,
+                        type: 'nounColumn',
+                        nameOverride: row.Noun || '',
+                        C, H,
+                        minL, maxL,
+                        a: C * Math.sin(H * Math.PI / 180),
+                        b: C * Math.cos(H * Math.PI / 180),
+                        notes: row.Note || ''
+                    };
+
+                    if (row.Noun !== undefined && row.Noun !== '') newNames[id] = row.Noun;
+                    if (row.Note !== undefined && row.Note !== '') newNotes[id] = row.Note;
+                    if (row.Tags) newTags[id] = row.Tags.split(',').map(t => t.trim()).filter(Boolean);
+                } else if ((targetType === 'GRID' || targetType === 'ANCHOR' || targetType === 'NOUN_COLUMN') && row.ID) { // Legacy
+                                const C = pC !== null ? pC : 0;
+                                const H = pH !== null ? pH : 0;
+                                if (targetType === 'NOUN_COLUMN') {
+                                    const id = row.ID;
+                                    const parts = (row.OKLCH_L || '').split('-');
+                                    let minL = 0, maxL = 1;
+                                    if (parts.length === 2) {
+                                        minL = parseFloat(parts[0]);
+                                        maxL = parseFloat(parts[1]);
                                     }
-                                    if (lStr) newAdjs[lStr] = row.Adjective;
-                                }
-                                
-                                if (String(row.Locked).toUpperCase() === 'TRUE' && pL !== null && pC !== null && pH !== null) {
-                                    const anchorId = row.ID;
-                                    const adjId = lStr || getLStr(pL);
-                                    const a = pC * Math.sin(pH * Math.PI / 180);
-                                    const b = pC * Math.cos(pH * Math.PI / 180);
-                                    newSavedColors[anchorId] = {
-                                        id: anchorId,
-                                        type: 'anchor',
-                                        L: pL, C: pC, H: pH, a, b,
-                                        erpCode: row.ERP_Code || getExactErpCode(pL, pC, pH),
-                                        adjId, anchorId,
-                                        nameOverride: '', adjOverride: '', notes: '',
-                                        color: new Color("oklch", [pL, pC, pH]).clone().toGamut({space: "srgb"}).toString({format: "hex"})
+                                    newSavedColors[id] = {
+                                        id,
+                                        type: 'nounColumn',
+                                        nameOverride: row.Noun || '',
+                                        C, H,
+                                        minL, maxL,
+                                        a: C * Math.sin(H * Math.PI / 180),
+                                        b: C * Math.cos(H * Math.PI / 180),
+                                        notes: row.Note || ''
                                     };
+                                    if (row.Noun !== undefined && row.Noun !== '') newNames[id] = row.Noun;
+                                    if (row.Note !== undefined && row.Note !== '') newNotes[id] = row.Note;
+                                    if (row.Tags) newTags[id] = row.Tags.split(',').map(t => t.trim()).filter(Boolean);
+                                } else {
+                                    if (row.Noun !== undefined && row.Noun !== '') newNames[row.ID] = row.Noun; 
+                                    if (row.Note !== undefined && row.Note !== '') newNotes[row.ID] = row.Note; 
+                                    if (row.Tags) newTags[row.ID] = row.Tags.split(',').map(t => t.trim()).filter(Boolean); 
+                                    
+                                    let lStr = null;
+                                    if (row.Adjective !== undefined && row.Adjective !== '') {
+                                        if (pL !== null) {
+                                            lStr = getLStr(pL);
+                                        } else if (row.ERP_Code && row.ERP_Code.length >= 2) {
+                                            lStr = row.ERP_Code.substring(0, 2);
+                                        }
+                                        if (lStr) newAdjs[lStr] = row.Adjective;
+                                    }
+                                    
+                                    if (String(row.Locked).toUpperCase() === 'TRUE' && pL !== null && pC !== null && pH !== null) {
+                                        const anchorId = row.ID;
+                                        const adjId = lStr || getLStr(pL);
+                                        const a = pC * Math.sin(pH * Math.PI / 180);
+                                        const b = pC * Math.cos(pH * Math.PI / 180);
+                                        newSavedColors[anchorId] = {
+                                            id: anchorId,
+                                            type: 'anchor',
+                                            L: pL, C: pC, H: pH, a, b,
+                                            erpCode: row.ERP_Code || getExactErpCode(pL, pC, pH),
+                                            adjId, anchorId,
+                                            nameOverride: '', adjOverride: '', notes: '',
+                                            color: new Color("oklch", [pL, pC, pH]).clone().toGamut({space: "srgb"}).toString({format: "hex"})
+                                        };
+                                    }
                                 }
                             } else if (targetType === 'ADJECTIVE') {
                                 if (row.Adjective !== undefined && row.Adjective !== '') {
-                                    let lStr = null;
-                                    if (pL !== null) {
-                                        lStr = getLStr(pL);
-                                    } else if (row.ERP_Code && row.ERP_Code.length >= 2) {
-                                        lStr = row.ERP_Code.substring(0, 2);
-                                    } else {
-                                        lStr = row.ID;
-                                    }
-                                    if (lStr) newAdjs[lStr] = row.Adjective;
+                                    const lStr = (row.ID && row.ID.trim())
+                                        || (row.OKLCH_L && typeof row.OKLCH_L === 'string' && row.OKLCH_L.trim())
+                                        || (pL !== null ? getLStr(pL) : null)
+                                        || (row.ERP_Code && row.ERP_Code.length >= 2 ? row.ERP_Code.substring(0, 2) : null);
+                                    if (lStr) newAdjs[lStr.trim()] = row.Adjective;
                                 }
                             } 
                         }); 
@@ -4638,8 +4855,16 @@ const FileManager = ({ linkedFiles, setLinkedFiles, onClose }) => {
                 }
             };
 
-            const handleRemoveFile = (fileToRemove) => {
+            const handleRemoveFile = async (fileToRemove) => {
                 setLinkedFiles(linkedFiles.filter(f => f !== fileToRemove));
+                try {
+                    const res = await window.fetch(`/api/csv/${fileToRemove}`, { method: 'DELETE' });
+                    if (res.ok) {
+                        console.log(`Deleted ${fileToRemove} from server`);
+                    }
+                } catch (e) {
+                    console.error(`Failed to delete ${fileToRemove} from server:`, e);
+                }
             };
 
             return (
@@ -4722,9 +4947,6 @@ const FileManager = ({ linkedFiles, setLinkedFiles, onClose }) => {
                                     </h1>
                                     <button onClick={() => setShowFileManager(true)} className="p-1.5 text-slate-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-500/10 rounded-full transition-colors" title="Manage Linked CSV Files">
                                         <Icon name="folder" className="w-4 h-4" />
-                                    </button>
-                                    <button onClick={() => setActiveTab('db')} className="p-1.5 text-slate-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 rounded-full transition-colors" title="Manage Color Database">
-                                        <Icon name="database" className="w-4 h-4" />
                                     </button>
                                     <button onClick={() => setShowHelpPanel(true)} className="p-1.5 text-slate-400 hover:text-sky-500 hover:bg-sky-50 dark:hover:bg-sky-500/10 rounded-full transition-colors" title="Help & Guide">
                                         <Icon name="help-circle" className="w-4 h-4" />
@@ -5187,9 +5409,6 @@ const FileManager = ({ linkedFiles, setLinkedFiles, onClose }) => {
                                 <button onClick={handleSystemExport} className="p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors" title="Export CSV">
                                     <Icon name="download" className="w-4 h-4" />
                                 </button>
-                                <button onClick={handleSyncToCSV} className="p-2 rounded-md hover:bg-sky-50 dark:hover:bg-sky-900/20 text-sky-500 transition-colors" title="Sync All Changes to Server CSVs">
-                                    <Icon name="server" className="w-4 h-4" />
-                                </button>
                                 <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors" title="Toggle Theme">
                                     <Icon name={theme === 'dark' ? "sun" : "moon"} className="w-4 h-4" />
                                 </button>
@@ -5284,8 +5503,8 @@ const FileManager = ({ linkedFiles, setLinkedFiles, onClose }) => {
                                     {activeTab === 'chroma' && <ViewChromaRings points={filteredViewData.points} crosshair={crosshair} handlePointClick={handlePointClick} theme={theme} names={names} adjectives={adjectives} savedColors={filteredViewData.savedColors} lockedNouns={lockedNouns} lockedAdjectives={lockedAdjectives} viewMode={viewMode} tetheringPinId={tetheringPinId} swatchLayout={swatchLayout} swatchZoom={swatchZoom} viewportFilter={viewportFilter} viewportSearchQuery={viewportSearchQuery} />}
                                     {activeTab === 'top' && <ViewTopDown points={filteredViewData.points} baseAnchors={filteredViewData.baseAnchors} crosshair={crosshair} handlePointClick={handlePointClick} theme={theme} names={names} adjectives={adjectives} savedColors={filteredViewData.savedColors} lockedNouns={lockedNouns} lockedAdjectives={lockedAdjectives} viewMode={viewMode} viewportFilter={viewportFilter} tetheringPinId={tetheringPinId} swatchLayout={swatchLayout} swatchZoom={swatchZoom} viewportSearchQuery={viewportSearchQuery} />}
                                     {activeTab === 'groups' && <ViewGroups settings={groupSettings} setSettings={setGroupSettings} />}
-                                    {activeTab === 'adjectives' && <ViewAdjectives gridData={gridData} names={names} adjectives={adjectives} setAdjectives={setAdjectives} handlePointClick={handlePointClick} crosshair={crosshair} lockedAdjectives={lockedAdjectives} savedColors={savedColors} onVisualize={handleVisualize} />}
-                                    {activeTab === 'palette' && <ViewPalette baseAnchors={gridData.baseAnchors} points={filteredViewData.points} handlePointClick={handlePointClick} names={names} setNames={setNames} adjectives={adjectives} setAdjectives={setAdjectives} dictNotes={dictNotes} lockedNouns={lockedNouns} lockedAdjectives={lockedAdjectives} savedColors={savedColors} setSavedColors={setSavedColors} dictTags={dictTags} onVisualize={handleVisualize} />}
+                                    {activeTab === 'adjectives' && <ViewAdjectives points={filteredViewData.points} names={names} adjectives={adjectives} setAdjectives={setAdjectives} handlePointClick={handlePointClick} crosshair={crosshair} lockedAdjectives={lockedAdjectives} savedColors={savedColors} onVisualize={handleVisualize} />}
+                                    {activeTab === 'palette' && <ViewPalette baseAnchors={filteredViewData.baseAnchors} points={filteredViewData.points} handlePointClick={handlePointClick} names={names} setNames={setNames} adjectives={adjectives} setAdjectives={setAdjectives} dictNotes={dictNotes} lockedNouns={lockedNouns} lockedAdjectives={lockedAdjectives} savedColors={savedColors} setSavedColors={setSavedColors} dictTags={dictTags} onVisualize={handleVisualize} />}
                                                                         {activeTab === 'pins' && <ViewPins handlePointClick={handlePointClick} names={names} adjectives={adjectives} dictNotes={dictNotes} savedColors={savedColors} setSavedColors={setSavedColors} dictTags={dictTags} selectedIds={selectedIds} setSelectedIds={setSelectedIds} handleBatchTag={handleBatchTag} handleBatchRemoveTag={handleBatchRemoveTag} />}
                                 </div>
                             </div>
