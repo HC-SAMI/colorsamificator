@@ -6262,7 +6262,7 @@ const App = () => {
           );
         }
 
-        // Last resort blind fallbacks
+                // Last resort blind fallbacks
         const knownDataFiles = [
           "Reference Colors.csv",
           "agt.csv",
@@ -6287,10 +6287,8 @@ const App = () => {
           "uniboard.csv",
         ];
         const initial = initialState?.linkedFiles || [];
-        if (initial.length > 0)
-          return initial.filter((f) => f.toLowerCase().endsWith(".csv"));
-
-        return knownDataFiles;
+        const union = [...new Set([...knownDataFiles, ...initial])];
+        return union.filter((f) => f.toLowerCase().endsWith(".csv"));
       };
 
       let discoveredFiles = await discoverCSVFiles();
@@ -6317,8 +6315,14 @@ const App = () => {
             window.__CSV_FILE_MAP__ && window.__CSV_FILE_MAP__[file];
           const blobUrl =
             csvKey && window.__resources && window.__resources[csvKey];
-          const resolvedUrl =
-            blobUrl || (file.startsWith("data/") ? file : "data/" + file);
+          let parsedUrl = new URL(window.location.href);
+          let p = parsedUrl.pathname;
+          if (!p.endsWith('/') && !p.split('/').pop().includes('.')) {
+              p += '/';
+          }
+          let baseForFetch = parsedUrl.origin + p;
+          const resolvedPath = file.startsWith("data/") ? file : "data/" + file;
+          const resolvedUrl = blobUrl || new URL(resolvedPath, baseForFetch).href;
           const res = await fetch(resolvedUrl);
           if (res.ok) {
             const csvText = await res.text();
@@ -7533,7 +7537,8 @@ const App = () => {
         if (!list || !Array.isArray(list)) continue;
         const brandName = getBrandDisplayName(brandKey);
 
-        for (const item of list) {
+        for (let listIdx = 0; listIdx < list.length; listIdx++) {
+          const item = list[listIdx];
           if (results.length >= 200) break;
           const idUrl = item.url || item.name.replace(/\s+/g, "-");
           const customId = `brand-${brandKey}-${idUrl}`;
