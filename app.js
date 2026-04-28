@@ -6263,11 +6263,34 @@ const App = () => {
         }
 
         // Last resort blind fallbacks
+        const knownDataFiles = [
+          "Reference Colors.csv",
+          "agt.csv",
+          "anchors.csv",
+          "arborite.csv",
+          "behr.csv",
+          "benjaminMoore.csv",
+          "dulux.csv",
+          "egger.csv",
+          "farrowball.csv",
+          "finsa.csv",
+          "munsell.csv",
+          "ncs.csv",
+          "pantone.csv",
+          "pins.csv",
+          "pionite.csv",
+          "ppg.csv",
+          "ral.csv",
+          "sherwinWilliams.csv",
+          "swissKrono.csv",
+          "tafisa.csv",
+          "uniboard.csv",
+        ];
         const initial = initialState?.linkedFiles || [];
         if (initial.length > 0)
           return initial.filter((f) => f.toLowerCase().endsWith(".csv"));
 
-        return [];
+        return knownDataFiles;
       };
 
       let discoveredFiles = await discoverCSVFiles();
