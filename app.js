@@ -92,13 +92,7 @@ function getColorGroup(l, c, h, settings) {
 }
 
 function getNounPrefix(L, C) {
-  if (C === 0) {
-    if (L >= 0.95) return "UL";
-    if (L >= 0.5) return "L";
-    if (L >= 0.2) return "D";
-    return "UD";
-  }
-  return L >= 0.5 ? "L" : "D";
+  return "";
 }
 
 function getLayerName(prefix) {
@@ -725,13 +719,10 @@ const CommercialMatches = ({ crosshair, colorData, onSelectColor }) => {
 
     const handleRowClick = () => {
       if (onSelectColor) {
-        try {
-          const matchColor = new Color(match.hex);
-          const oklch = matchColor.to("oklch");
-          onSelectColor([oklch.l, oklch.c, oklch.h || 0], match.spectral);
-        } catch (e) {
-          console.error("Failed to convert match color to OKLCH", e);
-        }
+        onSelectColor(
+          [match.L, match.C, isNaN(match.H) ? 0 : match.H],
+          match.spectral
+        );
       }
     };
 
@@ -810,8 +801,8 @@ const CommercialMatches = ({ crosshair, colorData, onSelectColor }) => {
           <input
             type="range"
             min="0.00"
-            max="0.25"
-            step="0.01"
+            max="50.00"
+            step="0.05"
             value={maxDeltaE}
             onChange={(e) => setMaxDeltaE(parseFloat(e.target.value))}
             className="flex-1 h-1 bg-slate-200 dark:bg-neutral-700 rounded-lg appearance-none cursor-pointer"
@@ -1083,8 +1074,7 @@ const View3D = ({
       y: points.map((p) => p.b),
       z: points.map((p) => p.L),
       text: points.map((p) => {
-        const prefix = getNounPrefix(p.L, p.C);
-        const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         const name =
           `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
           "Unnamed";
@@ -1102,16 +1092,14 @@ const View3D = ({
     const gridLockedNodes = points
       .filter((p) => !p.isCustomAnchor)
       .filter((p) => {
-        const prefix = getNounPrefix(p.L, p.C);
         return (
           !p.isPin &&
-          lockedNouns[p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`] &&
+          lockedNouns[p.parentNounId || `${p.cStr}-${p.hStr}`] &&
           lockedAdjectives[p.lStr]
         );
       })
       .map((p) => {
-        const prefix = getNounPrefix(p.L, p.C);
-        const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         return {
           ...p,
           displayName:
@@ -1256,7 +1244,7 @@ const View3D = ({
       scene: {
         xaxis: {
           title: "a",
-          range: [-0.3, 0.3],
+          range: [-0.4, 0.4],
           backgroundcolor: isDark ? "#052212" : "#F2E8DF",
           gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
           zerolinecolor: isDark
@@ -1268,7 +1256,7 @@ const View3D = ({
         },
         yaxis: {
           title: "b",
-          range: [-0.3, 0.3],
+          range: [-0.4, 0.4],
           backgroundcolor: isDark ? "#052212" : "#F2E8DF",
           gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
           zerolinecolor: isDark
@@ -1387,8 +1375,7 @@ const ViewVertical = ({
     points
       .filter((p) => !p.isPin && filterFn(p))
       .forEach((p) => {
-        const prefix = getNounPrefix(p.L, p.C);
-        const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         res.push({
           ...p,
           type: "grid",
@@ -1461,8 +1448,7 @@ const ViewVertical = ({
       x: filtered.map((p) => p.C),
       y: filtered.map((p) => p.L),
       text: filtered.map((p) => {
-        const prefix = getNounPrefix(p.L, p.C);
-        const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         const adj = adjectives[p.lStr] || "";
         const noun = names[nounId] || "";
         const fullName = `${adj} ${noun}`.trim() || "Unnamed";
@@ -1483,8 +1469,7 @@ const ViewVertical = ({
           ? "<b>%{customdata[3]}</b><br>L: %{y:.3f} C: %{x:.3f}<extra></extra>"
           : "%{text}<extra></extra>",
       customdata: filtered.map((p) => {
-        const prefix = getNounPrefix(p.L, p.C);
-        const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         const fullName =
           `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
           "Unnamed";
@@ -1504,14 +1489,11 @@ const ViewVertical = ({
       .filter(
         (p) =>
           !p.isCustomAnchor &&
-          lockedNouns[
-            p.parentNounId || `${getNounPrefix(p.L, p.C)}-${p.cStr}-${p.hStr}`
-          ] &&
+          lockedNouns[p.parentNounId || `${p.cStr}-${p.hStr}`] &&
           lockedAdjectives[p.lStr],
       )
       .map((p) => {
-        const prefix = getNounPrefix(p.L, p.C);
-        const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         return {
           ...p,
           displayName:
@@ -1643,7 +1625,7 @@ const ViewVertical = ({
       const targetH = stableH;
       const filterFn = (p) => {
         if (p.C === 0) return true;
-        const cStepForH = Math.max(1, Math.round(p.C / p.delta));
+        const cStepForH = Math.max(1, Math.round(p.C / 0.02));
         const nH = 6 * cStepForH;
         const stepH = 360 / nH;
         const closestH = Math.round(targetH / stepH) * stepH;
@@ -1758,7 +1740,7 @@ const ViewVertical = ({
       dragmode: "pan",
       xaxis: {
         title: "Chroma",
-        range: [0, 0.3],
+        range: [0, 0.4],
         showgrid: viewMode !== "bins",
         zeroline: viewMode !== "bins",
         gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
@@ -1782,7 +1764,7 @@ const ViewVertical = ({
   const handleBgClick = (cValue, lValue) => {
     handlePointClick([
       Math.max(0, Math.min(1.0, lValue)),
-      Math.max(0, Math.min(0.3, cValue)),
+      Math.max(0, Math.min(0.4, cValue)),
       crosshair?.rawH,
     ]);
   };
@@ -1891,8 +1873,7 @@ const ViewChromaRings = ({
     points
       .filter((p) => !p.isPin && filterFn(p))
       .forEach((p) => {
-        const prefix = getNounPrefix(p.L, p.C);
-        const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         res.push({
           ...p,
           type: "grid",
@@ -1965,8 +1946,7 @@ const ViewChromaRings = ({
       x: filtered.map((p) => p.H),
       y: filtered.map((p) => p.L),
       text: filtered.map((p) => {
-        const prefix = getNounPrefix(p.L, p.C);
-        const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         const adj = adjectives[p.lStr] || "";
         const noun = names[nounId] || "";
         const fullName = `${adj} ${noun}`.trim() || "Unnamed";
@@ -1987,8 +1967,7 @@ const ViewChromaRings = ({
           ? "<b>%{customdata[3]}</b><br>L: %{y:.3f} H: %{x:.1f}°<extra></extra>"
           : "%{text}<extra></extra>",
       customdata: filtered.map((p) => {
-        const prefix = getNounPrefix(p.L, p.C);
-        const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         const fullName =
           `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
           "Unnamed";
@@ -2008,14 +1987,11 @@ const ViewChromaRings = ({
       .filter(
         (p) =>
           !p.isCustomAnchor &&
-          lockedNouns[
-            p.parentNounId || `${getNounPrefix(p.L, p.C)}-${p.cStr}-${p.hStr}`
-          ] &&
+          lockedNouns[p.parentNounId || `${p.cStr}-${p.hStr}`] &&
           lockedAdjectives[p.lStr],
       )
       .map((p) => {
-        const prefix = getNounPrefix(p.L, p.C);
-        const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         return {
           ...p,
           displayName:
@@ -3034,11 +3010,15 @@ const ViewTopDown = ({
       .map((p) => {
         const targetL =
           p.L !== undefined && p.L !== null ? p.L : crosshair.rawL;
+        const minL = p.minL !== undefined ? p.minL : -0.01;
+        const maxL = p.maxL !== undefined ? p.maxL : 1.01;
+        const inRange = targetL >= minL - 0.001 && targetL <= maxL + 0.001;
+
         const c = new Color("oklch", [targetL, p.C, p.H]);
         const isSpecificAnchor =
           (Math.abs(p.C - 0.04) < 0.001 && Math.abs(p.H - 90) < 0.1) ||
           (Math.abs(p.C - 0.12) < 0.001 && Math.abs(p.H - 90) < 0.1);
-        if (c.inGamut("srgb") || p.C === 0 || isSpecificAnchor) {
+        if ((c.inGamut("srgb") || p.C === 0 || isSpecificAnchor) && inRange) {
           return {
             ...p,
             L: targetL,
@@ -3058,11 +3038,16 @@ const ViewTopDown = ({
     if (!crosshair) return [];
     return baseAnchors
       .map((p) => {
-        const c = new Color("oklch", [stableL, p.C, p.H]);
-        if (c.inGamut("srgb") || p.C === 0) {
+        const targetL = p.L !== undefined && p.L !== null ? p.L : stableL;
+        const minL = p.minL !== undefined ? p.minL : -0.01;
+        const maxL = p.maxL !== undefined ? p.maxL : 1.01;
+        const inRange = targetL >= minL - 0.001 && targetL <= maxL + 0.001;
+
+        const c = new Color("oklch", [targetL, p.C, p.H]);
+        if ((c.inGamut("srgb") || p.C === 0) && inRange) {
           return {
             ...p,
-            L: stableL,
+            L: targetL,
             color: c
               .clone()
               .toGamut({ space: "srgb" })
@@ -3080,9 +3065,8 @@ const ViewTopDown = ({
     if (viewMode !== "swatches") return [];
     const res = [];
     validAnchors.forEach((p) => {
-      const prefix = getNounPrefix(p.L, p.C);
       const lStr = getLStr(p.L);
-      const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+      const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
       res.push({
         ...p,
         type: "grid",
@@ -3151,9 +3135,8 @@ const ViewTopDown = ({
       x: validAnchors.map((p) => p.a),
       y: validAnchors.map((p) => p.b),
       text: validAnchors.map((p) => {
-        const prefix = getNounPrefix(p.L, p.C);
         const lStr = getLStr(p.L);
-        const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         const adj = adjectives[lStr] || "";
         const noun = names[nounId] || "";
         const fullName = `${adj} ${noun}`.trim() || "Unnamed";
@@ -3176,9 +3159,8 @@ const ViewTopDown = ({
           ? "<b>%{customdata[3]}</b><br>C: %{customdata[1]:.3f} H: %{customdata[2]:.1f}°<extra></extra>"
           : "%{text}<extra></extra>",
       customdata: validAnchors.map((p) => {
-        const prefix = getNounPrefix(p.L, p.C);
         const lStr = getLStr(p.L);
-        const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         const fullName =
           `${adjectives[lStr] || ""} ${names[nounId] || ""}`.trim() ||
           "Unnamed";
@@ -3198,16 +3180,14 @@ const ViewTopDown = ({
       .filter((p) => !p.isCustomAnchor)
       .map((p) => ({ ...p, L: crosshair.rawL, lStr: getLStr(crosshair.rawL) }))
       .filter((p) => {
-        const prefix = getNounPrefix(p.L, p.C);
         return (
           !p.isPin &&
-          lockedNouns[p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`] &&
+          lockedNouns[p.parentNounId || `${p.cStr}-${p.hStr}`] &&
           lockedAdjectives[p.lStr]
         );
       })
       .map((p) => {
-        const prefix = getNounPrefix(p.L, p.C);
-        const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         const c = new Color("oklch", [p.L, p.C, p.H]);
         const nodeColor =
           c.inGamut("srgb") || p.C === 0
@@ -3485,7 +3465,7 @@ const ViewTopDown = ({
     };
   }, [isDark, viewMode, stableAnchors, stableL]);
   const handleBgClick = (a, b) => {
-    const C = Math.min(0.3, Math.sqrt(a * a + b * b));
+    const C = Math.min(0.4, Math.sqrt(a * a + b * b));
     let H = Math.atan2(a, b) * (180 / Math.PI);
     if (H < 0) H += 360;
     handlePointClick([crosshair?.rawL, C, H]);
@@ -4139,7 +4119,7 @@ const ViewAdjectives = ({
     points.forEach((p) => {
       if (!p.isPin) counts[p.lStr] = (counts[p.lStr] || 0) + 1;
     });
-    const steps = filteredViewData.points.filter((p) => p.C === 0);
+    const steps = points.filter((p) => p.C === 0);
     const unique = [];
     const seen = new Set();
     steps.forEach((p) => {
@@ -4982,7 +4962,7 @@ const ViewGroups = ({ settings, setSettings }) => {
             label="Vivid / Muted Boundary"
             value={settings.vividC}
             min={0.02}
-            max={0.3}
+            max={0.4}
             step={0.001}
             onChange={(v) => updateSetting("vividC", v)}
             icon="zap"
@@ -5713,7 +5693,7 @@ const processCSVData = (
         const xyzStandard = calculateXYZFromSpectral(spectral, 2, "D65");
         const tc = new Color("xyz-d65", xyzStandard).to("oklch");
         pL = Math.max(0, Math.min(1, tc.coords[0]));
-        pC = Math.max(0, Math.min(0.3, tc.coords[1]));
+        pC = Math.max(0, Math.min(0.4, tc.coords[1]));
         pH = isNaN(tc.coords[2]) ? 0 : ((tc.coords[2] % 360) + 360) % 360;
       } catch (e) {}
     } else {
@@ -5740,7 +5720,7 @@ const processCSVData = (
         if (tc) {
           const o = tc.to("oklch");
           pL = Math.max(0, Math.min(1, o.coords[0]));
-          pC = Math.max(0, Math.min(0.3, o.coords[1]));
+          pC = Math.max(0, Math.min(0.4, o.coords[1]));
           pH = isNaN(o.coords[2]) ? 0 : ((o.coords[2] % 360) + 360) % 360;
         }
       } catch (e) {}
@@ -5813,8 +5793,7 @@ const processCSVData = (
         .toString()
         .padStart(2, "0");
       const hStr = Math.round(pH).toString().padStart(3, "0");
-      const gridPrefix = getNounPrefix(pL, pC);
-      const anchorId = `${gridPrefix}-${cStr}-${hStr}`;
+      const anchorId = `${cStr}-${hStr}`;
       const adjId = getLStr(pL);
       newSavedColors[pinId] = {
         id: pinId,
@@ -6627,6 +6606,8 @@ const App = () => {
           isPin: sc.type === "pin",
           pinId: sc.type === "pin" ? sc.id : undefined,
           L: sc.L,
+          minL: sc.L,
+          maxL: sc.L,
           color: sc.color,
           anchorId: anchorId,
           adjId: adjId,
@@ -6741,7 +6722,10 @@ const App = () => {
         // We also need to avoid appending duplicate baseAnchors
         const anchorExists = baseAnchors.some(
           (ba) =>
-            Math.abs(ba.C - sc.C) < 0.001 && Math.abs(ba.H - sc.H) < 0.001,
+            Math.abs(ba.C - sc.C) < 0.001 &&
+            Math.abs(ba.H - sc.H) < 0.001 &&
+            Math.abs((ba.minL || 0) - sc.minL) < 0.001 &&
+            Math.abs((ba.maxL || 1) - sc.maxL) < 0.001,
         );
         if (!anchorExists) {
           baseAnchors.push({
@@ -6749,6 +6733,8 @@ const App = () => {
             H: sc.H,
             a: sc.a,
             b: sc.b,
+            minL: sc.minL,
+            maxL: sc.maxL,
             cStr: Math.round(sc.C * 100)
               .toString()
               .padStart(2, "0"),
@@ -6788,8 +6774,7 @@ const App = () => {
     // 2. Filter Points and SavedColors by Tags and Search Query
     if (filterTags.length > 0 || q) {
       points = points.filter((p) => {
-        const prefix = getNounPrefix(p.L, p.C);
-        const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
 
         if (filterTags.length > 0) {
           const tags = dictTags[nounId] || [];
@@ -6904,7 +6889,7 @@ const App = () => {
 
   const handleUpdate = (pt, spectralData = null, commercialData = null) => {
     const L = Math.max(0, Math.min(1, pt[0]));
-    const C = Math.max(0, Math.min(0.3, pt[1]));
+    const C = Math.max(0, Math.min(0.4, pt[1]));
     const rawH = pt[2] || 0;
     const H = isNaN(rawH) ? 0 : ((rawH % 360) + 360) % 360;
     setScrubL(L);
@@ -7035,8 +7020,7 @@ const App = () => {
       if (closestGridPt.isPin) {
         activeSavedColor = savedColors[closestGridPt.pinId];
       } else {
-        const gridPrefix = getNounPrefix(closestGridPt.L, closestGridPt.C);
-        const aId = `${gridPrefix}-${closestGridPt.cStr}-${closestGridPt.hStr}`;
+        const aId = `${closestGridPt.cStr}-${closestGridPt.hStr}`;
         const anchorLock = Object.values(savedColors).find(
           (sc) =>
             sc.type === "anchor" &&
@@ -7065,7 +7049,12 @@ const App = () => {
         for (const ba of filteredViewData.baseAnchors) {
           const dist =
             Math.pow(effectiveA - ba.a, 2) + Math.pow(effectiveB - ba.b, 2);
-          if (dist < min2d) {
+          // NEW: Validate that this anchor's lightness range covers our current L
+          const minL = ba.minL !== undefined ? ba.minL : -0.01;
+          const maxL = ba.maxL !== undefined ? ba.maxL : 1.01;
+          const inRange = effectiveL >= minL - 0.001 && effectiveL <= maxL + 0.001;
+
+          if (dist < min2d && inRange) {
             min2d = dist;
             bestAnchor = ba;
           }
@@ -7091,8 +7080,9 @@ const App = () => {
         } else if (bestAnchor.isCustomAnchor) {
           nearestAnchorId = `custom-${bestAnchor.cStr}-${bestAnchor.hStr}-${getLStr(effectiveL)}`;
         } else {
-          const gridPrefix = getNounPrefix(effectiveL, bestAnchor.C);
-          nearestAnchorId = `${gridPrefix}-${bestAnchor.cStr}-${bestAnchor.hStr}`;
+          nearestAnchorId =
+            bestAnchor.parentNounId ||
+            `${bestAnchor.cStr}-${bestAnchor.hStr}`;
         }
       } else {
         nearestAnchorId = "";
@@ -7188,8 +7178,7 @@ const App = () => {
       items = filteredViewData.points
         .filter((p) => p.lStr === id)
         .map((p) => {
-          const prefix = getNounPrefix(p.L, p.C);
-          const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+          const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
           return {
             ...p,
             displayName:
@@ -7227,13 +7216,11 @@ const App = () => {
       } else {
         items = filteredViewData.points
           .filter((p) => {
-            const prefix = getNounPrefix(p.L, p.C);
-            const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+            const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
             return nounId === id;
           })
           .map((p) => {
-            const prefix = getNounPrefix(p.L, p.C);
-            const nounId = p.parentNounId || `${prefix}-${p.cStr}-${p.hStr}`;
+            const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
             return {
               ...p,
               displayName:
@@ -7339,8 +7326,7 @@ const App = () => {
     for (const pt of filteredViewData.points) {
       if (results.length >= 100) break;
       if (seenCodes.has(pt.erpCode)) continue;
-      const prefix = getNounPrefix(pt.L, pt.C);
-      const nounId = pt.parentNounId || `${prefix}-${pt.cStr}-${pt.hStr}`;
+      const nounId = pt.parentNounId || `${pt.cStr}-${pt.hStr}`;
       const adjStr = (adjectives[pt.lStr] || "").toLowerCase();
       const nameStr = (names[nounId] || "").toLowerCase();
       const fullNameStr = `${adjStr} ${nameStr}`.trim();
@@ -8276,7 +8262,7 @@ const App = () => {
             const xyzStandard = calculateXYZFromSpectral(spectral, 2, "D65");
             const tc = new Color("xyz-d65", xyzStandard).to("oklch");
             pL = Math.max(0, Math.min(1, tc.coords[0]));
-            pC = Math.max(0, Math.min(0.3, tc.coords[1]));
+            pC = Math.max(0, Math.min(0.4, tc.coords[1]));
             pH = isNaN(tc.coords[2]) ? 0 : ((tc.coords[2] % 360) + 360) % 360;
           } else {
             try {
@@ -8295,7 +8281,7 @@ const App = () => {
               if (tc) {
                 const o = tc.to("oklch");
                 pL = Math.max(0, Math.min(1, o.coords[0]));
-                pC = Math.max(0, Math.min(0.3, o.coords[1]));
+                pC = Math.max(0, Math.min(0.4, o.coords[1]));
                 pH = isNaN(o.coords[2]) ? 0 : ((o.coords[2] % 360) + 360) % 360;
               }
             } catch (err) {}
@@ -8364,8 +8350,7 @@ const App = () => {
               .toString()
               .padStart(2, "0");
             const hStr = Math.round(pH).toString().padStart(3, "0");
-            const gridPrefix = getNounPrefix(pL, pC);
-            const anchorId = `${gridPrefix}-${cStr}-${hStr}`;
+            const anchorId = `${cStr}-${hStr}`;
             const adjId = getLStr(pL);
             newSavedColors[pinId] = {
               id: pinId,
@@ -9055,7 +9040,7 @@ const ViewDatabase = ({
             const xyzStandard = calculateXYZFromSpectral(c.spectral, 2, "D65");
             const col = new Color("xyz-d65", xyzStandard).to("oklch");
             L = Math.max(0, Math.min(1, col.coords[0]));
-            C = Math.max(0, Math.min(0.3, col.coords[1]));
+            C = Math.max(0, Math.min(0.4, col.coords[1]));
             H = isNaN(col.coords[2]) ? 0 : ((col.coords[2] % 360) + 360) % 360;
             hexVal = col.to("srgb").toString({ format: "hex" });
           } catch (e) {}
@@ -9068,7 +9053,7 @@ const ViewDatabase = ({
           }
           if (tc) {
             L = Math.max(0, Math.min(1, tc.coords[0]));
-            C = Math.max(0, Math.min(0.3, tc.coords[1]));
+            C = Math.max(0, Math.min(0.4, tc.coords[1]));
             H = isNaN(tc.coords[2]) ? 0 : ((tc.coords[2] % 360) + 360) % 360;
           } else {
             L = 0.5;
@@ -9253,7 +9238,7 @@ const ViewDatabase = ({
       );
       updated[editingItem.brand][editingItem.originalIndex].C = Math.max(
         0,
-        Math.min(0.3, tc.coords[1]),
+        Math.min(0.4, tc.coords[1]),
       );
       updated[editingItem.brand][editingItem.originalIndex].H = isNaN(
         tc.coords[2],
@@ -9409,7 +9394,7 @@ const ViewDatabase = ({
               <input
                 type="range"
                 min="0"
-                max="25"
+                max="50"
                 step="0.1"
                 value={maxDeltaE}
                 onChange={(e) => setMaxDeltaE(parseFloat(e.target.value))}
@@ -10630,7 +10615,7 @@ const AppUI = ({
                 label="Chroma"
                 value={scrubC}
                 min={0}
-                max={0.3}
+                max={0.4}
                 step={0.001}
                 onChange={(v) => {
                   setScrubC(v);
