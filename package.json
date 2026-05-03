@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && mkdir -p dist/data && cp data/*.csv dist/data/ 2>/dev/null || true && npm run build:server",
+    "build": "mkdir -p dist && cp index.html app.js styles.css dist/ 2>/dev/null || true && mkdir -p dist/data && cp data/*.csv dist/data/ 2>/dev/null || true && npm run build:server",
     "build:server": "esbuild server.ts --bundle --platform=node --format=esm --outfile=dist/server.js --external:vite",
     "lint": "eslint .",
     "start": "NODE_ENV=production node dist/server.js"

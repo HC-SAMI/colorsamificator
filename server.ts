@@ -69,44 +69,12 @@ async function startServer() {
     }
   });
 
-  app.delete('/api/csv/:filename', async (req, res) => {
-    try {
-      const { filename } = req.params;
-      let filePath = path.join(process.cwd(), 'data', filename);
-      if (!fs.existsSync(filePath)) filePath = path.join(process.cwd(), filename);
-      
-      if (!filePath.startsWith(process.cwd())) {
-        return res.status(403).json({ error: 'Access denied' });
-      }
-
-      if (fs.existsSync(filePath)) {
-        await fs.unlink(filePath);
-        res.json({ success: true });
-      } else {
-        res.status(404).json({ error: 'File not found' });
-      }
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: 'Failed to delete CSV file' });
-    }
-  });
-
-  // Vite middleware for development
+  // Static file serving for development
   if (process.env.NODE_ENV !== 'production') {
-    const { createServer: createViteServer } = await import('vite');
-    app.use('/data', express.static(path.join(process.cwd(), 'data')));
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
+    app.use(express.static(process.cwd()));
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use('/data', express.static(path.join(process.cwd(), 'data')));
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
   }
 
   app.listen(PORT, '0.0.0.0', () => {
