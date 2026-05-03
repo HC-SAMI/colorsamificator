@@ -91,12 +91,22 @@ async function startServer() {
     }
   });
 
-  // Static file serving for development
+  // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
-    app.use(express.static(process.cwd()));
+    const { createServer: createViteServer } = await import('vite');
+    app.use('/data', express.static(path.join(process.cwd(), 'data')));
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
+    app.use('/data', express.static(path.join(process.cwd(), 'data')));
     app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
   }
 
   app.listen(PORT, '0.0.0.0', () => {

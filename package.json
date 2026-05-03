@@ -1,14 +1,64 @@
-import fs from 'fs';
-
-async function run() {
-  const url = "https://www.uniboard.com/en/colors";
-  console.log("Fetching Uniboard colors page:", url);
-  const html = await fetch(url).then(res => res.text());
-  console.log("Fetched HTML length:", html.length);
-  fs.writeFileSync('uniboard_test.html', html);
-  
-  if (html.length < 50000) {
-      console.log("HTML:", html.slice(0, 1000));
+{
+  "name": "color-samificator",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "vite build && mkdir -p dist/data && cp data/*.csv dist/data/ 2>/dev/null || true && npm run build:server",
+    "build:server": "esbuild server.ts --bundle --platform=node --format=esm --outfile=dist/server.js --external:vite",
+    "lint": "eslint .",
+    "start": "NODE_ENV=production node dist/server.js"
+  },
+  "dependencies": {
+    "@babel/standalone": "^7.29.2",
+    "@tailwindcss/vite": "^4.2.2",
+    "@vitejs/plugin-react": "^6.0.1",
+    "canvas": "^3.2.3",
+    "cheerio": "^1.2.0",
+    "clsx": "^2.1.1",
+    "color-namer": "^1.4.0",
+    "colorjs.io": "^0.6.1",
+    "colornerd": "^2.4.11",
+    "csv-parse": "^6.2.1",
+    "csv-stringify": "^6.7.0",
+    "d3-delaunay": "^6.0.4",
+    "express": "^4.21.2",
+    "fs-extra": "^11.3.4",
+    "jimp": "^1.6.1",
+    "jsdom": "^29.0.2",
+    "lucide": "^0.577.0",
+    "lucide-react": "^0.577.0",
+    "matrioshka.colors": "^1.0.38",
+    "motion": "^12.38.0",
+    "munsell": "^1.1.6",
+    "ncs-color": "^1.0.1",
+    "pantone-colors": "^1.0.3",
+    "papaparse": "^5.5.3",
+    "plotly.js-dist-min": "^3.4.0",
+    "puppeteer": "^24.40.0",
+    "ral-colors": "^1.0.1",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "tailwind-merge": "^3.5.0",
+    "vite": "^8.0.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/express": "^5.0.6",
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^25.6.0",
+    "@types/papaparse": "^5.5.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "esbuild": "^0.28.0",
+    "eslint": "^9.39.4",
+    "eslint-plugin-html": "^8.1.4",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.58.2"
   }
 }
-run();

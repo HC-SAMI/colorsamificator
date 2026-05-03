@@ -1,64 +1,151 @@
-{
-  "name": "color-samificator",
-  "version": "1.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "tsx server.ts",
-    "build": "vite build && mkdir -p dist/data && cp data/*.csv dist/data/ 2>/dev/null || true && npm run build:server",
-    "build:server": "esbuild server.ts --bundle --platform=node --format=esm --outfile=dist/server.js --external:vite",
-    "lint": "eslint .",
-    "start": "NODE_ENV=production node dist/server.js"
-  },
-  "dependencies": {
-    "@babel/standalone": "^7.29.2",
-    "@tailwindcss/vite": "^4.2.2",
-    "@vitejs/plugin-react": "^6.0.1",
-    "canvas": "^3.2.3",
-    "cheerio": "^1.2.0",
-    "clsx": "^2.1.1",
-    "color-namer": "^1.4.0",
-    "colorjs.io": "^0.6.1",
-    "colornerd": "^2.4.11",
-    "csv-parse": "^6.2.1",
-    "csv-stringify": "^6.7.0",
-    "d3-delaunay": "^6.0.4",
-    "express": "^4.21.2",
-    "fs-extra": "^11.3.4",
-    "jimp": "^1.6.1",
-    "jsdom": "^29.0.2",
-    "lucide": "^0.577.0",
-    "lucide-react": "^0.577.0",
-    "matrioshka.colors": "^1.0.38",
-    "motion": "^12.38.0",
-    "munsell": "^1.1.6",
-    "ncs-color": "^1.0.1",
-    "pantone-colors": "^1.0.3",
-    "papaparse": "^5.5.3",
-    "plotly.js-dist-min": "^3.4.0",
-    "puppeteer": "^24.40.0",
-    "ral-colors": "^1.0.1",
-    "react": "^19.2.5",
-    "react-dom": "^19.2.5",
-    "tailwind-merge": "^3.5.0",
-    "vite": "^8.0.8"
-  },
-  "devDependencies": {
-    "@eslint/js": "^10.0.1",
-    "@types/express": "^5.0.6",
-    "@types/fs-extra": "^11.0.4",
-    "@types/node": "^25.6.0",
-    "@types/papaparse": "^5.5.2",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "esbuild": "^0.28.0",
-    "eslint": "^9.39.4",
-    "eslint-plugin-html": "^8.1.4",
-    "eslint-plugin-react": "^7.37.5",
-    "eslint-plugin-react-hooks": "^7.0.1",
-    "eslint-plugin-react-refresh": "^0.5.2",
-    "globals": "^17.5.0",
-    "tsx": "^4.21.0",
-    "typescript": "^6.0.3",
-    "typescript-eslint": "^8.58.2"
-  }
+
+
+
+
+
+
+
+
+:root {
+  --c-darkest:#010D00; --c-darker:#052212; --c-dark:#2B4032;
+  --c-mid:#B1BC83; --c-light:#F2E8DF;
+  /* New: warm taupe border for light mode (OKLCH 0.74/0.02/68°) */
+  --c-border-light:#B4A99E;
+
+  /* LIGHT MODE */
+  --bg:#F2E8DF; --surface:#F2E8DF; --surface-2:#F2E8DF; --surface-card:#F2E8DF;
+  --border:#B4A99E;
+  --border-hover:#2B4032;
+  --text-strong:#010D00; --text:#052212; --text-muted:#2B4032;
+  --accent:#2B4032; --accent-hover:#B1BC83; --accent-sub:#B1BC83;
+  --on-accent:#F2E8DF; --on-accent-sub:#010D00;
+  --scroll-thumb:#B1BC83;
+  --shadow-sm:0 1px 3px rgba(1,13,0,0.10),0 1px 2px rgba(1,13,0,0.07);
+  --shadow-md:0 4px 14px rgba(1,13,0,0.12),0 2px 5px rgba(1,13,0,0.08);
+  --shadow-lg:0 8px 30px rgba(1,13,0,0.14),0 4px 10px rgba(1,13,0,0.09);
+  --shadow-xl:0 20px 60px rgba(1,13,0,0.18),0 8px 20px rgba(1,13,0,0.11);
 }
+html.dark {
+  --bg:#010D00; --surface:#010D00; --surface-2:#010D00; --surface-card:#010D00;
+  --border:#052212; --border-hover:#B1BC83;
+  --text-strong:#F2E8DF; --text:#F2E8DF; --text-muted:#B1BC83;
+  --accent:#F2E8DF; --accent-hover:#B1BC83; --accent-sub:#B1BC83;
+  --on-accent:#010D00; --on-accent-sub:#010D00;
+  --scroll-thumb:#052212;
+  --shadow-sm:0 1px 4px rgba(0,0,0,0.55),0 1px 2px rgba(0,0,0,0.40);
+  --shadow-md:0 4px 16px rgba(0,0,0,0.65),0 2px 6px rgba(0,0,0,0.45);
+  --shadow-lg:0 8px 32px rgba(0,0,0,0.75),0 4px 12px rgba(0,0,0,0.50);
+  --shadow-xl:0 20px 64px rgba(0,0,0,0.85),0 8px 24px rgba(0,0,0,0.60);
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;padding:0;background-color:var(--bg);color:var(--text);
+  font-family:'Inter',ui-sans-serif,sans-serif;
+  overscroll-behavior:none;-webkit-font-smoothing:antialiased}
+input,select,textarea,button{font-family:'Inter',ui-sans-serif,sans-serif}
+
+/* Shadows */
+aside{box-shadow:var(--shadow-md)}
+aside [class*="sticky"]{box-shadow:var(--shadow-sm)}
+[class*="rounded-lg"][class*="border"],
+[class*="rounded-xl"][class*="border"],
+[class*="rounded-2xl"][class*="border"]{box-shadow:var(--shadow-sm)}
+.fixed.inset-0>[class*="rounded"],
+.fixed.inset-0>div>[class*="rounded"]{box-shadow:var(--shadow-xl)!important}
+[class*="rounded-full"][class*="shadow"]{box-shadow:var(--shadow-lg)!important}
+[class*="inset-4"][class*="rounded-xl"]{box-shadow:var(--shadow-md)!important}
+
+/* Text fixes: text-slate-900 maps to surface-card (cream) for bg use,
+   but is widely used as text — force it to text-strong everywhere */
+.text-slate-900,.text-neutral-900,.text-gray-900{color:var(--text-strong)!important}
+.text-slate-800,.text-neutral-800,.text-gray-800{color:var(--text-strong)!important}
+
+/* Dark mode text fixes */
+html.dark .dark\:text-neutral-100,
+html.dark .dark\:text-neutral-200,
+html.dark .dark\:text-slate-100,
+html.dark .dark\:text-slate-200,
+html.dark .dark\:text-white{color:var(--text-strong)!important}
+html.dark .dark\:text-neutral-300,
+html.dark .dark\:text-slate-300{color:var(--text)!important}
+html.dark .dark\:text-neutral-400,
+html.dark .dark\:text-slate-400,
+html.dark .dark\:text-neutral-500,
+html.dark .dark\:text-slate-500{color:var(--text-muted)!important}
+
+/* Dark mode border fixes: neutral-600/700/800 map to text=cream → cream borders */
+html.dark .dark\:border-neutral-600,
+html.dark .dark\:border-neutral-700,
+html.dark .dark\:border-neutral-800,
+html.dark [class*="dark:border-neutral-6"],
+html.dark [class*="dark:border-neutral-7"],
+html.dark [class*="dark:border-neutral-8"],
+html.dark .dark\:border-slate-300,
+html.dark .dark\:border-slate-600{border-color:var(--border)!important}
+
+/* Dark mode bg overrides */
+html.dark .dark\:bg-neutral-600{background-color:var(--surface)!important}
+html.dark .dark\:bg-neutral-700{background-color:var(--surface-card)!important}
+html.dark .dark\:bg-neutral-800,
+html.dark [class*="dark:bg-neutral-800"],
+html.dark .dark\:hover\:bg-neutral-800:hover{background-color:var(--surface-2)!important}
+html.dark .dark\:bg-neutral-900,
+html.dark [class*="dark:bg-neutral-900"]{background-color:var(--surface-card)!important}
+html.dark .dark\:bg-neutral-950{background-color:var(--bg)!important}
+html.dark .bg-white{background-color:var(--surface-card)!important}
+html.dark .dark\:bg-white{background-color:#F2E8DF!important;color:#010D00!important}
+html.dark .dark\:text-slate-900{color:#010D00!important}
+html.dark .dark\:hover\:bg-neutral-700:hover{background-color:var(--surface-card)!important}
+html.dark .dark\:hover\:bg-neutral-600:hover{background-color:var(--surface)!important}
+
+/* Light mode inverse buttons */
+.bg-slate-900{background-color:var(--c-darker)!important;color:var(--c-light)!important}
+.hover\:bg-slate-800:hover{background-color:var(--c-dark)!important}
+
+/* Opacity variants */
+[class*="bg-white\/"],
+[class*="bg-slate-50\/"],
+[class*="bg-slate-100\/"]{background-color:var(--surface-card)!important}
+[class*="bg-neutral-800\/"],
+[class*="bg-slate-800\/"]{background-color:var(--surface-2)!important}
+[class*="bg-neutral-900\/"],
+[class*="bg-slate-900\/"]{background-color:var(--surface-card)!important}
+html.dark [class*="dark:bg-neutral-800\/"]{background-color:var(--surface-2)!important}
+html.dark [class*="dark:bg-neutral-900\/"]{background-color:var(--surface-card)!important}
+[class*="bg-sky-500\/"],
+[class*="bg-blue-500\/"],
+[class*="bg-emerald-500\/"]{background-color:var(--accent-sub)!important;color:var(--on-accent-sub)!important}
+html.dark [class*="dark:bg-sky-500\/"],
+html.dark [class*="dark:bg-emerald-500\/"]{background-color:var(--accent-sub)!important;color:var(--on-accent-sub)!important}
+[class*="bg-red-500\/"],
+[class*="bg-red-900\/"],
+html.dark [class*="dark:bg-red-500\/"],
+html.dark [class*="dark:bg-red-900\/"]{background-color:rgba(239,68,68,0.12)!important}
+
+/* Contrast on accent backgrounds */
+.bg-sky-500,.bg-emerald-500,.bg-blue-500{color:var(--on-accent)!important}
+[class*="bg-sky-500"][class*="text-white"],[class*="bg-emerald-500"][class*="text-white"]{color:var(--on-accent)!important}
+
+/* Slider */
+.slider-icon{color:var(--accent)!important}
+input[type=range]{-webkit-appearance:none;background:transparent}
+input[type=range]:focus{outline:none}
+input[type=range]::-webkit-slider-runnable-track{width:100%;height:4px;cursor:pointer;background:var(--border);border-radius:10px}
+input[type=range]::-webkit-slider-thumb{height:16px;width:16px;border-radius:50%;background:var(--accent);cursor:pointer;-webkit-appearance:none;margin-top:-6px;box-shadow:var(--shadow-sm)}
+
+/* Scrollbars */
+.custom-scrollbar::-webkit-scrollbar{width:5px;height:5px}
+.custom-scrollbar::-webkit-scrollbar-track{background:transparent}
+.custom-scrollbar::-webkit-scrollbar-thumb{background:var(--scroll-thumb);border-radius:10px}
+
+/* Inputs */
+input::placeholder,textarea::placeholder{color:var(--text-muted);opacity:0.55}
+
+/* Plotly */
+.plotly-wrapper{width:100%;height:100%}
+.js-plotly-plot,.plot-container,.gl-container,canvas{touch-action:none!important;border-radius:.75rem}
+
+/* Misc */
+.name-input::placeholder{opacity:.4;color:currentColor}
+[class*="accent-sky-500"]{accent-color:var(--accent)!important}
+[class*="ring-sky-500"]{--tw-ring-color:var(--accent)!important}
