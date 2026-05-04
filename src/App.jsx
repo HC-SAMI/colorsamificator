@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import ReactDOM from 'react-dom';
 
+const rawCsvFiles = import.meta.glob('../data/*.csv', { query: '?raw', import: 'default', eager: true });
+
 // --- UTILITIES --- //
 const Icon = ({ name, className = "w-4 h-4" }) => {
   const ref = useRef(null);
@@ -6582,7 +6584,10 @@ const App = () => {
         initialState?.groupSettings || defaultGroupSettings;
 
       const discoverCSVFiles = async () => {
-        // Strategy 1: "Here" (Express API endpoint)
+        // Use injected Vite CSV files directly
+        if (rawCsvFiles && Object.keys(rawCsvFiles).length > 0) {
+          return Object.keys(rawCsvFiles).map(p => p.split('/').pop()).filter(f => f.toLowerCase().endsWith(".csv"));
+        }
         try {
           const resList = await fetch("/api/csv-files");
           if (resList.ok) {
@@ -6709,22 +6714,31 @@ const App = () => {
 
       for (const file of filesToLoad) {
         try {
-          // Safely resolve resource URL: use bundler blob if available, else plain filename
-          const csvKey =
-            window.__CSV_FILE_MAP__ && window.__CSV_FILE_MAP__[file];
-          const blobUrl =
-            csvKey && window.__resources && window.__resources[csvKey];
-          let parsedUrl = new URL(window.location.href);
-          let p = parsedUrl.pathname;
-          if (!p.endsWith('/') && !p.split('/').pop().includes('.')) {
-              p += '/';
+          let csvText = "";
+          const injectedPath = '../data/' + file.replace(/^data\//, '');
+          if (rawCsvFiles && rawCsvFiles[injectedPath]) {
+            csvText = rawCsvFiles[injectedPath];
+          } else {
+            // Safely resolve resource URL: use bundler blob if available, else plain filename
+            const csvKey =
+              window.__CSV_FILE_MAP__ && window.__CSV_FILE_MAP__[file];
+            const blobUrl =
+              csvKey && window.__resources && window.__resources[csvKey];
+            let parsedUrl = new URL(window.location.href);
+            let p = parsedUrl.pathname;
+            if (!p.endsWith('/') && !p.split('/').pop().includes('.')) {
+                p += '/';
+            }
+            let baseForFetch = parsedUrl.origin + p;
+            const resolvedPath = file.startsWith("data/") ? file : "data/" + file;
+            const resolvedUrl = blobUrl || new URL(resolvedPath, baseForFetch).href;
+            const res = await fetch(resolvedUrl);
+            if (res.ok) {
+              csvText = await res.text();
+            }
           }
-          let baseForFetch = parsedUrl.origin + p;
-          const resolvedPath = file.startsWith("data/") ? file : "data/" + file;
-          const resolvedUrl = blobUrl || new URL(resolvedPath, baseForFetch).href;
-          const res = await fetch(resolvedUrl);
-          if (res.ok) {
-            const csvText = await res.text();
+            
+          if (csvText) {
             const fc = csvText.trimStart().slice(0, 5).toLowerCase();
             if (fc === "<!doc" || fc === "<html") {
               console.warn("Skip " + file + ": HTML response");
