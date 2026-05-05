@@ -670,7 +670,7 @@ const CommercialMatches = ({ crosshair, colorData, onSelectColor }) => {
 
     const allMatches = [];
 
-    const processList = (list, label) => {
+    const processList = (list, label, brandKey) => {
       if (!list || !Array.isArray(list)) return;
       for (let listIdx = 0; listIdx < list.length; listIdx++) {
         const item = list[listIdx];
@@ -705,6 +705,8 @@ const CommercialMatches = ({ crosshair, colorData, onSelectColor }) => {
                 C: targetColor.coords[1],
                 H: isNaN(targetColor.coords[2]) ? 0 : targetColor.coords[2],
                 d,
+                brand: brandKey,
+                originalIndex: listIdx
               },
             });
           }
@@ -715,7 +717,7 @@ const CommercialMatches = ({ crosshair, colorData, onSelectColor }) => {
     // Dynamic: iterate every brand in colorData regardless of key name
     Object.entries(colorData).forEach(([brandKey, list]) => {
       const label = getBrandDisplayName(brandKey);
-      processList(list, label);
+      processList(list, label, brandKey);
     });
 
     const qWords = searchQuery.toLowerCase().trim().split(/\s+/).filter(Boolean);
@@ -754,7 +756,8 @@ const CommercialMatches = ({ crosshair, colorData, onSelectColor }) => {
       if (onSelectColor) {
         onSelectColor(
           [match.L, match.C, isNaN(match.H) ? 0 : match.H],
-          match.spectral
+          match.spectral,
+          { brand: match.brand, originalIndex: match.originalIndex }
         );
       }
     };
@@ -1117,7 +1120,13 @@ const View3D = ({
         return `<b>${name}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`;
       }),
       hovertemplate: "%{text}<extra></extra>",
-      customdata: points.map((p) => [p.L, p.C, p.H]),
+      customdata: points.map((p) => {
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+        const name =
+          `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
+          "Unnamed";
+        return [p.L, p.C, p.H, { anchorId: nounId, adjId: p.lStr, fullName: name }];
+      }),
       marker: {
         size: 4,
         color: points.map((p) => p.color),
@@ -1203,7 +1212,12 @@ const View3D = ({
           `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`,
       ),
       hovertemplate: "%{text}<extra></extra>",
-      customdata: lockedNodes.map((p) => [p.L, p.C, p.H]),
+      customdata: lockedNodes.map((p) => [
+        p.L,
+        p.C,
+        p.H,
+        { anchorId: p.anchorId || p.id, adjId: p.adjId },
+      ]),
       marker: {
         symbol: "square",
         size: 6,
@@ -1222,7 +1236,7 @@ const View3D = ({
           `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`,
       ),
       hovertemplate: "%{text}<extra></extra>",
-      customdata: pinNodes.map((p) => [p.L, p.C, p.H]),
+      customdata: pinNodes.map((p) => [p.L, p.C, p.H, { pinId: p.id }]),
       marker: {
         symbol: "x",
         size: 6,
@@ -1259,7 +1273,12 @@ const View3D = ({
             `<b>[Commercial] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`
         ),
         hovertemplate: "%{text}<extra></extra>",
-        customdata: jitteredCommercial.map((p) => [p.L, p.C, p.H]),
+        customdata: jitteredCommercial.map((p) => [
+          p.L,
+          p.C,
+          p.H,
+          { brand: p.brand, originalIndex: p.originalIndex },
+        ]),
         marker: {
           symbol: "diamond",
           size: 6,
@@ -1560,14 +1579,14 @@ const ViewVertical = ({
       },
       hovertemplate:
         viewMode === "bins"
-          ? "<b>%{customdata[3]}</b><br>L: %{y:.3f} C: %{x:.3f}<extra></extra>"
+          ? "<b>%{customdata[3].fullName}</b><br>L: %{y:.3f} C: %{x:.3f}<extra></extra>"
           : "%{text}<extra></extra>",
       customdata: filtered.map((p) => {
         const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         const fullName =
           `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
           "Unnamed";
-        return [p.L, p.C, p.H, fullName];
+        return [p.L, p.C, p.H, { anchorId: nounId, adjId: p.lStr, fullName }];
       }),
       marker: {
         size: 10,
@@ -1621,7 +1640,12 @@ const ViewVertical = ({
           `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`,
       ),
       hovertemplate: "%{text}<extra></extra>",
-      customdata: lockedNodes.map((p) => [p.L, p.C, p.H]),
+      customdata: lockedNodes.map((p) => [
+        p.L,
+        p.C,
+        p.H,
+        { anchorId: p.anchorId || p.id, adjId: p.adjId },
+      ]),
       marker: {
         symbol: "square",
         size: 10,
@@ -1639,7 +1663,7 @@ const ViewVertical = ({
           `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`,
       ),
       hovertemplate: "%{text}<extra></extra>",
-      customdata: pinNodes.map((p) => [p.L, p.C, p.H]),
+      customdata: pinNodes.map((p) => [p.L, p.C, p.H, { pinId: p.id }]),
       marker: {
         symbol: "x",
         size: 12,
@@ -1675,7 +1699,12 @@ const ViewVertical = ({
             `<b>[Commercial] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`
         ),
         hovertemplate: "%{text}<extra></extra>",
-        customdata: jitteredCommercial.map((p) => [p.L, p.C, p.H]),
+        customdata: jitteredCommercial.map((p) => [
+          p.L,
+          p.C,
+          p.H,
+          { brand: p.brand, originalIndex: p.originalIndex },
+        ]),
         marker: {
           symbol: "triangle-up",
           size: 10,
@@ -1783,13 +1812,13 @@ const ViewVertical = ({
                 high = mid;
               }
             }
-            const maxC = Math.min(low, 0.3);
+            const maxC = Math.min(low, 0.4);
             boundaryPoints.push([maxC, l]);
             allVoronoiPoints.push({ C: maxC + 0.005, L: l, isDummy: true });
             allVoronoiPoints.push({ C: maxC + 0.02, L: l, isDummy: true });
           }
           const cStep = isMobile ? 0.05 : 0.01;
-          for (let c = 0; c <= 0.35; c += cStep) {
+          for (let c = 0; c <= 0.45; c += cStep) {
             allVoronoiPoints.push({ C: c, L: -0.01, isDummy: true });
             allVoronoiPoints.push({ C: c, L: 1.01, isDummy: true });
           }
@@ -1802,7 +1831,7 @@ const ViewVertical = ({
           const voronoi = delaunay.voronoi([
             -0.1 * scaleX,
             -0.1 * scaleY,
-            0.4 * scaleX,
+            0.5 * scaleX,
             1.15 * scaleY,
           ]);
           allVoronoiPoints.forEach((p, i) => {
@@ -1835,16 +1864,16 @@ const ViewVertical = ({
             }
           });
           const outerSquare = [
-            [-0.1, -0.1],
-            [0.4, -0.1],
-            [0.4, 1.1],
-            [-0.1, 1.1],
-            [-0.1, -0.1],
+            [-0.5, -0.5],
+            [1.0, -0.5],
+            [1.0, 1.5],
+            [-0.5, 1.5],
+            [-0.5, -0.5],
           ];
           const innerBoundary = [
-            [0, 1.1],
+            [0, 1.2],
             ...boundaryPoints.reverse(),
-            [0, -0.1],
+            [0, -0.2],
           ];
           const maskPath =
             "M" +
@@ -1859,6 +1888,7 @@ const ViewVertical = ({
             fillcolor: isDark ? "#052212" : "#F2E8DF",
             line: { width: 0 },
             layer: "below",
+            fillrule: "evenodd"
           });
         } catch (e) {
           console.error("Voronoi error:", e);
@@ -2114,14 +2144,14 @@ const ViewChromaRings = ({
       },
       hovertemplate:
         viewMode === "bins"
-          ? "<b>%{customdata[3]}</b><br>L: %{y:.3f} H: %{x:.1f}°<extra></extra>"
+          ? "<b>%{customdata[3].fullName}</b><br>L: %{y:.3f} H: %{x:.1f}°<extra></extra>"
           : "%{text}<extra></extra>",
       customdata: filtered.map((p) => {
         const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         const fullName =
           `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
           "Unnamed";
-        return [p.L, p.C, p.H, fullName];
+        return [p.L, p.C, p.H, { anchorId: nounId, adjId: p.lStr, fullName }];
       }),
       marker: {
         size: 10,
@@ -2175,7 +2205,12 @@ const ViewChromaRings = ({
           `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`,
       ),
       hovertemplate: "%{text}<extra></extra>",
-      customdata: lockedNodes.map((p) => [p.L, p.C, p.H]),
+      customdata: lockedNodes.map((p) => [
+        p.L,
+        p.C,
+        p.H,
+        { anchorId: p.anchorId || p.id, adjId: p.adjId },
+      ]),
       marker: {
         symbol: "square",
         size: 10,
@@ -2193,7 +2228,7 @@ const ViewChromaRings = ({
           `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`,
       ),
       hovertemplate: "%{text}<extra></extra>",
-      customdata: pinNodes.map((p) => [p.L, p.C, p.H]),
+      customdata: pinNodes.map((p) => [p.L, p.C, p.H, { pinId: p.id }]),
       marker: {
         symbol: "x",
         size: 12,
@@ -2228,7 +2263,12 @@ const ViewChromaRings = ({
             `<b>[Commercial] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`
         ),
         hovertemplate: "%{text}<extra></extra>",
-        customdata: commercialNodes.map((p) => [p.L, p.C, p.H]),
+        customdata: commercialNodes.map((p) => [
+          p.L,
+          p.C,
+          p.H,
+          { brand: p.brand, originalIndex: p.originalIndex },
+        ]),
         marker: {
           symbol: "triangle-up",
           size: 10,
@@ -2451,13 +2491,27 @@ const ViewChromaRings = ({
   );
 };
 
-function getInheritedPinNames(sc, savedColors, names, adjectives) {
+function getInheritedPinNames(sc, savedColors, names, adjectives, colorData = {}) {
   let baseAdj = sc.adjOverride || adjectives[sc.adjId];
   let baseName = sc.nameOverride || names[sc.anchorId];
   let source = "anchor";
   let sourceId = sc.anchorId;
 
-  if (!sc.nameOverride || !sc.adjOverride) {
+  if (sc.anchorId && sc.anchorId.startsWith("commercial-")) {
+    const parts = sc.anchorId.split("-");
+    const brand = parts[1];
+    const index = parseInt(parts[2]);
+    const item = colorData[brand]?.[index];
+    if (item) {
+      source = "commercial";
+      sourceId = sc.anchorId;
+      if (!sc.nameOverride) baseName = item.displayName || item.name;
+      if (!sc.adjOverride) {
+        const lStr = getLStr(sc.L);
+        baseAdj = adjectives[lStr] || getBrandDisplayName(brand);
+      }
+    }
+  } else if (!sc.nameOverride || !sc.adjOverride) {
     const nc = savedColors[sc.anchorId];
     if (nc && nc.type === "nounColumn") {
       source = "nounColumn";
@@ -3432,7 +3486,7 @@ const ViewTopDown = ({
       },
       hovertemplate:
         viewMode === "bins"
-          ? "<b>%{customdata[3]}</b><br>C: %{customdata[1]:.3f} H: %{customdata[2]:.1f}°<extra></extra>"
+          ? "<b>%{customdata[3].fullName}</b><br>C: %{customdata[1]:.3f} H: %{customdata[2]:.1f}°<extra></extra>"
           : "%{text}<extra></extra>",
       customdata: validAnchors.map((p) => {
         const lStr = getLStr(p.L);
@@ -3440,7 +3494,7 @@ const ViewTopDown = ({
         const fullName =
           `${adjectives[lStr] || ""} ${names[nounId] || ""}`.trim() ||
           "Unnamed";
-        return [p.L, p.C, p.H, fullName];
+        return [p.L, p.C, p.H, { anchorId: nounId, adjId: lStr, fullName }];
       }),
       marker: {
         size: 14,
@@ -3514,7 +3568,12 @@ const ViewTopDown = ({
           `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`,
       ),
       hovertemplate: "%{text}<extra></extra>",
-      customdata: lockedNodes.map((p) => [p.L, p.C, p.H]),
+      customdata: lockedNodes.map((p) => [
+        p.L,
+        p.C,
+        p.H,
+        { anchorId: p.anchorId || p.id, adjId: p.adjId },
+      ]),
       marker: {
         symbol: "square",
         size: 10,
@@ -3532,7 +3591,7 @@ const ViewTopDown = ({
           `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`,
       ),
       hovertemplate: "%{text}<extra></extra>",
-      customdata: pinNodes.map((p) => [p.L, p.C, p.H]),
+      customdata: pinNodes.map((p) => [p.L, p.C, p.H, { pinId: p.id }]),
       marker: {
         symbol: "x",
         size: 12,
@@ -3570,7 +3629,12 @@ const ViewTopDown = ({
             `<b>[Commercial] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`
         ),
         hovertemplate: "%{text}<extra></extra>",
-        customdata: jitteredCommercial.map((p) => [p.L, p.C, p.H]),
+        customdata: jitteredCommercial.map((p) => [
+          p.L,
+          p.C,
+          p.H,
+          { brand: p.brand, originalIndex: p.originalIndex },
+        ]),
         marker: {
           symbol: "triangle-up",
           size: 10,
@@ -6562,210 +6626,200 @@ const App = () => {
     initialState?.linkedFiles || [],
   );
 
-  useEffect(() => {
-    const loadInitialData = async () => {
-      let loadedColorData = null;
+  const loadInitialData = useCallback(async () => {
+    let loadedColorData = null;
 
-      if (window.__COLOR_DATA__) {
-        loadedColorData = window.__COLOR_DATA__;
-      }
+    if (window.__COLOR_DATA__) {
+      loadedColorData = window.__COLOR_DATA__;
+    }
 
-      if (loadedColorData) setColorData(loadedColorData);
+    if (loadedColorData) setColorData(loadedColorData);
 
-      // Try to fetch companion CSV files
-      let currentColorData = loadedColorData || {};
-      let currentSavedColors = savedColors;
-      let currentNames = initialState?.names || {};
-      let currentAdjs = initialState?.adjectives || {};
-      let currentNotes = initialState?.dictNotes || {};
-      let currentTags = initialState?.dictTags || {};
-      let currentGroupSettings =
-        initialState?.groupSettings || defaultGroupSettings;
+    // Try to fetch companion CSV files
+    let currentColorData = loadedColorData || {};
+    let currentSavedColors = savedColors;
+    let currentNames = initialState?.names || {};
+    let currentAdjs = initialState?.adjectives || {};
+    let currentNotes = initialState?.dictNotes || {};
+    let currentTags = initialState?.dictTags || {};
+    let currentGroupSettings =
+      initialState?.groupSettings || defaultGroupSettings;
 
-      const discoverCSVFiles = async () => {
-        // Strategy 1: Fetch directory listing if possible (handy for some dev servers)
-        try {
-          const res = await fetch("./data/");
-          if (res.ok) {
-            const text = await res.text();
-            // Ignore if this is actually the app's index.html being served back
-            if (!text.includes("The ColorSAMificator")) {
-              const regex = /href=["']?([^"'>]+\.csv)["'>]?/gi;
-              let match;
-              const parsedFiles = new Set();
-              while ((match = regex.exec(text)) !== null) {
-                const name = match[1].split("/").pop();
-                if (name && name.toLowerCase().endsWith(".csv"))
-                  parsedFiles.add(decodeURIComponent(name));
-              }
-              if (parsedFiles.size > 0) {
-                return Array.from(parsedFiles);
-              }
+    const discoverCSVFiles = async () => {
+      // Strategy 1: Fetch directory listing if possible (handy for some dev servers)
+      try {
+        const res = await fetch("./data/");
+        if (res.ok) {
+          const text = await res.text();
+          // Ignore if this is actually the app's index.html being served back
+          if (!text.includes("The ColorSAMificator")) {
+            const regex = /href=["']?([^"'>]+\.csv)["'>]?/gi;
+            let match;
+            const parsedFiles = new Set();
+            while ((match = regex.exec(text)) !== null) {
+              const name = match[1].split("/").pop();
+              if (name && name.toLowerCase().endsWith(".csv"))
+                parsedFiles.add(decodeURIComponent(name));
+            }
+            if (parsedFiles.size > 0) {
+              return Array.from(parsedFiles);
             }
           }
-        } catch (e) {}
-
-        // Strategy 2: "in GitHub" API
-        try {
-          if (window.location.hostname.includes("github.io")) {
-            const user = window.location.hostname.split(".")[0];
-            const repo =
-              window.location.pathname.split("/")[1] || user + ".github.io";
-            if (user && repo) {
-              let repoPath = window.location.pathname
-                .split("/")
-                .slice(2)
-                .join("/");
-              const lastSlashIndex = repoPath.lastIndexOf("/");
-              if (lastSlashIndex !== -1) {
-                repoPath = repoPath.substring(0, lastSlashIndex);
-              } else if (repoPath.includes(".")) {
-                // It's a file at the root of the repo (e.g. app.html)
-                repoPath = "";
-              }
-              if (repoPath.endsWith("/")) repoPath = repoPath.slice(0, -1);
-
-              const targetPath = repoPath ? `${repoPath}/data` : "data";
-              const apiPath = `https://api.github.com/repos/${user}/${repo}/contents/${targetPath}`;
-
-              const res = await fetch(apiPath);
-              if (res.ok) {
-                const data = await res.json();
-                if (Array.isArray(data)) {
-                  return data
-                    .filter(
-                      (f) => f.name && f.name.toLowerCase().endsWith(".csv"),
-                    )
-                    .map((f) => f.name);
-                }
-              }
-            }
-          }
-        } catch (e) {}
-
-        // Last resort blind fallbacks
-        const knownDataFiles = [
-          "Reference Colors.csv",
-          "agt.csv",
-          "anchors.csv",
-          "arborite.csv",
-          "behr.csv",
-          "benjaminMoore.csv",
-          "dulux.csv",
-          "egger.csv",
-          "farrowball.csv",
-          "finsa.csv",
-          "munsell.csv",
-          "ncs.csv",
-          "pantone.csv",
-          "pins.csv",
-          "pionite.csv",
-          "ppg.csv",
-          "ral.csv",
-          "sherwinWilliams.csv",
-          "swissKrono.csv",
-          "tafisa.csv",
-          "uniboard.csv",
-        ];
-        const initial = initialState?.linkedFiles || [];
-        const union = [...new Set([...knownDataFiles, ...initial])];
-        return union.filter((f) => f.toLowerCase().endsWith(".csv"));
-      };
-
-      let discoveredFiles = await discoverCSVFiles();
-
-      // Always order anchors.csv first, then pins.csv, then the rest
-      const filesToLoad = [];
-      const uniqueFiles = [
-        ...new Set([...discoveredFiles, ...(initialState?.linkedFiles || [])]),
-      ];
-      if (uniqueFiles.includes("anchors.csv")) filesToLoad.push("anchors.csv");
-      if (uniqueFiles.includes("pins.csv")) filesToLoad.push("pins.csv");
-
-      uniqueFiles.forEach((f) => {
-        if (f !== "anchors.csv" && f !== "pins.csv") filesToLoad.push(f);
-      });
-
-      // Update linked file state so the UI reflects auto-discovered files
-      setLinkedFiles(filesToLoad);
-
-      for (const file of filesToLoad) {
-        try {
-          let csvText = "";
-          
-          // Safely resolve resource URL
-          let parsedUrl = new URL(window.location.href);
-          let p = parsedUrl.pathname;
-          if (!p.endsWith('/') && !p.split('/').pop().includes('.')) {
-              p += '/';
-          }
-          let baseForFetch = parsedUrl.origin + p;
-          const resolvedPath = file.startsWith("data/") ? file : "data/" + file;
-          const resolvedUrl = new URL(resolvedPath, baseForFetch).href;
-          
-          const res = await fetch(resolvedUrl);
-          if (res.ok) {
-            csvText = await res.text();
-          }
-            
-          if (csvText) {
-            const fc = csvText.trimStart().slice(0, 5).toLowerCase();
-            if (fc === "<!doc" || fc === "<html") {
-              console.warn("Skip " + file + ": HTML response");
-              continue;
-            }
-            const parsed = parseCSV(csvText);
-            if (!parsed.length) {
-              continue;
-            }
-            const {
-              newColorData,
-              newSavedColors,
-              newNames,
-              newAdjs,
-              newNotes,
-              newTags,
-              newGroupSettings,
-            } = processCSVData(
-              parsed,
-              currentColorData,
-              currentSavedColors,
-              currentNames,
-              currentAdjs,
-              currentNotes,
-              currentTags,
-              currentGroupSettings,
-            );
-            currentColorData = newColorData;
-            currentSavedColors = newSavedColors;
-            currentNames = newNames;
-            currentAdjs = newAdjs;
-            currentNotes = newNotes;
-            currentTags = newTags;
-            if (newGroupSettings) currentGroupSettings = newGroupSettings;
-          }
-        } catch (e) {
-          console.warn("Failed: " + file, e);
         }
-      }
+      } catch (e) {}
 
-      // Only update colorData if we actually got some commercial data
-      // (don't replace pre-loaded window.__COLOR_DATA__ with empty object)
-      const hadPreloaded = !!window.__COLOR_DATA__;
-      const gotNewData = Object.keys(currentColorData).length > 0;
-      if (!hadPreloaded || gotNewData) {
-        setColorData(gotNewData ? currentColorData : null);
-      }
-      setSavedColors(currentSavedColors);
-      setNames(currentNames);
-      setAdjectives(currentAdjs);
-      setDictNotes(currentNotes);
-      setDictTags(currentTags);
-      setGroupSettings(currentGroupSettings);
+      // Strategy 2: "in GitHub" API
+      try {
+        if (window.location.hostname.includes("github.io")) {
+          const user = window.location.hostname.split(".")[0];
+          const repo =
+            window.location.pathname.split("/")[1] || user + ".github.io";
+          if (user && repo) {
+            let repoPath = window.location.pathname
+              .split("/")
+              .slice(2)
+              .join("/");
+            const lastSlashIndex = repoPath.lastIndexOf("/");
+            if (lastSlashIndex !== -1) {
+              repoPath = repoPath.substring(0, lastSlashIndex);
+            } else if (repoPath.includes(".")) {
+              // It's a file at the root of the repo (e.g. app.html)
+              repoPath = "";
+            }
+            if (repoPath.endsWith("/")) repoPath = repoPath.slice(0, -1);
+
+            const targetPath = repoPath ? `${repoPath}/data` : "data";
+            const apiPath = `https://api.github.com/repos/${user}/${repo}/contents/${targetPath}`;
+
+            const res = await fetch(apiPath);
+            if (res.ok) {
+              const data = await res.json();
+              if (Array.isArray(data)) {
+                return data
+                  .filter(
+                    (f) => f.name && f.name.toLowerCase().endsWith(".csv"),
+                  )
+                  .map((f) => f.name);
+              }
+            }
+          }
+        }
+      } catch (e) {}
+
+      // Last resort blind fallbacks
+      const knownDataFiles = [
+        "Reference Colors.csv",
+        "agt.csv",
+        "anchors.csv",
+        "arborite.csv",
+        "behr.csv",
+        "benjaminMoore.csv",
+        "dulux.csv",
+        "egger.csv",
+        "farrowball.csv",
+        "finsa.csv",
+        "munsell.csv",
+        "ncs.csv",
+        "pantone.csv",
+        "pins.csv",
+        "pionite.csv",
+        "ppg.csv",
+        "ral.csv",
+        "sherwinWilliams.csv",
+        "swissKrono.csv",
+        "tafisa.csv",
+        "uniboard.csv",
+      ];
+      const initial = initialState?.linkedFiles || [];
+      const union = [...new Set([...knownDataFiles, ...initial, ...linkedFiles])];
+      return union.filter((f) => f.toLowerCase().endsWith(".csv"));
     };
 
+    let discoveredFiles = await discoverCSVFiles();
+
+    // Always order anchors.csv first, then pins.csv, then the rest
+    const filesToLoad = [];
+    const uniqueFiles = [
+      ...new Set([...discoveredFiles, ...linkedFiles]),
+    ];
+    if (uniqueFiles.includes("anchors.csv")) filesToLoad.push("anchors.csv");
+    if (uniqueFiles.includes("pins.csv")) filesToLoad.push("pins.csv");
+
+    uniqueFiles.forEach((f) => {
+      if (f !== "anchors.csv" && f !== "pins.csv") filesToLoad.push(f);
+    });
+
+    // Update pool of linked files if we found new ones
+    if (
+      filesToLoad.length !== linkedFiles.length || 
+      !filesToLoad.every((f, i) => f === linkedFiles[i])
+    ) {
+      setLinkedFiles(filesToLoad);
+    }
+
+    for (const file of filesToLoad) {
+      try {
+        let csvText = "";
+        
+        let parsedUrl = new URL(window.location.href);
+        let p = parsedUrl.pathname;
+        if (!p.endsWith('/') && !p.split('/').pop().includes('.')) {
+            p += '/';
+        }
+        let baseForFetch = parsedUrl.origin + p;
+        const resolvedPath = file.startsWith("data/") ? file : "data/" + file;
+        const resolvedUrl = new URL(resolvedPath, baseForFetch).href;
+        
+        const res = await fetch(resolvedUrl);
+        if (res.ok) {
+          csvText = await res.text();
+        }
+          
+        if (csvText) {
+          const fc = csvText.trimStart().slice(0, 5).toLowerCase();
+          if (fc === "<!doc" || fc === "<html") continue;
+          const parsed = parseCSV(csvText);
+          if (!parsed.length) continue;
+
+          const processed = processCSVData(
+            parsed,
+            currentColorData,
+            currentSavedColors,
+            currentNames,
+            currentAdjs,
+            currentNotes,
+            currentTags,
+            currentGroupSettings,
+          );
+          currentColorData = processed.newColorData;
+          currentSavedColors = processed.newSavedColors;
+          currentNames = processed.newNames;
+          currentAdjs = processed.newAdjs;
+          currentNotes = processed.newNotes;
+          currentTags = processed.newTags;
+          if (processed.newGroupSettings) currentGroupSettings = processed.newGroupSettings;
+        }
+      } catch (e) {
+        console.warn("Failed: " + file, e);
+      }
+    }
+
+    const hadPreloaded = !!window.__COLOR_DATA__;
+    const gotNewData = Object.keys(currentColorData).length > 0;
+    if (!hadPreloaded || gotNewData) {
+      setColorData(gotNewData ? currentColorData : null);
+    }
+    setSavedColors(currentSavedColors);
+    setNames(currentNames);
+    setAdjectives(currentAdjs);
+    setDictNotes(currentNotes);
+    setDictTags(currentTags);
+    setGroupSettings(currentGroupSettings);
+  }, [linkedFiles]);
+
+  useEffect(() => {
     loadInitialData();
-  }, []);
+  }, [loadInitialData, linkedFiles.length]);
   const getComparable = (obj) => {
     if (!obj) return null;
     const { createdAt, createdBy, updatedAt, updatedBy, ...rest } = obj;
@@ -7335,6 +7389,7 @@ const App = () => {
     setScrubC(C);
     setScrubH(H);
     setTemporarySpectral(spectralData);
+    setScrubCommercial(commercialData);
   };
 
   const crosshair = useMemo(() => {
@@ -7389,7 +7444,10 @@ const App = () => {
       });
     }
     const closestGridPt = gridTieBreakers[0];
-    const currentDelta = 0.02; // Enforced maximum of 0.02 delta E OK attraction
+    const anchorThreshold = 0.02;
+    const pinThreshold = 0.005;
+    const currentDelta = anchorThreshold; // Enforced maximum delta E OK attraction
+
     const exactSavedColor =
       closestSaved && minSavedDist < 0.0001 ? closestSaved : null;
 
@@ -7414,7 +7472,7 @@ const App = () => {
     });
 
     if (
-      minCustomColumnDist <= 0.02 &&
+      minCustomColumnDist <= anchorThreshold &&
       closestCustomColumn &&
       minCustomColumnDist < minGridDist
     ) {
@@ -7424,14 +7482,19 @@ const App = () => {
       gravityA = closestCustomColumn.a;
       gravityB = closestCustomColumn.b;
       activePullType = "anchor";
-    } else if (minGridDist <= 0.02 && closestGridPt) {
+    } else if (
+      closestGridPt &&
+      (closestGridPt.isPin
+        ? minGridDist <= pinThreshold
+        : minGridDist <= anchorThreshold)
+    ) {
       gravityL = closestGridPt.L;
       gravityC = closestGridPt.C;
       gravityH = closestGridPt.H;
       gravityA = closestGridPt.a;
       gravityB = closestGridPt.b;
-      activePullType = "anchor";
-    } else if (minPinDist <= 0.005 && closestPin) {
+      activePullType = closestGridPt.isPin ? "pin" : "anchor";
+    } else if (minPinDist <= pinThreshold && closestPin) {
       gravityL = closestPin.L;
       gravityC = closestPin.C;
       gravityH = closestPin.H;
@@ -7442,13 +7505,18 @@ const App = () => {
       activePullType = "pin";
     }
 
-    const isGridSnapped = minGridDist <= 0.02 || minCustomColumnDist <= 0.02;
+    const isGridSnapped =
+      (closestGridPt &&
+        (closestGridPt.isPin
+          ? minGridDist <= pinThreshold
+          : minGridDist <= anchorThreshold)) ||
+      minCustomColumnDist <= anchorThreshold;
     let activeSavedColor = null;
     if (exactSavedColor && exactSavedColor.type === "pin") {
       activeSavedColor = exactSavedColor;
     } else if (
       activePullType === "anchor" &&
-      minCustomColumnDist <= 0.02 &&
+      minCustomColumnDist <= anchorThreshold &&
       minCustomColumnDist < minGridDist
     ) {
       activeSavedColor = closestCustomColumn;
@@ -7566,18 +7634,75 @@ const App = () => {
   ]);
 
   const handlePointClick = (pt, spectralData = null, commercialData = null) => {
-    handleUpdate(pt, spectralData, commercialData);
-    return;
+    // pt might be [L, C, H, name/id, brand, index, ...]
+    const coords = Array.isArray(pt) ? pt.slice(0, 3) : pt;
+    
+    // Check if we have identification in pt array (Plotly style)
+    let explicitCommercial = commercialData;
+    let explicitPinId = null;
+    let explicitAnchorId = null;
+
+    if (Array.isArray(pt) && pt.length > 3) {
+      const extra = pt[3];
+      if (extra && typeof extra === "object") {
+        if (extra.brand !== undefined) explicitCommercial = extra;
+        if (extra.pinId) explicitPinId = extra.pinId;
+        if (extra.anchorId) explicitAnchorId = extra.anchorId;
+      }
+    }
+
+    handleUpdate(coords, spectralData, explicitCommercial);
     if (!crosshair) return;
-    const {
-      exactSavedColor,
-      isGridSnapped,
-      closestGridPt,
-      nearestAdjId,
-      nearestAnchorId,
-    } = crosshair;
 
     if (tetheringPinId) {
+      const targetCommercial = explicitCommercial;
+      if (targetCommercial) {
+        setSavedColors((prev) => ({
+          ...prev,
+          [tetheringPinId]: {
+            ...prev[tetheringPinId],
+            parentPinId: null,
+            anchorId: `commercial-${targetCommercial.brand}-${targetCommercial.originalIndex}`,
+          },
+        }));
+        setTetheringPinId(null);
+        return;
+      }
+
+      if (explicitPinId && explicitPinId !== tetheringPinId) {
+        setSavedColors((prev) => ({
+          ...prev,
+          [tetheringPinId]: {
+            ...prev[tetheringPinId],
+            parentPinId: explicitPinId,
+            anchorId: savedColors[explicitPinId]?.anchorId || null,
+          },
+        }));
+        setTetheringPinId(null);
+        return;
+      }
+
+      if (explicitAnchorId) {
+        setSavedColors((prev) => ({
+          ...prev,
+          [tetheringPinId]: {
+            ...prev[tetheringPinId],
+            parentPinId: null,
+            anchorId: explicitAnchorId,
+          },
+        }));
+        setTetheringPinId(null);
+        return;
+      }
+
+      const {
+        exactSavedColor,
+        isGridSnapped,
+        closestGridPt,
+        nearestAdjId,
+        nearestAnchorId,
+      } = crosshair;
+
       let clickedItem = null;
       if (exactSavedColor && exactSavedColor.type === "pin") {
         clickedItem = exactSavedColor;
@@ -7600,7 +7725,7 @@ const App = () => {
           [tetheringPinId]: {
             ...prev[tetheringPinId],
             parentPinId: clickedItem.type === "pin" ? clickedItem.id : null,
-            anchorId: clickedItem.anchorId,
+            anchorId: clickedItem.anchorId || clickedItem.id,
             adjId: clickedItem.adjId,
           },
         }));
@@ -7608,7 +7733,6 @@ const App = () => {
         return;
       }
     }
-    handleUpdate(pt);
   };
 
   const handleVisualize = (type, id, displayName) => {
@@ -9157,7 +9281,7 @@ const App = () => {
   const getInheritedData = (sc) => {
     if (!sc) return null;
     if (!sc.parentPinId || !savedColors[sc.parentPinId]) {
-      const cb = getInheritedPinNames(sc, savedColors, names, adjectives);
+      const cb = getInheritedPinNames(sc, savedColors, names, adjectives, colorData);
       const parsedAdj = cb.displayAdj === "Unnamed" ? "" : cb.displayAdj;
       const parsedName = cb.displayName === "Unnamed" ? "" : cb.displayName;
       return {
@@ -9467,6 +9591,64 @@ const App = () => {
       tetheringPinId={tetheringPinId}
       setTetheringPinId={setTetheringPinId}
     />
+  );
+};
+
+const DatabaseManager = ({
+  colorData,
+  updateColorData,
+  swatchLayout,
+  swatchZoom,
+  handlePointClick,
+  crosshair,
+  onClose,
+}) => {
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-md transition-all">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.9, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.9, y: 20 }}
+        className="bg-white dark:bg-neutral-900 rounded-[2.5rem] shadow-2xl w-full max-w-6xl h-[85vh] flex flex-col overflow-hidden border border-slate-200 dark:border-neutral-800"
+      >
+        <div className="p-8 border-b border-slate-100 dark:border-neutral-800 flex justify-between items-center bg-slate-50/50 dark:bg-neutral-900/50">
+          <div>
+            <h2 className="text-2xl font-black tracking-tight text-slate-800 dark:text-neutral-100">
+              Color Inventory
+            </h2>
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">
+              System Database & Brand Assets
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-3 hover:bg-slate-200 dark:hover:bg-neutral-800 rounded-2xl transition-all text-slate-400 hover:text-slate-600 active:scale-95"
+          >
+            <Icon name="x" className="w-6 h-6" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-hidden">
+          <ViewDatabase
+            colorData={colorData}
+            updateColorData={updateColorData}
+            swatchLayout={swatchLayout}
+            swatchZoom={swatchZoom}
+            handlePointClick={handlePointClick}
+            crosshair={crosshair}
+          />
+        </div>
+
+        <div className="p-4 bg-slate-50 dark:bg-neutral-900 border-t border-slate-100 dark:border-neutral-800 flex justify-end">
+          <button
+            onClick={onClose}
+            className="px-6 py-2.5 bg-slate-900 dark:bg-neutral-100 text-white dark:text-neutral-900 rounded-xl font-bold text-xs uppercase tracking-widest hover:opacity-90 active:scale-95 transition-all shadow-lg"
+          >
+            Close Manager
+          </button>
+        </div>
+      </motion.div>
+    </div>
   );
 };
 
@@ -11218,7 +11400,7 @@ const AppUI = ({
                   activeSavedColor: crosshair.activeSavedColor,
                 }}
                 colorData={colorData}
-                onSelectColor={handleUpdate}
+                onSelectColor={handlePointClick}
               />
             </CollapsiblePanel>
 
@@ -12770,8 +12952,10 @@ const AppUI = ({
         <DatabaseManager
           colorData={colorData}
           updateColorData={updateColorData}
-          savedColors={savedColors}
-          setSavedColors={setSavedColors}
+          swatchLayout={swatchLayout}
+          swatchZoom={swatchZoom}
+          handlePointClick={handlePointClick}
+          crosshair={crosshair}
           onClose={() => setShowDatabaseManager(false)}
         />
       )}
