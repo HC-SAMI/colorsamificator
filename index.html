@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>The ColorSAMificator</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
@@ -32,12 +35,15 @@ tailwind.config = {
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <script src="https://unpkg.com/lucide@latest"></script>
 <script src="https://cdn.jsdelivr.net/npm/d3-delaunay@6"></script>
-<link rel="stylesheet" href="./styles.css">
+<!-- THREE.js — required by view3d-webgl.js -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
+<link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <div id="root"></div>
-<script type="module" src="/src/main.jsx"></script>
-
+<!-- Load WebGL 3D component BEFORE app.js so it's in scope when app.js runs -->
+<script type="text/babel" data-compact="true" src="view3d-webgl.js"></script>
+<script type="text/babel" data-compact="true" src="app.js"></script>
 </body>
 </html>
