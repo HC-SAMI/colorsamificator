@@ -1437,7 +1437,7 @@ const ViewVertical = ({
 
   const targetH = stableH;
   const filterFn = useCallback(
-    (p) => {
+    (p, isCommercial = false) => {
       if (p.C === 0) return true;
 
       if (
@@ -1446,7 +1446,8 @@ const ViewVertical = ({
         p.type === "pin" ||
         p.type === "anchor" ||
         p.url !== undefined || // Hacky way to detect commercial point since they usually have an erpCode/url
-        p.hex !== undefined    // Commercial points usually have hex explicitly defined in processCSVData
+        p.hex !== undefined || // Commercial points usually have hex explicitly defined in processCSVData
+        isCommercial
       ) {
         let hDiff = Math.abs(p.H - targetH);
         hDiff = Math.min(hDiff, 360 - hDiff);
@@ -1505,7 +1506,7 @@ const ViewVertical = ({
     if (colorData) {
       Object.keys(colorData).forEach((brand) => {
         colorData[brand].forEach((c) => {
-          if (filterFn(c)) {
+          if (filterFn(c, true)) {
             res.push({
               ...c,
               type: "commercial",
@@ -1676,7 +1677,7 @@ const ViewVertical = ({
     if (colorData) {
       Object.keys(colorData).forEach((brand) => {
         colorData[brand].forEach((c) => {
-          if (filterFn(c)) {
+          if (filterFn(c, true)) {
             commercialNodes.push({
               ...c,
               color: new Color("oklch", [c.L, c.C, c.H]).to("srgb").toString({ format: "hex" }),
@@ -1692,8 +1693,8 @@ const ViewVertical = ({
       traces.push({
         type: "scatter",
         mode: "markers",
-        x: jitteredCommercial.map((p) => p._jC),
-        y: jitteredCommercial.map((p) => p._jL),
+        x: jitteredCommercial.map((p) => p._jX),
+        y: jitteredCommercial.map((p) => p._jY),
         text: jitteredCommercial.map(
           (p) =>
             `<b>[Commercial] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`
@@ -2008,7 +2009,7 @@ const ViewChromaRings = ({
   }, [crosshair?.rawC, points, savedColors]);
 
   const filterFn = useCallback(
-    (p) => {
+    (p, isCommercial = false) => {
       const targetC = stableC;
       if (p.C === 0 && targetC === 0) return true;
 
@@ -2018,7 +2019,8 @@ const ViewChromaRings = ({
         p.type === "pin" ||
         p.type === "anchor" ||
         p.url !== undefined || // Hacky way to detect commercial point
-        p.hex !== undefined
+        p.hex !== undefined ||
+        isCommercial
       ) {
         return Math.abs(p.C - targetC) <= 0.02;
       }
@@ -2070,7 +2072,7 @@ const ViewChromaRings = ({
     if (colorData) {
       Object.keys(colorData).forEach((brand) => {
         colorData[brand].forEach((c) => {
-          if (filterFn(c)) {
+          if (filterFn(c, true)) {
             res.push({
               ...c,
               type: "commercial",
@@ -2241,7 +2243,7 @@ const ViewChromaRings = ({
     if (colorData) {
       Object.keys(colorData).forEach((brand) => {
         colorData[brand].forEach((c) => {
-          if (filterFn(c)) {
+          if (filterFn(c, true)) {
             commercialNodes.push({
               ...c,
               color: new Color("oklch", [c.L, c.C, c.H]).to("srgb").toString({ format: "hex" }),
@@ -3298,7 +3300,7 @@ const ViewTopDown = ({
   }, [crosshair?.rawL, points, savedColors]);
 
   const filterFn = useCallback(
-    (p) => {
+    (p, isCommercial = false) => {
       const targetL = crosshair?.rawL || 0;
       if (
         p.isPin ||
@@ -3306,7 +3308,8 @@ const ViewTopDown = ({
         p.type === "pin" ||
         p.type === "anchor" ||
         p.url !== undefined || // Hacky way to detect commercial point
-        p.hex !== undefined
+        p.hex !== undefined ||
+        isCommercial
       ) {
         return Math.abs(p.L - targetL) <= 0.02;
       }
@@ -3412,7 +3415,7 @@ const ViewTopDown = ({
     if (colorData) {
       Object.keys(colorData).forEach((brand) => {
         colorData[brand].forEach((c) => {
-          if (filterFn(c)) {
+          if (filterFn(c, true)) {
             res.push({
               ...c,
               type: "commercial",
@@ -3604,7 +3607,7 @@ const ViewTopDown = ({
     if (colorData) {
       Object.keys(colorData).forEach((brand) => {
         colorData[brand].forEach((c) => {
-          if (filterFn(c)) {
+          if (filterFn(c, true)) {
             commercialNodes.push({
               ...c,
               a: c.C * Math.sin((c.H * Math.PI) / 180),
@@ -7429,11 +7432,14 @@ const App = () => {
           Math.pow(b - pt.b, 2),
       );
       const EPSILON = 1e-9;
-      if (d < minGridDist - EPSILON) {
-        minGridDist = d;
-        gridTieBreakers = [pt];
-      } else if (Math.abs(d - minGridDist) <= EPSILON) {
-        gridTieBreakers.push(pt);
+      const allowedRadius = pt.isPin ? 0.002 : 0.02;
+      if (d <= allowedRadius) {
+        if (d < minGridDist - EPSILON) {
+          minGridDist = d;
+          gridTieBreakers = [pt];
+        } else if (Math.abs(d - minGridDist) <= EPSILON) {
+          gridTieBreakers.push(pt);
+        }
       }
     }
     if (gridTieBreakers.length > 1) {
@@ -7444,10 +7450,7 @@ const App = () => {
       });
     }
     const closestGridPt = gridTieBreakers[0];
-    const anchorThreshold = 0.02;
-    const pinThreshold = 0.005;
-    const currentDelta = anchorThreshold; // Enforced maximum delta E OK attraction
-
+    const currentDelta = 0.02; // Enforced maximum of 0.02 delta E OK attraction
     const exactSavedColor =
       closestSaved && minSavedDist < 0.0001 ? closestSaved : null;
 
@@ -7472,7 +7475,7 @@ const App = () => {
     });
 
     if (
-      minCustomColumnDist <= anchorThreshold &&
+      minCustomColumnDist <= 0.02 &&
       closestCustomColumn &&
       minCustomColumnDist < minGridDist
     ) {
@@ -7482,19 +7485,14 @@ const App = () => {
       gravityA = closestCustomColumn.a;
       gravityB = closestCustomColumn.b;
       activePullType = "anchor";
-    } else if (
-      closestGridPt &&
-      (closestGridPt.isPin
-        ? minGridDist <= pinThreshold
-        : minGridDist <= anchorThreshold)
-    ) {
+    } else if (minGridDist <= 0.02 && closestGridPt) {
       gravityL = closestGridPt.L;
       gravityC = closestGridPt.C;
       gravityH = closestGridPt.H;
       gravityA = closestGridPt.a;
       gravityB = closestGridPt.b;
-      activePullType = closestGridPt.isPin ? "pin" : "anchor";
-    } else if (minPinDist <= pinThreshold && closestPin) {
+      activePullType = "anchor";
+    } else if (minPinDist <= 0.002 && closestPin) {
       gravityL = closestPin.L;
       gravityC = closestPin.C;
       gravityH = closestPin.H;
@@ -7505,18 +7503,13 @@ const App = () => {
       activePullType = "pin";
     }
 
-    const isGridSnapped =
-      (closestGridPt &&
-        (closestGridPt.isPin
-          ? minGridDist <= pinThreshold
-          : minGridDist <= anchorThreshold)) ||
-      minCustomColumnDist <= anchorThreshold;
+    const isGridSnapped = minGridDist <= 0.02 || minCustomColumnDist <= 0.02;
     let activeSavedColor = null;
     if (exactSavedColor && exactSavedColor.type === "pin") {
       activeSavedColor = exactSavedColor;
     } else if (
       activePullType === "anchor" &&
-      minCustomColumnDist <= anchorThreshold &&
+      minCustomColumnDist <= 0.02 &&
       minCustomColumnDist < minGridDist
     ) {
       activeSavedColor = closestCustomColumn;
