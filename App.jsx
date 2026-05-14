@@ -1,4 +1,4 @@
-const { useState, useEffect, useMemo, useRef, useCallback } = React;
+const { useState, useEffect, useMemo, useRef, useCallback, useDeferredValue } = React;
 
 // Removed eager glob import. CSVs are now fetched at runtime from /public/data (published as /data)
 
@@ -1091,9 +1091,9 @@ const PlotlyChart = ({
 
 const View3D = ({
   colorData,
-
   points,
   crosshair,
+  deferredCrosshair,
   handlePointClick,
   theme,
   names,
@@ -1102,17 +1102,20 @@ const View3D = ({
   lockedNouns,
   lockedAdjectives,
   tetheringPinId,
+  filterPt,
 }) => {
   const isDark = theme === "dark";
-  const data = useMemo(() => {
+
+  const baseTraces = useMemo(() => {
     const traces = [];
+    const filteredPoints = points.filter(filterPt);
     traces.push({
       type: "scatter3d",
       mode: "markers",
-      x: points.map((p) => p.a),
-      y: points.map((p) => p.b),
-      z: points.map((p) => p.L),
-      text: points.map((p) => {
+      x: filteredPoints.map((p) => p.a),
+      y: filteredPoints.map((p) => p.b),
+      z: filteredPoints.map((p) => p.L),
+      text: filteredPoints.map((p) => {
         const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         const name =
           `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
@@ -1120,7 +1123,7 @@ const View3D = ({
         return `<b>${name}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}°`;
       }),
       hovertemplate: "%{text}<extra></extra>",
-      customdata: points.map((p) => {
+      customdata: filteredPoints.map((p) => {
         const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         const name =
           `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
@@ -1129,13 +1132,13 @@ const View3D = ({
       }),
       marker: {
         size: 4,
-        color: points.map((p) => p.color),
+        color: filteredPoints.map((p) => p.color),
         opacity: 0.8,
         line: { width: 0 },
       },
     });
     const gridLockedNodes = points
-      .filter((p) => !p.isCustomAnchor)
+      .filter((p) => !p.isCustomAnchor && filterPt(p))
       .filter((p) => {
         return (
           !p.isPin &&
@@ -1153,7 +1156,7 @@ const View3D = ({
         };
       });
     const customLockedNodes = Object.values(savedColors)
-      .filter((sc) => sc.type === "anchor")
+      .filter((sc) => sc.type === "anchor" && filterPt(sc))
       .map((p) => {
         const displayName =
           `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
@@ -1168,7 +1171,12 @@ const View3D = ({
       });
     const lockedNodes = [...gridLockedNodes, ...customLockedNodes];
     Object.values(savedColors)
-      .filter((sc) => sc.type === "nounColumn")
+      .filter((sc) => {
+        if (sc.type !== "nounColumn") return false;
+        let H = Math.atan2(sc.a, sc.b) * (180 / Math.PI);
+        if (H < 0) H += 360;
+        return filterPt({ L: (sc.minL + sc.maxL) / 2, C: Math.sqrt(sc.a * sc.a + sc.b * sc.b), H });
+      })
       .forEach((nc) => {
         const ncName = `${nc.nameOverride || names[nc.id] || "Custom Noun"}`;
         traces.push({
@@ -1189,7 +1197,7 @@ const View3D = ({
         });
       });
     const pinNodes = Object.values(savedColors)
-      .filter((sc) => sc.type === "pin")
+      .filter((sc) => sc.type === "pin" && filterPt(sc))
       .map((p) => {
         const displayName =
           `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
@@ -1249,13 +1257,15 @@ const View3D = ({
     if (colorData) {
       Object.keys(colorData).forEach((brand) => {
         colorData[brand].forEach((c) => {
-          commercialNodes.push({
-            ...c,
-            a: c.C * Math.sin((c.H * Math.PI) / 180),
-            b: c.C * Math.cos((c.H * Math.PI) / 180),
-            color: new Color("oklch", [c.L, c.C, c.H]).to("srgb").toString({ format: "hex" }),
-            displayName: `${brand} - ${c.name}`
-          });
+          if (filterPt(c)) {
+            commercialNodes.push({
+              ...c,
+              a: c.C * Math.sin((c.H * Math.PI) / 180),
+              b: c.C * Math.cos((c.H * Math.PI) / 180),
+              color: new Color("oklch", [c.L, c.C, c.H]).to("srgb").toString({ format: "hex" }),
+              displayName: `${brand} - ${c.name}`
+            });
+          }
         });
       });
     }
@@ -1287,49 +1297,55 @@ const View3D = ({
         },
       });
     }
-
-    traces.push({
-      type: "scatter3d",
-      mode: "lines",
-      x: crosshair?.snapTarget ? [crosshair.a, crosshair.snapTarget.a] : [],
-      y: crosshair?.snapTarget ? [crosshair.b, crosshair.snapTarget.b] : [],
-      z: crosshair?.snapTarget ? [crosshair.rawL, crosshair.snapTarget.L] : [],
-      line: {
-        color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
-        width: 2,
-        dash: "dot",
-      },
-      hoverinfo: "skip",
-    });
-    traces.push({
-      type: "scatter3d",
-      mode: "markers",
-      x: [crosshair?.a],
-      y: [crosshair?.b],
-      z: [crosshair?.rawL],
-      text: [
-        `<b>Cursor</b><br>L: ${crosshair?.rawL.toFixed(3)} C: ${crosshair?.rawC.toFixed(3)} H: ${crosshair?.rawH.toFixed(1)}°`,
-      ],
-      hovertemplate: "%{text}<extra></extra>",
-      marker: {
-        symbol: "cross",
-        size: 8,
-        color: isDark ? "#F2E8DF" : "#010D00",
-        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
-      },
-      hoverinfo: "skip",
-    });
     return traces;
   }, [
     points,
-    crosshair,
     isDark,
     names,
     adjectives,
     savedColors,
     lockedNouns,
     lockedAdjectives,
+    colorData,
+    filterPt,
   ]);
+
+  const data = useMemo(() => {
+    return [
+      ...baseTraces,
+      {
+        type: "scatter3d",
+        mode: "lines",
+        x: deferredCrosshair?.snapTarget ? [deferredCrosshair.a, deferredCrosshair.snapTarget.a] : [],
+        y: deferredCrosshair?.snapTarget ? [deferredCrosshair.b, deferredCrosshair.snapTarget.b] : [],
+        z: deferredCrosshair?.snapTarget ? [deferredCrosshair.rawL, deferredCrosshair.snapTarget.L] : [],
+        line: {
+          color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
+          width: 2,
+          dash: "dot",
+        },
+        hoverinfo: "skip",
+      },
+      {
+        type: "scatter3d",
+        mode: "markers",
+        x: [deferredCrosshair?.a],
+        y: [deferredCrosshair?.b],
+        z: [deferredCrosshair?.rawL],
+        text: [
+          `<b>Cursor</b><br>L: ${deferredCrosshair?.rawL?.toFixed(3)} C: ${deferredCrosshair?.rawC?.toFixed(3)} H: ${deferredCrosshair?.rawH?.toFixed(1)}°`,
+        ],
+        hovertemplate: "%{text}<extra></extra>",
+        marker: {
+          symbol: "cross",
+          size: 8,
+          color: isDark ? "#F2E8DF" : "#010D00",
+          line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
+        },
+        hoverinfo: "skip",
+      }
+    ];
+  }, [baseTraces, deferredCrosshair, isDark]);
   const layout = useMemo(
     () => ({
       uirevision: "true",
@@ -1379,19 +1395,21 @@ const View3D = ({
     [isDark],
   );
   return (
-    <PlotlyChart
-      data={data}
-      layout={layout}
-      onPointClick={handlePointClick}
-      theme={theme}
-    />
+    <div className="relative w-full h-full">
+      <PlotlyChart
+        data={data}
+        layout={layout}
+        onPointClick={handlePointClick}
+        theme={theme}
+      />
+    </div>
   );
 };
 const ViewVertical = ({
   colorData,
-
   points,
   crosshair,
+  deferredCrosshair,
   handlePointClick,
   theme,
   names,
@@ -1406,6 +1424,10 @@ const ViewVertical = ({
   viewportFilter,
   viewportSearchQuery,
   viewportTagFilter,
+  filterPt,
+  filterL,
+  filterC,
+  filterH,
 }) => {
   const isDark = theme === "dark";
   const [showText, setShowText] = useState(false);
@@ -1419,26 +1441,14 @@ const ViewVertical = ({
       setShowText(false);
     }
   };
-  const stableH = useMemo(() => {
-    const allPoints = [...(points || [])];
-    Object.values(savedColors).forEach((sc) => {
-      if (sc.type === "pin") allPoints.push(sc);
-    });
-    if (allPoints.length === 0) return 0;
-    const target = crosshair?.rawH || 0;
-    const uniqueH = [
-      ...new Set(allPoints.filter((p) => p.C > 0).map((p) => p.H)),
-    ].sort((a, b) => a - b);
-    if (uniqueH.length === 0) return 0;
-    return uniqueH.reduce((prev, curr) =>
-      Math.abs(curr - target) < Math.abs(prev - target) ? curr : prev,
-    );
-  }, [crosshair?.rawH, points, savedColors]);
-
-  const targetH = stableH;
+  const targetH = crosshair?.rawH || 0;
   const filterFn = useCallback(
     (p, isCommercial = false) => {
+      if (filterPt && !filterPt(p)) return false;
       if (p.C === 0) return true;
+
+      // When the user uses the Hue slider, respect it; otherwise default to slice width of 5
+      const allowedHueDiff = filterH !== undefined ? Math.max(5, filterH) : 5;
 
       if (
         p.isPin ||
@@ -1451,21 +1461,11 @@ const ViewVertical = ({
       ) {
         let hDiff = Math.abs(p.H - targetH);
         hDiff = Math.min(hDiff, 360 - hDiff);
-        return hDiff <= 5;
+        return hDiff <= allowedHueDiff;
       }
-
-      const cStepForH = Math.max(1, Math.round(p.C / 0.02));
-      const nH = 6 * cStepForH;
-      const stepH = 360 / nH;
-      const closestH = (Math.round(targetH / stepH) * stepH) % 360;
-
-      if (Math.abs(p.H - closestH) > 0.1) return false;
-
-      let hDiff = Math.abs(closestH - targetH);
-      hDiff = Math.min(hDiff, 360 - hDiff);
-      return hDiff <= 5;
+      return true; // We rely on filterPt for lightness and chroma
     },
-    [targetH],
+    [targetH, filterPt, filterH],
   );
 
   const swatchItems = useMemo(() => {
@@ -1549,7 +1549,7 @@ const ViewVertical = ({
     });
   }, [swatchItems, viewMode, savedColors, names, adjectives]);
 
-  const data = useMemo(() => {
+  const baseTraces = useMemo(() => {
     if (viewMode === "swatches") return [];
     const filtered = points.filter((p) => !p.isPin && filterFn(p));
     const filteredBurnt = Object.values(savedColors).filter(
@@ -1715,11 +1715,30 @@ const ViewVertical = ({
       });
     }
 
+    return traces;
+  }, [
+    points,
+    isDark,
+    names,
+    adjectives,
+    savedColors,
+    lockedNouns,
+    lockedAdjectives,
+    viewMode,
+    showText,
+    targetH,
+    colorData,
+    filterFn,
+  ]);
+
+  const data = useMemo(() => {
+    if (viewMode === "swatches") return [];
+    const traces = [...baseTraces];
     traces.push({
       type: "scatter",
       mode: "lines",
-      x: crosshair?.snapTarget ? [crosshair.rawC, crosshair.snapTarget.C] : [],
-      y: crosshair?.snapTarget ? [crosshair.rawL, crosshair.snapTarget.L] : [],
+      x: deferredCrosshair?.snapTarget ? [deferredCrosshair.rawC, deferredCrosshair.snapTarget.C] : [],
+      y: deferredCrosshair?.snapTarget ? [deferredCrosshair.rawL, deferredCrosshair.snapTarget.L] : [],
       line: {
         color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
         width: 2,
@@ -1730,10 +1749,10 @@ const ViewVertical = ({
     traces.push({
       type: "scatter",
       mode: "markers",
-      x: [crosshair?.rawC],
-      y: [crosshair?.rawL],
+      x: [deferredCrosshair?.rawC],
+      y: [deferredCrosshair?.rawL],
       text: [
-        `<b>Cursor</b><br>L: ${crosshair?.rawL.toFixed(3)} C: ${crosshair?.rawC.toFixed(3)} H: ${crosshair?.rawH.toFixed(1)}°`,
+        `<b>Cursor</b><br>L: ${deferredCrosshair?.rawL?.toFixed(3)} C: ${deferredCrosshair?.rawC?.toFixed(3)} H: ${deferredCrosshair?.rawH?.toFixed(1)}°`,
       ],
       hovertemplate: "%{text}<extra></extra>",
       marker: {
@@ -1750,28 +1769,15 @@ const ViewVertical = ({
       traces.push({
         type: "scatter",
         mode: "lines",
-        x: [p.C, crosshair.rawC],
-        y: [p.L, crosshair.rawL],
+        x: [p.C, deferredCrosshair?.rawC],
+        y: [p.L, deferredCrosshair?.rawL],
         line: { color: "#f59e0b", width: 2, dash: "dash" },
         hoverinfo: "skip",
       });
     }
 
     return traces;
-  }, [
-    points,
-    crosshair,
-    isDark,
-    names,
-    adjectives,
-    savedColors,
-    lockedNouns,
-    lockedAdjectives,
-    viewMode,
-    showText,
-    stableH,
-    tetheringPinId,
-  ]);
+  }, [baseTraces, deferredCrosshair, isDark, viewMode, tetheringPinId, savedColors]);
   const layout = useMemo(() => {
     const shapes = [
       {
@@ -1784,7 +1790,6 @@ const ViewVertical = ({
       },
     ];
     if (viewMode === "bins") {
-      const targetH = stableH;
       const filterFn = (p) => {
         if (p.C === 0) return true;
         const cStepForH = Math.max(1, Math.round(p.C / 0.02));
@@ -1795,7 +1800,7 @@ const ViewVertical = ({
         const h2 = (closestH + 360) % 360;
         return Math.abs(p.H - h1) < 0.1 || Math.abs(p.H - h2) < 0.1;
       };
-      const filtered = points.filter((p) => !p.isPin && filterFn(p));
+      const filtered = points.filter((p) => !p.isPin && filterFn(p) && (filterPt ? filterPt(p) : true));
       if (filtered.length > 0) {
         try {
           const allVoronoiPoints = [...filtered];
@@ -1923,7 +1928,7 @@ const ViewVertical = ({
       shapes,
       showlegend: false,
     };
-  }, [isDark, viewMode, points, stableH]);
+  }, [isDark, viewMode, points, targetH, filterPt]);
   const handleBgClick = (cValue, lValue) => {
     handlePointClick([
       Math.max(0, Math.min(1.0, lValue)),
@@ -1962,9 +1967,9 @@ const ViewVertical = ({
 
 const ViewChromaRings = ({
   colorData,
-
   points,
   crosshair,
+  deferredCrosshair,
   handlePointClick,
   theme,
   names,
@@ -1979,6 +1984,10 @@ const ViewChromaRings = ({
   viewportFilter,
   viewportSearchQuery,
   viewportTagFilter,
+  filterPt,
+  filterL,
+  filterC,
+  filterH,
 }) => {
   const isDark = theme === "dark";
   const [showText, setShowText] = useState(false);
@@ -1992,25 +2001,10 @@ const ViewChromaRings = ({
       setShowText(false);
     }
   };
-  const stableC = useMemo(() => {
-    const allPoints = [...(points || [])];
-    Object.values(savedColors).forEach((sc) => {
-      if (sc.type === "pin") allPoints.push(sc);
-    });
-    if (allPoints.length === 0) return 0;
-    const target = crosshair?.rawC || 0;
-    const uniqueC = [...new Set(allPoints.map((p) => p.C))].sort(
-      (a, b) => a - b,
-    );
-    if (uniqueC.length === 0) return 0;
-    return uniqueC.reduce((prev, curr) =>
-      Math.abs(curr - target) < Math.abs(prev - target) ? curr : prev,
-    );
-  }, [crosshair?.rawC, points, savedColors]);
-
+  const targetC = crosshair?.rawC || 0;
   const filterFn = useCallback(
     (p, isCommercial = false) => {
-      const targetC = stableC;
+      if (filterPt && !filterPt(p)) return false;
       if (p.C === 0 && targetC === 0) return true;
 
       if (
@@ -2022,21 +2016,17 @@ const ViewChromaRings = ({
         p.hex !== undefined ||
         isCommercial
       ) {
-        return Math.abs(p.C - targetC) <= 0.02;
+        return Math.abs(p.C - targetC) <= Math.max(0.02, filterC);
       }
 
-      const gridC = Math.round(targetC / 0.02) * 0.02;
-      if (Math.abs(p.C - gridC) > 0.001) return false;
-
-      return Math.abs(gridC - targetC) <= 0.02;
+      return true; // We use filterPt for lightness and chroma
     },
-    [stableC],
+    [targetC, filterPt, filterC],
   );
 
   const swatchItems = useMemo(() => {
     if (viewMode !== "swatches") return [];
     const res = [];
-    const targetC = stableC;
     points
       .filter((p) => !p.isPin && filterFn(p))
       .forEach((p) => {
@@ -2093,7 +2083,7 @@ const ViewChromaRings = ({
     viewMode,
     names,
     adjectives,
-    stableC,
+    targetC,
   ]);
 
   const finalSwatchItems = useMemo(() => {
@@ -2115,7 +2105,7 @@ const ViewChromaRings = ({
     });
   }, [swatchItems, viewMode, savedColors, names, adjectives]);
 
-  const data = useMemo(() => {
+  const baseTraces = useMemo(() => {
     if (viewMode === "swatches") return [];
     const filtered = points.filter((p) => !p.isPin && filterFn(p));
     const filteredBurnt = Object.values(savedColors).filter(
@@ -2280,11 +2270,31 @@ const ViewChromaRings = ({
       });
     }
 
+    return traces;
+  }, [
+    points,
+    isDark,
+    names,
+    adjectives,
+    savedColors,
+    lockedNouns,
+    lockedAdjectives,
+    viewMode,
+    showText,
+    targetC,
+    colorData,
+    filterFn,
+  ]);
+
+  const data = useMemo(() => {
+    if (viewMode === "swatches") return [];
+    const traces = [...baseTraces];
+
     traces.push({
       type: "scatter",
       mode: "lines",
-      x: crosshair?.snapTarget ? [crosshair.rawH, crosshair.snapTarget.H] : [],
-      y: crosshair?.snapTarget ? [crosshair.rawL, crosshair.snapTarget.L] : [],
+      x: deferredCrosshair?.snapTarget ? [deferredCrosshair.rawH, deferredCrosshair.snapTarget.H] : [],
+      y: deferredCrosshair?.snapTarget ? [deferredCrosshair.rawL, deferredCrosshair.snapTarget.L] : [],
       line: {
         color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
         width: 2,
@@ -2295,10 +2305,10 @@ const ViewChromaRings = ({
     traces.push({
       type: "scatter",
       mode: "markers",
-      x: [crosshair?.rawH],
-      y: [crosshair?.rawL],
+      x: [deferredCrosshair?.rawH],
+      y: [deferredCrosshair?.rawL],
       text: [
-        `<b>Cursor</b><br>L: ${crosshair?.rawL.toFixed(3)} C: ${crosshair?.rawC.toFixed(3)} H: ${crosshair?.rawH.toFixed(1)}°`,
+        `<b>Cursor</b><br>L: ${deferredCrosshair?.rawL?.toFixed(3)} C: ${deferredCrosshair?.rawC?.toFixed(3)} H: ${deferredCrosshair?.rawH?.toFixed(1)}°`,
       ],
       hovertemplate: "%{text}<extra></extra>",
       marker: {
@@ -2315,28 +2325,15 @@ const ViewChromaRings = ({
       traces.push({
         type: "scatter",
         mode: "lines",
-        x: [p.H, crosshair.rawH],
-        y: [p.L, crosshair.rawL],
+        x: [p.H, deferredCrosshair?.rawH],
+        y: [p.L, deferredCrosshair?.rawL],
         line: { color: "#f59e0b", width: 2, dash: "dash" },
         hoverinfo: "none",
       });
     }
 
     return traces;
-  }, [
-    points,
-    crosshair,
-    isDark,
-    names,
-    adjectives,
-    savedColors,
-    lockedNouns,
-    lockedAdjectives,
-    viewMode,
-    showText,
-    stableC,
-    tetheringPinId,
-  ]);
+  }, [baseTraces, deferredCrosshair, isDark, viewMode, tetheringPinId, savedColors]);
   const layout = useMemo(() => {
     const shapes = [
       {
@@ -2349,7 +2346,7 @@ const ViewChromaRings = ({
       },
     ];
     if (viewMode === "bins") {
-      const gridC = Math.round(stableC / 0.02) * 0.02;
+      const gridC = Math.round(targetC / 0.02) * 0.02;
       const filtered = points.filter(
         (p) => !p.isPin && p.C > 0 && Math.abs(p.C - gridC) <= 0.001,
       );
@@ -2456,7 +2453,7 @@ const ViewChromaRings = ({
       shapes,
       showlegend: false,
     };
-  }, [isDark, viewMode, points, stableC]);
+  }, [isDark, viewMode, points, targetC, filterPt]);
   const handleBgClick = (hValue, lValue) => {
     handlePointClick([
       Math.max(0, Math.min(1.0, lValue)),
@@ -3253,10 +3250,10 @@ const ViewportSwatches = ({
 
 const ViewTopDown = ({
   colorData,
-
   points,
   baseAnchors,
   crosshair,
+  deferredCrosshair,
   handlePointClick,
   theme,
   names,
@@ -3270,6 +3267,10 @@ const ViewTopDown = ({
   swatchZoom,
   viewportSearchQuery,
   viewportTagFilter,
+  filterPt,
+  filterL,
+  filterC,
+  filterH,
 }) => {
   const isDark = theme === "dark";
   const [showText, setShowText] = useState(false);
@@ -3283,24 +3284,10 @@ const ViewTopDown = ({
       setShowText(false);
     }
   };
-  const stableL = useMemo(() => {
-    const allPoints = [...(points || [])];
-    Object.values(savedColors).forEach((sc) => {
-      if (sc.type === "pin") allPoints.push(sc);
-    });
-    if (allPoints.length === 0) return 0;
-    const target = crosshair?.rawL || 0;
-    const uniqueL = [...new Set(allPoints.map((p) => p.L))].sort(
-      (a, b) => a - b,
-    );
-    if (uniqueL.length === 0) return 0;
-    return uniqueL.reduce((prev, curr) =>
-      Math.abs(curr - target) < Math.abs(prev - target) ? curr : prev,
-    );
-  }, [crosshair?.rawL, points, savedColors]);
-
+  const targetL = crosshair?.rawL || 0;
   const filterFn = useCallback(
     (p, isCommercial = false) => {
+      if (filterPt && !filterPt(p)) return false;
       const targetL = crosshair?.rawL || 0;
       if (
         p.isPin ||
@@ -3311,14 +3298,11 @@ const ViewTopDown = ({
         p.hex !== undefined ||
         isCommercial
       ) {
-        return Math.abs(p.L - targetL) <= 0.02;
+        return Math.abs(p.L - targetL) <= Math.max(0.02, filterL);
       }
-      const gridL = Math.round(targetL / 0.02) * 0.02;
-      if (Math.abs(p.L - gridL) > 0.001) return false;
-
-      return Math.abs(gridL - targetL) <= 0.02;
+      return true;
     },
-    [crosshair],
+    [crosshair, filterPt, filterL],
   );
 
   const validAnchors = useMemo(() => {
@@ -3349,35 +3333,8 @@ const ViewTopDown = ({
         }
         return { isValid: false };
       })
-      .filter((p) => p.isValid && !p.isPin);
-  }, [baseAnchors, crosshair?.rawL]);
-  const stableAnchors = useMemo(() => {
-    if (!crosshair) return [];
-    return baseAnchors
-      .map((p) => {
-        const targetL = p.L !== undefined && p.L !== null ? p.L : stableL;
-        const minL = p.minL !== undefined ? p.minL : -0.01;
-        const maxL = p.maxL !== undefined ? p.maxL : 1.01;
-        const inRange = targetL >= minL - 0.001 && targetL <= maxL + 0.001;
-
-        const c = new Color("oklch", [targetL, p.C, p.H]);
-        if ((c.inGamut("srgb") || p.C === 0) && inRange) {
-          return {
-            ...p,
-            L: targetL,
-            color: c
-              .clone()
-              .toGamut({ space: "srgb" })
-              .toString({ format: "hex" }),
-            inSrgb: true,
-            isValid: true,
-          };
-        }
-        return { isValid: false };
-      })
-      .filter((p) => p.isValid && !p.isPin);
-  }, [baseAnchors, stableL]);
-
+      .filter((p) => p.isValid && !p.isPin && (filterPt ? filterPt(p) : true));
+  }, [baseAnchors, crosshair?.rawL, filterPt]);
   const swatchItems = useMemo(() => {
     if (viewMode !== "swatches") return [];
     const res = [];
@@ -3429,7 +3386,6 @@ const ViewTopDown = ({
     return res;
   }, [
     validAnchors,
-    stableL,
     savedColors,
     colorData,
     lockedNouns,
@@ -3459,7 +3415,7 @@ const ViewTopDown = ({
     });
   }, [swatchItems, viewMode, savedColors, names, adjectives]);
 
-  const data = useMemo(() => {
+  const baseTraces = useMemo(() => {
     if (viewMode === "swatches") return [];
     const traces = [];
     traces.push({
@@ -3511,12 +3467,13 @@ const ViewTopDown = ({
     });
     const gridLockedNodes = baseAnchors
       .filter((p) => !p.isCustomAnchor)
-      .map((p) => ({ ...p, L: crosshair.rawL, lStr: getLStr(crosshair.rawL) }))
+      .map((p) => ({ ...p, L: deferredCrosshair?.rawL || 0, lStr: getLStr(deferredCrosshair?.rawL || 0) }))
       .filter((p) => {
         return (
           !p.isPin &&
           lockedNouns[p.parentNounId || `${p.cStr}-${p.hStr}`] &&
-          lockedAdjectives[p.lStr]
+          lockedAdjectives[p.lStr] &&
+          (filterPt ? filterPt(p) : true)
         );
       })
       .map((p) => {
@@ -3647,16 +3604,38 @@ const ViewTopDown = ({
       });
     }
 
+    return traces;
+  }, [
+    validAnchors,
+    baseAnchors,
+    deferredCrosshair,
+    isDark,
+    names,
+    adjectives,
+    savedColors,
+    lockedNouns,
+    lockedAdjectives,
+    viewMode,
+    showText,
+    colorData,
+    filterFn,
+    filterPt,
+  ]);
+
+  const data = useMemo(() => {
+    if (viewMode === "swatches") return [];
+    const traces = [...baseTraces];
+
     traces.push({
       type: "scatter",
       mode: "lines",
       x:
-        crosshair?.snapTarget || crosshair?.activePullType
-          ? [crosshair.a, crosshair.snapTarget?.a || crosshair.gravityA]
+        deferredCrosshair?.snapTarget || deferredCrosshair?.activePullType
+          ? [deferredCrosshair.a, deferredCrosshair.snapTarget?.a || deferredCrosshair.gravityA]
           : [],
       y:
-        crosshair?.snapTarget || crosshair?.activePullType
-          ? [crosshair.b, crosshair.snapTarget?.b || crosshair.gravityB]
+        deferredCrosshair?.snapTarget || deferredCrosshair?.activePullType
+          ? [deferredCrosshair.b, deferredCrosshair.snapTarget?.b || deferredCrosshair.gravityB]
           : [],
       line: {
         color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
@@ -3668,10 +3647,10 @@ const ViewTopDown = ({
     traces.push({
       type: "scatter",
       mode: "markers",
-      x: [crosshair?.a],
-      y: [crosshair?.b],
+      x: [deferredCrosshair?.a],
+      y: [deferredCrosshair?.b],
       text: [
-        `<b>Cursor ${crosshair?.activePullType ? `(Tethered to ${crosshair.activePullType})` : ""}</b><br>L: ${crosshair?.rawL.toFixed(3)} C: ${crosshair?.rawC.toFixed(3)} H: ${crosshair?.rawH.toFixed(1)}°`,
+        `<b>Cursor ${deferredCrosshair?.activePullType ? `(Tethered to ${deferredCrosshair.activePullType})` : ""}</b><br>L: ${deferredCrosshair?.rawL?.toFixed(3)} C: ${deferredCrosshair?.rawC?.toFixed(3)} H: ${deferredCrosshair?.rawH?.toFixed(1)}°`,
       ],
       hovertemplate: "%{text}<extra></extra>",
       marker: {
@@ -3689,34 +3668,21 @@ const ViewTopDown = ({
       traces.push({
         type: "scatter",
         mode: "lines",
-        x: [p.a, crosshair.a],
-        y: [p.b, crosshair.b],
+        x: [p.a, deferredCrosshair?.a],
+        y: [p.b, deferredCrosshair?.b],
         line: { color: "#f59e0b", width: 2, dash: "dash" },
         hoverinfo: "skip",
       });
     }
 
     return traces;
-  }, [
-    validAnchors,
-    baseAnchors,
-    crosshair,
-    isDark,
-    names,
-    adjectives,
-    savedColors,
-    lockedNouns,
-    lockedAdjectives,
-    viewMode,
-    showText,
-    tetheringPinId,
-  ]);
+  }, [baseTraces, deferredCrosshair, isDark, viewMode, tetheringPinId, savedColors]);
   const layout = useMemo(() => {
     const shapes = [];
     if (viewMode === "bins") {
-      if (stableAnchors.length > 0) {
+      if (validAnchors.length > 0) {
         try {
-          const allVoronoiPoints = [...stableAnchors];
+          const allVoronoiPoints = [...validAnchors];
           const isMobile = window.innerWidth < 768;
           const angleStep = isMobile ? 10 : 2;
           const boundaryPoints = [];
@@ -3725,7 +3691,7 @@ const ViewTopDown = ({
               high = 0.4;
             while (high - low > 0.001) {
               let mid = (low + high) / 2;
-              if (new Color("oklch", [stableL, mid, angle]).inGamut("srgb")) {
+              if (new Color("oklch", [crosshair?.rawL || 0, mid, angle]).inGamut("srgb")) {
                 low = mid;
               } else {
                 high = mid;
@@ -3846,7 +3812,7 @@ const ViewTopDown = ({
       showlegend: false,
       shapes,
     };
-  }, [isDark, viewMode, stableAnchors, stableL]);
+  }, [isDark, viewMode, validAnchors, crosshair?.rawL]);
   const handleBgClick = (a, b) => {
     const C = Math.min(0.4, Math.sqrt(a * a + b * b));
     let H = Math.atan2(a, b) * (180 / Math.PI);
@@ -6488,6 +6454,10 @@ const App = () => {
   const [activeTab, setActiveTab] = useState("top");
   const [colorData, setColorData] = useState(null);
 
+  const [filterL, setFilterL] = useState(1.0);
+  const [filterC, setFilterC] = useState(0.4);
+  const [filterH, setFilterH] = useState(180);
+
   const updateColorData = (newData) => {
     setColorData(newData);
   };
@@ -6884,6 +6854,8 @@ const App = () => {
     }
     return filtered;
   }, [colorData, viewportVisibility]);
+
+
   const [showVisibilityMenu, setShowVisibilityMenu] = useState(false);
   const visibilityMenuRef = useRef(null);
 
@@ -6903,8 +6875,11 @@ const App = () => {
   const [viewportTagFilter, setViewportTagFilter] = useState("");
   const [swatchZoom, setSwatchZoom] = useState(1.0);
   const [scrubL, setScrubL] = useState(0.65);
+  const deferredScrubL = useDeferredValue(scrubL);
   const [scrubC, setScrubC] = useState(0.12);
+  const deferredScrubC = useDeferredValue(scrubC);
   const [scrubH, setScrubH] = useState(0);
+  const deferredScrubH = useDeferredValue(scrubH);
   const [scrubCommercial, setScrubCommercial] = useState(null);
   const [temporarySpectral, setTemporarySpectral] = useState(null);
   const [compSlotA, setCompSlotA] = useState(null);
@@ -7398,6 +7373,7 @@ const App = () => {
   const crosshair = useMemo(() => {
     if (!gridData) return null;
     const a = scrubC * Math.sin((scrubH * Math.PI) / 180);
+
     const b = scrubC * Math.cos((scrubH * Math.PI) / 180);
     let closestSaved = null,
       minSavedDist = Infinity,
@@ -7625,6 +7601,17 @@ const App = () => {
     savedColors,
     temporarySpectral,
   ]);
+
+  const deferredCrosshair = useDeferredValue(crosshair);
+
+  const filterPt = useCallback((p) => {
+    const lDiff = Math.abs(p.L - deferredScrubL);
+    const cDiff = Math.abs(p.C - deferredScrubC);
+    let hDiff = Math.abs(p.H - deferredScrubH);
+    hDiff = Math.min(hDiff, 360 - hDiff);
+
+    return lDiff <= filterL && cDiff <= filterC && hDiff <= filterH;
+  }, [deferredScrubL, deferredScrubC, deferredScrubH, filterL, filterC, filterH]);
 
   const handlePointClick = (pt, spectralData = null, commercialData = null) => {
     // pt might be [L, C, H, name/id, brand, index, ...]
@@ -8418,7 +8405,8 @@ const App = () => {
         appCode = inlineScript.textContent;
       } else {
         try {
-          const r2 = await fetch("app.js");
+          let r2 = await fetch("App.jsx");
+          if (!r2.ok) r2 = await fetch("app.js");
           if (r2.ok) appCode = await r2.text();
           else throw new Error("Cannot locate app code");
         } catch (e2) {
@@ -9490,6 +9478,13 @@ const App = () => {
       setSwatchZoom={setSwatchZoom}
       viewportTagFilter={viewportTagFilter}
       setViewportTagFilter={setViewportTagFilter}
+      filterL={filterL}
+      setFilterL={setFilterL}
+      filterC={filterC}
+      setFilterC={setFilterC}
+      filterH={filterH}
+      setFilterH={setFilterH}
+      filterPt={filterPt}
       scrubL={scrubL}
       setScrubL={setScrubL}
       scrubC={scrubC}
@@ -9538,6 +9533,7 @@ const App = () => {
       handlePointClick={handlePointClick}
       handleVisualize={handleVisualize}
       crosshair={crosshair}
+      deferredCrosshair={deferredCrosshair}
       gridData={gridData}
       isLight={isLight}
       activeColorObj={activeColorObj}
@@ -9654,6 +9650,7 @@ const ViewDatabase = ({
   crosshair,
   searchTerm,
   tagFilter,
+  filterPt,
 }) => {
   const [sortBy, setSortBy] = useState("brand");
   const [sortAsc, setSortAsc] = useState(true);
@@ -9678,6 +9675,7 @@ const ViewDatabase = ({
     let items = [];
     Object.keys(colorData).forEach((brand) => {
       colorData[brand].forEach((c, idx) => {
+        if (filterPt && !filterPt(c)) return;
         let L = c.L;
         let C = c.C;
         let H = c.H;
@@ -9730,7 +9728,7 @@ const ViewDatabase = ({
       });
     });
     return items;
-  }, [colorData]);
+  }, [colorData, filterPt]);
 
   const allBrands = useMemo(
     () => Array.from(new Set(allDbItems.map((i) => i.brand))).sort(),
@@ -10843,6 +10841,13 @@ const AppUI = ({
   setSwatchZoom,
   viewportTagFilter,
   setViewportTagFilter,
+  filterL,
+  setFilterL,
+  filterC,
+  setFilterC,
+  filterH,
+  setFilterH,
+  filterPt,
   scrubL,
   setScrubL,
   scrubC,
@@ -10891,6 +10896,7 @@ const AppUI = ({
   handlePointClick,
   handleVisualize,
   crosshair,
+  deferredCrosshair,
   gridData,
   isLight,
   activeColorObj,
@@ -10938,6 +10944,7 @@ const AppUI = ({
   setTetheringPinId,
 }) => {
   const isDark = theme === "dark";
+  const [showViewFilters, setShowViewFilters] = useState(false);
 
   return (
     <div className="flex flex-col md:flex-row h-screen overflow-hidden">
@@ -12205,6 +12212,48 @@ const AppUI = ({
             )}
 
             <div className="flex-1 relative overflow-hidden">
+              {["slice", "chroma", "top", "3d", "db"].includes(activeTab) && (
+                <div className="absolute top-4 left-4 z-50">
+                  <button
+                    onClick={() => setShowViewFilters(!showViewFilters)}
+                    className="flex justify-center items-center w-8 h-8 bg-white/80 dark:bg-neutral-900/80 rounded-lg border border-slate-200 dark:border-neutral-800 backdrop-blur-md shadow-sm text-slate-500 hover:text-sky-600 dark:text-neutral-400 dark:hover:text-sky-400 transition-colors"
+                    title="View Filters"
+                  >
+                    <Icon name="sliders-horizontal" className="w-4 h-4" />
+                  </button>
+                  {showViewFilters && (
+                    <div className="mt-2 flex flex-col gap-4 bg-white/95 dark:bg-neutral-900/95 p-4 rounded-xl border border-slate-200 dark:border-neutral-800 backdrop-blur-md shadow-xl w-56 animate-in fade-in zoom-in-95 duration-200 origin-top-left">
+                      <div className="flex items-center justify-between border-b border-slate-100 dark:border-neutral-800 pb-2">
+                        <label className="text-xs font-semibold tracking-wider text-slate-500 dark:text-neutral-400">View Filters</label>
+                        <button onClick={() => setShowViewFilters(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-neutral-200" title="Close Filters">
+                          <Icon name="x" className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <div className="flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono">
+                          <span>Lightness</span>
+                          <span className="bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded">± {(filterL).toFixed(2)}</span>
+                        </div>
+                        <input type="range" min="0" max="1" step="0.01" value={filterL} onChange={e => setFilterL(Number(e.target.value))} className="w-full accent-sky-500" />
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <div className="flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono">
+                          <span>Chroma</span>
+                          <span className="bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded">± {(filterC).toFixed(2)}</span>
+                        </div>
+                        <input type="range" min="0" max="0.4" step="0.01" value={filterC} onChange={e => setFilterC(Number(e.target.value))} className="w-full accent-sky-500" />
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <div className="flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono">
+                          <span>Hue</span>
+                          <span className="bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded">± {filterH.toFixed(0)}°</span>
+                        </div>
+                        <input type="range" min="0" max="180" step="1" value={filterH} onChange={e => setFilterH(Number(e.target.value))} className="w-full accent-sky-500" />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
               {activeTab === "db" && (
                 <ViewDatabase
                   colorData={colorData}
@@ -12215,6 +12264,7 @@ const AppUI = ({
                   crosshair={{ L: scrubL, C: scrubC, H: scrubH }}
                   searchTerm={viewportSearchQuery}
                   tagFilter={viewportTagFilter}
+                  filterPt={filterPt}
                 />
               )}
               {activeTab === "3d" && (
@@ -12222,6 +12272,7 @@ const AppUI = ({
                   colorData={filteredColorData}
                   points={filteredViewData.points}
                   crosshair={crosshair}
+                  deferredCrosshair={deferredCrosshair}
                   handlePointClick={handlePointClick}
                   theme={theme}
                   names={names}
@@ -12230,6 +12281,7 @@ const AppUI = ({
                   lockedNouns={lockedNouns}
                   lockedAdjectives={lockedAdjectives}
                   tetheringPinId={tetheringPinId}
+                  filterPt={filterPt}
                 />
               )}
               {activeTab === "slice" && (
@@ -12237,6 +12289,7 @@ const AppUI = ({
                   colorData={filteredColorData}
                   points={filteredViewData.points}
                   crosshair={crosshair}
+                  deferredCrosshair={deferredCrosshair}
                   handlePointClick={handlePointClick}
                   theme={theme}
                   names={names}
@@ -12249,6 +12302,10 @@ const AppUI = ({
                   swatchLayout={swatchLayout}
                   swatchZoom={swatchZoom}
                   viewportSearchQuery={viewportSearchQuery}
+                  filterPt={filterPt}
+                  filterL={filterL}
+                  filterC={filterC}
+                  filterH={filterH}
                 />
               )}
               {activeTab === "chroma" && (
@@ -12256,6 +12313,7 @@ const AppUI = ({
                   colorData={filteredColorData}
                   points={filteredViewData.points}
                   crosshair={crosshair}
+                  deferredCrosshair={deferredCrosshair}
                   handlePointClick={handlePointClick}
                   theme={theme}
                   names={names}
@@ -12268,6 +12326,10 @@ const AppUI = ({
                   swatchLayout={swatchLayout}
                   swatchZoom={swatchZoom}
                   viewportSearchQuery={viewportSearchQuery}
+                  filterPt={filterPt}
+                  filterL={filterL}
+                  filterC={filterC}
+                  filterH={filterH}
                 />
               )}
               {activeTab === "top" && (
@@ -12276,6 +12338,7 @@ const AppUI = ({
                   points={filteredViewData.points}
                   baseAnchors={filteredViewData.baseAnchors}
                   crosshair={crosshair}
+                  deferredCrosshair={deferredCrosshair}
                   handlePointClick={handlePointClick}
                   theme={theme}
                   names={names}
@@ -12288,6 +12351,10 @@ const AppUI = ({
                   swatchLayout={swatchLayout}
                   swatchZoom={swatchZoom}
                   viewportSearchQuery={viewportSearchQuery}
+                  filterPt={filterPt}
+                  filterL={filterL}
+                  filterC={filterC}
+                  filterH={filterH}
                 />
               )}
               {activeTab === "groups" && (
