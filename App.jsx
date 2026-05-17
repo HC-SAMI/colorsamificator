@@ -1,4 +1,4 @@
-const { useState, useEffect, useMemo, useRef, useCallback, useDeferredValue } = React;
+const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
 // Removed eager glob import. CSVs are now fetched at runtime from /public/data (published as /data)
 
@@ -726,7 +726,8 @@ const CommercialMatches = ({ crosshair, colorData, onSelectColor }) => {
           return qWords.every((w) => 
             item.label.toLowerCase().includes(w) ||
             (item.match.name && item.match.name.toLowerCase().includes(w)) ||
-            (item.match.url && item.match.url.toLowerCase().includes(w))
+            (item.match.url && item.match.url.toLowerCase().includes(w)) ||
+            (item.match.tags && item.match.tags.some(t => t.toLowerCase().includes(w)))
           );
         })
       : allMatches;
@@ -902,10 +903,22 @@ const PlotlyChart = ({
   theme,
 }) => {
   const chartRef = useRef(null);
+  const cbRef = useRef({ onPointClick, onBgClick, onRelayout });
+  
+  useEffect(() => {
+    cbRef.current = { onPointClick, onBgClick, onRelayout };
+  });
+
+  const configStr = JSON.stringify(config);
+
   useEffect(() => {
     const gd = chartRef.current;
     if (!gd || !Plotly) return;
-    let activeLayout = JSON.parse(JSON.stringify(layout));
+    let activeLayout = { ...layout };
+    if (activeLayout.scene) activeLayout.scene = { ...activeLayout.scene };
+    if (activeLayout.xaxis) activeLayout.xaxis = { ...activeLayout.xaxis };
+    if (activeLayout.yaxis) activeLayout.yaxis = { ...activeLayout.yaxis };
+    
     const is3D = !!activeLayout.scene;
     if (gd._fullLayout) {
       if (is3D && gd._fullLayout.scene) {
@@ -925,18 +938,14 @@ const PlotlyChart = ({
         gd._fullLayout.xaxis.range &&
         activeLayout.xaxis
       ) {
-        activeLayout.xaxis.range = JSON.parse(
-          JSON.stringify(gd._fullLayout.xaxis.range),
-        );
+        activeLayout.xaxis.range = [...gd._fullLayout.xaxis.range];
       }
       if (
         gd._fullLayout.yaxis &&
         gd._fullLayout.yaxis.range &&
         activeLayout.yaxis
       ) {
-        activeLayout.yaxis.range = JSON.parse(
-          JSON.stringify(gd._fullLayout.yaxis.range),
-        );
+        activeLayout.yaxis.range = [...gd._fullLayout.yaxis.range];
       }
     }
     Plotly.react(gd, data, activeLayout, {
@@ -947,20 +956,24 @@ const PlotlyChart = ({
     }).then(() => {
       gd.removeAllListeners("plotly_click");
       gd.removeAllListeners("plotly_relayout");
-      if (onPointClick) {
-        gd.on("plotly_click", (e) => {
-          gd.__pointClicked = true;
-          if (e.points && e.points[0] && e.points[0].customdata) {
-            onPointClick(e.points[0].customdata);
+      
+      gd.on("plotly_click", (e) => {
+        gd.__pointClicked = true;
+        if (e.points && e.points[0] && e.points[0].customdata) {
+          if (cbRef.current.onPointClick) {
+            cbRef.current.onPointClick(e.points[0].customdata);
           }
-          setTimeout(() => {
-            gd.__pointClicked = false;
-          }, 50);
-        });
-      }
-      if (onRelayout) {
-        gd.on("plotly_relayout", onRelayout);
-      }
+        }
+        setTimeout(() => {
+          gd.__pointClicked = false;
+        }, 50);
+      });
+      
+      gd.on("plotly_relayout", (e) => {
+        if (cbRef.current.onRelayout) {
+          cbRef.current.onRelayout(e);
+        }
+      });
     });
     let isMiddleProxying = false;
     const proxyEvent = (e) => {
@@ -1016,7 +1029,7 @@ const PlotlyChart = ({
         e.button === 0 &&
         !e.__proxied &&
         leftPointerDown &&
-        onBgClick &&
+        cbRef.current.onBgClick &&
         !is3D
       ) {
         const dx = e.clientX - leftPointerDown.x;
@@ -1037,7 +1050,9 @@ const PlotlyChart = ({
               const xData = xAxis.p2d(xPx);
               const yData = yAxis.p2d(yPx);
               setTimeout(() => {
-                if (!gd.__pointClicked) onBgClick(xData, yData);
+                if (!gd.__pointClicked && cbRef.current.onBgClick) {
+                  cbRef.current.onBgClick(xData, yData);
+                }
               }, 50);
             }
           }
@@ -1085,7 +1100,7 @@ const PlotlyChart = ({
       );
       window.removeEventListener(upEv, handleLeftUp, { capture: true });
     };
-  }, [data, layout, theme, onPointClick, onBgClick, config]);
+  }, [data, layout, theme, configStr]);
   return <div ref={chartRef} className="plotly-wrapper"></div>;
 };
 
@@ -1093,7 +1108,6 @@ const View3D = ({
   colorData,
   points,
   crosshair,
-  deferredCrosshair,
   handlePointClick,
   theme,
   names,
@@ -1316,9 +1330,9 @@ const View3D = ({
       {
         type: "scatter3d",
         mode: "lines",
-        x: deferredCrosshair?.snapTarget ? [deferredCrosshair.a, deferredCrosshair.snapTarget.a] : [],
-        y: deferredCrosshair?.snapTarget ? [deferredCrosshair.b, deferredCrosshair.snapTarget.b] : [],
-        z: deferredCrosshair?.snapTarget ? [deferredCrosshair.rawL, deferredCrosshair.snapTarget.L] : [],
+        x: crosshair?.snapTarget ? [crosshair.a, crosshair.snapTarget.a] : [],
+        y: crosshair?.snapTarget ? [crosshair.b, crosshair.snapTarget.b] : [],
+        z: crosshair?.snapTarget ? [crosshair.rawL, crosshair.snapTarget.L] : [],
         line: {
           color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
           width: 2,
@@ -1329,11 +1343,11 @@ const View3D = ({
       {
         type: "scatter3d",
         mode: "markers",
-        x: [deferredCrosshair?.a],
-        y: [deferredCrosshair?.b],
-        z: [deferredCrosshair?.rawL],
+        x: [crosshair?.a],
+        y: [crosshair?.b],
+        z: [crosshair?.rawL],
         text: [
-          `<b>Cursor</b><br>L: ${deferredCrosshair?.rawL?.toFixed(3)} C: ${deferredCrosshair?.rawC?.toFixed(3)} H: ${deferredCrosshair?.rawH?.toFixed(1)}°`,
+          `<b>Cursor</b><br>L: ${crosshair?.rawL?.toFixed(3)} C: ${crosshair?.rawC?.toFixed(3)} H: ${crosshair?.rawH?.toFixed(1)}°`,
         ],
         hovertemplate: "%{text}<extra></extra>",
         marker: {
@@ -1345,7 +1359,7 @@ const View3D = ({
         hoverinfo: "skip",
       }
     ];
-  }, [baseTraces, deferredCrosshair, isDark]);
+  }, [baseTraces, crosshair, isDark]);
   const layout = useMemo(
     () => ({
       uirevision: "true",
@@ -1409,7 +1423,6 @@ const ViewVertical = ({
   colorData,
   points,
   crosshair,
-  deferredCrosshair,
   handlePointClick,
   theme,
   names,
@@ -1444,6 +1457,7 @@ const ViewVertical = ({
   const targetH = crosshair?.rawH || 0;
   const filterFn = useCallback(
     (p, isCommercial = false) => {
+      // In bins mode, we want to see the whole slice usually, but we can honor filters if they are active
       if (filterPt && !filterPt(p)) return false;
       if (p.C === 0) return true;
 
@@ -1455,15 +1469,15 @@ const ViewVertical = ({
         p.isCustomAnchor ||
         p.type === "pin" ||
         p.type === "anchor" ||
-        p.url !== undefined || // Hacky way to detect commercial point since they usually have an erpCode/url
-        p.hex !== undefined || // Commercial points usually have hex explicitly defined in processCSVData
+        p.url !== undefined || 
+        p.hex !== undefined || 
         isCommercial
       ) {
         let hDiff = Math.abs(p.H - targetH);
         hDiff = Math.min(hDiff, 360 - hDiff);
         return hDiff <= allowedHueDiff;
       }
-      return true; // We rely on filterPt for lightness and chroma
+      return true;
     },
     [targetH, filterPt, filterH],
   );
@@ -1737,8 +1751,8 @@ const ViewVertical = ({
     traces.push({
       type: "scatter",
       mode: "lines",
-      x: deferredCrosshair?.snapTarget ? [deferredCrosshair.rawC, deferredCrosshair.snapTarget.C] : [],
-      y: deferredCrosshair?.snapTarget ? [deferredCrosshair.rawL, deferredCrosshair.snapTarget.L] : [],
+      x: crosshair?.snapTarget ? [crosshair.rawC, crosshair.snapTarget.C] : [],
+      y: crosshair?.snapTarget ? [crosshair.rawL, crosshair.snapTarget.L] : [],
       line: {
         color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
         width: 2,
@@ -1749,10 +1763,10 @@ const ViewVertical = ({
     traces.push({
       type: "scatter",
       mode: "markers",
-      x: [deferredCrosshair?.rawC],
-      y: [deferredCrosshair?.rawL],
+      x: [crosshair?.rawC],
+      y: [crosshair?.rawL],
       text: [
-        `<b>Cursor</b><br>L: ${deferredCrosshair?.rawL?.toFixed(3)} C: ${deferredCrosshair?.rawC?.toFixed(3)} H: ${deferredCrosshair?.rawH?.toFixed(1)}°`,
+        `<b>Cursor</b><br>L: ${crosshair?.rawL?.toFixed(3)} C: ${crosshair?.rawC?.toFixed(3)} H: ${crosshair?.rawH?.toFixed(1)}°`,
       ],
       hovertemplate: "%{text}<extra></extra>",
       marker: {
@@ -1769,15 +1783,89 @@ const ViewVertical = ({
       traces.push({
         type: "scatter",
         mode: "lines",
-        x: [p.C, deferredCrosshair?.rawC],
-        y: [p.L, deferredCrosshair?.rawL],
+        x: [p.C, crosshair?.rawC],
+        y: [p.L, crosshair?.rawL],
         line: { color: "#f59e0b", width: 2, dash: "dash" },
         hoverinfo: "skip",
       });
     }
 
     return traces;
-  }, [baseTraces, deferredCrosshair, isDark, viewMode, tetheringPinId, savedColors]);
+  }, [baseTraces, crosshair, isDark, viewMode, tetheringPinId, savedColors]);
+
+  // STABLE VORONOI MAPPING - Fixes Performance and Filter Bug
+  const voronoiContent = useMemo(() => {
+    if (viewMode !== "bins") return { cells: [], mask: null };
+    try {
+      const filterFnSlice = (p) => {
+        if (p.C === 0) return true;
+        const cStepForH = Math.max(1, Math.round(p.C / 0.02));
+        const nH = 6 * cStepForH;
+        const stepH = 360 / nH;
+        const closestH = Math.round(targetH / stepH) * stepH;
+        const h1 = closestH % 360;
+        const h2 = (closestH + 360) % 360;
+        return Math.abs(p.H - h1) < 0.1 || Math.abs(p.H - h2) < 0.1;
+      };
+      
+      const slicePoints = points.filter((p) => !p.isPin && filterFnSlice(p));
+      if (slicePoints.length === 0) return { cells: [], mask: null };
+
+      const allVoronoiPoints = [...slicePoints];
+      const isMobile = window.innerWidth < 768;
+      const lStep = isMobile ? 0.05 : 0.01;
+      const boundaryPoints = [];
+      for (let l = 0; l <= 1.0; l += lStep) {
+        let low = 0, high = 0.4;
+        while (high - low > 0.001) {
+          let mid = (low + high) / 2;
+          if (new Color("oklch", [l, mid, targetH]).inGamut("srgb")) { low = mid; } else { high = mid; }
+        }
+        const maxC = Math.min(low, 0.4);
+        boundaryPoints.push([maxC, l]);
+        allVoronoiPoints.push({ C: maxC + 0.005, L: l, isDummy: true });
+        allVoronoiPoints.push({ C: maxC + 0.02, L: l, isDummy: true });
+      }
+      const cStep = isMobile ? 0.05 : 0.01;
+      for (let c = 0; c <= 0.45; c += cStep) {
+        allVoronoiPoints.push({ C: c, L: -0.01, isDummy: true });
+        allVoronoiPoints.push({ C: c, L: 1.01, isDummy: true });
+      }
+
+      const scaleX = 1;
+      const scaleY = 0.3;
+      const delaunay = d3.Delaunay.from(allVoronoiPoints.map((p) => [p.C * scaleX, p.L * scaleY]));
+      const voronoi = delaunay.voronoi([-0.1 * scaleX, -0.1 * scaleY, 0.5 * scaleX, 1.15 * scaleY]);
+      
+      const cells = [];
+      allVoronoiPoints.forEach((p, i) => {
+        if (p.isDummy) return;
+        const path = voronoi.renderCell(i);
+        if (path) {
+          const pts = [];
+          path.replace(/([ML])([^,]+),([^MLZ]+)/g, (match, cmd, x, y) => {
+            pts.push([parseFloat(x), parseFloat(y)]);
+            return match;
+          });
+          if (pts.length > 2) {
+            const unscaledPts = pts.map((pt) => [pt[0] / scaleX, pt[1] / scaleY]);
+            const unscaledPath = "M" + unscaledPts.map((pt) => pt.join(",")).join("L") + "Z";
+            cells.push({ path: unscaledPath, color: p.color, p });
+          }
+        }
+      });
+
+      const outerSquare = [[-0.5, -0.5], [1.0, -0.5], [1.0, 1.5], [-0.5, 1.5], [-0.5, -0.5]];
+      const innerBoundary = [[0, 1.2], ...boundaryPoints.reverse(), [0, -0.2]];
+      const maskPath = "M" + outerSquare.map((p) => p.join(",")).join("L") + "Z " + "M" + innerBoundary.map((p) => p.join(",")).join("L") + "Z";
+
+      return { cells, mask: maskPath };
+    } catch (e) {
+      console.error("Voronoi error:", e);
+      return { cells: [], mask: null };
+    }
+  }, [points, targetH, viewMode]);
+
   const layout = useMemo(() => {
     const shapes = [
       {
@@ -1789,118 +1877,38 @@ const ViewVertical = ({
         line: { color: isDark ? "#F2E8DF" : "#2B4032", width: 1, dash: "dot" },
       },
     ];
-    if (viewMode === "bins") {
-      const filterFn = (p) => {
-        if (p.C === 0) return true;
-        const cStepForH = Math.max(1, Math.round(p.C / 0.02));
-        const nH = 6 * cStepForH;
-        const stepH = 360 / nH;
-        const closestH = Math.round(targetH / stepH) * stepH;
-        const h1 = closestH % 360;
-        const h2 = (closestH + 360) % 360;
-        return Math.abs(p.H - h1) < 0.1 || Math.abs(p.H - h2) < 0.1;
-      };
-      const filtered = points.filter((p) => !p.isPin && filterFn(p) && (filterPt ? filterPt(p) : true));
-      if (filtered.length > 0) {
-        try {
-          const allVoronoiPoints = [...filtered];
-          const isMobile = window.innerWidth < 768;
-          const lStep = isMobile ? 0.05 : 0.01;
-          const boundaryPoints = [];
-          for (let l = 0; l <= 1.0; l += lStep) {
-            let low = 0,
-              high = 0.4;
-            while (high - low > 0.001) {
-              let mid = (low + high) / 2;
-              if (new Color("oklch", [l, mid, targetH]).inGamut("srgb")) {
-                low = mid;
-              } else {
-                high = mid;
-              }
-            }
-            const maxC = Math.min(low, 0.4);
-            boundaryPoints.push([maxC, l]);
-            allVoronoiPoints.push({ C: maxC + 0.005, L: l, isDummy: true });
-            allVoronoiPoints.push({ C: maxC + 0.02, L: l, isDummy: true });
-          }
-          const cStep = isMobile ? 0.05 : 0.01;
-          for (let c = 0; c <= 0.45; c += cStep) {
-            allVoronoiPoints.push({ C: c, L: -0.01, isDummy: true });
-            allVoronoiPoints.push({ C: c, L: 1.01, isDummy: true });
-          }
 
-          const scaleX = 1;
-          const scaleY = 0.3;
-          const delaunay = d3.Delaunay.from(
-            allVoronoiPoints.map((p) => [p.C * scaleX, p.L * scaleY]),
-          );
-          const voronoi = delaunay.voronoi([
-            -0.1 * scaleX,
-            -0.1 * scaleY,
-            0.5 * scaleX,
-            1.15 * scaleY,
-          ]);
-          allVoronoiPoints.forEach((p, i) => {
-            if (p.isDummy) return;
-            const path = voronoi.renderCell(i);
-            if (path) {
-              const pts = [];
-              path.replace(/([ML])([^,]+),([^MLZ]+)/g, (match, cmd, x, y) => {
-                pts.push([parseFloat(x), parseFloat(y)]);
-                return match;
-              });
-              if (pts.length > 2) {
-                const unscaledPts = pts.map((pt) => [
-                  pt[0] / scaleX,
-                  pt[1] / scaleY,
-                ]);
-                const unscaledPath =
-                  "M" + unscaledPts.map((pt) => pt.join(",")).join("L") + "Z";
-                shapes.push({
-                  type: "path",
-                  path: unscaledPath,
-                  fillcolor: p.color,
-                  line: {
-                    width: 1.5,
-                    color: isDark ? "rgba(0,0,0,0.1)" : "rgba(255,255,255,0.4)",
-                  },
-                  layer: "below",
-                });
-              }
-            }
-          });
-          const outerSquare = [
-            [-0.5, -0.5],
-            [1.0, -0.5],
-            [1.0, 1.5],
-            [-0.5, 1.5],
-            [-0.5, -0.5],
-          ];
-          const innerBoundary = [
-            [0, 1.2],
-            ...boundaryPoints.reverse(),
-            [0, -0.2],
-          ];
-          const maskPath =
-            "M" +
-            outerSquare.map((p) => p.join(",")).join("L") +
-            "Z " +
-            "M" +
-            innerBoundary.map((p) => p.join(",")).join("L") +
-            "Z";
-          shapes.push({
-            type: "path",
-            path: maskPath,
-            fillcolor: isDark ? "#052212" : "#F2E8DF",
-            line: { width: 0 },
-            layer: "below",
-            fillrule: "evenodd"
-          });
-        } catch (e) {
-          console.error("Voronoi error:", e);
-        }
+    if (viewMode === "bins" && voronoiContent.cells.length > 0) {
+      voronoiContent.cells.forEach((cell) => {
+        // Here we can apply filterPt to the cell visibility if we want, 
+        // but for Bins mode we usually want all bins to be visible.
+        // If the user specifically wants to filter the background, we use filterPt here.
+        if (filterPt && !filterPt(cell.p)) return;
+
+        shapes.push({
+          type: "path",
+          path: cell.path,
+          fillcolor: cell.color,
+          line: {
+            width: 1.5,
+            color: isDark ? "rgba(0,0,0,0.1)" : "rgba(255,255,255,0.4)",
+          },
+          layer: "below",
+        });
+      });
+
+      if (voronoiContent.mask) {
+        shapes.push({
+          type: "path",
+          path: voronoiContent.mask,
+          fillcolor: isDark ? "#052212" : "#F2E8DF",
+          line: { width: 0 },
+          layer: "below",
+          fillrule: "evenodd"
+        });
       }
     }
+
     return {
       uirevision: "true",
       paper_bgcolor: "rgba(0,0,0,0)",
@@ -1928,7 +1936,8 @@ const ViewVertical = ({
       shapes,
       showlegend: false,
     };
-  }, [isDark, viewMode, points, targetH, filterPt]);
+  }, [isDark, viewMode, voronoiContent, filterPt]);
+
   const handleBgClick = (cValue, lValue) => {
     handlePointClick([
       Math.max(0, Math.min(1.0, lValue)),
@@ -1969,7 +1978,6 @@ const ViewChromaRings = ({
   colorData,
   points,
   crosshair,
-  deferredCrosshair,
   handlePointClick,
   theme,
   names,
@@ -2012,14 +2020,14 @@ const ViewChromaRings = ({
         p.isCustomAnchor ||
         p.type === "pin" ||
         p.type === "anchor" ||
-        p.url !== undefined || // Hacky way to detect commercial point
+        p.url !== undefined || 
         p.hex !== undefined ||
         isCommercial
       ) {
         return Math.abs(p.C - targetC) <= Math.max(0.02, filterC);
       }
 
-      return true; // We use filterPt for lightness and chroma
+      return true;
     },
     [targetC, filterPt, filterC],
   );
@@ -2293,8 +2301,8 @@ const ViewChromaRings = ({
     traces.push({
       type: "scatter",
       mode: "lines",
-      x: deferredCrosshair?.snapTarget ? [deferredCrosshair.rawH, deferredCrosshair.snapTarget.H] : [],
-      y: deferredCrosshair?.snapTarget ? [deferredCrosshair.rawL, deferredCrosshair.snapTarget.L] : [],
+      x: crosshair?.snapTarget ? [crosshair.rawH, crosshair.snapTarget.H] : [],
+      y: crosshair?.snapTarget ? [crosshair.rawL, crosshair.snapTarget.L] : [],
       line: {
         color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
         width: 2,
@@ -2305,10 +2313,10 @@ const ViewChromaRings = ({
     traces.push({
       type: "scatter",
       mode: "markers",
-      x: [deferredCrosshair?.rawH],
-      y: [deferredCrosshair?.rawL],
+      x: [crosshair?.rawH],
+      y: [crosshair?.rawL],
       text: [
-        `<b>Cursor</b><br>L: ${deferredCrosshair?.rawL?.toFixed(3)} C: ${deferredCrosshair?.rawC?.toFixed(3)} H: ${deferredCrosshair?.rawH?.toFixed(1)}°`,
+        `<b>Cursor</b><br>L: ${crosshair?.rawL?.toFixed(3)} C: ${crosshair?.rawC?.toFixed(3)} H: ${crosshair?.rawH?.toFixed(1)}°`,
       ],
       hovertemplate: "%{text}<extra></extra>",
       marker: {
@@ -2325,15 +2333,74 @@ const ViewChromaRings = ({
       traces.push({
         type: "scatter",
         mode: "lines",
-        x: [p.H, deferredCrosshair?.rawH],
-        y: [p.L, deferredCrosshair?.rawL],
+        x: [p.H, crosshair?.rawH],
+        y: [p.L, crosshair?.rawL],
         line: { color: "#f59e0b", width: 2, dash: "dash" },
         hoverinfo: "none",
       });
     }
 
     return traces;
-  }, [baseTraces, deferredCrosshair, isDark, viewMode, tetheringPinId, savedColors]);
+  }, [baseTraces, crosshair, isDark, viewMode, tetheringPinId, savedColors]);
+
+  const voronoiContent = useMemo(() => {
+    if (viewMode !== "bins") return { cells: [] };
+    try {
+      const gridC = Math.round(targetC / 0.02) * 0.02;
+      const slicePoints = points.filter((p) => !p.isPin && p.C > 0 && Math.abs(p.C - gridC) <= 0.001);
+      if (slicePoints.length === 0) return { cells: [] };
+
+      const allVoronoiPoints = [...slicePoints];
+      const isMobile = window.innerWidth < 768;
+      const lStep = isMobile ? 0.04 : 0.02;
+      const hStep = isMobile ? 10 : 5;
+      for (let l = -0.05; l <= 1.05; l += lStep) {
+        for (let h = 0; h < 360; h += hStep) {
+          if (l < 0 || l > 1) {
+            allVoronoiPoints.push({ H: h, L: l, isDummy: true });
+            continue;
+          }
+          const cColor = new Color("oklch", [l, gridC, h]);
+          if (!cColor.inGamut("srgb")) {
+            allVoronoiPoints.push({ H: h, L: l, isDummy: true });
+          }
+        }
+      }
+      const scaleX = 1;
+      const scaleY = 360;
+      const paddedVoronoi = [];
+      allVoronoiPoints.forEach((p) => {
+        paddedVoronoi.push({ ...p, H: p.H - 360 });
+        paddedVoronoi.push(p);
+        paddedVoronoi.push({ ...p, H: p.H + 360 });
+      });
+      const delaunay = d3.Delaunay.from(paddedVoronoi.map((p) => [p.H * scaleX, p.L * scaleY]));
+      const voronoi = delaunay.voronoi([-360 * scaleX, -0.1 * scaleY, 720 * scaleX, 1.15 * scaleY]);
+      
+      const cells = [];
+      allVoronoiPoints.forEach((p, i) => {
+        if (p.isDummy) return;
+        const path = voronoi.renderCell(3 * i + 1);
+        if (path) {
+          const pts = [];
+          path.replace(/([ML])([^,]+),([^MLZ]+)/g, (match, cmd, x, y) => {
+            pts.push([parseFloat(x), parseFloat(y)]);
+            return match;
+          });
+          if (pts.length > 2) {
+            const unscaledPts = pts.map((pt) => [pt[0] / scaleX, pt[1] / scaleY]);
+            const unscaledPath = "M" + unscaledPts.map((pt) => pt.join(",")).join("L") + "Z";
+            cells.push({ path: unscaledPath, color: p.color, p });
+          }
+        }
+      });
+      return { cells };
+    } catch (e) {
+      console.error("Voronoi error:", e);
+      return { cells: [] };
+    }
+  }, [points, targetC, viewMode]);
+
   const layout = useMemo(() => {
     const shapes = [
       {
@@ -2345,84 +2412,20 @@ const ViewChromaRings = ({
         line: { color: isDark ? "#F2E8DF" : "#2B4032", width: 1, dash: "dot" },
       },
     ];
-    if (viewMode === "bins") {
-      const gridC = Math.round(targetC / 0.02) * 0.02;
-      const filtered = points.filter(
-        (p) => !p.isPin && p.C > 0 && Math.abs(p.C - gridC) <= 0.001,
-      );
-      if (filtered.length > 0) {
-        try {
-          const voronoiPoints = filtered.filter((p) => p.C > 0);
-          if (voronoiPoints.length > 0) {
-            const allVoronoiPoints = [...voronoiPoints];
-            const isMobile = window.innerWidth < 768;
-            const lStep = isMobile ? 0.04 : 0.02;
-            const hStep = isMobile ? 10 : 5;
-            for (let l = -0.05; l <= 1.05; l += lStep) {
-              for (let h = 0; h < 360; h += hStep) {
-                if (l < 0 || l > 1) {
-                  allVoronoiPoints.push({ H: h, L: l, isDummy: true });
-                  continue;
-                }
-                const cColor = new Color("oklch", [l, gridC, h]);
-                if (!cColor.inGamut("srgb")) {
-                  allVoronoiPoints.push({ H: h, L: l, isDummy: true });
-                }
-              }
-            }
-            const scaleX = 1;
-            const scaleY = 360;
-            const paddedVoronoi = [];
-            allVoronoiPoints.forEach((p) => {
-              paddedVoronoi.push({ ...p, H: p.H - 360 });
-              paddedVoronoi.push(p);
-              paddedVoronoi.push({ ...p, H: p.H + 360 });
-            });
-            const delaunay = d3.Delaunay.from(
-              paddedVoronoi.map((p) => [p.H * scaleX, p.L * scaleY]),
-            );
-            const voronoi = delaunay.voronoi([
-              -360 * scaleX,
-              -0.1 * scaleY,
-              720 * scaleX,
-              1.15 * scaleY,
-            ]);
-            allVoronoiPoints.forEach((p, i) => {
-              if (p.isDummy) return;
-              const path = voronoi.renderCell(3 * i + 1);
-              if (path) {
-                const pts = [];
-                path.replace(/([ML])([^,]+),([^MLZ]+)/g, (match, cmd, x, y) => {
-                  pts.push([parseFloat(x), parseFloat(y)]);
-                  return match;
-                });
-                if (pts.length > 2) {
-                  const unscaledPts = pts.map((pt) => [
-                    pt[0] / scaleX,
-                    pt[1] / scaleY,
-                  ]);
-                  const unscaledPath =
-                    "M" + unscaledPts.map((pt) => pt.join(",")).join("L") + "Z";
-                  shapes.push({
-                    type: "path",
-                    path: unscaledPath,
-                    fillcolor: p.color,
-                    line: {
-                      width: 1.5,
-                      color: isDark
-                        ? "rgba(0,0,0,0.1)"
-                        : "rgba(255,255,255,0.4)",
-                    },
-                    layer: "below",
-                  });
-                }
-              }
-            });
-          }
-        } catch (e) {
-          console.error("Voronoi error:", e);
-        }
-      }
+    if (viewMode === "bins" && voronoiContent.cells.length > 0) {
+      voronoiContent.cells.forEach((cell) => {
+        if (filterPt && !filterPt(cell.p)) return;
+        shapes.push({
+          type: "path",
+          path: cell.path,
+          fillcolor: cell.color,
+          line: {
+            width: 1.5,
+            color: isDark ? "rgba(0,0,0,0.1)" : "rgba(255,255,255,0.4)",
+          },
+          layer: "below",
+        });
+      });
     }
     return {
       uirevision: "true",
@@ -2453,7 +2456,8 @@ const ViewChromaRings = ({
       shapes,
       showlegend: false,
     };
-  }, [isDark, viewMode, points, targetC, filterPt]);
+  }, [isDark, viewMode, voronoiContent, filterPt]);
+
   const handleBgClick = (hValue, lValue) => {
     handlePointClick([
       Math.max(0, Math.min(1.0, lValue)),
@@ -2489,7 +2493,6 @@ const ViewChromaRings = ({
     />
   );
 };
-
 function getInheritedPinNames(sc, savedColors, names, adjectives, colorData = {}) {
   let baseAdj = sc.adjOverride || adjectives[sc.adjId];
   let baseName = sc.nameOverride || names[sc.anchorId];
@@ -3253,7 +3256,6 @@ const ViewTopDown = ({
   points,
   baseAnchors,
   crosshair,
-  deferredCrosshair,
   handlePointClick,
   theme,
   names,
@@ -3467,7 +3469,7 @@ const ViewTopDown = ({
     });
     const gridLockedNodes = baseAnchors
       .filter((p) => !p.isCustomAnchor)
-      .map((p) => ({ ...p, L: deferredCrosshair?.rawL || 0, lStr: getLStr(deferredCrosshair?.rawL || 0) }))
+      .map((p) => ({ ...p, L: crosshair?.rawL || 0, lStr: getLStr(crosshair?.rawL || 0) }))
       .filter((p) => {
         return (
           !p.isPin &&
@@ -3608,7 +3610,7 @@ const ViewTopDown = ({
   }, [
     validAnchors,
     baseAnchors,
-    deferredCrosshair,
+    crosshair,
     isDark,
     names,
     adjectives,
@@ -3630,12 +3632,12 @@ const ViewTopDown = ({
       type: "scatter",
       mode: "lines",
       x:
-        deferredCrosshair?.snapTarget || deferredCrosshair?.activePullType
-          ? [deferredCrosshair.a, deferredCrosshair.snapTarget?.a || deferredCrosshair.gravityA]
+        crosshair?.snapTarget || crosshair?.activePullType
+          ? [crosshair.a, crosshair.snapTarget?.a || crosshair.gravityA]
           : [],
       y:
-        deferredCrosshair?.snapTarget || deferredCrosshair?.activePullType
-          ? [deferredCrosshair.b, deferredCrosshair.snapTarget?.b || deferredCrosshair.gravityB]
+        crosshair?.snapTarget || crosshair?.activePullType
+          ? [crosshair.b, crosshair.snapTarget?.b || crosshair.gravityB]
           : [],
       line: {
         color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
@@ -3647,10 +3649,10 @@ const ViewTopDown = ({
     traces.push({
       type: "scatter",
       mode: "markers",
-      x: [deferredCrosshair?.a],
-      y: [deferredCrosshair?.b],
+      x: [crosshair?.a],
+      y: [crosshair?.b],
       text: [
-        `<b>Cursor ${deferredCrosshair?.activePullType ? `(Tethered to ${deferredCrosshair.activePullType})` : ""}</b><br>L: ${deferredCrosshair?.rawL?.toFixed(3)} C: ${deferredCrosshair?.rawC?.toFixed(3)} H: ${deferredCrosshair?.rawH?.toFixed(1)}°`,
+        `<b>Cursor ${crosshair?.activePullType ? `(Tethered to ${crosshair.activePullType})` : ""}</b><br>L: ${crosshair?.rawL?.toFixed(3)} C: ${crosshair?.rawC?.toFixed(3)} H: ${crosshair?.rawH?.toFixed(1)}°`,
       ],
       hovertemplate: "%{text}<extra></extra>",
       marker: {
@@ -3668,15 +3670,15 @@ const ViewTopDown = ({
       traces.push({
         type: "scatter",
         mode: "lines",
-        x: [p.a, deferredCrosshair?.a],
-        y: [p.b, deferredCrosshair?.b],
+        x: [p.a, crosshair?.a],
+        y: [p.b, crosshair?.b],
         line: { color: "#f59e0b", width: 2, dash: "dash" },
         hoverinfo: "skip",
       });
     }
 
     return traces;
-  }, [baseTraces, deferredCrosshair, isDark, viewMode, tetheringPinId, savedColors]);
+  }, [baseTraces, crosshair, isDark, viewMode, tetheringPinId, savedColors]);
   const layout = useMemo(() => {
     const shapes = [];
     if (viewMode === "bins") {
@@ -3717,6 +3719,7 @@ const ViewTopDown = ({
           const voronoi = delaunay.voronoi([-0.4, -0.4, 0.4, 0.4]);
           allVoronoiPoints.forEach((p, i) => {
             if (p.isDummy) return;
+            if (filterPt && !filterPt(p)) return;
             const path = voronoi.renderCell(i);
             if (path) {
               const pts = [];
@@ -3812,7 +3815,7 @@ const ViewTopDown = ({
       showlegend: false,
       shapes,
     };
-  }, [isDark, viewMode, validAnchors, crosshair?.rawL]);
+  }, [isDark, viewMode, validAnchors, crosshair?.rawL, filterPt]);
   const handleBgClick = (a, b) => {
     const C = Math.min(0.4, Math.sqrt(a * a + b * b));
     let H = Math.atan2(a, b) * (180 / Math.PI);
@@ -6808,12 +6811,13 @@ const App = () => {
 
   const handleBatchTag = (tag) => {
     if (!tag || selectedIds.length === 0) return;
+    const normalizedTag = tag.toLowerCase().trim();
     setDictTags((prev) => {
       const next = { ...prev };
       selectedIds.forEach((id) => {
-        const currentTags = next[id] || [];
-        if (!currentTags.includes(tag)) {
-          next[id] = [...currentTags, tag];
+        const currentTags = (next[id] || []).map(t => t.toLowerCase());
+        if (!currentTags.includes(normalizedTag)) {
+          next[id] = [...(next[id] || []), tag.trim()];
         }
       });
       return next;
@@ -6823,14 +6827,13 @@ const App = () => {
 
   const handleBatchRemoveTag = (tag) => {
     if (!tag || selectedIds.length === 0) return;
+    const normalizedTag = tag.toLowerCase().trim();
     setDictTags((prev) => {
       const next = { ...prev };
       selectedIds.forEach((id) => {
         const currentTags = next[id] || [];
-        if (currentTags.includes(tag)) {
-          next[id] = currentTags.filter((t) => t !== tag);
-          if (next[id].length === 0) delete next[id];
-        }
+        next[id] = currentTags.filter((t) => t.toLowerCase() !== normalizedTag);
+        if (next[id].length === 0) delete next[id];
       });
       return next;
     });
@@ -6848,7 +6851,7 @@ const App = () => {
     if (viewportVisibility.commercial === false) return {};
     const filtered = {};
     for (const brand of Object.keys(colorData)) {
-      if (viewportVisibility.brands[brand] !== false) {
+      if (viewportVisibility.brands[brand] === true) {
         filtered[brand] = colorData[brand];
       }
     }
@@ -6875,11 +6878,8 @@ const App = () => {
   const [viewportTagFilter, setViewportTagFilter] = useState("");
   const [swatchZoom, setSwatchZoom] = useState(1.0);
   const [scrubL, setScrubL] = useState(0.65);
-  const deferredScrubL = useDeferredValue(scrubL);
   const [scrubC, setScrubC] = useState(0.12);
-  const deferredScrubC = useDeferredValue(scrubC);
   const [scrubH, setScrubH] = useState(0);
-  const deferredScrubH = useDeferredValue(scrubH);
   const [scrubCommercial, setScrubCommercial] = useState(null);
   const [temporarySpectral, setTemporarySpectral] = useState(null);
   const [compSlotA, setCompSlotA] = useState(null);
@@ -7602,16 +7602,14 @@ const App = () => {
     temporarySpectral,
   ]);
 
-  const deferredCrosshair = useDeferredValue(crosshair);
-
   const filterPt = useCallback((p) => {
-    const lDiff = Math.abs(p.L - deferredScrubL);
-    const cDiff = Math.abs(p.C - deferredScrubC);
-    let hDiff = Math.abs(p.H - deferredScrubH);
+    const lDiff = Math.abs(p.L - scrubL);
+    const cDiff = Math.abs(p.C - scrubC);
+    let hDiff = Math.abs(p.H - scrubH);
     hDiff = Math.min(hDiff, 360 - hDiff);
 
     return lDiff <= filterL && cDiff <= filterC && hDiff <= filterH;
-  }, [deferredScrubL, deferredScrubC, deferredScrubH, filterL, filterC, filterH]);
+  }, [scrubL, scrubC, scrubH, filterL, filterC, filterH]);
 
   const handlePointClick = (pt, spectralData = null, commercialData = null) => {
     // pt might be [L, C, H, name/id, brand, index, ...]
@@ -9358,6 +9356,7 @@ const App = () => {
       ? dictTags[activeItemId] || []
       : [];
   const addTag = (tag) => {
+    const normalizedTag = tag.toLowerCase().trim();
     if (activeCommercial) {
       const updated = { ...colorData };
       if (
@@ -9368,27 +9367,28 @@ const App = () => {
         updated[activeCommercial.brand][activeCommercial.originalIndex] = {
           ...updated[activeCommercial.brand][activeCommercial.originalIndex],
         };
-        updated[activeCommercial.brand][activeCommercial.originalIndex].tags =
-          Array.from(
-            new Set([
-              ...(updated[activeCommercial.brand][
-                activeCommercial.originalIndex
-              ].tags || []),
-              tag,
-            ]),
-          );
-        updateColorData(updated);
+        const currentTags = updated[activeCommercial.brand][activeCommercial.originalIndex].tags || [];
+        if (!currentTags.some(t => t.toLowerCase() === normalizedTag)) {
+          updated[activeCommercial.brand][activeCommercial.originalIndex].tags = [
+            ...currentTags,
+            tag.trim()
+          ];
+          updateColorData(updated);
+        }
       }
     } else if (activeItemId) {
-      setDictTags((prev) => ({
-        ...prev,
-        [activeItemId]: Array.from(
-          new Set([...(prev[activeItemId] || []), tag]),
-        ),
-      }));
+      setDictTags((prev) => {
+        const currentTags = prev[activeItemId] || [];
+        if (currentTags.some(t => t.toLowerCase() === normalizedTag)) return prev;
+        return {
+          ...prev,
+          [activeItemId]: [...currentTags, tag.trim()],
+        };
+      });
     }
   };
   const removeTag = (tag) => {
+    const normalizedTag = tag.toLowerCase().trim();
     if (activeCommercial) {
       const updated = { ...colorData };
       if (
@@ -9399,16 +9399,15 @@ const App = () => {
         updated[activeCommercial.brand][activeCommercial.originalIndex] = {
           ...updated[activeCommercial.brand][activeCommercial.originalIndex],
         };
+        const currentTags = updated[activeCommercial.brand][activeCommercial.originalIndex].tags || [];
         updated[activeCommercial.brand][activeCommercial.originalIndex].tags =
-          updated[activeCommercial.brand][
-            activeCommercial.originalIndex
-          ].tags.filter((t) => t !== tag);
+          currentTags.filter((t) => t.toLowerCase() !== normalizedTag);
         updateColorData(updated);
       }
     } else if (activeItemId) {
       setDictTags((prev) => ({
         ...prev,
-        [activeItemId]: (prev[activeItemId] || []).filter((t) => t !== tag),
+        [activeItemId]: (prev[activeItemId] || []).filter((t) => t.toLowerCase() !== normalizedTag),
       }));
     }
   };
@@ -9533,7 +9532,7 @@ const App = () => {
       handlePointClick={handlePointClick}
       handleVisualize={handleVisualize}
       crosshair={crosshair}
-      deferredCrosshair={deferredCrosshair}
+      crosshair={crosshair}
       gridData={gridData}
       isLight={isLight}
       activeColorObj={activeColorObj}
@@ -9661,8 +9660,8 @@ const ViewDatabase = ({
   const [userEnableDeltaE, setUserEnableDeltaE] = useState(false);
   const [maxDeltaE, setMaxDeltaE] = useState(5.0);
 
-  // Delta E is always active when "all brands" is selected
-  const enableDeltaE = !brandFilter || userEnableDeltaE;
+  // Allow user to toggle Delta E normally
+  const enableDeltaE = userEnableDeltaE;
 
   const [fullscreenImage, setFullscreenImage] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
@@ -9735,7 +9734,7 @@ const ViewDatabase = ({
     [allDbItems],
   );
   const allTags = useMemo(
-    () => Array.from(new Set(allDbItems.flatMap((i) => i.tags))).sort(),
+    () => Array.from(new Set(allDbItems.flatMap((i) => (i.tags || []).map(t => t.toLowerCase())))).sort(),
     [allDbItems],
   );
 
@@ -9763,7 +9762,7 @@ const ViewDatabase = ({
 
     if (brandFilter) items = items.filter((item) => item.brand === brandFilter);
     if (tagFilter)
-      items = items.filter((item) => item.tags.includes(tagFilter));
+      items = items.filter((item) => (item.tags || []).some(t => t.toLowerCase() === tagFilter.toLowerCase()));
     if (spectralFilter) items = items.filter((item) => item.hasSpectral);
 
     if (searchTerm.trim()) {
@@ -10024,18 +10023,11 @@ const ViewDatabase = ({
               checked={enableDeltaE}
               onChange={(e) => {
                 setUserEnableDeltaE(e.target.checked);
-                if (!brandFilter) setBrandFilter(allBrands[0] || "");
               }}
-              disabled={!brandFilter}
-              className="rounded text-sky-500 disabled:opacity-50"
-              title={
-                !brandFilter
-                  ? "Delta E is always active when viewing All Brands"
-                  : ""
-              }
+              className="rounded text-sky-500"
+              title=""
             />
-            Filter by &Delta;E to Crosshair{" "}
-            {!brandFilter && "(Forced on 'All Brands')"}
+            Filter by &Delta;E to Crosshair
           </label>
           {enableDeltaE && (
             <div className="flex items-center gap-2">
@@ -10896,7 +10888,6 @@ const AppUI = ({
   handlePointClick,
   handleVisualize,
   crosshair,
-  deferredCrosshair,
   gridData,
   isLight,
   activeColorObj,
@@ -12143,7 +12134,7 @@ const AppUI = ({
                           <label key={brand} className="flex items-center gap-2 px-2 py-1 pl-6 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded cursor-pointer text-slate-500 dark:text-neutral-400">
                             <input 
                               type="checkbox" 
-                              checked={viewportVisibility.brands[brand] !== false} 
+                              checked={viewportVisibility.brands[brand] === true} 
                               onChange={(e) => setViewportVisibility(prev => ({ 
                                 ...prev, 
                                 brands: { ...prev.brands, [brand]: e.target.checked }
@@ -12261,7 +12252,7 @@ const AppUI = ({
                   swatchLayout={swatchLayout}
                   swatchZoom={swatchZoom}
                   handlePointClick={handlePointClick}
-                  crosshair={{ L: scrubL, C: scrubC, H: scrubH }}
+                  crosshair={crosshair}
                   searchTerm={viewportSearchQuery}
                   tagFilter={viewportTagFilter}
                   filterPt={filterPt}
@@ -12272,7 +12263,6 @@ const AppUI = ({
                   colorData={filteredColorData}
                   points={filteredViewData.points}
                   crosshair={crosshair}
-                  deferredCrosshair={deferredCrosshair}
                   handlePointClick={handlePointClick}
                   theme={theme}
                   names={names}
@@ -12289,7 +12279,6 @@ const AppUI = ({
                   colorData={filteredColorData}
                   points={filteredViewData.points}
                   crosshair={crosshair}
-                  deferredCrosshair={deferredCrosshair}
                   handlePointClick={handlePointClick}
                   theme={theme}
                   names={names}
@@ -12313,7 +12302,6 @@ const AppUI = ({
                   colorData={filteredColorData}
                   points={filteredViewData.points}
                   crosshair={crosshair}
-                  deferredCrosshair={deferredCrosshair}
                   handlePointClick={handlePointClick}
                   theme={theme}
                   names={names}
@@ -12338,7 +12326,6 @@ const AppUI = ({
                   points={filteredViewData.points}
                   baseAnchors={filteredViewData.baseAnchors}
                   crosshair={crosshair}
-                  deferredCrosshair={deferredCrosshair}
                   handlePointClick={handlePointClick}
                   theme={theme}
                   names={names}
