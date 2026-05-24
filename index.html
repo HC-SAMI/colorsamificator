@@ -35,24 +35,30 @@ tailwind.config = {
 <!-- React, ReactDOM, Babel for Standalone Execution -->
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
 <script>
-  const originalError = console.error;
-  console.error = function(...args) {
-    if (args[0] && typeof args[0] === "string" && args[0].includes("[BABEL] Note: The code generator has deoptimised the styling")) {
-      return;
-    }
-    originalError.apply(console, args);
-  };
+  function suppressBabelNote(originalFn) {
+    return function(...args) {
+      if (args.some(a => typeof a === "string" && /BABEL.*deoptimised/i.test(a))) {
+        return;
+      }
+      originalFn.apply(console, args);
+    };
+  }
+  console.error = suppressBabelNote(console.error);
+  console.warn = suppressBabelNote(console.warn);
+  console.info = suppressBabelNote(console.info);
+  console.log = suppressBabelNote(console.log);
 </script>
+
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
 <link rel="stylesheet" href="./styles.css">
 
 </head>
 <body>
 <div id="root"></div>
-<script type="text/babel" data-compact="false" src="./App.jsx"></script>
+<script type="text/babel" data-compact="true" src="./App.jsx"></script>
 
 </body>
 </html>
