@@ -5320,6 +5320,7 @@ const ViewPins = ({
   savedColors = {},
   setSavedColors,
   dictTags,
+  setDictTags,
   globalTags = [],
   selectedIds,
   setSelectedIds,
@@ -5404,6 +5405,14 @@ const ViewPins = ({
         id: newId,
       },
     }));
+    setDictTags((prev) => {
+      const sourceTags = prev[sourceId];
+      if (!sourceTags || sourceTags.length === 0) return prev;
+      return {
+        ...prev,
+        [newId]: [...sourceTags],
+      };
+    });
   };
   const pinItems = useMemo(() => {
     return Object.values(savedColors)
@@ -15278,6 +15287,7 @@ const AppUI = ({
                 savedColors,
                 setSavedColors,
                 dictTags,
+                setDictTags,
                 globalTags,
                 selectedIds,
                 setSelectedIds,
