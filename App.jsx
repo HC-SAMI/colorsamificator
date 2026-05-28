@@ -11,6 +11,13 @@ const Icon = ({ name, className = "w-4 h-4" }) => {
   }, [name, className]);
   return React.createElement("span", { ref, style: { display: "contents" } });
 };
+const LABEL_OPTIONS = {
+  sheen: ['-', 'SM (Super Matte)', 'MT (Matte)', 'ST (Satin)', 'HG (High Gloss)'],
+  visualPattern: ['-', 'V1 (Solid)', 'V2 (Straight Grain)', 'V3 (Cathedral Grain)', 'V4 (Rustic/Heavy)', 'V5 (Abstract/Stipple)'],
+  tactileTexture: ['-', 'T1 (Smooth)', 'T2 (Stipple)', 'T3 (Linear Grain)', 'T4 (EIR/Natural)'],
+  doorProfile: ['-', 'SL (Slab)', 'CS (Shaker)', 'SS (Slim)', 'RD (Reeded)', 'CT (Countertop)', 'WG (Wood-Framed Glass)', 'MG (Metal-framed Glass)'],
+  material: ['-', 'Solid Laminate', 'Textured Laminate', 'Lacquered MDF', 'Natural Oak', 'Natural Maple']
+};
 const defaultGroupSettings = {
   lightL: 0.5,
   neutralC: 0.02,
@@ -4530,7 +4537,7 @@ const ViewPalette = ({
               onVisualize("noun", item.id, names[item.id] || item.id);
             },
             className:
-              "absolute bottom-1 right-1 opacity-0 group-hover/swatch:opacity-100 bg-black/50 hover:bg-black/70 text-white p-1 rounded transition-opacity",
+              "absolute bottom-1 right-1 opacity-0 group-hover/swatch:opacity-100 bg-black/50 hover:bg-black/70 text-white p-1 rounded transition-opacity z-30",
             title: "Visualize all instances",
           },
           React.createElement(Icon, { name: "eye", className: "w-3 h-3" }),
@@ -5258,7 +5265,7 @@ const ViewAdjectives = ({
                     );
                   },
                   className:
-                    "absolute bottom-1 right-1 opacity-0 group-hover/swatch:opacity-100 bg-black/50 hover:bg-black/70 text-white p-1 rounded transition-opacity",
+                    "absolute bottom-1 right-1 opacity-0 group-hover/swatch:opacity-100 bg-black/50 hover:bg-black/70 text-white p-1 rounded transition-opacity z-30",
                   title: "Visualize all instances",
                 },
                 React.createElement(Icon, {
@@ -5318,6 +5325,9 @@ const ViewPins = ({
   setSelectedIds,
   handleBatchTag,
   handleBatchRemoveTag,
+  setShowAveryModal,
+  setSelectedPrintIds,
+  setAveryPrintSourceType,
 }) => {
   const [sortBy, setSortBy] = useState("layer");
   const [sortAsc, setSortAsc] = useState(true);
@@ -5382,6 +5392,18 @@ const ViewPins = ({
       C: 0.1,
       H: 180,
     });
+  };
+  const handleDuplicatePin = (sourceId) => {
+    const sourcePin = savedColors[sourceId];
+    if (!sourcePin) return;
+    const newId = crypto.randomUUID();
+    setSavedColors((prev) => ({
+      ...prev,
+      [newId]: {
+        ...sourcePin,
+        id: newId,
+      },
+    }));
   };
   const pinItems = useMemo(() => {
     return Object.values(savedColors)
@@ -5646,6 +5668,25 @@ const ViewPins = ({
           }),
           isAdding ? "Cancel" : "Add Pin",
         ),
+        selectedIds.length > 0 &&
+          React.createElement(
+            "button",
+            {
+              onClick: () => {
+                setAveryPrintSourceType("pins");
+                setSelectedPrintIds(selectedIds);
+                setShowAveryModal(true);
+              },
+              className:
+                "px-3 py-1.5 border border-slate-300 dark:border-neutral-700 hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-700 dark:text-neutral-300 font-bold text-[10px] uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5 rounded",
+              title: "Print Avery 5159 Labels",
+            },
+            React.createElement(Icon, {
+              name: "printer",
+              className: "w-3.5 h-3.5",
+            }),
+            "Print Labels (" + selectedIds.length + ")",
+          ),
         React.createElement(
           "span",
           {
@@ -5915,7 +5956,7 @@ const ViewPins = ({
             ),
             React.createElement(
               "div",
-              { className: "flex-1 flex flex-col justify-center min-w-0 pr-4" },
+              { className: "flex-1 flex flex-col justify-center min-w-0 pr-4 py-1" },
               React.createElement(
                 "div",
                 {
@@ -5928,11 +5969,42 @@ const ViewPins = ({
                 "div",
                 {
                   className:
-                    "text-[11px] text-slate-600 dark:text-neutral-400 italic line-clamp-2 leading-relaxed",
+                    "text-[11px] text-slate-600 dark:text-neutral-400 italic line-clamp-2 leading-relaxed mb-2",
                   title: item.displayNotes,
                 },
                 item.displayNotes || "No notes provided.",
               ),
+              React.createElement(
+                "div",
+                { className: "grid grid-cols-2 lg:grid-cols-5 gap-2 mt-auto" },
+                [
+                  { label: "Sheen", key: "sheen", options: LABEL_OPTIONS.sheen },
+                  { label: "Profile", key: "doorProfile", options: LABEL_OPTIONS.doorProfile },
+                  { label: "Vis. Pattern", key: "visualTexture", options: LABEL_OPTIONS.visualPattern },
+                  { label: "Tac. Texture", key: "tactileTexture", options: LABEL_OPTIONS.tactileTexture },
+                  { label: "Material", key: "material", options: LABEL_OPTIONS.material }
+                ].map(field => 
+                  React.createElement(
+                    "div",
+                    { key: field.key, className: "flex flex-col gap-0.5" },
+                    React.createElement("label", { className: "text-[8px] font-bold uppercase tracking-wider text-slate-400 dark:text-neutral-500" }, field.label),
+                    React.createElement("select", {
+                      value: item[field.key] || "-",
+                      onChange: (e) => setSavedColors(prev => ({
+                        ...prev,
+                        [item.id]: {
+                          ...prev[item.id],
+                          [field.key]: e.target.value === "-" ? "" : e.target.value
+                        }
+                      })),
+                      onClick: (e) => e.stopPropagation(),
+                      className: "bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 outline-none text-[9px] font-medium text-slate-700 dark:text-neutral-300 w-full p-1 rounded-sm cursor-pointer hover:bg-slate-100 dark:hover:bg-neutral-700"
+                    },
+                      field.options.map(opt => React.createElement("option", { key: opt, value: opt }, opt === "-" ? "Default" : opt))
+                    )
+                  )
+                )
+              )
             ),
             React.createElement(
               "div",
@@ -5967,14 +6039,36 @@ const ViewPins = ({
               ),
             ),
             React.createElement(
-              "button",
+              "div",
               {
-                onClick: () => handleUnlock(item.id),
-                className:
-                  "absolute -top-2 -right-2 bg-slate-800 text-white p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity z-10 hover:bg-red-500 shadow-sm",
-                title: "Remove Pin",
+                className: "absolute -top-2 -right-2 flex gap-1 z-10"
               },
-              React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
+              React.createElement(
+                "button",
+                {
+                  onClick: (e) => {
+                    e.stopPropagation();
+                    handleDuplicatePin(item.id);
+                  },
+                  className:
+                    "bg-sky-500 text-white p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-sky-600 shadow-sm",
+                  title: "Duplicate Pin",
+                },
+                React.createElement(Icon, { name: "copy", className: "w-3 h-3" })
+              ),
+              React.createElement(
+                "button",
+                {
+                  onClick: (e) => {
+                    e.stopPropagation();
+                    handleUnlock(item.id);
+                  },
+                  className:
+                    "bg-slate-800 text-white p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 shadow-sm",
+                  title: "Remove Pin",
+                },
+                React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
+              )
             ),
           ),
         ),
@@ -7607,6 +7701,37 @@ const App = () => {
     });
     return res;
   }, [savedColors]);
+
+  const getPaletteItemInfo = useCallback((item) => {
+    if (!item) return { hex: "#FFFFFF", displayName: "", erpCode: "", L: 0, C: 0, H: 0 };
+    const c = new Color("oklch", [item.L, item.C, item.H]);
+    const hex = c
+      .clone()
+      .toGamut({ space: "srgb" })
+      .toString({ format: "hex" })
+      .toUpperCase();
+    let pin = item.pinId ? savedColors[item.pinId] : null;
+    if (!pin) {
+      pin = Object.values(savedColors).find(
+        (sc) => sc.type === "pin" && sc.erpCode === item.erpCode,
+      );
+    }
+    
+    let adj = "";
+    let noun = "";
+    if (pin) {
+      const inherited = getInheritedPinNames(pin, savedColors, names, adjectives, colorData);
+      adj = inherited.displayAdj;
+      noun = inherited.displayName;
+    } else {
+      adj = adjectives[item.adjId] || "";
+      noun = names[item.nounId] || "";
+    }
+    
+    const displayName = `${adj} ${noun}`.trim() || "Unnamed";
+    return { hex, displayName, erpCode: item.erpCode || "N/A", L: item.L, C: item.C, H: item.H, pin };
+  }, [savedColors, adjectives, names, colorData]);
+
   const [groupSettings, setGroupSettings] = useState(
     initialState?.groupSettings || defaultGroupSettings,
   );
@@ -7619,6 +7744,72 @@ const App = () => {
   const [newPaletteName, setNewPaletteName] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState([]);
+  const [showAveryModal, setShowAveryModal] = useState(false);
+  const [averyPrintSourceType, setAveryPrintSourceType] = useState("palette");
+  const [selectedPrintIds, setSelectedPrintIds] = useState([]);
+  const [printConfigs, setPrintConfigs] = useState({});
+  const [printStartIndex, setPrintStartIndex] = useState(1);
+  const [printLabelSwatches, setPrintLabelSwatches] = useState(true);
+  const [printLabelNames, setPrintLabelNames] = useState(true);
+  const [printLabelErp, setPrintLabelErp] = useState(true);
+  const [printLabelHex, setPrintLabelHex] = useState(true);
+  const [printLabelOklch, setPrintLabelOklch] = useState(true);
+  const [printLabelBorders, setPrintLabelBorders] = useState(true);
+
+  const [printLabelDoorProfile, setPrintLabelDoorProfile] = useState("SL (Slab)");
+  const [printLabelSheen, setPrintLabelSheen] = useState("MT (Matte)");
+  const [printLabelVisualTexture, setPrintLabelVisualTexture] = useState("V2 (Straight Grain)");
+  const [printLabelTactileTexture, setPrintLabelTactileTexture] = useState("T3 (Linear Grain)");
+  const [printLabelMaterial, setPrintLabelMaterial] = useState("Solid Laminate");
+
+  const averySourceItems = useMemo(() => {
+    if (averyPrintSourceType === "pins") {
+      return Object.values(savedColors).filter((sc) => sc.type === "pin").map((sc) => ({
+        id: sc.id,
+        L: sc.L,
+        C: sc.C,
+        H: sc.H,
+        erpCode: sc.erpCode,
+        adjId: sc.adjId,
+        nounId: sc.anchorId,
+        pinId: sc.id,
+      }));
+    }
+    return palette;
+  }, [averyPrintSourceType, savedColors, palette]);
+
+  const generateAveryPages = useCallback(() => {
+    const activeItems = averySourceItems.filter((item) => selectedPrintIds.includes(item.id));
+    const pages = [];
+    let currentPage = [];
+    
+    const offset = Math.max(0, printStartIndex - 1);
+    for (let i = 0; i < offset; i++) {
+      currentPage.push(null);
+    }
+    
+    activeItems.forEach((item) => {
+      const config = printConfigs[item.id] || {};
+      const count = Math.max(1, parseInt(config.count) || 1);
+      
+      for (let j = 0; j < count; j++) {
+        if (currentPage.length === 14) {
+          pages.push(currentPage);
+          currentPage = [];
+        }
+        currentPage.push(item);
+      }
+    });
+    
+    if (currentPage.length > 0) {
+      while (currentPage.length < 14) {
+        currentPage.push(null);
+      }
+      pages.push(currentPage);
+    }
+    
+    return pages.length > 0 ? pages : [Array(14).fill(null)];
+  }, [averySourceItems, selectedPrintIds, printStartIndex, printConfigs]);
   const [observer, setObserver] = useState(initialState?.observer || 10);
   const [illuminant, setIlluminant] = useState(
     initialState?.illuminant || "D65",
@@ -10411,6 +10602,41 @@ const App = () => {
     setShowDatabaseManager,
     showFileManager,
     setShowFileManager,
+    showAveryModal,
+    setShowAveryModal,
+    averyPrintSourceType,
+    setAveryPrintSourceType,
+    averySourceItems,
+    selectedPrintIds,
+    setSelectedPrintIds,
+    printConfigs,
+    setPrintConfigs,
+    printStartIndex,
+    setPrintStartIndex,
+    printLabelSwatches,
+    setPrintLabelSwatches,
+    printLabelNames,
+    setPrintLabelNames,
+    printLabelErp,
+    setPrintLabelErp,
+    printLabelHex,
+    setPrintLabelHex,
+    printLabelOklch,
+    setPrintLabelOklch,
+    printLabelBorders,
+    setPrintLabelBorders,
+    printLabelDoorProfile,
+    setPrintLabelDoorProfile,
+    printLabelSheen,
+    setPrintLabelSheen,
+    printLabelVisualTexture,
+    setPrintLabelVisualTexture,
+    printLabelTactileTexture,
+    setPrintLabelTactileTexture,
+    printLabelMaterial,
+    setPrintLabelMaterial,
+    generateAveryPages,
+    getPaletteItemInfo,
     linkedFiles,
     setLinkedFiles,
     colorData,
@@ -12509,6 +12735,41 @@ const AppUI = ({
   setShowDatabaseManager,
   showFileManager,
   setShowFileManager,
+  showAveryModal,
+  setShowAveryModal,
+  averyPrintSourceType,
+  setAveryPrintSourceType,
+  averySourceItems,
+  selectedPrintIds,
+  setSelectedPrintIds,
+  printConfigs,
+  setPrintConfigs,
+  printStartIndex,
+  setPrintStartIndex,
+  printLabelSwatches,
+  setPrintLabelSwatches,
+  printLabelNames,
+  setPrintLabelNames,
+  printLabelErp,
+  setPrintLabelErp,
+  printLabelHex,
+  setPrintLabelHex,
+  printLabelOklch,
+  setPrintLabelOklch,
+  printLabelBorders,
+  setPrintLabelBorders,
+  printLabelDoorProfile,
+  setPrintLabelDoorProfile,
+  printLabelSheen,
+  setPrintLabelSheen,
+  printLabelVisualTexture,
+  setPrintLabelVisualTexture,
+  printLabelTactileTexture,
+  setPrintLabelTactileTexture,
+  printLabelMaterial,
+  setPrintLabelMaterial,
+  generateAveryPages,
+  getPaletteItemInfo,
   linkedFiles,
   setLinkedFiles,
   colorData,
@@ -12578,6 +12839,239 @@ const AppUI = ({
 }) => {
   const isDark = theme === "dark";
   const [showViewFilters, setShowViewFilters] = useState(false);
+
+  const handlePrintAvery = () => {
+    try {
+      const printContainer = document.querySelector('.print-avery-container');
+      if (!printContainer) {
+        window.print();
+        return;
+      }
+      
+      const printWindow = window.open("", "_blank");
+      if (!printWindow) {
+        alert("Your browser blocked the pop-up print window. Standard printing will be used. Please enable pop-ups for this site, or open the app in a new tab to bypass this iframe restriction.");
+        window.print();
+        return;
+      }
+      
+      printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>SAMI Color Labels</title>
+            <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+            <style>
+              body, html {
+                margin: 0 !important;
+                padding: 0 !important;
+                width: 8.5in !important;
+                height: 11in !important;
+                background: white !important;
+                font-family: 'Bicyclette', 'Byciclette', 'Inter', system-ui, sans-serif !important;
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+              }
+              @page {
+                size: 8.5in 11in;
+                margin: 0;
+              }
+              body {
+                background-color: #f1f5f9;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                padding: 20px 0;
+                overflow-y: auto;
+              }
+              .print-avery-container {
+                display: block !important;
+                background: white !important;
+                box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+                border-radius: 8px;
+                padding: 0;
+                margin-bottom: 20px;
+              }
+              
+              /* Print only styles to remove background, shadows and custom margins */
+              @media print {
+                body {
+                  background: white !important;
+                  padding: 0 !important;
+                }
+                .print-avery-container {
+                  box-shadow: none !important;
+                  border-radius: 0 !important;
+                  margin-bottom: 0 !important;
+                }
+                .no-print {
+                  display: none !important;
+                }
+              }
+              
+              .no-print-header {
+                width: 8.5in;
+                background: #1e293b;
+                color: #f8fafc;
+                padding: 12px 20px;
+                border-radius: 8px;
+                margin-bottom: 12px;
+                box-sizing: border-box;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+              }
+              .no-print-header h1 {
+                margin: 0;
+                font-size: 14px;
+                font-weight: 700;
+                letter-spacing: 0.05em;
+              }
+              .print-btn {
+                background: #10b981;
+                color: white;
+                border: none;
+                padding: 6px 16px;
+                border-radius: 6px;
+                font-weight: 700;
+                font-size: 12px;
+                cursor: pointer;
+                transition: background 0.2s;
+              }
+              .print-btn:hover {
+                background: #059669;
+              }
+              
+              .avery-print-page {
+                display: grid !important;
+                grid-template-columns: 4in 4in !important;
+                column-gap: 0.188in !important;
+                row-gap: 0in !important;
+                width: 8.5in !important;
+                height: 11in !important;
+                padding-top: 0.25in !important;
+                padding-bottom: 0.25in !important;
+                padding-left: 0.156in !important;
+                padding-right: 0.156in !important;
+                box-sizing: border-box !important;
+                page-break-after: always !important;
+                page-break-inside: avoid !important;
+                align-content: start !important;
+                background: white !important;
+              }
+              .avery-label-cell {
+                width: 4in !important;
+                height: 1.5in !important;
+                box-sizing: border-box !important;
+                padding: 0 !important;
+                display: flex !important;
+                overflow: hidden !important;
+                background: white !important;
+                border-radius: 0.125in !important;
+                font-family: 'Bicyclette', 'Byciclette', 'Inter', system-ui, sans-serif !important;
+              }
+              .avery-label-border {
+                border: 1px dashed rgba(180, 169, 158, 0.4) !important;
+              }
+              .avery-label-borderless {
+                border: 1px solid transparent !important;
+              }
+              .sami-sidebar {
+                width: 0.45in !important;
+                height: 100% !important;
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+              }
+              .sami-sidebar span {
+                transform: rotate(-90deg) !important;
+                font-weight: 900 !important;
+                font-size: 13pt !important;
+                letter-spacing: 0.1em !important;
+              }
+              .sami-content {
+                flex-grow: 1 !important;
+                padding: 0.1in 0.15in !important;
+                display: flex !important;
+                flex-direction: column !important;
+                justify-content: space-between !important;
+                height: 100% !important;
+                box-sizing: border-box !important;
+              }
+              .sami-row {
+                display: flex !important;
+                align-items: baseline !important;
+                font-size: 6.5pt !important;
+                line-height: 1.1 !important;
+                width: 100% !important;
+                position: relative !important;
+              }
+              .sami-label {
+                font-weight: 800 !important;
+                width: 0.85in !important;
+                flex-shrink: 0 !important;
+                color: #1a201c !important;
+                font-size: 6.5pt !important;
+              }
+              .sami-label.right {
+                width: auto !important;
+                margin-left: auto !important;
+                padding-left: 0.1in !important;
+                padding-right: 0.05in !important;
+              }
+              .sami-value {
+                font-weight: 500 !important;
+                color: #2b332d !important;
+                white-space: nowrap !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+              }
+              .sami-value.sami-lg {
+                font-size: 9.5pt !important;
+                font-weight: 800 !important;
+                text-transform: uppercase !important;
+              }
+              .sami-line {
+                flex-grow: 1 !important;
+                border-bottom: 0.5px solid #a0a8a3 !important;
+                min-width: 0.5in !important;
+                margin-bottom: 1pt !important;
+              }
+              .sami-id {
+                margin-left: auto !important;
+                font-size: 6pt !important;
+                font-style: italic !important;
+                color: #88908a !important;
+              }
+            </style>
+          </head>
+          <body>
+            <div class="no-print-header no-print">
+              <h1>SAMI COLOR LABEL PRINT VIEW</h1>
+              <button class="print-btn" onclick="window.print()">Print This Page</button>
+            </div>
+            <div class="print-avery-container">
+              ${printContainer.innerHTML}
+            </div>
+            <script>
+              window.addEventListener('load', () => {
+                setTimeout(() => {
+                  window.print();
+                }, 500);
+              });
+            </script>
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
+    } catch (e) {
+      console.error(e);
+      window.print();
+    }
+  };
   return React.createElement(
     "div",
     { className: "flex flex-col md:flex-row h-screen overflow-hidden" },
@@ -13385,23 +13879,9 @@ const AppUI = ({
                   "div",
                   { className: "flex flex-wrap gap-2" },
                   palette.map((item) => {
-                    const c = new Color("oklch", [item.L, item.C, item.H]);
-                    const h = c
-                      .clone()
-                      .toGamut({ space: "srgb" })
-                      .toString({ format: "hex" })
-                      .toUpperCase();
-                    let pin = item.pinId ? savedColors[item.pinId] : null;
-                    if (!pin) {
-                      pin = Object.values(savedColors).find(
-                        (sc) =>
-                          sc.type === "pin" && sc.erpCode === item.erpCode,
-                      );
-                    }
-                    const adj =
-                      pin?.adjOverride || adjectives[item.adjId] || "";
-                    const noun = pin?.nameOverride || names[item.nounId] || "";
-                    const displayName = `${adj} ${noun}`.trim() || "Unnamed";
+                    const info = getPaletteItemInfo(item);
+                    const displayName = info.displayName;
+                    const h = info.hex;
                     return React.createElement(
                       "div",
                       {
@@ -13468,21 +13948,40 @@ const AppUI = ({
                       {
                         onClick: () => setShowFullscreenPalette(true),
                         className:
-                          "flex-1 py-2 border border-slate-300 dark:border-neutral-700 hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-700 dark:text-neutral-300 font-bold text-[10px] uppercase tracking-wider rounded transition-colors flex items-center justify-center gap-1.5",
+                          "flex-1 py-1.5 border border-slate-300 dark:border-neutral-700 hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-700 dark:text-neutral-300 font-bold text-[10px] uppercase tracking-wider rounded transition-colors flex items-center justify-center gap-1",
+                        title: "Fullscreen Palette",
                       },
                       React.createElement(Icon, {
                         name: "maximize",
                         className: "w-3.5 h-3.5",
                       }),
-                      " ",
                       "Fullscreen",
+                    ),
+                    React.createElement(
+                      "button",
+                      {
+                        onClick: () => {
+                          setAveryPrintSourceType("palette");
+                          setSelectedPrintIds(palette.map((item) => item.id));
+                          setShowAveryModal(true);
+                        },
+                        className:
+                          "flex-1 py-1.5 border border-slate-300 dark:border-neutral-700 hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-700 dark:text-neutral-300 font-bold text-[10px] uppercase tracking-wider rounded transition-colors flex items-center justify-center gap-1",
+                        title: "Print Avery 5159 Labels",
+                      },
+                      React.createElement(Icon, {
+                        name: "printer",
+                        className: "w-3.5 h-3.5",
+                      }),
+                      "Print Avery",
                     ),
                     React.createElement(
                       "button",
                       {
                         onClick: () => setPalette([]),
                         className:
-                          "py-2 px-3 border border-red-200 dark:border-red-900/30 hover:bg-red-50 text-red-500 font-bold text-[10px] uppercase tracking-wider rounded transition-colors",
+                          "py-1.5 px-3 border border-red-200 dark:border-red-900/30 hover:bg-red-50 text-red-500 font-bold text-[10px] uppercase tracking-wider rounded transition-colors flex items-center justify-center",
+                        title: "Clear Palette",
                       },
                       React.createElement(Icon, {
                         name: "trash-2",
@@ -14784,6 +15283,9 @@ const AppUI = ({
                 setSelectedIds,
                 handleBatchTag,
                 handleBatchRemoveTag,
+                setShowAveryModal,
+                setSelectedPrintIds,
+                setAveryPrintSourceType,
               }),
           ),
         ),
@@ -15150,23 +15652,14 @@ const AppUI = ({
           "div",
           { className: "flex w-full h-full relative z-10" },
           palette.map((item) => {
-            const c = new Color("oklch", [item.L, item.C, item.H]);
-            const h = c
-              .clone()
-              .toGamut({ space: "srgb" })
-              .toString({ format: "hex" })
-              .toUpperCase();
-            let pin = item.pinId ? savedColors[item.pinId] : null;
-            if (!pin) {
-              pin = Object.values(savedColors).find(
-                (sc) => sc.type === "pin" && sc.erpCode === item.erpCode,
-              );
-            }
-            const adj = pin?.adjOverride || adjectives[item.adjId] || "";
-            const noun = pin?.nameOverride || names[item.nounId] || "";
+            const info = getPaletteItemInfo(item);
             const displayName =
-              `${adj} ${noun}`.trim() ||
-              (item.erpCode ? `#${item.erpCode}` : "\u2014");
+              info.displayName !== "Unnamed"
+                ? info.displayName
+                : item.erpCode
+                  ? `#${item.erpCode}`
+                  : "\u2014";
+            const h = info.hex;
             return React.createElement(
               "div",
               {
@@ -15788,6 +16281,626 @@ const AppUI = ({
         crosshair,
         onClose: () => setShowDatabaseManager(false),
       }),
+    showAveryModal &&
+      ReactDOM.createPortal(
+        React.createElement(
+          "div",
+          {
+            className:
+              "fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/40 dark:bg-black/60 backdrop-blur-sm p-4 md:p-8 animate-in fade-in duration-300",
+          },
+          React.createElement(
+            "div",
+            {
+              className:
+                "bg-white dark:bg-neutral-900 text-slate-800 dark:text-neutral-100 rounded-2xl w-full max-w-5xl h-[90vh] shadow-2xl flex flex-col border border-slate-200 dark:border-neutral-800 overflow-hidden",
+            },
+            // Header
+            React.createElement(
+              "div",
+              {
+                className:
+                  "p-4 border-b border-slate-200 dark:border-neutral-800 flex justify-between items-center bg-slate-50 dark:bg-neutral-800/50 rounded-t-2xl",
+              },
+              React.createElement(
+                "h3",
+                { className: "font-bold flex items-center gap-2 text-slate-900 dark:text-white" },
+                React.createElement(Icon, {
+                  name: "printer",
+                  className: "w-5 h-5 text-sky-500",
+                }),
+                " Avery 5159 Color Label Designer",
+              ),
+              React.createElement(
+                "button",
+                {
+                  onClick: () => setShowAveryModal(false),
+                  className: "text-slate-400 hover:text-slate-600 dark:hover:text-neutral-200",
+                },
+                React.createElement(Icon, { name: "x", className: "w-5 h-5" }),
+              ),
+            ),
+            // Body
+            React.createElement(
+              "div",
+              {
+                className:
+                  "flex-1 flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-slate-200 dark:divide-neutral-800 overflow-hidden",
+              },
+              // Left Panel (Design & Settings)
+              React.createElement(
+                "div",
+                {
+                  className:
+                    "w-full md:w-[360px] p-5 overflow-y-auto flex flex-col gap-5 bg-slate-50/50 dark:bg-neutral-900/10 custom-scrollbar",
+                },
+                React.createElement(
+                  "div",
+                  { className: "flex flex-col gap-1.5" },
+                  React.createElement(
+                    "h4",
+                    { className: "text-xs font-bold uppercase tracking-wider text-slate-400" },
+                    "1. Starting Label Position"
+                  ),
+                  React.createElement(
+                    "p",
+                    { className: "text-xs text-slate-500 leading-normal" },
+                    "Avoid wasting labels by starting from any slot. Click a slot in the preview grid or select below."
+                  ),
+                  React.createElement(
+                    "select",
+                    {
+                      value: printStartIndex,
+                      onChange: (e) => setPrintStartIndex(parseInt(e.target.value) || 1),
+                      className:
+                        "w-full mt-1.5 bg-white dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-3 py-2 text-xs text-slate-700 dark:text-neutral-300 outline-none focus:border-sky-500",
+                    },
+                    Array.from({ length: 14 }).map((_, i) =>
+                      React.createElement("option", { key: i, value: i + 1 }, `Label Slot ${i + 1}`)
+                    )
+                  )
+                ),
+                React.createElement(
+                  "div",
+                  { className: "flex flex-col gap-3" },
+                  React.createElement(
+                    "h4",
+                    { className: "text-xs font-bold uppercase tracking-wider text-slate-400" },
+                    "2. SAMI Label Details"
+                  ),
+                  [
+                    { label: "Sheen", value: printLabelSheen, setter: setPrintLabelSheen, options: ['SM (Super Matte)', 'MT (Matte)', 'ST (Satin)', 'HG (High Gloss)'] },
+                    { label: "Visual Pattern", value: printLabelVisualTexture, setter: setPrintLabelVisualTexture, options: ['V1 (Solid)', 'V2 (Straight Grain)', 'V3 (Cathedral Grain)', 'V4 (Rustic/Heavy)', 'V5 (Abstract/Stipple)'] },
+                    { label: "Tactile Texture", value: printLabelTactileTexture, setter: setPrintLabelTactileTexture, options: ['T1 (Smooth)', 'T2 (Stipple)', 'T3 (Linear Grain)', 'T4 (EIR/Natural)'] },
+                    { label: "Door Profile", value: printLabelDoorProfile, setter: setPrintLabelDoorProfile, options: ['SL (Slab)', 'CS (Shaker)', 'SS (Slim)', 'RD (Reeded)', 'CT (Countertop)', 'WG (Wood-Framed Glass)', 'MG (Metal-framed Glass)'] },
+                    { label: "Material", value: printLabelMaterial, setter: setPrintLabelMaterial, options: ['Solid Laminate', 'Textured Laminate', 'Lacquered MDF', 'Natural Oak', 'Natural Maple'] },
+                  ].map((field, idx) =>
+                    React.createElement(
+                      "div",
+                      { key: idx, className: "flex flex-col gap-1" },
+                      React.createElement("label", { className: "text-[10px] uppercase font-bold text-slate-500" }, field.label),
+                      React.createElement("select", {
+                        value: field.value,
+                        onChange: (e) => field.setter(e.target.value),
+                        className: "bg-white dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs text-slate-700 dark:text-neutral-300 w-full outline-none focus:border-sky-500 transition-colors"
+                      },
+                        field.options.map(opt => React.createElement("option", { key: opt, value: opt }, opt))
+                      )
+                    )
+                  )
+                ),
+                React.createElement(
+                  "div",
+                  { className: "flex flex-col gap-3 py-2 border-t border-slate-200 dark:border-neutral-800" },
+                  React.createElement(
+                    "h4",
+                    { className: "text-xs font-bold uppercase tracking-wider text-slate-400" },
+                    "3. Layout Alignment"
+                  ),
+                  React.createElement(
+                    "label",
+                    { className: "flex items-center gap-2.5 cursor-pointer text-xs select-none" },
+                    React.createElement("input", {
+                      type: "checkbox",
+                      checked: printLabelBorders,
+                      onChange: (e) => setPrintLabelBorders(e.target.checked),
+                      className: "rounded border-slate-300 text-sky-500 focus:ring-sky-500 h-3.5 w-3.5",
+                    }),
+                    React.createElement("span", { className: "text-slate-700 dark:text-neutral-300 font-medium" }, "Show layout guidelines (dashed)")
+                  )
+                ),
+                React.createElement(
+                  "div",
+                  { className: "mt-auto pt-4 border-t border-slate-200 dark:border-neutral-800 text-xs text-slate-500 flex flex-col gap-1" },
+                  React.createElement("div", null, `Checked Colors: ${averySourceItems.filter((p) => selectedPrintIds.includes(p.id)).length} of ${averySourceItems.length}`),
+                  React.createElement("div", null, `Sheets needed: ${generateAveryPages().length} page(s)`)
+                )
+              ),
+              // Right Panel (Interactive sheet grid and Selector)
+              React.createElement(
+                "div",
+                {
+                  className:
+                    "flex-1 p-5 overflow-y-auto flex flex-col lg:flex-row gap-6 custom-scrollbar bg-white dark:bg-neutral-900",
+                },
+                // Selection list
+                React.createElement(
+                  "div",
+                  { className: "flex-1 flex flex-col gap-3" },
+                  React.createElement(
+                    "div",
+                    { className: "flex items-center justify-between" },
+                    React.createElement(
+                      "h4",
+                      { className: "font-semibold text-xs uppercase tracking-wider text-slate-400" },
+                      "Select Colors to Print"
+                    ),
+                    React.createElement(
+                      "div",
+                      { className: "flex gap-2" },
+                      React.createElement(
+                        "button",
+                        {
+                          onClick: () => setSelectedPrintIds(averySourceItems.map((p) => p.id)),
+                          className: "text-[10px] text-sky-500 hover:underline hover:text-sky-600 font-bold uppercase tracking-wider",
+                        },
+                        "All"
+                      ),
+                      React.createElement("span", { className: "text-slate-300 dark:text-neutral-700" }, "|"),
+                      React.createElement(
+                        "button",
+                        {
+                          onClick: () => setSelectedPrintIds([]),
+                          className: "text-[10px] text-slate-500 hover:underline hover:text-slate-600 font-bold uppercase tracking-wider",
+                        },
+                        "None"
+                      )
+                    )
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "flex-1 min-h-[160px] max-h-[220px] lg:max-h-[380px] overflow-y-auto border border-slate-200 dark:border-neutral-800 rounded-lg p-2 flex flex-col gap-1 bg-slate-50/50 dark:bg-neutral-900/20 custom-scrollbar" },
+                    averySourceItems.map((item) => {
+                      const info = getPaletteItemInfo(item);
+                      const isChecked = selectedPrintIds.includes(item.id);
+                      const myConfig = printConfigs[item.id] || {};
+                      
+                      const updateMyConfig = (key, val) => {
+                        setPrintConfigs(prev => ({
+                          ...prev,
+                          [item.id]: {
+                            ...prev[item.id],
+                            [key]: val
+                          }
+                        }));
+                      };
+
+                      return React.createElement(
+                        "div",
+                        {
+                          key: item.id,
+                          className: `flex flex-col rounded-md transition-colors ${isChecked ? "bg-white dark:bg-neutral-800/50 shadow-sm border border-slate-200 dark:border-neutral-700" : "hover:bg-slate-100 dark:hover:bg-neutral-800/80 cursor-pointer"}`,
+                        },
+                        React.createElement(
+                          "div",
+                          {
+                            className: "flex items-center gap-3 p-2 cursor-pointer",
+                            onClick: () => {
+                              setSelectedPrintIds((prev) =>
+                                prev.includes(item.id) ? prev.filter((pId) => pId !== item.id) : [...prev, item.id]
+                              );
+                            },
+                          },
+                          React.createElement("input", {
+                            type: "checkbox",
+                            checked: isChecked,
+                            readOnly: true,
+                            className: "rounded border-slate-300 text-sky-500 focus:ring-sky-500 h-3.5 w-3.5 pointer-events-none",
+                          }),
+                          React.createElement("div", {
+                            className: "w-6 h-6 rounded border border-slate-200/50 flex-shrink-0 shadow-sm",
+                            style: { backgroundColor: info.hex },
+                          }),
+                          React.createElement(
+                            "div",
+                            { className: "flex-1 overflow-hidden" },
+                            React.createElement(
+                              "div",
+                              { className: "text-xs font-bold truncate text-slate-800 dark:text-neutral-200" },
+                              info.displayName
+                            ),
+                            React.createElement(
+                              "div",
+                              { className: "text-[10px] font-mono text-slate-400 truncate" },
+                              `ERP: ${info.erpCode} \u2022 ${info.hex}`
+                            )
+                          )
+                        ),
+                        // Expanded settings panel
+                        isChecked && React.createElement(
+                          "div",
+                          { className: "px-2 pb-2 pt-1 border-t border-slate-100 dark:border-neutral-800 flex flex-col gap-2 bg-slate-50 dark:bg-neutral-900/50 rounded-b-md" },
+                          React.createElement(
+                            "div",
+                            { className: "flex items-center justify-between" },
+                            React.createElement("span", { className: "text-[10px] font-bold text-slate-500" }, "COPIES"),
+                            React.createElement("input", {
+                              type: "number",
+                              min: 1,
+                              value: myConfig.count ?? 1,
+                              onChange: (e) => updateMyConfig("count", parseInt(e.target.value) || 1),
+                              className: "w-16 h-6 px-1 text-xs text-right border border-slate-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-800 outline-none"
+                            })
+                          ),
+                          // Override Fields
+                          [
+                            { label: "Sheen", key: "sheen", global: printLabelSheen, options: ['-', 'SM (Super Matte)', 'MT (Matte)', 'ST (Satin)', 'HG (High Gloss)'] },
+                            { label: "Vis. Pattern", key: "visualTexture", global: printLabelVisualTexture, options: ['-', 'V1 (Solid)', 'V2 (Straight Grain)', 'V3 (Cathedral Grain)', 'V4 (Rustic/Heavy)', 'V5 (Abstract/Stipple)'] },
+                            { label: "Tac. Texture", key: "tactileTexture", global: printLabelTactileTexture, options: ['-', 'T1 (Smooth)', 'T2 (Stipple)', 'T3 (Linear Grain)', 'T4 (EIR/Natural)'] },
+                            { label: "Profile", key: "doorProfile", global: printLabelDoorProfile, options: ['-', 'SL (Slab)', 'CS (Shaker)', 'SS (Slim)', 'RD (Reeded)', 'CT (Countertop)', 'WG (Wood-Framed Glass)', 'MG (Metal-framed Glass)'] },
+                            { label: "Material", key: "material", global: printLabelMaterial, options: ['-', 'Solid Laminate', 'Textured Laminate', 'Lacquered MDF', 'Natural Oak', 'Natural Maple'] }
+                          ].map((field) => (
+                            React.createElement(
+                              "div",
+                              { key: field.key, className: "flex items-center justify-between gap-2" },
+                              React.createElement("span", { className: "text-[9px] uppercase font-bold text-slate-500 truncate" }, field.label),
+                              React.createElement("select", {
+                                value: myConfig[field.key] ?? "-",
+                                onChange: (e) => updateMyConfig(field.key, e.target.value === "-" ? null : e.target.value),
+                                className: "w-24 h-6 px-1.5 text-[9px] border border-slate-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-800 outline-none"
+                              },
+                                field.options.map(opt => React.createElement("option", { key: opt, value: opt }, opt === "-" ? `Default (${field.global.split(" ")[0]})` : opt))
+                              )
+                            )
+                          ))
+                        )
+                      );
+                    })
+                  )
+                ),
+                // Visual Sheet preview container
+                React.createElement(
+                  "div",
+                  { className: "w-full lg:w-[280px] flex flex-col gap-3 justify-center items-center" },
+                  React.createElement(
+                    "h4",
+                    { className: "font-semibold text-xs uppercase tracking-wider text-slate-400 text-center w-full animate-pulse-none" },
+                    "First Sheet Layout"
+                  ),
+                  React.createElement(
+                    "div",
+                    {
+                      className:
+                        "relative w-full aspect-[8.5/11] bg-slate-100 dark:bg-neutral-950/45 p-1.5 border border-slate-300 dark:border-neutral-800 rounded-lg shadow-inner max-w-[240px] flex flex-col gap-0.5 justify-between",
+                    },
+                    // Grid template for 14 slots
+                    React.createElement(
+                      "div",
+                      { className: "grid grid-cols-2 grid-rows-7 gap-1 h-full w-full" },
+                      Array.from({ length: 14 }).map((_, slotIdx) => {
+                        const printPages = generateAveryPages();
+                        const firstPageColors = printPages[0] || Array(14).fill(null);
+                        const maybeItem = firstPageColors[slotIdx];
+                        const isStart = printStartIndex === slotIdx + 1;
+                        let cellBg = "bg-white/80 dark:bg-neutral-800/10 text-slate-400";
+                        let innerText = "";
+                        let colorHex = null;
+                        
+                        if (maybeItem) {
+                          const info = getPaletteItemInfo(maybeItem);
+                          colorHex = info.hex;
+                          innerText = info.displayName;
+                        } else if (slotIdx + 1 < printStartIndex) {
+                          cellBg = "bg-slate-300/40 dark:bg-neutral-900/40 text-slate-400/50 line-through";
+                          innerText = "Skip";
+                        } else {
+                          innerText = "Empty";
+                        }
+                        
+                        return React.createElement(
+                          "div",
+                          {
+                            key: slotIdx,
+                            onClick: () => setPrintStartIndex(slotIdx + 1),
+                            className: `relative flex flex-col justify-center items-center p-0.5 text-[8px] font-bold rounded cursor-pointer transition-all border overflow-hidden select-none ${isStart ? "border-sky-500 ring-2 ring-sky-500/50 z-10" : "border-slate-200 dark:border-neutral-800/50 hover:border-slate-400 dark:hover:border-neutral-600"} ${cellBg}`,
+                            style: colorHex ? { backgroundColor: colorHex, color: new Color(colorHex).L > 0.65 ? "#000" : "#fff" } : {},
+                            title: `Slot ${slotIdx + 1}. Click to set as starting label.`,
+                          },
+                          React.createElement(
+                            "div",
+                            { className: "truncate max-w-full text-[7px]" },
+                            innerText
+                          ),
+                          isStart &&
+                            React.createElement(
+                              "div",
+                              { className: "absolute bottom-0 right-0 bg-sky-500 text-white rounded-tl px-0.5 text-[6px] text-center" },
+                              "Start"
+                            )
+                        );
+                      })
+                    )
+                  ),
+                  React.createElement(
+                    "p",
+                    { className: "text-[10px] text-slate-400 text-center italic leading-tight" },
+                    "Slots 1\u201314 on Sheet 1. Checked colors are filled sequentially starting at 'Start'. Click slots to reposition."
+                  )
+                )
+              )
+            ),
+            // Footer
+            React.createElement(
+              "div",
+              {
+                className:
+                  "p-4 border-t border-slate-200 dark:border-neutral-800 flex justify-between items-center bg-slate-50 dark:bg-neutral-800/50 rounded-b-2xl",
+              },
+              React.createElement(
+                "div",
+                { className: "text-xs text-slate-400 hidden sm:block" },
+                "Fits Avery 5159 standard (4\" \u00d7 1.5\" \u00d7 14 labels per page)"
+              ),
+              React.createElement(
+                "div",
+                { className: "flex gap-2 ml-auto" },
+                React.createElement(
+                  "button",
+                  {
+                    onClick: () => setShowAveryModal(false),
+                    className:
+                      "px-4 py-2 border border-slate-200 hover:bg-slate-100 dark:border-neutral-700 dark:hover:bg-neutral-800 text-slate-700 dark:text-neutral-300 rounded-lg text-xs font-bold transition-colors",
+                  },
+                  "Cancel"
+                ),
+                React.createElement(
+                  "button",
+                  {
+                    onClick: () => handlePrintAvery(),
+                    disabled: averySourceItems.filter((p) => selectedPrintIds.includes(p.id)).length === 0,
+                    className:
+                      "px-5 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-300 disabled:dark:bg-neutral-800 text-white rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm",
+                  },
+                  React.createElement(Icon, { name: "printer", className: "w-4 h-4" }),
+                  "Print Labels"
+                )
+              )
+            )
+          )
+        ),
+        document.body
+      ),
+    React.createElement(
+      "div",
+      { className: "hidden print:block print-avery-container font-sans bg-white" },
+      React.createElement("style", null, `
+        @media print {
+          body, html {
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 8.5in !important;
+            height: 11in !important;
+            background: white !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+          #root {
+            display: none !important;
+          }
+          .print-avery-container {
+            display: block !important;
+            background: white !important;
+          }
+          .avery-print-page {
+            display: grid !important;
+            grid-template-columns: 4in 4in !important;
+            column-gap: 0.188in !important;
+            row-gap: 0in !important;
+            width: 8.5in !important;
+            height: 11in !important;
+            padding-top: 0.25in !important;
+            padding-bottom: 0.25in !important;
+            padding-left: 0.156in !important;
+            padding-right: 0.156in !important;
+            box-sizing: border-box !important;
+            page-break-after: always !important;
+            page-break-inside: avoid !important;
+            align-content: start !important;
+            background: white !important;
+          }
+          .avery-label-cell {
+            width: 4in !important;
+            height: 1.5in !important;
+            box-sizing: border-box !important;
+            padding: 0 !important;
+            display: flex !important;
+            overflow: hidden !important;
+            background: white !important;
+            border-radius: 0.125in !important;
+            font-family: 'Bicyclette', 'Byciclette', 'Inter', system-ui, sans-serif !important;
+          }
+          .avery-label-border {
+            border: 1px dashed rgba(180, 169, 158, 0.4) !important;
+          }
+          .avery-label-borderless {
+            border: 1px solid transparent !important;
+          }
+          .sami-sidebar {
+            width: 0.45in !important;
+            height: 100% !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+          .sami-sidebar span {
+            transform: rotate(-90deg) !important;
+            font-weight: 900 !important;
+            font-size: 13pt !important;
+            letter-spacing: 0.1em !important;
+          }
+          .sami-content {
+            flex-grow: 1 !important;
+            padding: 0.1in 0.15in !important;
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: space-between !important;
+            height: 100% !important;
+            box-sizing: border-box !important;
+          }
+          .sami-row {
+            display: flex !important;
+            align-items: baseline !important;
+            font-size: 6.5pt !important;
+            line-height: 1.1 !important;
+            width: 100% !important;
+            position: relative !important;
+          }
+          .sami-label {
+            font-weight: 800 !important;
+            width: 0.85in !important;
+            flex-shrink: 0 !important;
+            color: #1a201c !important;
+            font-size: 6.5pt !important;
+          }
+          .sami-label.right {
+            width: auto !important;
+            margin-left: auto !important;
+            padding-left: 0.1in !important;
+            padding-right: 0.05in !important;
+          }
+          .sami-value {
+            font-weight: 500 !important;
+            color: #2b332d !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+          }
+          .sami-value.sami-lg {
+            font-size: 9.5pt !important;
+            font-weight: 800 !important;
+            text-transform: uppercase !important;
+          }
+          .sami-line {
+            flex-grow: 1 !important;
+            border-bottom: 0.5px solid #a0a8a3 !important;
+            min-width: 0.5in !important;
+            margin-bottom: 1pt !important;
+          }
+          .sami-id {
+            margin-left: auto !important;
+            font-size: 6pt !important;
+            font-style: italic !important;
+            color: #88908a !important;
+          }
+        }
+      `),
+      generateAveryPages().map((pageColors, pIdx) =>
+        React.createElement(
+          "div",
+          { key: pIdx, className: "avery-print-page" },
+          pageColors.map((item, cIdx) => {
+            if (!item) {
+              return React.createElement("div", {
+                key: `empty-${cIdx}`,
+                className: `avery-label-cell ${printLabelBorders ? "avery-label-border" : "avery-label-borderless"}`,
+              });
+            }
+            const info = getPaletteItemInfo(item);
+            
+            const config = printConfigs[item.id] || {};
+            const itemSheen = config.sheen ?? (info.pin?.sheen || null) ?? printLabelSheen;
+            const itemMaterial = config.material ?? (info.pin?.material || null) ?? printLabelMaterial;
+            const itemVisualTexture = config.visualTexture ?? (info.pin?.visualTexture || null) ?? printLabelVisualTexture;
+            const itemTactileTexture = config.tactileTexture ?? (info.pin?.tactileTexture || null) ?? printLabelTactileTexture;
+            const itemDoorProfile = config.doorProfile ?? (info.pin?.doorProfile || null) ?? printLabelDoorProfile;
+            
+            // Build the ID string like [Color]-[Sheen]-[Visual Pattern]-[Tactile Texture]-[Profile]
+            const abbrSheen = itemSheen.split(' ')[0] || "XX";
+            const abbrVisual = itemVisualTexture.split(' ')[0] || "XX";
+            const abbrTactile = itemTactileTexture.split(' ')[0] || "XX";
+            const abbrProfile = itemDoorProfile.split(' ')[0] || "XX";
+            const generatedIdStr = `${info.erpCode}-${abbrSheen}-${abbrVisual}-${abbrTactile}-${abbrProfile}`;
+
+            // Determine if the text in sidebar should be black or white for contrast
+            // We use a simple luminous check, L from OKLCH is convenient (info.L)
+            const sidebarTextColor = info.L > 0.65 ? "#000000" : "#FFFFFF";
+
+            return React.createElement(
+              "div",
+              {
+                // Must ensure unique keys for duplicates
+                key: `${item.id}-${cIdx}`,
+                className: `avery-label-cell ${printLabelBorders ? "avery-label-border" : "avery-label-borderless"}`,
+              },
+              React.createElement(
+                "div",
+                {
+                  className: "sami-sidebar",
+                  style: { backgroundColor: info.hex, color: sidebarTextColor }
+                },
+                React.createElement("span", null, "SAMI")
+              ),
+              React.createElement(
+                "div",
+                { className: "sami-content" },
+                // Row 1: Name
+                React.createElement(
+                  "div",
+                  { className: "sami-row" },
+                  React.createElement("span", { className: "sami-label" }, "NAME:"),
+                  React.createElement("span", { className: "sami-value sami-lg uppercase" }, info.displayName)
+                ),
+                // Row 2: Color Code
+                React.createElement(
+                  "div",
+                  { className: "sami-row" },
+                  React.createElement("span", { className: "sami-label" }, "COLOR CODE:"),
+                  React.createElement("span", { className: "sami-value" }, info.erpCode)
+                ),
+                // Row 3: Sheen
+                React.createElement(
+                  "div",
+                  { className: "sami-row" },
+                  React.createElement("span", { className: "sami-label" }, "SHEEN:"),
+                  React.createElement("span", { className: "sami-value" }, itemSheen)
+                ),
+                // Row 4: Visual Pattern
+                React.createElement(
+                  "div",
+                  { className: "sami-row" },
+                  React.createElement("span", { className: "sami-label" }, "VISUAL PATTERN:"),
+                  React.createElement("span", { className: "sami-value" }, itemVisualTexture)
+                ),
+                // Row 5: Tactile Texture
+                React.createElement(
+                  "div",
+                  { className: "sami-row" },
+                  React.createElement("span", { className: "sami-label" }, "TACTILE TEXTURE:"),
+                  React.createElement("span", { className: "sami-value" }, itemTactileTexture)
+                ),
+                // Row 6: Door Profile
+                React.createElement(
+                  "div",
+                  { className: "sami-row" },
+                  React.createElement("span", { className: "sami-label" }, "DOOR PROFILE:"),
+                  React.createElement("span", { className: "sami-value" }, itemDoorProfile)
+                ),
+                // Row 7: Material + ID
+                React.createElement(
+                  "div",
+                  { className: "sami-row" },
+                  React.createElement("span", { className: "sami-label" }, "MATERIAL:"),
+                  React.createElement("span", { className: "sami-value" }, itemMaterial),
+                  React.createElement("span", { className: "sami-id" }, generatedIdStr)
+                )
+              )
+            );
+          })
+        )
+      )
+    ),
   );
 };
 const rootItem = document.getElementById("root");
