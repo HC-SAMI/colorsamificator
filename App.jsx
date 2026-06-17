@@ -11,6 +11,7 @@ const Icon = ({ name, className = "w-4 h-4" }) => {
   }, [name, className]);
   return React.createElement("span", { ref, style: { display: "contents" } });
 };
+window.Icon = Icon;
 const LABEL_OPTIONS = {
   sheen: ['-', 'SM (Super Matte)', 'MT (Matte)', 'ST (Satin)', 'HG (High Gloss)'],
   visualPattern: ['-', 'V1 (Solid)', 'V2 (Straight Grain)', 'V3 (Cathedral Grain)', 'V4 (Rustic/Heavy)', 'V5 (Abstract/Stipple)'],
@@ -702,7 +703,17 @@ const ColorConverter = ({
     ),
   );
 };
-const CommercialMatches = ({ crosshair, colorData, onSelectColor }) => {
+const CommercialMatches = ({
+  crosshair,
+  colorData,
+  filterSameAdjective,
+  filterSameNoun,
+  names,
+  adjectives,
+  gridData,
+  onSelectColor,
+  savedColors = {},
+}) => {
   if (!crosshair) return null;
   const c = new Color("oklch", [
     crosshair.rawL,
@@ -720,6 +731,19 @@ const CommercialMatches = ({ crosshair, colorData, onSelectColor }) => {
   const [searchQuery, setSearchQuery] = useState("");
   const filteredMatches = useMemo(() => {
     if (!colorData || Object.keys(colorData).length === 0) return null;
+
+    let binBounds = null;
+    if (filterSameAdjective || filterSameNoun) {
+      const unfilteredPts = getUnfilteredPoints(gridData, savedColors);
+      binBounds = getCursorBinBoundaries(
+        crosshair.rawL,
+        crosshair.rawC,
+        crosshair.rawH,
+        savedColors,
+        unfilteredPts
+      );
+    }
+
     const allMatches = [];
     const processList = (list, label, brandKey) => {
       if (!list || !Array.isArray(list)) return;
@@ -747,6 +771,19 @@ const CommercialMatches = ({ crosshair, colorData, onSelectColor }) => {
           }
           const d = c.deltaE(targetColor, "OK") * 100;
           if (d <= maxDeltaE) {
+            if ((filterSameAdjective || filterSameNoun) && binBounds) {
+              const itemL = targetColor.coords[0];
+              const itemC = targetColor.coords[1];
+              const itemH = isNaN(targetColor.coords[2]) ? 0 : targetColor.coords[2];
+
+              if (filterSameAdjective && !isPointInSameAdjective(itemL, binBounds)) {
+                continue;
+              }
+              if (filterSameNoun && !isPointInSameNoun(itemC, itemH, binBounds)) {
+                continue;
+              }
+            }
+
             allMatches.push({
               label,
               match: {
@@ -801,6 +838,12 @@ const CommercialMatches = ({ crosshair, colorData, onSelectColor }) => {
     colorData,
     maxDeltaE,
     searchQuery,
+    filterSameAdjective,
+    filterSameNoun,
+    names,
+    adjectives,
+    gridData,
+    savedColors,
   ]);
   const MatchRow = ({ label, match }) => {
     if (!match) return null;
@@ -2704,6 +2747,228 @@ function getInheritedPinNames(
     sourceId,
   };
 }
+const getUnfilteredPoints = (gridData, savedColors) => {
+  if (!gridData) return [];
+  const points = [...(gridData.allPoints || [])];
+  Object.values(savedColors).forEach((sc) => {
+    if (sc.type === "pin" || sc.type === "anchor") {
+      const adjId = sc.adjId || getLStr(sc.L);
+      const anchorId =
+        sc.anchorId ||
+        `custom-${Math.round(sc.C * 100)
+          .toString()
+          .padStart(2, "0")}-${Math.round(sc.H).toString().padStart(3, "0")}-${adjId}`;
+      points.push({
+        L: sc.L,
+        C: sc.C,
+        H: sc.H,
+        a: sc.a || sc.C * Math.sin((sc.H * Math.PI) / 180),
+        b: sc.b || sc.C * Math.cos((sc.H * Math.PI) / 180),
+        lStr: adjId,
+        cStr: anchorId ? anchorId.split("-")[1] : "",
+        hStr: anchorId ? anchorId.split("-")[2] : "",
+        parentNounId: sc.id,
+        isPin: sc.type === "pin",
+        isCustomAnchor: sc.type === "anchor",
+      });
+    } else if (sc.type === "nounColumn") {
+      const dL = 0.02;
+      if (sc.minL === sc.maxL && sc.minL !== null) {
+        const L = sc.minL;
+        points.push({
+          L,
+          C: sc.C,
+          H: sc.H,
+          a: sc.a || sc.C * Math.sin((sc.H * Math.PI) / 180),
+          b: sc.b || sc.C * Math.cos((sc.H * Math.PI) / 180),
+          lStr: getLStr(L),
+          cStr: Math.round(sc.C * 100).toString().padStart(2, "0"),
+          hStr: Math.round(sc.H).toString().padStart(3, "0"),
+          parentNounId: sc.id,
+        });
+      } else {
+        for (let L = Math.ceil(sc.minL / dL) * dL; L <= sc.maxL; L += dL) {
+          points.push({
+            L,
+            C: sc.C,
+            H: sc.H,
+            a: sc.a || sc.C * Math.sin((sc.H * Math.PI) / 180),
+            b: sc.b || sc.C * Math.cos((sc.H * Math.PI) / 180),
+            lStr: getLStr(L),
+            cStr: Math.round(sc.C * 100).toString().padStart(2, "0"),
+            hStr: Math.round(sc.H).toString().padStart(3, "0"),
+            parentNounId: sc.id,
+          });
+        }
+      }
+    }
+  });
+  return points;
+};
+
+const getCursorBinBoundaries = (L, C, H, savedColors, points = []) => {
+  const normH = isNaN(H) || H === undefined ? 0 : ((H % 360) + 360) % 360;
+  const a = C * Math.sin((normH * Math.PI) / 180);
+  const b = C * Math.cos((normH * Math.PI) / 180);
+  
+  let minDist = Infinity;
+  let closestPt = null;
+
+  points.forEach((p) => {
+    if (p.isPin) return; // skip pins, a bin boundary is defined by columns
+    const d =
+      Math.pow(L - p.L, 2) +
+      Math.pow(a - p.a, 2) +
+      Math.pow(b - p.b, 2);
+    if (d < minDist) {
+      minDist = d;
+      closestPt = p;
+    }
+  });
+
+  if (!closestPt) {
+    return {
+      minL: L - 0.015,
+      maxL: L + 0.015,
+      minC: Math.max(0, C - 0.005),
+      maxC: C + 0.005,
+      midLow: normH - 10,
+      midHigh: normH + 10,
+      hasAnchors: false
+    };
+  }
+
+  // 1. Lightness (L) bounds (narrow bounds of exact same adjective level)
+  const minL = closestPt.L - 0.0101;
+  const maxL = closestPt.L + 0.0101;
+
+  // 2. Chroma (C) bounds
+  const allC = Array.from(new Set(points.map((p) => p.C))).sort((x, y) => x - y);
+  const idxC = allC.indexOf(closestPt.C);
+  let minC, maxC;
+  if (idxC !== -1) {
+    minC = idxC > 0 ? (allC[idxC - 1] + closestPt.C) / 2 : Math.max(0, closestPt.C - 0.01);
+    maxC = idxC < allC.length - 1 ? (allC[idxC + 1] + closestPt.C) / 2 : closestPt.C + 0.01;
+  } else {
+    minC = Math.max(0, closestPt.C - 0.01);
+    maxC = closestPt.C + 0.01;
+  }
+
+  // 3. Hue (H) bounds
+  const sameChromaPts = points.filter((p) => Math.abs(p.C - closestPt.C) < 0.005);
+  const colHVal = Array.from(new Set(sameChromaPts.map((p) => p.H))).sort((x, y) => x - y);
+  const idxH = colHVal.indexOf(closestPt.H);
+  let midLow, midHigh;
+  if (idxH !== -1 && colHVal.length > 1) {
+    const prevH = idxH > 0 ? colHVal[idxH - 1] : colHVal[colHVal.length - 1] - 360;
+    const nextH = idxH < colHVal.length - 1 ? colHVal[idxH + 1] : colHVal[0] + 360;
+    midLow = (prevH + closestPt.H) / 2;
+    midHigh = (closestPt.H + nextH) / 2;
+  } else {
+    midLow = closestPt.H - 15;
+    midHigh = closestPt.H + 15;
+  }
+
+  return {
+    minL,
+    maxL,
+    minC,
+    maxC,
+    midLow,
+    midHigh,
+    hasAnchors: true,
+    anchor: closestPt,
+    allPoints: points
+  };
+};
+
+const isPointInSameAdjective = (ptL, binBounds) => {
+  return !(ptL < binBounds.minL || ptL > binBounds.maxL);
+};
+
+const isPointInSameNoun = (ptC, ptH, binBounds) => {
+  if (binBounds.allPoints && binBounds.anchor) {
+    const targetA = ptC * Math.sin((ptH * Math.PI) / 180);
+    const targetB = ptC * Math.cos((ptH * Math.PI) / 180);
+    const cursorL = binBounds.anchor.L;
+    
+    let minDist = Infinity;
+    let closestPt = null;
+    binBounds.allPoints.forEach((p) => {
+      if (Math.abs(p.L - cursorL) > 0.001) return;
+      if (p.isPin) return;
+      const isSpecificAnchor =
+        (Math.abs(p.C - 0.04) < 0.001 && Math.abs(p.H - 90) < 0.1) ||
+        (Math.abs(p.C - 0.12) < 0.001 && Math.abs(p.H - 90) < 0.1);
+      
+      const cObj = new Color("oklch", [p.L, p.C, p.H]);
+      if (!cObj.inGamut("srgb") && p.C !== 0 && !isSpecificAnchor) return;
+
+      // Use existing a, b coordinates or compute them
+      const pa = p.a !== undefined ? p.a : p.C * Math.sin((p.H * Math.PI) / 180);
+      const pb = p.b !== undefined ? p.b : p.C * Math.cos((p.H * Math.PI) / 180);
+      const d = Math.pow(targetA - pa, 2) + Math.pow(targetB - pb, 2);
+      // We want strictly the closest column in 2D space.
+      if (d < minDist) {
+        minDist = d;
+        closestPt = { a: pa, b: pb };
+      }
+    });
+    
+    if (closestPt) {
+      const anchorA = binBounds.anchor.a !== undefined ? binBounds.anchor.a : binBounds.anchor.C * Math.sin((binBounds.anchor.H * Math.PI) / 180);
+      const anchorB = binBounds.anchor.b !== undefined ? binBounds.anchor.b : binBounds.anchor.C * Math.cos((binBounds.anchor.H * Math.PI) / 180);
+      return Math.abs(closestPt.a - anchorA) < 0.001 && Math.abs(closestPt.b - anchorB) < 0.001;
+    }
+  }
+
+  if (ptC < binBounds.minC || ptC > binBounds.maxC) return false;
+  
+  const h = isNaN(ptH) ? 0 : ptH;
+  let l = binBounds.midLow;
+  let r = binBounds.midHigh;
+  let range = r - l;
+  let shifted = (h - l) % 360;
+  if (shifted < 0) shifted += 360;
+  if (shifted > range) return false;
+  
+  return true;
+};
+const isNounColumnInSameAdjective = (sc, binBounds) => {
+  const minL = sc.minL !== undefined ? sc.minL : (sc.L !== undefined ? sc.L : 0);
+  const maxL = sc.maxL !== undefined ? sc.maxL : (sc.L !== undefined ? sc.L : 1);
+  return !(Math.max(minL, binBounds.minL) > Math.min(maxL, binBounds.maxL));
+};
+
+const isNounColumnInSameNoun = (sc, binBounds) => {
+  return isPointInSameNoun(sc.C, sc.H, binBounds);
+};
+
+const doesItemMatchBinNounName = (item, binBounds, namesObj) => {
+  if (!binBounds || !binBounds.anchor || !binBounds.anchor.parentNounId) return true;
+  const nounName = namesObj[binBounds.anchor.parentNounId];
+  if (!nounName) return true;
+  const itemName = item.name || item.displayName;
+  if (!itemName) return false;
+  
+  const itemStr = itemName.toLowerCase().replace(/[^a-z0-9]/g, " ");
+  
+  // Split nounName by slashes, commas, ampersands to get distinct alternative phrases
+  const phrases = nounName.toLowerCase().split(/[\/,&]+/).map(s => s.trim()).filter(Boolean);
+  if (phrases.length === 0) return true;
+
+  // It matches if it matches AT LEAST ONE phrase
+  return phrases.some(phrase => {
+    const phraseWords = phrase.replace(/[^a-z0-9]/g, " ").split(/\s+/).filter(Boolean);
+    if (phraseWords.length === 0) return true;
+    
+    // All words in this phrase must be present in item name
+    return phraseWords.every(w => {
+      const regex = new RegExp(`\\b${w}\\b`, "i");
+      return regex.test(itemName) || itemStr.includes(w);
+    });
+  });
+};
 const ViewportSwatches = ({
   items,
   layout,
@@ -3691,12 +3956,12 @@ const ViewTopDown = ({
         }
         return { isValid: false };
       })
-      .filter((p) => p.isValid && !p.isPin && (filterPt ? filterPt(p) : true));
+      .filter((p) => p.isValid && !p.isPin);
   }, [baseAnchors, crosshair?.rawL, filterPt]);
   const swatchItems = useMemo(() => {
     if (viewMode !== "swatches") return [];
     const res = [];
-    validAnchors.forEach((p) => {
+    validAnchors.filter((p) => filterPt ? filterPt(p) : true).forEach((p) => {
       const lStr = getLStr(p.L);
       const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
       res.push({
@@ -3776,12 +4041,13 @@ const ViewTopDown = ({
   const baseTraces = useMemo(() => {
     if (viewMode === "swatches") return [];
     const traces = [];
+    const displayAnchors = validAnchors.filter((p) => filterPt ? filterPt(p) : true);
     traces.push({
       type: "scatter",
       mode: viewMode === "bins" ? (showText ? "text" : "markers") : "markers",
-      x: validAnchors.map((p) => p.a),
-      y: validAnchors.map((p) => p.b),
-      text: validAnchors.map((p) => {
+      x: displayAnchors.map((p) => p.a),
+      y: displayAnchors.map((p) => p.b),
+      text: displayAnchors.map((p) => {
         const lStr = getLStr(p.L);
         const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         const adj = adjectives[lStr] || "";
@@ -3799,13 +4065,13 @@ const ViewTopDown = ({
       textfont: {
         size: 12,
         family: "Inter, sans-serif",
-        color: validAnchors.map((p) => (p.L > 0.55 ? "#010D00" : "#F2E8DF")),
+        color: displayAnchors.map((p) => (p.L > 0.55 ? "#010D00" : "#F2E8DF")),
       },
       hovertemplate:
         viewMode === "bins"
           ? "<b>%{customdata[3].fullName}</b><br>C: %{customdata[1]:.3f} H: %{customdata[2]:.1f}\xB0<extra></extra>"
           : "%{text}<extra></extra>",
-      customdata: validAnchors.map((p) => {
+      customdata: displayAnchors.map((p) => {
         const lStr = getLStr(p.L);
         const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
         const fullName =
@@ -3815,7 +4081,7 @@ const ViewTopDown = ({
       }),
       marker: {
         size: 14,
-        color: validAnchors.map((p) => p.color),
+        color: displayAnchors.map((p) => p.color),
         opacity: viewMode === "bins" ? (showText ? 0 : 0.3) : 1,
         line: {
           width: 0.5,
@@ -6766,7 +7032,7 @@ const SpectralGraph = ({
     return `rgba(${R},${G},${B},0.6)`;
   };
   const colors = useMemo(
-    () => SPECTRAL_TABLES.wavelengths.map((w) => wavelengthToColor(w)),
+    () => SPECTRAL_TABLES.wavelengths.map((w) => wavelengthToColor(1100 - w)),
     [],
   );
   const data = useMemo(() => {
@@ -7576,6 +7842,40 @@ const App = () => {
   const [filterL, setFilterL] = useState(1);
   const [filterC, setFilterC] = useState(0.4);
   const [filterH, setFilterH] = useState(180);
+  const [filterSameAdjective, setFilterSameAdjective] = useState(false);
+  const [filterSameNoun, setFilterSameNoun] = useState(false);
+  const [scrubL, setScrubL] = useState(0.65);
+  const [scrubC, setScrubC] = useState(0.12);
+  const [scrubH, setScrubH] = useState(0);
+  const [scrubCommercial, setScrubCommercial] = useState(null);
+  const [temporarySpectral, setTemporarySpectral] = useState(null);
+  const [compSlotA, setCompSlotA] = useState(null);
+  const [compSlotB, setCompSlotB] = useState(null);
+
+  useEffect(() => {
+    switch (activeTab) {
+      case "top":
+        setFilterL(0.01);
+        setFilterC(0.4);
+        setFilterH(180);
+        break;
+      case "chroma":
+        setFilterL(1);
+        setFilterC(0.01);
+        setFilterH(180);
+        break;
+      case "slice":
+        setFilterL(1);
+        setFilterC(0.4);
+        setFilterH(5);
+        break;
+      default:
+        setFilterL(1);
+        setFilterC(0.4);
+        setFilterH(180);
+        break;
+    }
+  }, [activeTab]);
   const updateColorData = (newData) => {
     setColorData(newData);
   };
@@ -8088,15 +8388,77 @@ const App = () => {
   });
   const filteredColorData = useMemo(() => {
     if (!colorData) return null;
-    if (viewportVisibility.commercial === false) return {};
+    const isDb = activeTab === "db";
+
+    let binBounds = null;
+    if (filterSameAdjective || filterSameNoun) {
+      const unfilteredPts = getUnfilteredPoints(gridData, savedColors);
+      binBounds = getCursorBinBoundaries(
+        scrubL,
+        scrubC,
+        scrubH,
+        savedColors,
+        unfilteredPts
+      );
+    }
+
     const filtered = {};
     for (const brand of Object.keys(colorData)) {
-      if (viewportVisibility.brands[brand] === true) {
-        filtered[brand] = colorData[brand];
+      const isVisible = isDb ? viewportVisibility.brands[brand] !== false : viewportVisibility.brands[brand] === true;
+      if (isVisible) {
+        let list = colorData[brand];
+        if ((filterSameAdjective || filterSameNoun) && binBounds) {
+          list = list.filter((c) => {
+            let itemL, itemC, itemH;
+            if (c.L !== undefined && c.L !== null && !isNaN(c.L)) {
+              itemL = c.L;
+              itemC = c.C;
+              itemH = isNaN(c.H) ? 0 : c.H;
+            } else {
+              try {
+                let targetColor;
+                if (c.spectral && c.spectral.length === 31) {
+                  const xyzStandard = calculateXYZFromSpectral(
+                    c.spectral,
+                    2,
+                    "D65",
+                  );
+                  targetColor = new Color("xyz-d65", xyzStandard).to("oklch");
+                } else {
+                  targetColor = new Color(c.hex || "#000000").to("oklch");
+                }
+                itemL = targetColor.coords[0];
+                itemC = targetColor.coords[1];
+                itemH = isNaN(targetColor.coords[2]) ? 0 : targetColor.coords[2];
+              } catch (e) {
+                return false;
+              }
+            }
+            if (filterSameAdjective && !isPointInSameAdjective(itemL, binBounds)) {
+              return false;
+            }
+            if (filterSameNoun && !isPointInSameNoun(itemC, itemH, binBounds)) {
+              return false;
+            }
+            return true;
+          });
+        }
+        filtered[brand] = list;
       }
     }
     return filtered;
-  }, [colorData, viewportVisibility]);
+  }, [
+    colorData,
+    gridData,
+    viewportVisibility,
+    filterSameAdjective,
+    filterSameNoun,
+    savedColors,
+    scrubL,
+    scrubC,
+    scrubH,
+    names,
+  ]);
   const [showVisibilityMenu, setShowVisibilityMenu] = useState(false);
   const visibilityMenuRef = useRef(null);
   useEffect(() => {
@@ -8116,13 +8478,6 @@ const App = () => {
   const [swatchLayout, setSwatchLayout] = useState("gallery");
   const [viewportTagFilter, setViewportTagFilter] = useState("");
   const [swatchZoom, setSwatchZoom] = useState(1);
-  const [scrubL, setScrubL] = useState(0.65);
-  const [scrubC, setScrubC] = useState(0.12);
-  const [scrubH, setScrubH] = useState(0);
-  const [scrubCommercial, setScrubCommercial] = useState(null);
-  const [temporarySpectral, setTemporarySpectral] = useState(null);
-  const [compSlotA, setCompSlotA] = useState(null);
-  const [compSlotB, setCompSlotB] = useState(null);
   const [showFullscreenPreview, setShowFullscreenPreview] = useState(false);
   const [showCompareFullscreen, setShowCompareFullscreen] = useState(false);
   const [showFullscreenSpectral, setShowFullscreenSpectral] = useState(true);
@@ -8432,6 +8787,48 @@ const App = () => {
         }
       }
     });
+    if (filterSameAdjective || filterSameNoun) {
+      const binBounds = getCursorBinBoundaries(
+        scrubL,
+        scrubC,
+        scrubH,
+        savedColors,
+        points
+      );
+
+      if (binBounds && binBounds.hasAnchors) {
+        points = points.filter((p) => {
+          if (filterSameAdjective && !isPointInSameAdjective(p.L, binBounds)) return false;
+          if (filterSameNoun && !isPointInSameNoun(p.C, p.H, binBounds)) return false;
+          return true;
+        });
+
+        Object.keys(filteredSavedColors).forEach((k) => {
+          const sc = filteredSavedColors[k];
+          if (sc.type === "nounColumn") {
+            if (filterSameAdjective && !isNounColumnInSameAdjective(sc, binBounds)) {
+              delete filteredSavedColors[k];
+            } else if (filterSameNoun && !isNounColumnInSameNoun(sc, binBounds)) {
+              delete filteredSavedColors[k];
+            }
+          } else {
+            if (filterSameAdjective && !isPointInSameAdjective(sc.L, binBounds)) {
+              delete filteredSavedColors[k];
+            } else if (filterSameNoun && !isPointInSameNoun(sc.C, sc.H, binBounds)) {
+              delete filteredSavedColors[k];
+            }
+          }
+        });
+
+        baseAnchors = baseAnchors.filter((ba) => {
+          const minL = ba.minL !== undefined ? ba.minL : (ba.L !== undefined ? ba.L : 0);
+          const maxL = ba.maxL !== undefined ? ba.maxL : (ba.L !== undefined ? ba.L : 1);
+          if (filterSameAdjective && !isNounColumnInSameAdjective({ minL, maxL, C: ba.C, H: ba.H }, binBounds)) return false;
+          if (filterSameNoun && !isNounColumnInSameNoun({ minL, maxL, C: ba.C, H: ba.H }, binBounds)) return false;
+          return true;
+        });
+      }
+    }
     const filterTags = viewportTagFilter
       .toLowerCase()
       .split(",")
@@ -8556,6 +8953,11 @@ const App = () => {
     names,
     adjectives,
     dictNotes,
+    filterSameAdjective,
+    filterSameNoun,
+    scrubL,
+    scrubC,
+    scrubH,
   ]);
   useEffect(() => {
     if (theme === "dark") document.documentElement.classList.add("dark");
@@ -8949,6 +9351,7 @@ const App = () => {
   const tabs = useMemo(
     () => [
       { id: "db", label: "Commercial DB" },
+      { id: "nix", label: "Nix Spectro" },
       { id: "top", label: "Light Layers" },
       { id: "chroma", label: "CHROMA RINGS" },
       { id: "slice", label: "HUE SLICES" },
@@ -10533,6 +10936,10 @@ const App = () => {
     setNames,
     adjectives,
     setAdjectives,
+    filterSameAdjective,
+    setFilterSameAdjective,
+    filterSameNoun,
+    setFilterSameNoun,
     dictNotes,
     setDictNotes,
     dictTags,
@@ -12666,6 +13073,10 @@ const AppUI = ({
   setNames,
   adjectives,
   setAdjectives,
+  filterSameAdjective,
+  setFilterSameAdjective,
+  filterSameNoun,
+  setFilterSameNoun,
   dictNotes,
   setDictNotes,
   dictTags,
@@ -12959,7 +13370,7 @@ const AppUI = ({
                 row-gap: 0in !important;
                 width: 8.5in !important;
                 height: 11in !important;
-                padding-top: 0.25in !important;
+                padding-top: calc(0.25in - 2mm) !important;
                 padding-bottom: 0.25in !important;
                 padding-left: 0.156in !important;
                 padding-right: 0.156in !important;
@@ -12975,9 +13386,9 @@ const AppUI = ({
                 box-sizing: border-box !important;
                 padding: 0 !important;
                 display: flex !important;
-                overflow: hidden !important;
+                overflow: visible !important;
                 background: white !important;
-                border-radius: 0.125in !important;
+                border-radius: 0in !important;
                 font-family: 'Bicyclette', 'Byciclette', 'Inter', system-ui, sans-serif !important;
               }
               .avery-label-border {
@@ -12987,8 +13398,13 @@ const AppUI = ({
                 border: 1px solid transparent !important;
               }
               .sami-sidebar {
-                width: 0.45in !important;
-                height: 100% !important;
+                width: calc(0.45in + 3mm) !important;
+                height: calc(100% + 6mm) !important;
+                margin-top: -3mm !important;
+                margin-bottom: -3mm !important;
+                margin-left: -3mm !important;
+                padding-left: 3mm !important;
+                box-sizing: border-box !important;
                 display: flex !important;
                 align-items: center !important;
                 justify-content: center !important;
@@ -13732,6 +14148,12 @@ const AppUI = ({
                   activeSavedColor: crosshair.activeSavedColor,
                 },
                 colorData,
+                filterSameAdjective,
+                filterSameNoun,
+                names,
+                adjectives,
+                gridData,
+                savedColors,
                 onSelectColor: handlePointClick,
               }),
             ),
@@ -14880,52 +15302,41 @@ const AppUI = ({
                         className: "h-px bg-slate-200 dark:bg-neutral-800 my-1",
                       }),
                       React.createElement(
-                        "label",
-                        {
-                          className:
-                            "flex items-center gap-2 px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded cursor-pointer text-slate-700 dark:text-neutral-300 font-bold",
-                        },
-                        React.createElement("input", {
-                          type: "checkbox",
-                          checked: viewportVisibility.commercial,
-                          onChange: (e) =>
-                            setViewportVisibility((prev) => ({
-                              ...prev,
-                              commercial: e.target.checked,
-                            })),
-                          className:
-                            "rounded border-slate-300 text-sky-500 focus:ring-sky-500",
-                        }),
-                        "Commercial Colors",
-                      ),
-                      viewportVisibility.commercial &&
-                        colorData &&
-                        Object.keys(colorData).map((brand) =>
-                          React.createElement(
-                            "label",
-                            {
-                              key: brand,
-                              className:
-                                "flex items-center gap-2 px-2 py-1 pl-6 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded cursor-pointer text-slate-500 dark:text-neutral-400",
-                            },
-                            React.createElement("input", {
-                              type: "checkbox",
-                              checked:
-                                viewportVisibility.brands[brand] === true,
-                              onChange: (e) =>
-                                setViewportVisibility((prev) => ({
-                                  ...prev,
-                                  brands: {
-                                    ...prev.brands,
-                                    [brand]: e.target.checked,
-                                  },
-                                })),
-                              className:
-                                "rounded border-slate-300 text-emerald-500 focus:ring-emerald-500 w-3 h-3",
-                            }),
-                            getBrandDisplayName(brand),
-                          ),
+                        "details",
+                        { className: "px-2 py-1.5", open: true },
+                        React.createElement(
+                          "summary",
+                          { className: "cursor-pointer text-slate-700 dark:text-neutral-300 font-bold" },
+                          "Commercial Colors"
                         ),
+                        colorData &&
+                          Object.keys(colorData).map((brand) =>
+                            React.createElement(
+                              "label",
+                              {
+                                key: brand,
+                                className:
+                                  "flex items-center gap-2 px-2 py-1 pl-4 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded cursor-pointer text-slate-500 dark:text-neutral-400 mt-1",
+                              },
+                              React.createElement("input", {
+                                type: "checkbox",
+                                checked:
+                                  activeTab === "db" ? viewportVisibility.brands[brand] !== false : viewportVisibility.brands[brand] === true,
+                                onChange: (e) =>
+                                  setViewportVisibility((prev) => ({
+                                    ...prev,
+                                    brands: {
+                                      ...prev.brands,
+                                      [brand]: e.target.checked,
+                                    },
+                                  })),
+                                className:
+                                  "rounded border-slate-300 text-emerald-500 focus:ring-emerald-500 w-3 h-3",
+                              }),
+                              getBrandDisplayName(brand),
+                            ),
+                          ),
+                      ),
                     ),
                 ),
                 React.createElement(
@@ -15129,7 +15540,7 @@ const AppUI = ({
                               "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded",
                           },
                           "\xB1 ",
-                          filterH.toFixed(0),
+                          filterH.toFixed(2),
                           "\xB0",
                         ),
                       ),
@@ -15137,17 +15548,65 @@ const AppUI = ({
                         type: "range",
                         min: "0",
                         max: "180",
-                        step: "1",
+                        step: "0.01",
                         value: filterH,
                         onChange: (e) => setFilterH(Number(e.target.value)),
                         className: "w-full accent-sky-500",
                       }),
                     ),
+                    React.createElement(
+                      "div",
+                      { className: "flex flex-col gap-2 border-t border-slate-100 dark:border-neutral-800 pt-2 mt-1" },
+                      React.createElement(
+                        "div",
+                        { className: "flex items-center justify-between" },
+                        React.createElement(
+                          "span",
+                          { className: "text-[10px] uppercase text-slate-400 font-mono" },
+                          "Same Adjective"
+                        ),
+                        React.createElement("button", {
+                          onClick: () => setFilterSameAdjective(!filterSameAdjective),
+                          className: `w-9 h-5 flex items-center rounded-full p-1 transition-colors duration-200 focus:outline-none ${
+                            filterSameAdjective ? "bg-sky-500" : "bg-slate-200 dark:bg-neutral-800"
+                          }`,
+                          title: "Toggle Same Adjective"
+                        },
+                          React.createElement("div", {
+                            className: `bg-white w-3 h-3 rounded-full shadow-md transform transition-transform duration-200 ${
+                              filterSameAdjective ? "translate-x-4" : "translate-x-0"
+                            }`
+                          })
+                        )
+                      ),
+                      React.createElement(
+                        "div",
+                        { className: "flex items-center justify-between" },
+                        React.createElement(
+                          "span",
+                          { className: "text-[10px] uppercase text-slate-400 font-mono" },
+                          "Same Noun"
+                        ),
+                        React.createElement("button", {
+                          onClick: () => setFilterSameNoun(!filterSameNoun),
+                          className: `w-9 h-5 flex items-center rounded-full p-1 transition-colors duration-200 focus:outline-none ${
+                            filterSameNoun ? "bg-sky-500" : "bg-slate-200 dark:bg-neutral-800"
+                          }`,
+                          title: "Toggle Same Noun"
+                        },
+                          React.createElement("div", {
+                            className: `bg-white w-3 h-3 rounded-full shadow-md transform transition-transform duration-200 ${
+                              filterSameNoun ? "translate-x-4" : "translate-x-0"
+                            }`
+                          })
+                        )
+                      )
+                    ),
                   ),
               ),
             activeTab === "db" &&
               React.createElement(ViewDatabase, {
-                colorData,
+                colorData: filteredColorData,
                 updateColorData,
                 swatchLayout,
                 swatchZoom,
@@ -15296,6 +15755,20 @@ const AppUI = ({
                 setShowAveryModal,
                 setSelectedPrintIds,
                 setAveryPrintSourceType,
+              }),
+            activeTab === "nix" &&
+              React.createElement(ViewNixSpectroErrorBoundary, {
+                handlePointClick,
+                savedColors,
+                setSavedColors,
+                theme,
+                names,
+                adjectives,
+                dictNotes,
+                setDictNotes,
+                dictTags,
+                setDictTags,
+                getPaletteItemInfo,
               }),
           ),
         ),
@@ -16549,8 +17022,9 @@ const AppUI = ({
                             { label: "Tac. Texture", key: "tactileTexture", global: printLabelTactileTexture, options: ['-', 'T1 (Smooth)', 'T2 (Stipple)', 'T3 (Linear Grain)', 'T4 (EIR/Natural)'] },
                             { label: "Profile", key: "doorProfile", global: printLabelDoorProfile, options: ['-', 'SL (Slab)', 'CS (Shaker)', 'SS (Slim)', 'RD (Reeded)', 'CT (Countertop)', 'WG (Wood-Framed Glass)', 'MG (Metal-framed Glass)'] },
                             { label: "Material", key: "material", global: printLabelMaterial, options: ['-', 'Solid Laminate', 'Textured Laminate', 'Lacquered MDF', 'Natural Oak', 'Natural Maple'] }
-                          ].map((field) => (
-                            React.createElement(
+                          ].map((field) => {
+                            const effectiveGlobal = (info.pin && info.pin[field.key]) ? info.pin[field.key] : field.global;
+                            return React.createElement(
                               "div",
                               { key: field.key, className: "flex items-center justify-between gap-2" },
                               React.createElement("span", { className: "text-[9px] uppercase font-bold text-slate-500 truncate" }, field.label),
@@ -16559,10 +17033,10 @@ const AppUI = ({
                                 onChange: (e) => updateMyConfig(field.key, e.target.value === "-" ? null : e.target.value),
                                 className: "w-24 h-6 px-1.5 text-[9px] border border-slate-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-800 outline-none"
                               },
-                                field.options.map(opt => React.createElement("option", { key: opt, value: opt }, opt === "-" ? `Default (${field.global.split(" ")[0]})` : opt))
+                                field.options.map(opt => React.createElement("option", { key: opt, value: opt }, opt === "-" ? `Default (${effectiveGlobal.split(" ")[0]})` : opt))
                               )
                             )
-                          ))
+                          })
                         )
                       );
                     })
@@ -16708,7 +17182,7 @@ const AppUI = ({
             row-gap: 0in !important;
             width: 8.5in !important;
             height: 11in !important;
-            padding-top: 0.25in !important;
+            padding-top: calc(0.25in - 2mm) !important;
             padding-bottom: 0.25in !important;
             padding-left: 0.156in !important;
             padding-right: 0.156in !important;
@@ -16724,9 +17198,9 @@ const AppUI = ({
             box-sizing: border-box !important;
             padding: 0 !important;
             display: flex !important;
-            overflow: hidden !important;
+            overflow: visible !important;
             background: white !important;
-            border-radius: 0.125in !important;
+            border-radius: 0in !important;
             font-family: 'Bicyclette', 'Byciclette', 'Inter', system-ui, sans-serif !important;
           }
           .avery-label-border {
@@ -16736,8 +17210,13 @@ const AppUI = ({
             border: 1px solid transparent !important;
           }
           .sami-sidebar {
-            width: 0.45in !important;
-            height: 100% !important;
+            width: calc(0.45in + 3mm) !important;
+            height: calc(100% + 6mm) !important;
+            margin-top: -3mm !important;
+            margin-bottom: -3mm !important;
+            margin-left: -3mm !important;
+            padding-left: 3mm !important;
+            box-sizing: border-box !important;
             display: flex !important;
             align-items: center !important;
             justify-content: center !important;
