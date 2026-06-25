@@ -8339,13 +8339,34 @@ const App = () => {
     
     const displayName = (`${adj} ${noun}`.trim() || "Unnamed").toUpperCase();
     let image = item.image;
-    if (!image && pin) {
-      image = pin.image || (pin.notes?.startsWith("http") ? pin.notes : null);
+    let sheen = item.sheen;
+    let material = item.material;
+    let visualTexture = item.visualTexture;
+    let tactileTexture = item.tactileTexture;
+    let doorProfile = item.doorProfile;
+    
+    if (pin) {
+      if (!image) image = pin.image || (pin.notes?.startsWith("http") ? pin.notes : null);
+      if (!sheen) sheen = pin.sheen;
+      if (!material) material = pin.material;
+      if (!visualTexture) visualTexture = pin.visualTexture;
+      if (!tactileTexture) tactileTexture = pin.tactileTexture;
+      if (!doorProfile) doorProfile = pin.doorProfile;
     }
-    if (!image && item.brand !== undefined && item.originalIndex !== undefined) {
-      image = colorData[item.brand]?.[item.originalIndex]?.image || null;
+    
+    if (item.brand !== undefined && item.originalIndex !== undefined) {
+      const cItem = colorData[item.brand]?.[item.originalIndex];
+      if (cItem) {
+        if (!image) image = cItem.image || null;
+        if (!sheen) sheen = cItem.sheen;
+        if (!material) material = cItem.material;
+        if (!visualTexture) visualTexture = cItem.visualTexture;
+        if (!tactileTexture) tactileTexture = cItem.tactileTexture;
+        if (!doorProfile) doorProfile = cItem.doorProfile;
+      }
     }
-    return { hex, displayName, erpCode: item.erpCode || "N/A", L: item.L, C: item.C, H: item.H, pin, image };
+    
+    return { hex, displayName, erpCode: item.erpCode || "N/A", L: item.L, C: item.C, H: item.H, pin, image, sheen, material, visualTexture, tactileTexture, doorProfile };
   }, [savedColors, adjectives, names, colorData]);
 
   const [groupSettings, setGroupSettings] = useState(
@@ -10423,6 +10444,11 @@ const App = () => {
             OKLCH_C: sc.C,
             OKLCH_H: sc.H,
             ERP_Code: sc.erpCode,
+            Sheen: sc.sheen || "",
+            Profile: sc.doorProfile || "",
+            Visual_Pattern: sc.visualTexture || "",
+            Tactile_Texture: sc.tactileTexture || "",
+            Material: sc.material || "",
             Spectral: sc.spectral ? JSON.stringify(sc.spectral) : "",
             Illuminant: sc.illuminant || "",
             Observer: sc.observer || "",
@@ -10472,8 +10498,9 @@ const App = () => {
           }),
         );
       }
+      const palettesCsv = [];
       (savedPalettes || []).forEach((p) => {
-        anchorsCsv.push({
+        palettesCsv.push({
           Type: "PALETTE",
           Noun: p.name,
           Note: JSON.stringify(p.colors),
@@ -10494,6 +10521,11 @@ const App = () => {
             OKLCH_C: "",
             OKLCH_H: "",
             ERP_Code: "",
+            Sheen: "",
+            Profile: "",
+            Visual_Pattern: "",
+            Tactile_Texture: "",
+            Material: "",
             Spectral: "",
             Illuminant: "",
             Observer: "",
@@ -10506,6 +10538,7 @@ const App = () => {
       const zip = new JSZip();
       zip.file("anchors.csv", Papa.unparse(anchorsCsv.map(makeExportRow)));
       zip.file("pins.csv", Papa.unparse(pinsCsv.map(makeExportRow)));
+      zip.file("palettes.csv", Papa.unparse(palettesCsv.map(makeExportRow)));
       Object.keys(colorData || {}).forEach((brand) => {
         const brandData = colorData[brand].map((color, listIdx) => {
           const safeName = color.name || `unknown-${listIdx}`;
@@ -10526,6 +10559,11 @@ const App = () => {
             ERP_Code: color.url || "",
             Note: customNote || "",
             Tags: (color.tags || dictTags[customId] || []).join(","),
+            Sheen: color.sheen || "",
+            Profile: color.doorProfile || "",
+            Visual_Pattern: color.visualTexture || "",
+            Tactile_Texture: color.tactileTexture || "",
+            Material: color.material || "",
             Illuminant: color.illuminant || "",
             Observer: color.observer || "",
             Measurement_Method: color.measurementMethod || "",
@@ -11565,6 +11603,7 @@ const DatabaseManager = ({
         { className: "flex-1 overflow-hidden" },
         React.createElement(ViewDatabase, {
           colorData,
+          fullColorData: colorData,
           updateColorData,
           swatchLayout,
           swatchZoom,
@@ -11591,8 +11630,70 @@ const DatabaseManager = ({
     ),
   );
 };
+const CustomPromptModal = ({ title, value, setValue, onSubmit, onCancel }) => {
+  return React.createElement(
+    "div",
+    { className: "fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" },
+    React.createElement(
+      "div",
+      { className: "bg-white dark:bg-neutral-900 rounded-xl shadow-xl w-full max-w-sm overflow-hidden" },
+      React.createElement(
+        "div",
+        { className: "p-4 border-b border-slate-100 dark:border-neutral-800" },
+        React.createElement("h3", { className: "font-bold text-slate-800 dark:text-neutral-200" }, title)
+      ),
+      React.createElement(
+        "div",
+        { className: "p-4" },
+        React.createElement("input", {
+          autoFocus: true,
+          type: "text",
+          value: value,
+          onChange: (e) => setValue(e.target.value),
+          onKeyDown: (e) => { if (e.key === "Enter") onSubmit(); if (e.key === "Escape") onCancel(); },
+          className: "w-full bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded-lg px-3 py-2 text-sm text-slate-900 dark:text-white outline-none focus:border-sky-500 transition-colors"
+        })
+      ),
+      React.createElement(
+        "div",
+        { className: "p-4 bg-slate-50 dark:bg-neutral-800/50 flex justify-end gap-2" },
+        React.createElement("button", { onClick: onCancel, className: "px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-500 hover:text-slate-700 transition-colors" }, "Cancel"),
+        React.createElement("button", { onClick: onSubmit, className: "px-4 py-2 text-xs font-bold uppercase tracking-wider bg-sky-500 hover:bg-sky-600 text-white rounded transition-colors" }, "OK")
+      )
+    )
+  );
+};
+
+const CustomConfirmModal = ({ message, onConfirm, onCancel }) => {
+  return React.createElement(
+    "div",
+    { className: "fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" },
+    React.createElement(
+      "div",
+      { className: "bg-white dark:bg-neutral-900 rounded-xl shadow-xl w-full max-w-sm overflow-hidden" },
+      React.createElement(
+        "div",
+        { className: "p-4 border-b border-slate-100 dark:border-neutral-800" },
+        React.createElement("h3", { className: "font-bold text-slate-800 dark:text-neutral-200" }, "Confirm")
+      ),
+      React.createElement(
+        "div",
+        { className: "p-4" },
+        React.createElement("p", { className: "text-sm text-slate-700 dark:text-neutral-300" }, message)
+      ),
+      React.createElement(
+        "div",
+        { className: "p-4 bg-slate-50 dark:bg-neutral-800/50 flex justify-end gap-2" },
+        React.createElement("button", { onClick: onCancel, className: "px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-500 hover:text-slate-700 transition-colors" }, "Cancel"),
+        React.createElement("button", { autoFocus: true, onClick: onConfirm, className: "px-4 py-2 text-xs font-bold uppercase tracking-wider bg-rose-500 hover:bg-rose-600 text-white rounded transition-colors" }, "Delete")
+      )
+    )
+  );
+};
+
 const ViewDatabase = ({
   colorData,
+  fullColorData,
   updateColorData,
   swatchLayout,
   swatchZoom,
@@ -11607,6 +11708,7 @@ const ViewDatabase = ({
   handleBatchRemoveTag,
   globalTags,
 }) => {
+  const dataForUpdates = fullColorData || colorData;
   const [sortBy, setSortBy] = useState("brand");
   const [sortAsc, setSortAsc] = useState(true);
   const [spectralFilter, setSpectralFilter] = useState(true);
@@ -11617,6 +11719,8 @@ const ViewDatabase = ({
   const enableDeltaE = userEnableDeltaE;
   const [fullscreenImage, setFullscreenImage] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
+  const [promptState, setPromptState] = useState(null);
+  const [confirmState, setConfirmState] = useState(null);
   const baseMatrixSize = 48;
   const baseListSize = 48;
   const allDbItems = useMemo(() => {
@@ -11727,6 +11831,11 @@ const ViewDatabase = ({
             item.displayName.toLowerCase().includes(w) ||
             item.brand.toLowerCase().includes(w) ||
             item.erpCode.toLowerCase().includes(w) ||
+            (item.sheen && item.sheen.toLowerCase().includes(w)) ||
+            (item.doorProfile && item.doorProfile.toLowerCase().includes(w)) ||
+            (item.visualTexture && item.visualTexture.toLowerCase().includes(w)) ||
+            (item.tactileTexture && item.tactileTexture.toLowerCase().includes(w)) ||
+            (item.material && item.material.toLowerCase().includes(w)) ||
             (item.tags && item.tags.some((t) => t.toLowerCase().includes(w))),
         ),
       );
@@ -11749,6 +11858,26 @@ const ViewDatabase = ({
         case "brand":
           valA = a.brand.toLowerCase();
           valB = b.brand.toLowerCase();
+          break;
+        case "sheen":
+          valA = (a.sheen || "").toLowerCase();
+          valB = (b.sheen || "").toLowerCase();
+          break;
+        case "doorProfile":
+          valA = (a.doorProfile || "").toLowerCase();
+          valB = (b.doorProfile || "").toLowerCase();
+          break;
+        case "visualTexture":
+          valA = (a.visualTexture || "").toLowerCase();
+          valB = (b.visualTexture || "").toLowerCase();
+          break;
+        case "tactileTexture":
+          valA = (a.tactileTexture || "").toLowerCase();
+          valB = (b.tactileTexture || "").toLowerCase();
+          break;
+        case "material":
+          valA = (a.material || "").toLowerCase();
+          valB = (b.material || "").toLowerCase();
           break;
         case "lightness":
           valA = a.L;
@@ -11791,7 +11920,8 @@ const ViewDatabase = ({
   ]);
   const handleSaveEdit = (e) => {
     e.preventDefault();
-    const updated = { ...colorData };
+    const updated = { ...dataForUpdates };
+    updated[editingItem.brand] = [...updated[editingItem.brand]];
     updated[editingItem.brand][editingItem.originalIndex] = {
       ...updated[editingItem.brand][editingItem.originalIndex],
       name: editingItem.displayName,
@@ -11846,39 +11976,77 @@ const ViewDatabase = ({
     updateColorData(updated);
     setEditingItem(null);
   };
-  const handleDeleteItem = (item) => {
-    if (confirm(`Delete ${item.displayName} from ${item.brand}?`)) {
-      const updated = { ...colorData };
-      updated[item.brand].splice(item.originalIndex, 1);
-      if (updated[item.brand].length === 0) delete updated[item.brand];
-      updateColorData(updated);
-      setEditingItem(null);
+  const handleInlineMetadataEdit = (item, field, value) => {
+    const updated = { ...dataForUpdates };
+    
+    let itemsToUpdate = [];
+    if (selectedIds && selectedIds.includes(item.id)) {
+      itemsToUpdate = allDbItems.filter(i => selectedIds.includes(i.id));
+    } else {
+      itemsToUpdate = [item];
     }
+    
+    itemsToUpdate.forEach(i => {
+      if (updated[i.brand]) {
+        if (updated[i.brand] === dataForUpdates[i.brand]) {
+            updated[i.brand] = [...updated[i.brand]];
+        }
+        updated[i.brand][i.originalIndex] = {
+          ...updated[i.brand][i.originalIndex],
+          [field]: value
+        };
+      }
+    });
+    
+    updateColorData(updated);
+  };
+  const handleDeleteItem = (item) => {
+    setConfirmState({
+      message: `Delete ${item.displayName} from ${item.brand}?`,
+      onConfirm: () => {
+        const updated = { ...dataForUpdates };
+        updated[item.brand] = [...updated[item.brand]];
+        updated[item.brand].splice(item.originalIndex, 1);
+        if (updated[item.brand].length === 0) delete updated[item.brand];
+        updateColorData(updated);
+        setEditingItem(null);
+      }
+    });
   };
   const handleAddBrand = () => {
-    const b = prompt("New Brand Name:");
-    if (b && !colorData[b]) {
-      updateColorData({ ...colorData, [b]: [] });
-      setBrandFilter(b);
-    }
+    setPromptState({
+      title: "New Brand Name:",
+      value: "",
+      onSubmit: (b) => {
+        if (b && !dataForUpdates[b]) {
+          updateColorData({ ...dataForUpdates, [b]: [] });
+          setBrandFilter(b);
+        }
+      }
+    });
   };
   const handleAddColor = () => {
-    if (!brandFilter) return alert("Select a brand first");
-    const n = prompt("Color Name:");
-    if (n) {
-      const updated = { ...colorData };
-      updated[brandFilter].unshift({
-        name: n,
-        hex: "#888888",
-        L: 0.5,
-        C: 0,
-        H: 0,
-        tags: [],
-        url: "",
-        image: "",
-      });
-      updateColorData(updated);
-    }
+    if (!brandFilter) return setConfirmState({ message: "Select a brand first", onConfirm: () => {} });
+    setPromptState({
+      title: "Color Name:",
+      value: "",
+      onSubmit: (n) => {
+        if (n) {
+          const updated = { ...dataForUpdates };
+          updated[brandFilter] = [{
+            name: n,
+            hex: "#888888",
+            L: 0.5,
+            C: 0,
+            H: 0,
+            tags: [],
+            url: "",
+            image: "",
+          }, ...(updated[brandFilter] || [])];
+          updateColorData(updated);
+        }
+      }
+    });
   };
   const SortButton = ({ field, label }) =>
     React.createElement(
@@ -11907,6 +12075,24 @@ const ViewDatabase = ({
       className:
         "h-full flex flex-col overflow-hidden pt-2 relative bg-slate-50/50 dark:bg-neutral-900/50",
     },
+    promptState && React.createElement(CustomPromptModal, {
+      title: promptState.title,
+      value: promptState.value,
+      setValue: (val) => setPromptState({ ...promptState, value: val }),
+      onSubmit: () => {
+        promptState.onSubmit(promptState.value);
+        setPromptState(null);
+      },
+      onCancel: () => setPromptState(null)
+    }),
+    confirmState && React.createElement(CustomConfirmModal, {
+      message: confirmState.message,
+      onConfirm: () => {
+        confirmState.onConfirm();
+        setConfirmState(null);
+      },
+      onCancel: () => setConfirmState(null)
+    }),
     React.createElement(
       "div",
       {
@@ -11917,6 +12103,11 @@ const ViewDatabase = ({
         "div",
         { className: "flex flex-wrap items-center gap-2" },
         React.createElement(SortButton, { field: "brand", label: "Brand" }),
+        React.createElement(SortButton, { field: "sheen", label: "Sheen" }),
+        React.createElement(SortButton, { field: "doorProfile", label: "Profile" }),
+        React.createElement(SortButton, { field: "visualTexture", label: "Vis. Pat" }),
+        React.createElement(SortButton, { field: "tactileTexture", label: "Tac. Tex" }),
+        React.createElement(SortButton, { field: "material", label: "Material" }),
         React.createElement(SortButton, { field: "name", label: "Name" }),
         React.createElement(SortButton, { field: "lightness", label: "L" }),
         React.createElement(SortButton, { field: "chroma", label: "C" }),
@@ -11968,12 +12159,15 @@ const ViewDatabase = ({
             "button",
             {
               onClick: () => {
-                if (confirm(`Delete entire brand '${brandFilter}'?`)) {
-                  const c = { ...colorData };
-                  delete c[brandFilter];
-                  updateColorData(c);
-                  setBrandFilter("");
-                }
+                setConfirmState({
+                  message: `Delete entire brand '${brandFilter}'?`,
+                  onConfirm: () => {
+                    const c = { ...dataForUpdates };
+                    delete c[brandFilter];
+                    updateColorData(c);
+                    setBrandFilter("");
+                  }
+                });
               },
               className:
                 "px-2 py-1 text-[9px] font-bold bg-rose-50 text-rose-600 border border-rose-200 hover:bg-rose-100 uppercase tracking-wider rounded flex items-center gap-1",
@@ -12385,6 +12579,11 @@ const ViewDatabase = ({
                 ),
                 React.createElement("th", { className: "p-3" }, "Name"),
                 React.createElement("th", { className: "p-3 w-20" }, "Brand"),
+                React.createElement("th", { className: "p-3" }, "Sheen"),
+                React.createElement("th", { className: "p-3" }, "Profile"),
+                React.createElement("th", { className: "p-3" }, "Vis. Pat"),
+                React.createElement("th", { className: "p-3" }, "Tac. Tex"),
+                React.createElement("th", { className: "p-3" }, "Material"),
                 React.createElement(
                   "th",
                   { className: "p-3 w-40" },
@@ -12511,6 +12710,86 @@ const ViewDatabase = ({
                     "td",
                     { className: "p-2 text-slate-500 font-mono text-[9px]" },
                     getBrandDisplayName(item.brand),
+                  ),
+                  React.createElement(
+                    "td",
+                    { className: "p-2" },
+                    React.createElement(
+                      "select",
+                      {
+                        value: item.sheen || "",
+                        onChange: (e) => handleInlineMetadataEdit(item, "sheen", e.target.value),
+                        onClick: (e) => e.stopPropagation(),
+                        className: "w-20 bg-transparent text-[9px] outline-none cursor-pointer"
+                      },
+                      LABEL_OPTIONS.sheen.map((opt) =>
+                        React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)
+                      )
+                    )
+                  ),
+                  React.createElement(
+                    "td",
+                    { className: "p-2" },
+                    React.createElement(
+                      "select",
+                      {
+                        value: item.doorProfile || "",
+                        onChange: (e) => handleInlineMetadataEdit(item, "doorProfile", e.target.value),
+                        onClick: (e) => e.stopPropagation(),
+                        className: "w-20 bg-transparent text-[9px] outline-none cursor-pointer"
+                      },
+                      LABEL_OPTIONS.doorProfile.map((opt) =>
+                        React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)
+                      )
+                    )
+                  ),
+                  React.createElement(
+                    "td",
+                    { className: "p-2" },
+                    React.createElement(
+                      "select",
+                      {
+                        value: item.visualTexture || "",
+                        onChange: (e) => handleInlineMetadataEdit(item, "visualTexture", e.target.value),
+                        onClick: (e) => e.stopPropagation(),
+                        className: "w-20 bg-transparent text-[9px] outline-none cursor-pointer"
+                      },
+                      LABEL_OPTIONS.visualPattern.map((opt) =>
+                        React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)
+                      )
+                    )
+                  ),
+                  React.createElement(
+                    "td",
+                    { className: "p-2" },
+                    React.createElement(
+                      "select",
+                      {
+                        value: item.tactileTexture || "",
+                        onChange: (e) => handleInlineMetadataEdit(item, "tactileTexture", e.target.value),
+                        onClick: (e) => e.stopPropagation(),
+                        className: "w-20 bg-transparent text-[9px] outline-none cursor-pointer"
+                      },
+                      LABEL_OPTIONS.tactileTexture.map((opt) =>
+                        React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)
+                      )
+                    )
+                  ),
+                  React.createElement(
+                    "td",
+                    { className: "p-2" },
+                    React.createElement(
+                      "select",
+                      {
+                        value: item.material || "",
+                        onChange: (e) => handleInlineMetadataEdit(item, "material", e.target.value),
+                        onClick: (e) => e.stopPropagation(),
+                        className: "w-20 bg-transparent text-[9px] outline-none cursor-pointer"
+                      },
+                      LABEL_OPTIONS.material.map((opt) =>
+                        React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)
+                      )
+                    )
                   ),
                   React.createElement(
                     "td",
@@ -13211,6 +13490,32 @@ const ViewDatabase = ({
                     "w-full bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-3 py-2 text-sm font-mono",
                   placeholder: "https://",
                 }),
+              ),
+              React.createElement(
+                "div",
+                { className: "grid grid-cols-2 gap-3" },
+                [
+                  { label: "Sheen", key: "sheen", options: LABEL_OPTIONS.sheen },
+                  { label: "Profile", key: "doorProfile", options: LABEL_OPTIONS.doorProfile },
+                  { label: "Visual Pattern", key: "visualTexture", options: LABEL_OPTIONS.visualPattern },
+                  { label: "Tactile Texture", key: "tactileTexture", options: LABEL_OPTIONS.tactileTexture },
+                  { label: "Material", key: "material", options: LABEL_OPTIONS.material },
+                ].map((field) => 
+                  React.createElement(
+                    "div",
+                    { key: field.key },
+                    React.createElement(
+                      "label",
+                      { className: "block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1" },
+                      field.label
+                    ),
+                    React.createElement("select", {
+                      value: editingItem[field.key] || "",
+                      onChange: (e) => setEditingItem({ ...editingItem, [field.key]: e.target.value }),
+                      className: "w-full bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs text-slate-900 dark:text-white outline-none cursor-pointer"
+                    }, field.options.map(opt => React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)))
+                  )
+                )
               ),
               React.createElement(
                 "div",
@@ -16080,6 +16385,7 @@ const AppUI = ({
             activeTab === "db" &&
               React.createElement(ViewDatabase, {
                 colorData: filteredColorData,
+                fullColorData: colorData,
                 updateColorData,
                 swatchLayout,
                 swatchZoom,
