@@ -7732,6 +7732,7 @@ const processCSVData = (
   currentNotes = {},
   currentTags = {},
   currentGroupSettings = null,
+  currentSavedPalettes = [],
 ) => {
   const newColorData = currentColorData
     ? JSON.parse(JSON.stringify(currentColorData))
@@ -7743,6 +7744,9 @@ const processCSVData = (
   const newAdjs = currentAdjs ? JSON.parse(JSON.stringify(currentAdjs)) : {};
   const newNotes = currentNotes ? JSON.parse(JSON.stringify(currentNotes)) : {};
   const newTags = currentTags ? JSON.parse(JSON.stringify(currentTags)) : {};
+  const newSavedPalettes = currentSavedPalettes
+    ? JSON.parse(JSON.stringify(currentSavedPalettes))
+    : [];
   let newGroupSettings = currentGroupSettings
     ? JSON.parse(JSON.stringify(currentGroupSettings))
     : null;
@@ -7756,6 +7760,29 @@ const processCSVData = (
       .toUpperCase()
       .trim();
     if (!targetType) return;
+    if (targetType === "PALETTE") {
+      try {
+        const colors = JSON.parse(row.Note || "[]");
+        const paletteId = row.Tags || row.ID || crypto.randomUUID();
+        const existingIdx = newSavedPalettes.findIndex(
+          (p) => p.id === paletteId,
+        );
+        if (existingIdx >= 0) {
+          newSavedPalettes[existingIdx] = {
+            id: paletteId,
+            name: row.Noun || "Imported Palette",
+            colors,
+          };
+        } else {
+          newSavedPalettes.push({
+            id: paletteId,
+            name: row.Noun || "Imported Palette",
+            colors,
+          });
+        }
+      } catch (e2) {}
+      return;
+    }
     if (targetType === "SETTING") {
       if (!newGroupSettings)
         newGroupSettings = {
@@ -7923,7 +7950,18 @@ const processCSVData = (
         const existingIdx = newColorData[finalBrand].findIndex(
           (c) => c.name.toLowerCase() === name.toLowerCase(),
         );
-        const colorObj = { name, hex, L: pL, C: pC, H: pH };
+        const colorObj = {
+          name,
+          hex,
+          L: pL,
+          C: pC,
+          H: pH,
+          sheen: (row.Sheen || row.sheen || "").trim(),
+          doorProfile: (row.Profile || row.Door_Profile || row.DoorProfile || row.doorProfile || "").trim(),
+          visualTexture: (row.Visual_Pattern || row.VisualPattern || row.Visual_Texture || row.VisualTexture || row.visualTexture || "").trim(),
+          tactileTexture: (row.Tactile_Texture || row.TactileTexture || row.tactileTexture || "").trim(),
+          material: (row.Material || row.material || "").trim(),
+        };
         if (row.Tags)
           colorObj.tags =
             typeof row.Tags === "string"
@@ -7975,6 +8013,11 @@ const processCSVData = (
         adjOverride: row.Adjective || "",
         notes: row.Note || "",
         erpCode: row.ERP_Code || getExactErpCode(pL, pC, pC === 0 ? 0 : pH),
+        sheen: (row.Sheen || row.sheen || "").trim(),
+        doorProfile: (row.Profile || row.Door_Profile || row.DoorProfile || row.doorProfile || "").trim(),
+        visualTexture: (row.Visual_Pattern || row.VisualPattern || row.Visual_Texture || row.VisualTexture || row.visualTexture || "").trim(),
+        tactileTexture: (row.Tactile_Texture || row.TactileTexture || row.tactileTexture || "").trim(),
+        material: (row.Material || row.material || "").trim(),
         adjId,
         anchorId,
         color:
@@ -8152,6 +8195,7 @@ const processCSVData = (
     colorsAdded,
     pinsAdded: pinsAdded2,
     newGroupSettings,
+    newSavedPalettes,
   };
 };
 const App = () => {
@@ -8503,6 +8547,7 @@ const App = () => {
     let currentAdjs = initialState?.adjectives || {};
     let currentNotes = initialState?.dictNotes || {};
     let currentTags = initialState?.dictTags || {};
+    let currentSavedPalettes = savedPalettes || [];
     let currentGroupSettings =
       initialState?.groupSettings || defaultGroupSettings;
     const discoverCSVFiles = async () => {
@@ -8630,6 +8675,7 @@ const App = () => {
             currentNotes,
             currentTags,
             currentGroupSettings,
+            currentSavedPalettes,
           );
           currentColorData = processed.newColorData;
           currentSavedColors = processed.newSavedColors;
@@ -8639,6 +8685,8 @@ const App = () => {
           currentTags = processed.newTags;
           if (processed.newGroupSettings)
             currentGroupSettings = processed.newGroupSettings;
+          if (processed.newSavedPalettes)
+            currentSavedPalettes = processed.newSavedPalettes;
         }
       } catch (e) {
         console.warn("Failed: " + file, e);
@@ -8655,6 +8703,7 @@ const App = () => {
     setDictNotes(currentNotes);
     setDictTags(currentTags);
     setGroupSettings(currentGroupSettings);
+    setSavedPalettes(currentSavedPalettes);
   }, [linkedFiles]);
   useEffect(() => {
     loadInitialData();
@@ -10812,6 +10861,11 @@ const App = () => {
                 L: pL !== null ? pL : 0.5,
                 C: pC !== null ? pC : 0,
                 H: pH !== null ? pH : 0,
+                sheen: (row.Sheen || row.sheen || "").trim(),
+                doorProfile: (row.Profile || row.Door_Profile || row.DoorProfile || row.doorProfile || "").trim(),
+                visualTexture: (row.Visual_Pattern || row.VisualPattern || row.Visual_Texture || row.VisualTexture || row.visualTexture || "").trim(),
+                tactileTexture: (row.Tactile_Texture || row.TactileTexture || row.tactileTexture || "").trim(),
+                material: (row.Material || row.material || "").trim(),
               };
               if (row.Tags)
                 colorObj.tags =
@@ -10861,7 +10915,7 @@ const App = () => {
             const hStr = Math.round(pH).toString().padStart(3, "0");
             const anchorId = `${cStr}-${hStr}`;
             const adjId = getLStr(pL);
-            newSavedColors[pinId] = {
+             newSavedColors[pinId] = {
               id: pinId,
               type: "pin",
               L: pL,
@@ -10872,6 +10926,11 @@ const App = () => {
               notes: row.Note || "",
               erpCode:
                 row.ERP_Code || getExactErpCode(pL, pC, pC === 0 ? 0 : pH),
+              sheen: (row.Sheen || row.sheen || "").trim(),
+              doorProfile: (row.Profile || row.Door_Profile || row.DoorProfile || row.doorProfile || "").trim(),
+              visualTexture: (row.Visual_Pattern || row.VisualPattern || row.Visual_Texture || row.VisualTexture || row.visualTexture || "").trim(),
+              tactileTexture: (row.Tactile_Texture || row.TactileTexture || row.tactileTexture || "").trim(),
+              material: (row.Material || row.material || "").trim(),
               adjId,
               anchorId,
               color:
