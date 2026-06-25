@@ -500,6 +500,18 @@ const ColorConverter = ({
   const fmt = (v, d = 3) => (isNaN(v) ? "0.000" : Number(v).toFixed(d));
   const wrap = (space) =>
     `[${fmt(c.to(space).coords[0])}, ${fmt(c.to(space).coords[1])}, ${fmt(c.to(space).coords[2])}]`;
+  
+  // CMYK calculation
+  const rCo = c.to("srgb").coords;
+  const r_ = Math.max(0, Math.min(1, rCo[0]));
+  const g_ = Math.max(0, Math.min(1, rCo[1]));
+  const b_ = Math.max(0, Math.min(1, rCo[2]));
+  const k_ = 1 - Math.max(r_, g_, b_);
+  const c_ = k_ === 1 ? 0 : (1 - r_ - k_) / (1 - k_);
+  const m_ = k_ === 1 ? 0 : (1 - g_ - k_) / (1 - k_);
+  const y_ = k_ === 1 ? 0 : (1 - b_ - k_) / (1 - k_);
+  const cmykStr = `[${Math.round(c_ * 100)}%, ${Math.round(m_ * 100)}%, ${Math.round(y_ * 100)}%, ${Math.round(k_ * 100)}%]`;
+
   const spectral =
     crosshair.activeSavedColor?.spectral || crosshair.temporarySpectral;
   let varXYZ = null;
@@ -540,6 +552,25 @@ const ColorConverter = ({
           const ch = val.trim();
           if (/^#?[0-9a-fA-F]{3,8}$/.test(ch))
             pc = new Color(ch.startsWith("#") ? ch : "#" + ch);
+        } else if (space === "CMYK") {
+          const p = val
+            .replace(/[\[\]%]/g, "")
+            .split(/[\s,;]+/)
+            .filter((x) => x !== "")
+            .map((s) => parseFloat(s));
+          if (p.length === 4 && p.every((v) => !isNaN(v))) {
+            const isZeroToHundred = p.some(v => v > 1.0) || val.includes("%");
+            const div = isZeroToHundred ? 100 : 1;
+            const cVal = Math.max(0, Math.min(1, p[0] / div));
+            const mVal = Math.max(0, Math.min(1, p[1] / div));
+            const yVal = Math.max(0, Math.min(1, p[2] / div));
+            const kVal = Math.max(0, Math.min(1, p[3] / div));
+            
+            const r = (1 - cVal) * (1 - kVal);
+            const g = (1 - mVal) * (1 - kVal);
+            const b = (1 - yVal) * (1 - kVal);
+            pc = new Color("srgb", [r, g, b]);
+          }
         } else {
           const p = val
             .replace(/[\[\]]/g, "")
@@ -713,6 +744,12 @@ const ColorConverter = ({
           label: "HSL",
           space: "HSL",
           value: `[${fmt(c.to("hsl").coords[0], 1)}, ${fmt(c.to("hsl").coords[1])}%, ${fmt(c.to("hsl").coords[2])}%]`,
+          onEdit,
+        }),
+        React.createElement(EditableColorField, {
+          label: "CMYK",
+          space: "CMYK",
+          value: cmykStr,
           onEdit,
         }),
       ),
