@@ -4,12 +4,17 @@
   "type": "module",
   "scripts": {
     "dev": "http-server -p 3000 -c-1",
-    "build": "mkdir -p dist && cp index.html App.jsx styles.css .nojekyll dist/ && cp -r data dist/",
+    "build": "mkdir -p dist && cp index.html App.jsx ViewNixSpectro.jsx styles.css .nojekyll dist/ && cp -r data dist/",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@eslint/js": "^10.0.1",
     "clsx": "^2.1.1",
+    "eslint-plugin-react": "^7.37.5",
+    "globals": "^17.6.0",
+    "jimp": "^0.22.12",
     "lucide-react": "^0.454.0",
+    "papaparse": "^5.5.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwind-merge": "^2.5.0"

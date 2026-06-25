@@ -422,6 +422,61 @@ const calculateDeltaEFromSpectral = (
   const cB = new Color("lab", labB);
   return cA.deltaE(cB, "2000");
 };
+const multiplyMatrixVector = (matrix, vector) => {
+  return [
+    matrix[0][0] * vector[0] + matrix[0][1] * vector[1] + matrix[0][2] * vector[2],
+    matrix[1][0] * vector[0] + matrix[1][1] * vector[1] + matrix[1][2] * vector[2],
+    matrix[2][0] * vector[0] + matrix[2][1] * vector[1] + matrix[2][2] * vector[2]
+  ];
+};
+const getGeneralBradfordAdaptationMatrix = (ws, wd) => {
+  const MBFD = [
+    [ 0.8951,  0.2664, -0.1614],
+    [-0.7502,  1.7135,  0.0367],
+    [ 0.0389, -0.0685,  1.0296]
+  ];
+  const MBFD_inv = [
+    [ 0.9869929, -0.1470543,  0.1599627],
+    [ 0.4323053,  0.5183603,  0.0492912],
+    [-0.0085287,  0.0490340,  0.9684867]
+  ];
+  const lms_s = multiplyMatrixVector(MBFD, ws);
+  const lms_d = multiplyMatrixVector(MBFD, wd);
+  const rL = lms_s[0] === 0 ? 0 : lms_d[0] / lms_s[0];
+  const rM = lms_s[1] === 0 ? 0 : lms_d[1] / lms_s[1];
+  const rS = lms_s[2] === 0 ? 0 : lms_d[2] / lms_s[2];
+  const intermediate = [
+    [ MBFD[0][0] * rL, MBFD[0][1] * rL, MBFD[0][2] * rL ],
+    [ MBFD[1][0] * rM, MBFD[1][1] * rM, MBFD[1][2] * rM ],
+    [ MBFD[2][0] * rS, MBFD[2][1] * rS, MBFD[2][2] * rS ]
+  ];
+  const m = [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0]
+  ];
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) {
+      m[i][j] = MBFD_inv[i][0] * intermediate[0][j] +
+                MBFD_inv[i][1] * intermediate[1][j] +
+                MBFD_inv[i][2] * intermediate[2][j];
+    }
+  }
+  return m;
+};
+const labToXyz = (lab, whitePoint) => {
+  const fy = (lab[0] + 16) / 116;
+  const fx = lab[1] / 500 + fy;
+  const fz = fy - lab[2] / 200;
+  const delta = 6 / 29;
+  const fx3 = fx * fx * fx;
+  const fz3 = fz * fz * fz;
+  const x = fx > delta ? fx3 : (fx - 16 / 116) / 7.787;
+  const y = fy > delta ? fy * fy * fy : (fy - 16 / 116) / 7.787;
+  const z = fz > delta ? fz3 : (fz - 16 / 116) / 7.787;
+  return [x * whitePoint[0], y * whitePoint[1], z * whitePoint[2]];
+};
+
 const ColorConverter = ({
   crosshair,
   onEdit,
@@ -470,13 +525,15 @@ const ColorConverter = ({
     isOutOfGamut,
     readOnly = false,
   }) => {
+    const isBlocked = observer === 10;
+    const fieldReadOnly = readOnly || isBlocked;
     const [localVal, setLocalVal] = useState(value);
     const [isFocused, setIsFocused] = useState(false);
     useEffect(() => {
       if (!isFocused) setLocalVal(value);
     }, [value, isFocused]);
     const applyChange = (val) => {
-      if (readOnly) return;
+      if (fieldReadOnly) return;
       try {
         let pc;
         if (space === "Hex") {
@@ -499,9 +556,71 @@ const ColorConverter = ({
               "CIE LCH": "lch",
               HSL: "hsl",
             };
-            if (space === "RGB")
+            if (space === "RGB") {
               pc = new Color("srgb", [p[0] / 255, p[1] / 255, p[2] / 255]);
-            else if (sm[space]) pc = new Color(sm[space], p);
+            } else if (space === "CIE LAB" || space === "CIE LCH" || space === "XYZ") {
+              let xyz_d65;
+              if (space === "XYZ") {
+                if (illuminant === "D65") {
+                  xyz_d65 = p;
+                } else if (illuminant === "D50") {
+                  const M_D50_to_D65 = [
+                    [ 0.9555766, -0.0230380,  0.0631610],
+                    [-0.0283858,  1.0099424,  0.0210077],
+                    [ 0.0123140, -0.0205076,  1.3299215]
+                  ];
+                  xyz_d65 = [
+                    M_D50_to_D65[0][0] * p[0] + M_D50_to_D65[0][1] * p[1] + M_D50_to_D65[0][2] * p[2],
+                    M_D50_to_D65[1][0] * p[0] + M_D50_to_D65[1][1] * p[1] + M_D50_to_D65[1][2] * p[2],
+                    M_D50_to_D65[2][0] * p[0] + M_D50_to_D65[2][1] * p[1] + M_D50_to_D65[2][2] * p[2]
+                  ];
+                } else {
+                  const wpSource = getWhitePoint(observer, illuminant);
+                  const wpD65 = getWhitePoint(observer, "D65");
+                  const M_adapt = getGeneralBradfordAdaptationMatrix(wpSource, wpD65);
+                  xyz_d65 = [
+                    M_adapt[0][0] * p[0] + M_adapt[0][1] * p[1] + M_adapt[0][2] * p[2],
+                    M_adapt[1][0] * p[0] + M_adapt[1][1] * p[1] + M_adapt[1][2] * p[2],
+                    M_adapt[2][0] * p[0] + M_adapt[2][1] * p[1] + M_adapt[2][2] * p[2]
+                  ];
+                }
+              } else {
+                let lab = p;
+                if (space === "CIE LCH") {
+                  const hRad = (p[2] * Math.PI) / 180;
+                  lab = [p[0], p[1] * Math.cos(hRad), p[1] * Math.sin(hRad)];
+                }
+                const wpSource = getWhitePoint(observer, illuminant);
+                const xyzSource = labToXyz(lab, wpSource);
+                if (illuminant === "D65") {
+                  xyz_d65 = xyzSource;
+                } else if (illuminant === "D50") {
+                  const M_D50_to_D65 = [
+                    [ 0.9555766, -0.0230380,  0.0631610],
+                    [-0.0283858,  1.0099424,  0.0210077],
+                    [ 0.0123140, -0.0205076,  1.3299215]
+                  ];
+                  xyz_d65 = [
+                    M_D50_to_D65[0][0] * xyzSource[0] + M_D50_to_D65[0][1] * xyzSource[1] + M_D50_to_D65[0][2] * xyzSource[2],
+                    M_D50_to_D65[1][0] * xyzSource[0] + M_D50_to_D65[1][1] * xyzSource[1] + M_D50_to_D65[1][2] * xyzSource[2],
+                    M_D50_to_D65[2][0] * xyzSource[0] + M_D50_to_D65[2][1] * xyzSource[1] + M_D50_to_D65[2][2] * xyzSource[2]
+                  ];
+                } else {
+                  const wpD65 = getWhitePoint(observer, "D65");
+                  const M_adapt = getGeneralBradfordAdaptationMatrix(wpSource, wpD65);
+                  xyz_d65 = [
+                    M_adapt[0][0] * xyzSource[0] + M_adapt[0][1] * xyzSource[1] + M_adapt[0][2] * xyzSource[2],
+                    M_adapt[1][0] * xyzSource[0] + M_adapt[1][1] * xyzSource[1] + M_adapt[1][2] * xyzSource[2],
+                    M_adapt[2][0] * xyzSource[0] + M_adapt[2][1] * xyzSource[1] + M_adapt[2][2] * xyzSource[2]
+                  ];
+                }
+              }
+              if (xyz_d65) {
+                pc = new Color("xyz-d65", xyz_d65);
+              }
+            } else if (sm[space]) {
+              pc = new Color(sm[space], p);
+            }
           }
         }
         if (pc) {
@@ -535,7 +654,7 @@ const ColorConverter = ({
       React.createElement("input", {
         type: "text",
         value: localVal,
-        readOnly,
+        readOnly: fieldReadOnly,
         onFocus: () => setIsFocused(true),
         onBlur: () => {
           setIsFocused(false);
@@ -544,7 +663,7 @@ const ColorConverter = ({
         onKeyDown: (e) => e.key === "Enter" && e.target.blur(),
         onChange: (e) => setLocalVal(e.target.value),
         spellCheck: "false",
-        className: `w-full bg-slate-100 dark:bg-neutral-800/50 border border-slate-200 dark:border-neutral-700/50 rounded px-1.5 py-1 font-mono text-[10px] ${readOnly ? "text-slate-500 dark:text-neutral-500 cursor-not-allowed" : "text-slate-800 dark:text-neutral-200"} focus:outline-none focus:border-sky-500 transition-all`,
+        className: `w-full bg-slate-100 dark:bg-neutral-800/50 border border-slate-200 dark:border-neutral-700/50 rounded px-1.5 py-1 font-mono text-[10px] ${fieldReadOnly ? "text-slate-500 dark:text-neutral-500 cursor-not-allowed" : "text-slate-800 dark:text-neutral-200"} focus:outline-none focus:border-sky-500 transition-all`,
       }),
     );
   };
@@ -619,6 +738,13 @@ const ColorConverter = ({
             " Spectral data required",
           ),
       ),
+      observer === 10 &&
+        React.createElement(
+          "div",
+          { className: "mb-3 p-2 bg-amber-50/80 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/40 rounded text-[10px] text-amber-700 dark:text-amber-400 flex items-center gap-1.5 font-sans leading-snug" },
+          React.createElement(Icon, { name: "lock", className: "w-3.5 h-3.5 shrink-0" }),
+          "Manual input blocked for 10\xB0 observer."
+        ),
       React.createElement(
         "div",
         { className: "grid grid-cols-2 gap-2 mb-3" },
@@ -638,7 +764,6 @@ const ColorConverter = ({
             {
               value: observer,
               onChange: (e) => setObserver(parseInt(e.target.value)),
-              disabled: !spectral,
               className:
                 "bg-slate-100 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-1.5 py-1 text-[10px] font-mono focus:outline-none focus:border-sky-500 transition-all disabled:opacity-50",
             },
@@ -662,7 +787,6 @@ const ColorConverter = ({
             {
               value: illuminant,
               onChange: (e) => setIlluminant(e.target.value),
-              disabled: !spectral,
               className:
                 "bg-slate-100 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-1.5 py-1 text-[10px] font-mono focus:outline-none focus:border-sky-500 transition-all disabled:opacity-50",
             },
@@ -678,28 +802,35 @@ const ColorConverter = ({
           ),
         ),
       ),
-      React.createElement(
-        "div",
-        { className: "grid grid-cols-2 gap-3" },
-        React.createElement(EditableColorField, {
-          label: `CIE LAB (${illuminant}/${observer}\xB0)`,
-          space: "CIE LAB",
-          value: `[${fmt(varLab[0])}, ${fmt(varLab[1])}, ${fmt(varLab[2])}]`,
-          readOnly: true,
-        }),
-        React.createElement(EditableColorField, {
-          label: `CIE LCH (${illuminant}/${observer}\xB0)`,
-          space: "CIE LCH",
-          value: `[${fmt(varLch[0])}, ${fmt(varLch[1])}, ${fmt(varLch[2], 1)}]`,
-          readOnly: true,
-        }),
-        React.createElement(EditableColorField, {
-          label: `XYZ (${illuminant}/${observer}\xB0)`,
-          space: "XYZ",
-          value: `[${fmt(varXYZ[0])}, ${fmt(varXYZ[1])}, ${fmt(varXYZ[2])}]`,
-          readOnly: true,
-        }),
-      ),
+      (observer !== 10 || !!spectral) ?
+        React.createElement(
+          "div",
+          { className: "grid grid-cols-2 gap-3" },
+          React.createElement(EditableColorField, {
+            label: `CIE LAB (${illuminant}/${observer}\xB0)`,
+            space: "CIE LAB",
+            value: `[${fmt(varLab[0])}, ${fmt(varLab[1])}, ${fmt(varLab[2])}]`,
+            onEdit,
+          }),
+          React.createElement(EditableColorField, {
+            label: `CIE LCH (${illuminant}/${observer}\xB0)`,
+            space: "CIE LCH",
+            value: `[${fmt(varLch[0])}, ${fmt(varLch[1])}, ${fmt(varLch[2], 1)}]`,
+            onEdit,
+          }),
+          React.createElement(EditableColorField, {
+            label: `XYZ (${illuminant}/${observer}\xB0)`,
+            space: "XYZ",
+            value: `[${fmt(varXYZ[0])}, ${fmt(varXYZ[1])}, ${fmt(varXYZ[2])}]`,
+            onEdit,
+          }),
+        ) :
+        React.createElement(
+          "div",
+          { className: "p-2 bg-slate-50 dark:bg-neutral-800/40 border border-slate-200/50 dark:border-neutral-700/40 rounded text-[10px] text-slate-500 dark:text-neutral-400 flex items-center justify-center gap-1.5 font-sans leading-snug" },
+          React.createElement(Icon, { name: "eye-off", className: "w-3.5 h-3.5 shrink-0 text-slate-400" }),
+          "10\xB0 conversions require spectral data"
+        ),
     ),
   );
 };
@@ -868,9 +999,17 @@ const CommercialMatches = ({
             "div",
             {
               className:
-                "relative group w-8 h-8 rounded shadow-sm shrink-0 border border-slate-200 dark:border-neutral-700 bg-cover bg-center",
-              style: { backgroundImage: `url(${match.image})` },
+                "relative group w-8 h-8 rounded shadow-sm shrink-0 border border-slate-200 dark:border-neutral-700 overflow-hidden",
+              style: { backgroundColor: match.hex },
             },
+            React.createElement("div", {
+              className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
+              style: {
+                backgroundImage: `url(${match.image})`,
+                WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+              },
+            }),
             React.createElement(
               "button",
               {
@@ -1025,6 +1164,10 @@ const CommercialMatches = ({
             alt: "Fullscreen Match",
             className:
               "max-w-full max-h-full object-contain rounded shadow-2xl",
+            style: {
+              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+              maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+            },
             onClick: (e) => e.stopPropagation(),
           }),
           React.createElement(
@@ -1366,8 +1509,8 @@ const View3D = ({
       .filter((sc) => sc.type === "pin" && filterPt(sc))
       .map((p) => {
         const displayName =
-          `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
-          "Unnamed Pin";
+          (`${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
+          "Unnamed Pin").toUpperCase();
         return {
           ...p,
           a: p.C * Math.sin((p.H * Math.PI) / 180),
@@ -1600,6 +1743,7 @@ const ViewVertical = ({
   filterL,
   filterC,
   filterH,
+  groupSettings,
 }) => {
   const isDark = theme === "dark";
   const [showText, setShowText] = useState(false);
@@ -2038,16 +2182,66 @@ const ViewVertical = ({
     }
   }, [points, targetH, viewMode]);
   const layout = useMemo(() => {
-    const shapes = [
-      {
+    const shapes = [];
+    if (groupSettings) {
+      const gC = isDark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)";
+      // Neutral C line
+      if (groupSettings.neutralC) {
+        shapes.push({
+          type: "line",
+          x0: groupSettings.neutralC,
+          x1: groupSettings.neutralC,
+          y0: -0.05,
+          y1: 1.05,
+          line: { color: gC, width: 1, dash: "dot" },
+        });
+      }
+      // Vivid C line
+      if (groupSettings.vividC) {
+        shapes.push({
+          type: "line",
+          x0: groupSettings.vividC,
+          x1: groupSettings.vividC,
+          y0: -0.05,
+          y1: 1.05,
+          line: { color: gC, width: 1, dash: "dot" },
+        });
+      }
+      // Light L line (for non-neutrals)
+      if (groupSettings.lightL && groupSettings.neutralC) {
+        shapes.push({
+          type: "line",
+          x0: groupSettings.neutralC,
+          x1: 0.4,
+          y0: groupSettings.lightL,
+          y1: groupSettings.lightL,
+          line: { color: gC, width: 1, dash: "dot" },
+        });
+      }
+      // Neutrals maxL lines
+      if (groupSettings.neutrals && groupSettings.neutralC) {
+        groupSettings.neutrals.forEach(n => {
+          shapes.push({
+            type: "line",
+            x0: 0,
+            x1: groupSettings.neutralC,
+            y0: n.maxL,
+            y1: n.maxL,
+            line: { color: gC, width: 1, dash: "dot" },
+          });
+        });
+      }
+    } else {
+      shapes.push({
         type: "line",
         x0: 0,
         x1: 0.3,
         y0: 0.5,
         y1: 0.5,
         line: { color: isDark ? "#F2E8DF" : "#2B4032", width: 1, dash: "dot" },
-      },
-    ];
+      });
+    }
+
     if (viewMode === "bins" && voronoiContent.cells.length > 0) {
       voronoiContent.cells.forEach((cell) => {
         if (filterPt && !filterPt(cell.p)) return;
@@ -2100,7 +2294,7 @@ const ViewVertical = ({
       shapes,
       showlegend: false,
     };
-  }, [isDark, viewMode, voronoiContent, filterPt]);
+  }, [isDark, viewMode, voronoiContent, filterPt, groupSettings]);
   const handleBgClick = (cValue, lValue) => {
     handlePointClick([
       Math.max(0, Math.min(1, lValue)),
@@ -2154,6 +2348,7 @@ const ViewChromaRings = ({
   filterL,
   filterC,
   filterH,
+  groupSettings,
 }) => {
   const isDark = theme === "dark";
   const [showText, setShowText] = useState(false);
@@ -2558,16 +2753,40 @@ const ViewChromaRings = ({
     }
   }, [points, targetC, viewMode]);
   const layout = useMemo(() => {
-    const shapes = [
-      {
+    const shapes = [];
+    if (groupSettings) {
+      const gC = isDark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)";
+      shapes.push({
+        type: "line",
+        x0: 0,
+        x1: 360,
+        y0: groupSettings.lightL || 0.5,
+        y1: groupSettings.lightL || 0.5,
+        line: { color: gC, width: 1, dash: "dot" },
+      });
+      if (groupSettings.hues) {
+        groupSettings.hues.forEach(h => {
+          shapes.push({
+            type: "line",
+            x0: h.maxH,
+            x1: h.maxH,
+            y0: 0,
+            y1: 1.05,
+            line: { color: gC, width: 1, dash: "dot" },
+          });
+        });
+      }
+    } else {
+      shapes.push({
         type: "line",
         x0: 0,
         x1: 360,
         y0: 0.5,
         y1: 0.5,
         line: { color: isDark ? "#F2E8DF" : "#2B4032", width: 1, dash: "dot" },
-      },
-    ];
+      });
+    }
+
     if (viewMode === "bins" && voronoiContent.cells.length > 0) {
       voronoiContent.cells.forEach((cell) => {
         if (filterPt && !filterPt(cell.p)) return;
@@ -2612,7 +2831,7 @@ const ViewChromaRings = ({
       shapes,
       showlegend: false,
     };
-  }, [isDark, viewMode, voronoiContent, filterPt]);
+  }, [isDark, viewMode, voronoiContent, filterPt, groupSettings]);
   const handleBgClick = (hValue, lValue) => {
     handlePointClick([
       Math.max(0, Math.min(1, lValue)),
@@ -2741,8 +2960,8 @@ function getInheritedPinNames(
     inheritedName = names[sc.anchorId] || "Unnamed Noun";
   }
   return {
-    displayAdj: inheritedAdj.trim(),
-    displayName: inheritedName.trim(),
+    displayAdj: inheritedAdj.trim().toUpperCase(),
+    displayName: inheritedName.trim().toUpperCase(),
     source,
     sourceId,
   };
@@ -3169,19 +3388,21 @@ const ViewportSwatches = ({
                           className: `group rounded cursor-pointer transition-all relative ${activeHex === item.hex ? "ring-4 ring-sky-500 z-20 scale-110" : "z-10"} ${selectedIds?.includes(item.id) ? "ring-2 ring-sky-500 shadow-md" : "hover:ring-2 hover:ring-sky-500"}`,
                           style: {
                             backgroundColor: item.hex,
-                            backgroundImage: item.image
-                              ? `url(${item.image})`
-                              : item.note?.startsWith("http")
-                                ? `url(${item.note})`
-                                : "none",
-                            backgroundSize: "cover",
-                            backgroundPosition: "center",
                             width: `${baseMatrixSize * swatchZoom}px`,
                             height: `${baseMatrixSize * swatchZoom}px`,
                           },
                           title: `${item.displayName}
 ${item.erpCode}`,
                         },
+                        (item.image || item.note?.startsWith("http")) &&
+                          React.createElement("div", {
+                            className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
+                            style: {
+                              backgroundImage: `url(${item.image || item.note})`,
+                              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                              maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                            },
+                          }),
                         !item._inGamut &&
                           React.createElement("div", {
                             className: "absolute inset-0 pointer-events-none",
@@ -3463,15 +3684,17 @@ ${item.erpCode}`,
                       className: "w-8 h-8 rounded relative shadow-sm",
                       style: {
                         backgroundColor: item.hex,
-                        backgroundImage: item.image
-                          ? `url(${item.image})`
-                          : item.note?.startsWith("http")
-                            ? `url(${item.note})`
-                            : "none",
-                        backgroundSize: "cover",
-                        backgroundPosition: "center",
                       },
                     },
+                    (item.image || item.note?.startsWith("http")) &&
+                      React.createElement("div", {
+                        className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
+                        style: {
+                          backgroundImage: `url(${item.image || item.note})`,
+                          WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                          maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                        },
+                      }),
                     item.hasSpectral &&
                       React.createElement("div", {
                         className:
@@ -3676,16 +3899,18 @@ ${item.erpCode}`,
               className: `aspect-square rounded-2xl relative overflow-hidden transition-all group-hover:scale-[1.02] group-hover:shadow-md ${activeHex === item.hex ? "ring-4 ring-sky-500" : ""} ${selectedIds?.includes(item.id) ? "ring-2 ring-sky-500 shadow-md" : "hover:ring-2 hover:ring-sky-500"}`,
               style: {
                 backgroundColor: item.hex,
-                backgroundImage: item.image
-                  ? `url(${item.image})`
-                  : item.note?.startsWith("http")
-                    ? `url(${item.note})`
-                    : "none",
-                backgroundSize: "cover",
-                backgroundPosition: "center",
                 width: "100%",
               },
             },
+            (item.image || item.note?.startsWith("http")) &&
+              React.createElement("div", {
+                className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
+                style: {
+                  backgroundImage: `url(${item.image || item.note})`,
+                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                  maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                },
+              }),
             !item._inGamut &&
               React.createElement("div", {
                 className: "absolute inset-0 pointer-events-none",
@@ -3862,6 +4087,10 @@ ${item.erpCode}`,
             alt: "Fullscreen Image",
             className:
               "max-w-full max-h-full object-contain rounded shadow-2xl",
+            style: {
+              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+              maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+            },
             onClick: (e) => e.stopPropagation(),
           }),
           React.createElement(
@@ -3900,6 +4129,7 @@ const ViewTopDown = ({
   filterL,
   filterC,
   filterH,
+  groupSettings,
 }) => {
   const isDark = theme === "dark";
   const [showText, setShowText] = useState(false);
@@ -4410,13 +4640,55 @@ const ViewTopDown = ({
           x1: c,
           y1: c,
           line: {
-            color: isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)",
+            color: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.05)",
             width: 1,
             dash: "dot",
           },
         });
       }
     }
+    
+    if (groupSettings) {
+      const gC = isDark ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.25)";
+      if (groupSettings.neutralC) {
+        shapes.push({
+          type: "circle",
+          xref: "x",
+          yref: "y",
+          x0: -groupSettings.neutralC,
+          y0: -groupSettings.neutralC,
+          x1: groupSettings.neutralC,
+          y1: groupSettings.neutralC,
+          line: { color: gC, width: 1.5, dash: "dot" },
+        });
+      }
+      if (groupSettings.vividC) {
+        shapes.push({
+          type: "circle",
+          xref: "x",
+          yref: "y",
+          x0: -groupSettings.vividC,
+          y0: -groupSettings.vividC,
+          x1: groupSettings.vividC,
+          y1: groupSettings.vividC,
+          line: { color: gC, width: 1.5, dash: "dot" },
+        });
+      }
+      if (groupSettings.hues && groupSettings.neutralC) {
+        groupSettings.hues.forEach(h => {
+          const rad = (h.maxH * Math.PI) / 180;
+          shapes.push({
+             type: "line",
+             x0: groupSettings.neutralC * Math.sin(rad),
+             y0: groupSettings.neutralC * Math.cos(rad),
+             x1: 0.4 * Math.sin(rad),
+             y1: 0.4 * Math.cos(rad),
+             line: { color: gC, width: 1.5, dash: "dot" },
+          });
+        });
+      }
+    }
+
     return {
       uirevision: "true",
       paper_bgcolor: "rgba(0,0,0,0)",
@@ -4445,7 +4717,7 @@ const ViewTopDown = ({
       showlegend: false,
       shapes,
     };
-  }, [isDark, viewMode, validAnchors, crosshair?.rawL, filterPt]);
+  }, [isDark, viewMode, validAnchors, crosshair?.rawL, filterPt, groupSettings]);
   const handleBgClick = (a, b) => {
     const C = Math.min(0.4, Math.sqrt(a * a + b * b));
     let H = Math.atan2(a, b) * (180 / Math.PI);
@@ -4747,11 +5019,17 @@ const ViewPalette = ({
             "relative w-14 h-14 rounded shadow-sm cursor-pointer overflow-hidden border border-slate-200 dark:border-neutral-700 hover:ring-2 hover:ring-sky-500 transition-all flex-shrink-0 group/swatch",
           style: {
             backgroundColor: item.color,
-            backgroundImage: item.image ? `url(${item.image})` : "none",
-            backgroundSize: "cover",
-            backgroundPosition: "center",
           },
         },
+        (item.image || item.note?.startsWith("http")) &&
+          React.createElement("div", {
+            className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
+            style: {
+              backgroundImage: `url(${item.image || item.note})`,
+              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+              maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+            },
+          }),
         !new Color("oklch", [item.L, item.C, item.H]).inGamut("srgb") &&
           React.createElement("div", {
             className: "absolute inset-0 pointer-events-none",
@@ -5272,6 +5550,10 @@ const ViewPalette = ({
             alt: "Fullscreen Match",
             className:
               "max-w-full max-h-full object-contain rounded shadow-2xl",
+            style: {
+              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+              maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+            },
             onClick: (e) => e.stopPropagation(),
           }),
           React.createElement(
@@ -7853,6 +8135,24 @@ const App = () => {
   const [compSlotB, setCompSlotB] = useState(null);
 
   useEffect(() => {
+    if (scrubCommercial && colorData) {
+      const { brand, originalIndex } = scrubCommercial;
+      const target = colorData[brand]?.[originalIndex];
+      if (target) {
+        const dL = Math.abs(scrubL - target.L);
+        const dC = Math.abs(scrubC - target.C);
+        let dH = Math.abs(scrubH - target.H);
+        dH = Math.min(dH, 360 - dH);
+        if (dL > 0.0001 || dC > 0.0001 || dH > 0.0001) {
+          setScrubCommercial(null);
+        }
+      } else {
+        setScrubCommercial(null);
+      }
+    }
+  }, [scrubL, scrubC, scrubH, scrubCommercial, colorData]);
+
+  useEffect(() => {
     switch (activeTab) {
       case "top":
         setFilterL(0.01);
@@ -8037,8 +8337,15 @@ const App = () => {
       noun = names[item.nounId] || "";
     }
     
-    const displayName = `${adj} ${noun}`.trim() || "Unnamed";
-    return { hex, displayName, erpCode: item.erpCode || "N/A", L: item.L, C: item.C, H: item.H, pin };
+    const displayName = (`${adj} ${noun}`.trim() || "Unnamed").toUpperCase();
+    let image = item.image;
+    if (!image && pin) {
+      image = pin.image || (pin.notes?.startsWith("http") ? pin.notes : null);
+    }
+    if (!image && item.brand !== undefined && item.originalIndex !== undefined) {
+      image = colorData[item.brand]?.[item.originalIndex]?.image || null;
+    }
+    return { hex, displayName, erpCode: item.erpCode || "N/A", L: item.L, C: item.C, H: item.H, pin, image };
   }, [savedColors, adjectives, names, colorData]);
 
   const [groupSettings, setGroupSettings] = useState(
@@ -8119,7 +8426,7 @@ const App = () => {
     
     return pages.length > 0 ? pages : [Array(14).fill(null)];
   }, [averySourceItems, selectedPrintIds, printStartIndex, printConfigs]);
-  const [observer, setObserver] = useState(initialState?.observer || 10);
+  const [observer, setObserver] = useState(initialState?.observer || 2);
   const [illuminant, setIlluminant] = useState(
     initialState?.illuminant || "D65",
   );
@@ -8458,6 +8765,7 @@ const App = () => {
     scrubC,
     scrubH,
     names,
+    activeTab,
   ]);
   const [showVisibilityMenu, setShowVisibilityMenu] = useState(false);
   const visibilityMenuRef = useRef(null);
@@ -8482,6 +8790,7 @@ const App = () => {
   const [showCompareFullscreen, setShowCompareFullscreen] = useState(false);
   const [showFullscreenSpectral, setShowFullscreenSpectral] = useState(true);
   const [showFullscreenPalette, setShowFullscreenPalette] = useState(false);
+  const [showFullscreenImageOverlay, setShowFullscreenImageOverlay] = useState(true);
   const [showCompareDivider, setShowCompareDivider] = useState(true);
   const [showHelpPanel, setShowHelpPanel] = useState(false);
   const [showDatabaseManager, setShowDatabaseManager] = useState(false);
@@ -8641,6 +8950,9 @@ const App = () => {
           anchorId,
           adjId,
           isCustomAnchor: sc.type === "anchor",
+          image: sc.image || (sc.notes?.startsWith("http") ? sc.notes : undefined),
+          brand: sc.brand,
+          originalIndex: sc.originalIndex,
         };
         points.push(pt);
         baseAnchors.push({
@@ -9156,6 +9468,20 @@ const App = () => {
     }
     const exactErpCode = getExactErpCode(scrubL, scrubC, scrubH);
     const activeErpCode = exactErpCode;
+    let validatedCommercial = null;
+    if (scrubCommercial && colorData) {
+      const { brand, originalIndex } = scrubCommercial;
+      const target = colorData[brand]?.[originalIndex];
+      if (target) {
+        const dL = Math.abs(scrubL - target.L);
+        const dC = Math.abs(scrubC - target.C);
+        let dH = Math.abs(scrubH - target.H);
+        dH = Math.min(dH, 360 - dH);
+        if (dL <= 0.0001 && dC <= 0.0001 && dH <= 0.0001) {
+          validatedCommercial = scrubCommercial;
+        }
+      }
+    }
     return {
       rawL: scrubL,
       rawC: scrubC,
@@ -9178,7 +9504,7 @@ const App = () => {
       snapDist: minGridDist,
       snapTarget: closestGridPt,
       temporarySpectral,
-      activeCommercial: scrubCommercial,
+      activeCommercial: validatedCommercial,
     };
   }, [
     gridData,
@@ -9218,12 +9544,16 @@ const App = () => {
     if (tetheringPinId) {
       const targetCommercial = explicitCommercial;
       if (targetCommercial) {
+        const m = colorData[targetCommercial.brand]?.[targetCommercial.originalIndex];
         setSavedColors((prev) => ({
           ...prev,
           [tetheringPinId]: {
             ...prev[tetheringPinId],
             parentPinId: null,
             anchorId: `commercial-${targetCommercial.brand}-${targetCommercial.originalIndex}`,
+            brand: targetCommercial.brand,
+            originalIndex: targetCommercial.originalIndex,
+            image: m?.image || null,
           },
         }));
         setTetheringPinId(null);
@@ -9800,6 +10130,15 @@ const App = () => {
       });
     } else {
       const newId = crypto.randomUUID();
+      let pinImage = null;
+      let pinBrand = undefined;
+      let pinOriginalIndex = undefined;
+      if (crosshair.activeCommercial) {
+        const m = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
+        pinImage = m?.image || null;
+        pinBrand = crosshair.activeCommercial.brand;
+        pinOriginalIndex = crosshair.activeCommercial.originalIndex;
+      }
       setSavedColors((prev) => ({
         ...prev,
         [newId]: {
@@ -9824,6 +10163,9 @@ const App = () => {
             .toGamut({ space: "srgb" })
             .toString({ format: "hex" }),
           spectral: crosshair.temporarySpectral,
+          brand: pinBrand,
+          originalIndex: pinOriginalIndex,
+          image: pinImage,
         },
       }));
     }
@@ -10662,6 +11004,20 @@ const App = () => {
       crosshair.activeSavedColor?.type === "pin"
         ? crosshair.activeSavedColor.id
         : null;
+    let imageSrc = null;
+    let brand = undefined;
+    let originalIndex = undefined;
+    if (crosshair.activeCommercial) {
+      const match = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
+      imageSrc = match?.image || null;
+      brand = crosshair.activeCommercial.brand;
+      originalIndex = crosshair.activeCommercial.originalIndex;
+    } else if (pinId && savedColors[pinId]) {
+      const pinObj = savedColors[pinId];
+      imageSrc = pinObj.image || (pinObj.notes?.startsWith("http") ? pinObj.notes : null);
+      brand = pinObj.brand;
+      originalIndex = pinObj.originalIndex;
+    }
     const newItem = {
       id: crypto.randomUUID(),
       L: scrubL,
@@ -10671,6 +11027,9 @@ const App = () => {
       adjId: crosshair.nearestAdjId,
       nounId: crosshair.nearestAnchorId,
       pinId,
+      image: imageSrc,
+      brand,
+      originalIndex,
     };
     setPalette((prev) => [...prev, newItem]);
   };
@@ -10720,6 +11079,20 @@ const App = () => {
       crosshair.activeSavedColor?.type === "pin"
         ? crosshair.activeSavedColor.id
         : null;
+    let imageSrc = null;
+    let brand = undefined;
+    let originalIndex = undefined;
+    if (crosshair.activeCommercial) {
+      const match = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
+      imageSrc = match?.image || null;
+      brand = crosshair.activeCommercial.brand;
+      originalIndex = crosshair.activeCommercial.originalIndex;
+    } else if (pinId && savedColors[pinId]) {
+      const pinObj = savedColors[pinId];
+      imageSrc = pinObj.image || (pinObj.notes?.startsWith("http") ? pinObj.notes : null);
+      brand = pinObj.brand;
+      originalIndex = pinObj.originalIndex;
+    }
     setPalette((prev) =>
       prev.map((item) =>
         item.id === id
@@ -10732,6 +11105,9 @@ const App = () => {
               adjId: crosshair.nearestAdjId,
               nounId: crosshair.nearestAnchorId,
               pinId,
+              image: imageSrc,
+              brand,
+              originalIndex,
             }
           : item,
       ),
@@ -11010,6 +11386,8 @@ const App = () => {
     setShowFullscreenSpectral,
     showFullscreenPalette,
     setShowFullscreenPalette,
+    showFullscreenImageOverlay,
+    setShowFullscreenImageOverlay,
     showCompareDivider,
     setShowCompareDivider,
     showHelpPanel,
@@ -11231,7 +11609,7 @@ const ViewDatabase = ({
 }) => {
   const [sortBy, setSortBy] = useState("brand");
   const [sortAsc, setSortAsc] = useState(true);
-  const [spectralFilter, setSpectralFilter] = useState(false);
+  const [spectralFilter, setSpectralFilter] = useState(true);
   const [dbAxis, setDbAxis] = useState("HxL");
   const [brandFilter, setBrandFilter] = useState("");
   const [userEnableDeltaE, setUserEnableDeltaE] = useState(false);
@@ -11653,7 +12031,7 @@ const ViewDatabase = ({
             className: `flex items-center gap-1.5 px-2 py-1 text-[9px] font-bold uppercase tracking-wider rounded border ${spectralFilter ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-white text-slate-500 border-slate-200 dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-400"}`,
           },
           React.createElement(Icon, { name: "activity", className: "w-3 h-3" }),
-          " Spectral Only",
+          " Verified Colors Only",
         ),
         React.createElement(
           "span",
@@ -11786,17 +12164,19 @@ const ViewDatabase = ({
                   className: "rounded relative flex-shrink-0",
                   style: {
                     backgroundColor: item.hex,
-                    backgroundImage: item.image
-                      ? `url(${item.image})`
-                      : item.note?.startsWith("http")
-                        ? `url(${item.note})`
-                        : "none",
-                    backgroundSize: "cover",
-                    backgroundPosition: "center",
                     width: `${baseListSize * swatchZoom}px`,
                     height: `${baseListSize * swatchZoom}px`,
                   },
                 },
+                (item.image || item.note?.startsWith("http")) &&
+                  React.createElement("div", {
+                    className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
+                    style: {
+                      backgroundImage: `url(${item.image || item.note})`,
+                      WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                      maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                    },
+                  }),
                 !item._inGamut &&
                   React.createElement("div", {
                     className: "absolute inset-0 pointer-events-none",
@@ -12088,15 +12468,17 @@ const ViewDatabase = ({
                         className: "w-8 h-8 rounded relative shadow-sm",
                         style: {
                           backgroundColor: item.hex,
-                          backgroundImage: item.image
-                            ? `url(${item.image})`
-                            : item.note?.startsWith("http")
-                              ? `url(${item.note})`
-                              : "none",
-                          backgroundSize: "cover",
-                          backgroundPosition: "center",
                         },
                       },
+                      (item.image || item.note?.startsWith("http")) &&
+                        React.createElement("div", {
+                          className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
+                          style: {
+                            backgroundImage: `url(${item.image || item.note})`,
+                            WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                            maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                          },
+                        }),
                       (item.image || item.note?.startsWith("http")) &&
                         React.createElement(
                           "button",
@@ -12231,16 +12613,18 @@ const ViewDatabase = ({
                   className: `aspect-square relative flex items-center justify-center overflow-hidden transition-all text-[0px] rounded-xl group-hover:scale-[1.05] group-hover:shadow-md`,
                   style: {
                     backgroundColor: item.hex,
-                    backgroundImage: item.image
-                      ? `url(${item.image})`
-                      : item.note?.startsWith("http")
-                        ? `url(${item.note})`
-                        : "none",
-                    backgroundSize: "cover",
-                    backgroundPosition: "center",
                     width: "100%",
                   },
                 },
+                (item.image || item.note?.startsWith("http")) &&
+                  React.createElement("div", {
+                    className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
+                    style: {
+                      backgroundImage: `url(${item.image || item.note})`,
+                      WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                      maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                    },
+                  }),
                 !item._inGamut &&
                   React.createElement("div", {
                     className: "absolute inset-0 pointer-events-none",
@@ -12542,6 +12926,10 @@ const ViewDatabase = ({
             src: fullscreenImage,
             alt: "Fullscreen Preview",
             className: "max-w-full max-h-full object-contain cursor-default",
+            style: {
+              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+              maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+            },
             onClick: (e) => e.stopPropagation(),
           }),
           React.createElement(
@@ -13147,6 +13535,8 @@ const AppUI = ({
   setShowFullscreenSpectral,
   showFullscreenPalette,
   setShowFullscreenPalette,
+  showFullscreenImageOverlay,
+  setShowFullscreenImageOverlay,
   showCompareDivider,
   setShowCompareDivider,
   showHelpPanel,
@@ -13366,11 +13756,12 @@ const AppUI = ({
               .avery-print-page {
                 display: grid !important;
                 grid-template-columns: 4in 4in !important;
+                grid-template-rows: repeat(7, 1.5in) !important;
                 column-gap: 0.188in !important;
                 row-gap: 0in !important;
                 width: 8.5in !important;
                 height: 11in !important;
-                padding-top: calc(0.25in - 2mm) !important;
+                padding-top: 0.25in !important;
                 padding-bottom: 0.25in !important;
                 padding-left: 0.156in !important;
                 padding-right: 0.156in !important;
@@ -13392,18 +13783,16 @@ const AppUI = ({
                 font-family: 'Bicyclette', 'Byciclette', 'Inter', system-ui, sans-serif !important;
               }
               .avery-label-border {
-                border: 1px dashed rgba(180, 169, 158, 0.4) !important;
+                outline: 1px dashed rgba(180, 169, 158, 0.4) !important;
+                outline-offset: -1px !important;
               }
               .avery-label-borderless {
-                border: 1px solid transparent !important;
+                outline: 1px solid transparent !important;
+                outline-offset: -1px !important;
               }
               .sami-sidebar {
-                width: calc(0.45in + 3mm) !important;
-                height: calc(100% + 6mm) !important;
-                margin-top: -3mm !important;
-                margin-bottom: -3mm !important;
-                margin-left: -3mm !important;
-                padding-left: 3mm !important;
+                width: 0.45in !important;
+                height: 100% !important;
                 box-sizing: border-box !important;
                 display: flex !important;
                 align-items: center !important;
@@ -13436,7 +13825,7 @@ const AppUI = ({
               }
               .sami-label {
                 font-weight: 800 !important;
-                width: 0.85in !important;
+                width: 1.1in !important;
                 flex-shrink: 0 !important;
                 color: #1a201c !important;
                 font-size: 6.5pt !important;
@@ -13620,11 +14009,22 @@ const AppUI = ({
                         "flex items-center gap-4 p-3 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded-xl text-left transition-all border border-transparent hover:border-slate-200 dark:hover:border-neutral-700 group",
                     },
                     res.image
-                      ? React.createElement("div", {
-                          className:
-                            "w-10 h-10 rounded-lg shadow-sm border border-slate-200 dark:border-neutral-700 shrink-0 group-hover:scale-105 transition-transform bg-cover bg-center",
-                          style: { backgroundImage: `url(${res.image})` },
-                        })
+                      ? React.createElement(
+                          "div",
+                          {
+                            className:
+                              "w-10 h-10 rounded-lg shadow-sm border border-slate-200 dark:border-neutral-700 shrink-0 group-hover:scale-105 transition-transform relative overflow-hidden",
+                            style: { backgroundColor: res.color },
+                          },
+                          React.createElement("div", {
+                            className: "absolute inset-0 bg-cover bg-center rounded-[inherit]",
+                            style: {
+                              backgroundImage: `url(${res.image})`,
+                              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                              maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                            },
+                          })
+                        )
                       : React.createElement("div", {
                           className:
                             "w-10 h-10 rounded-lg shadow-sm border border-slate-200 dark:border-neutral-700 shrink-0 group-hover:scale-105 transition-transform",
@@ -13699,6 +14099,18 @@ const AppUI = ({
                     "h-44 w-full relative rounded-2xl shadow-inner border border-black/5 dark:border-white/5 overflow-hidden transition-colors duration-300",
                   style: { backgroundColor: crosshairHex },
                 },
+                crosshair?.activeCommercial &&
+                  (() => {
+                    const m = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
+                    return m?.image && React.createElement("div", {
+                      className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
+                      style: {
+                        backgroundImage: `url(${m.image})`,
+                        WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                        maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                      },
+                    });
+                  })(),
                 isOutOfGamut &&
                   React.createElement("div", {
                     className: "absolute inset-0 pointer-events-none",
@@ -13946,9 +14358,7 @@ const AppUI = ({
                       className:
                         "text-[8px] font-black uppercase tracking-widest opacity-80 drop-shadow-md mb-0.5",
                     },
-                    "CIELAB (",
-                    spectral ? `${illuminant}/${observer}\xB0` : "D50/2\xB0",
-                    ")",
+                    `CIELAB (${illuminant}/${observer}\xB0)`,
                   ),
                   React.createElement(
                     "div",
@@ -14320,9 +14730,18 @@ const AppUI = ({
                         className:
                           "relative group w-10 h-10 rounded-md shadow-sm border border-slate-200 dark:border-neutral-700 cursor-pointer overflow-hidden flex-shrink-0",
                         style: { backgroundColor: h },
-                        onClick: () => handleUpdate([item.L, item.C, item.H]),
+                        onClick: () => handleUpdate([item.L, item.C, item.H], item.spectral, item.brand !== undefined ? { brand: item.brand, originalIndex: item.originalIndex } : null),
                         title: `${displayName} (${item.erpCode})`,
                       },
+                      info.image &&
+                        React.createElement("div", {
+                          className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
+                          style: {
+                            backgroundImage: `url(${info.image})`,
+                            WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                            maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                          },
+                        }),
                       React.createElement(
                         "button",
                         {
@@ -14451,11 +14870,11 @@ const AppUI = ({
                               className:
                                 "flex-1 w-full relative cursor-pointer hover:opacity-90 transition-opacity",
                               onClick: () =>
-                                handleUpdate([
-                                  compSlotA.L,
-                                  compSlotA.C,
-                                  compSlotA.H,
-                                ]),
+                                handleUpdate(
+                                  [compSlotA.L, compSlotA.C, compSlotA.H],
+                                  compSlotA.spectral,
+                                  compSlotA.brand !== undefined ? { brand: compSlotA.brand, originalIndex: compSlotA.originalIndex } : null
+                                ),
                               style: {
                                 backgroundColor: new Color("oklch", [
                                   compSlotA.L,
@@ -14467,6 +14886,15 @@ const AppUI = ({
                                   .toString({ format: "hex" }),
                               },
                             },
+                            compSlotA.image &&
+                              React.createElement("div", {
+                                className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
+                                style: {
+                                  backgroundImage: `url(${compSlotA.image})`,
+                                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                                  maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                                },
+                              }),
                             !new Color("oklch", [
                               compSlotA.L,
                               compSlotA.C,
@@ -14487,11 +14915,11 @@ const AppUI = ({
                               className:
                                 "p-1.5 text-center text-[9px] font-mono text-slate-600 dark:text-neutral-400 bg-slate-50 dark:bg-neutral-800/50 border-t border-slate-200 dark:border-neutral-700 cursor-pointer flex items-center justify-center gap-1",
                               onClick: () =>
-                                handleUpdate([
-                                  compSlotA.L,
-                                  compSlotA.C,
-                                  compSlotA.H,
-                                ]),
+                                handleUpdate(
+                                  [compSlotA.L, compSlotA.C, compSlotA.H],
+                                  compSlotA.spectral,
+                                  compSlotA.brand !== undefined ? { brand: compSlotA.brand, originalIndex: compSlotA.originalIndex } : null
+                                ),
                             },
                             !new Color("oklch", [
                               compSlotA.L,
@@ -14534,7 +14962,21 @@ const AppUI = ({
                       : React.createElement(
                           "button",
                           {
-                            onClick: () =>
+                            onClick: () => {
+                              let loadedImage = null;
+                              let loadedBrand = undefined;
+                              let loadedIndex = undefined;
+                              if (crosshair?.activeCommercial) {
+                                const m = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
+                                loadedImage = m?.image || null;
+                                loadedBrand = crosshair.activeCommercial.brand;
+                                loadedIndex = crosshair.activeCommercial.originalIndex;
+                              } else if (crosshair?.activeSavedColor?.type === "pin") {
+                                const pinObj = savedColors[crosshair.activeSavedColor.id];
+                                loadedImage = pinObj?.image || (pinObj?.notes?.startsWith("http") ? pinObj.notes : null);
+                                loadedBrand = pinObj?.brand;
+                                loadedIndex = pinObj?.originalIndex;
+                              }
                               setCompSlotA({
                                 L: scrubL,
                                 C: scrubC,
@@ -14552,7 +14994,11 @@ const AppUI = ({
                                   crosshair?.activeSavedColor?.nameOverride,
                                 type: crosshair?.activeSavedColor?.type,
                                 spectral: crosshair?.activeSavedColor?.spectral,
-                              }),
+                                image: loadedImage,
+                                brand: loadedBrand,
+                                originalIndex: loadedIndex,
+                              });
+                            },
                             className:
                               "w-full h-full flex flex-col items-center justify-center hover:bg-slate-50 dark:hover:bg-neutral-800 text-slate-400 hover:text-sky-500 transition-colors",
                           },
@@ -14586,11 +15032,11 @@ const AppUI = ({
                               className:
                                 "flex-1 w-full relative cursor-pointer hover:opacity-90 transition-opacity",
                               onClick: () =>
-                                handleUpdate([
-                                  compSlotB.L,
-                                  compSlotB.C,
-                                  compSlotB.H,
-                                ]),
+                                handleUpdate(
+                                  [compSlotB.L, compSlotB.C, compSlotB.H],
+                                  compSlotB.spectral,
+                                  compSlotB.brand !== undefined ? { brand: compSlotB.brand, originalIndex: compSlotB.originalIndex } : null
+                                ),
                               style: {
                                 backgroundColor: new Color("oklch", [
                                   compSlotB.L,
@@ -14602,6 +15048,15 @@ const AppUI = ({
                                   .toString({ format: "hex" }),
                               },
                             },
+                            compSlotB.image &&
+                              React.createElement("div", {
+                                className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
+                                style: {
+                                  backgroundImage: `url(${compSlotB.image})`,
+                                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                                  maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                                },
+                              }),
                             !new Color("oklch", [
                               compSlotB.L,
                               compSlotB.C,
@@ -14622,11 +15077,11 @@ const AppUI = ({
                               className:
                                 "p-1.5 text-center text-[9px] font-mono text-slate-600 dark:text-neutral-400 bg-slate-50 dark:bg-neutral-800/50 border-t border-slate-200 dark:border-neutral-700 cursor-pointer flex items-center justify-center gap-1",
                               onClick: () =>
-                                handleUpdate([
-                                  compSlotB.L,
-                                  compSlotB.C,
-                                  compSlotB.H,
-                                ]),
+                                handleUpdate(
+                                  [compSlotB.L, compSlotB.C, compSlotB.H],
+                                  compSlotB.spectral,
+                                  compSlotB.brand !== undefined ? { brand: compSlotB.brand, originalIndex: compSlotB.originalIndex } : null
+                                ),
                             },
                             !new Color("oklch", [
                               compSlotB.L,
@@ -14669,7 +15124,21 @@ const AppUI = ({
                       : React.createElement(
                           "button",
                           {
-                            onClick: () =>
+                            onClick: () => {
+                              let loadedImage = null;
+                              let loadedBrand = undefined;
+                              let loadedIndex = undefined;
+                              if (crosshair?.activeCommercial) {
+                                const m = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
+                                loadedImage = m?.image || null;
+                                loadedBrand = crosshair.activeCommercial.brand;
+                                loadedIndex = crosshair.activeCommercial.originalIndex;
+                              } else if (crosshair?.activeSavedColor?.type === "pin") {
+                                const pinObj = savedColors[crosshair.activeSavedColor.id];
+                                loadedImage = pinObj?.image || (pinObj?.notes?.startsWith("http") ? pinObj.notes : null);
+                                loadedBrand = pinObj?.brand;
+                                loadedIndex = pinObj?.originalIndex;
+                              }
                               setCompSlotB({
                                 L: scrubL,
                                 C: scrubC,
@@ -14687,7 +15156,11 @@ const AppUI = ({
                                   crosshair?.activeSavedColor?.nameOverride,
                                 type: crosshair?.activeSavedColor?.type,
                                 spectral: crosshair?.activeSavedColor?.spectral,
-                              }),
+                                image: loadedImage,
+                                brand: loadedBrand,
+                                originalIndex: loadedIndex,
+                              });
+                            },
                             className:
                               "w-full h-full flex flex-col items-center justify-center hover:bg-slate-50 dark:hover:bg-neutral-800 text-slate-400 hover:text-sky-500 transition-colors",
                           },
@@ -15657,6 +16130,7 @@ const AppUI = ({
                 filterL,
                 filterC,
                 filterH,
+                groupSettings,
               }),
             activeTab === "chroma" &&
               React.createElement(ViewChromaRings, {
@@ -15679,6 +16153,7 @@ const AppUI = ({
                 filterL,
                 filterC,
                 filterH,
+                groupSettings,
               }),
             activeTab === "top" &&
               React.createElement(ViewTopDown, {
@@ -15702,6 +16177,7 @@ const AppUI = ({
                 filterL,
                 filterC,
                 filterH,
+                groupSettings,
               }),
             activeTab === "groups" &&
               React.createElement(ViewGroups, {
@@ -15809,6 +16285,21 @@ const AppUI = ({
           React.createElement(
             "div",
             { className: "absolute top-8 right-8 z-[110] flex gap-2" },
+            (compSlotA.image || compSlotB.image) &&
+              React.createElement(
+                "button",
+                {
+                  onClick: () =>
+                    setShowFullscreenImageOverlay(!showFullscreenImageOverlay),
+                  className:
+                    "bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg flex items-center gap-2",
+                },
+                React.createElement(Icon, {
+                  name: showFullscreenImageOverlay ? "image-off" : "image",
+                  className: "w-4 h-4",
+                }),
+                showFullscreenImageOverlay ? "Hide Images" : "Show Images",
+              ),
             (compSlotA.spectral || compSlotB.spectral) &&
               React.createElement(
                 "button",
@@ -15851,16 +16342,30 @@ const AppUI = ({
             "div",
             {
               className:
-                "flex-1 flex flex-col justify-between p-16 relative transition-colors duration-300 cursor-pointer group",
+                "flex-1 flex flex-col justify-between p-16 relative transition-colors duration-300 cursor-pointer group overflow-hidden",
               style: {
                 backgroundColor: hA,
                 color: compSlotA.L > 0.65 ? "#010D00" : "#F2E8DF",
               },
               onClick: () => {
-                handleUpdate([compSlotA.L, compSlotA.C, compSlotA.H]);
+                handleUpdate(
+                  [compSlotA.L, compSlotA.C, compSlotA.H],
+                  compSlotA.spectral,
+                  compSlotA.brand !== undefined ? { brand: compSlotA.brand, originalIndex: compSlotA.originalIndex } : null
+                );
                 setShowCompareFullscreen(false);
               },
             },
+            compSlotA.image &&
+              showFullscreenImageOverlay &&
+              React.createElement("div", {
+                className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none transition-transform duration-500 group-hover:scale-105",
+                style: {
+                  backgroundImage: `url(${compSlotA.image})`,
+                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                  maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                },
+              }),
             !cA.inGamut("srgb") &&
               React.createElement("div", {
                 className: "absolute inset-0 pointer-events-none",
@@ -15905,16 +16410,30 @@ const AppUI = ({
             "div",
             {
               className:
-                "flex-1 flex flex-col justify-between p-16 relative transition-colors duration-300 cursor-pointer group",
+                "flex-1 flex flex-col justify-between p-16 relative transition-colors duration-300 cursor-pointer group overflow-hidden",
               style: {
                 backgroundColor: hB,
                 color: compSlotB.L > 0.65 ? "#010D00" : "#F2E8DF",
               },
               onClick: () => {
-                handleUpdate([compSlotB.L, compSlotB.C, compSlotB.H]);
+                handleUpdate(
+                  [compSlotB.L, compSlotB.C, compSlotB.H],
+                  compSlotB.spectral,
+                  compSlotB.brand !== undefined ? { brand: compSlotB.brand, originalIndex: compSlotB.originalIndex } : null
+                );
                 setShowCompareFullscreen(false);
               },
             },
+            compSlotB.image &&
+              showFullscreenImageOverlay &&
+              React.createElement("div", {
+                className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none transition-transform duration-500 group-hover:scale-105",
+                style: {
+                  backgroundImage: `url(${compSlotB.image})`,
+                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                  maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                },
+              }),
             !cB.inGamut("srgb") &&
               React.createElement("div", {
                 className: "absolute inset-0 pointer-events-none",
@@ -16123,13 +16642,30 @@ const AppUI = ({
             "fixed inset-0 z-[100] flex animate-in fade-in duration-300 bg-neutral-950",
         },
         React.createElement(
-          "button",
-          {
-            onClick: () => setShowFullscreenPalette(false),
-            className:
-              "absolute top-8 right-8 z-[110] bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg",
-          },
-          "Close Palette",
+          "div",
+          { className: "absolute top-8 right-8 z-[110] flex gap-2" },
+          React.createElement(
+            "button",
+            {
+              onClick: () => setShowFullscreenImageOverlay(!showFullscreenImageOverlay),
+              className:
+                "bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg flex items-center gap-2",
+            },
+            React.createElement(Icon, {
+              name: showFullscreenImageOverlay ? "image-off" : "image",
+              className: "w-4 h-4",
+            }),
+            showFullscreenImageOverlay ? "Hide Images" : "Show Images"
+          ),
+          React.createElement(
+            "button",
+            {
+              onClick: () => setShowFullscreenPalette(false),
+              className:
+                "bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg",
+            },
+            "Close Palette"
+          )
         ),
         React.createElement(
           "div",
@@ -16148,13 +16684,27 @@ const AppUI = ({
               {
                 key: item.id,
                 className:
-                  "flex-1 flex flex-col justify-end p-8 transition-all hover:flex-[1.2] cursor-pointer group relative",
+                  "flex-1 flex flex-col justify-end p-8 transition-all hover:flex-[1.2] cursor-pointer group relative overflow-hidden",
                 style: { backgroundColor: h },
                 onClick: () => {
-                  handleUpdate([item.L, item.C, item.H]);
+                  handleUpdate(
+                    [item.L, item.C, item.H],
+                    item.spectral,
+                    item.brand !== undefined ? { brand: item.brand, originalIndex: item.originalIndex } : null
+                  );
                   setShowFullscreenPalette(false);
                 },
               },
+              info.image &&
+                showFullscreenImageOverlay &&
+                React.createElement("div", {
+                  className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none transition-transform duration-500 group-hover:scale-105",
+                  style: {
+                    backgroundImage: `url(${info.image})`,
+                    WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                    maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                  },
+                }),
               React.createElement(
                 "div",
                 {
@@ -16291,53 +16841,94 @@ const AppUI = ({
       ),
     showFullscreenPreview &&
       !showCompareFullscreen &&
-      React.createElement(
-        "div",
-        {
-          className:
-            "fixed inset-0 z-[100] flex flex-col items-center justify-end p-20 animate-in fade-in duration-300 cursor-pointer",
-          style: { backgroundColor: crosshairHex },
-          onClick: () => setShowFullscreenPreview(false),
-        },
-        React.createElement(
-          "button",
-          {
-            onClick: (e) => {
-              e.stopPropagation();
-              setShowFullscreenPreview(false);
-            },
-            className:
-              "absolute top-8 right-8 bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg z-20",
-          },
-          "Close Preview",
-        ),
-        React.createElement(
+      (() => {
+        let previewImage = null;
+        if (crosshair?.activeCommercial) {
+          const m = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
+          previewImage = m?.image || null;
+        } else if (crosshair?.activeSavedColor?.type === "pin") {
+          const pinObj = savedColors[crosshair.activeSavedColor.id];
+          previewImage = pinObj?.image || (pinObj?.notes?.startsWith("http") ? pinObj.notes : null);
+        }
+        return React.createElement(
           "div",
           {
             className:
-              "bg-black/10 backdrop-blur-xl p-10 rounded-2xl text-center shadow-2xl pointer-events-none relative z-20",
-            style: { color: isLight ? "#010D00" : "#F2E8DF" },
+              "fixed inset-0 z-[100] flex flex-col items-center justify-end p-20 animate-in fade-in duration-300 cursor-pointer overflow-hidden",
+            style: { backgroundColor: crosshairHex },
+            onClick: () => setShowFullscreenPreview(false),
           },
+          previewImage &&
+            showFullscreenImageOverlay &&
+            React.createElement("div", {
+              className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
+              style: {
+                backgroundImage: `url(${previewImage})`,
+                WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+              },
+            }),
           React.createElement(
             "div",
-            {
-              className:
-                "text-6xl font-black mb-4 tracking-tight uppercase drop-shadow-md",
-            },
-            activeAdj,
-            " ",
-            activeName,
+            { className: "absolute top-8 right-8 z-[110] flex gap-2" },
+            previewImage &&
+              React.createElement(
+                "button",
+                {
+                  onClick: (e) => {
+                    e.stopPropagation();
+                    setShowFullscreenImageOverlay(!showFullscreenImageOverlay);
+                  },
+                  className:
+                    "bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg flex items-center gap-2",
+                },
+                React.createElement(Icon, {
+                  name: showFullscreenImageOverlay ? "image-off" : "image",
+                  className: "w-4 h-4",
+                }),
+                showFullscreenImageOverlay ? "Hide Images" : "Show Images",
+              ),
+            React.createElement(
+              "button",
+              {
+                onClick: (e) => {
+                  e.stopPropagation();
+                  setShowFullscreenPreview(false);
+                },
+                className:
+                  "bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg",
+              },
+              "Close Preview",
+            )
           ),
           React.createElement(
             "div",
             {
               className:
-                "text-xl font-mono uppercase tracking-widest opacity-80 drop-shadow-sm",
+                "bg-black/10 backdrop-blur-xl p-10 rounded-2xl text-center shadow-2xl pointer-events-none relative z-20",
+              style: { color: isLight ? "#010D00" : "#F2E8DF" },
             },
-            crosshair?.activeErpCode || "",
+            React.createElement(
+              "div",
+              {
+                className:
+                  "text-6xl font-black mb-4 tracking-tight uppercase drop-shadow-md",
+              },
+              activeAdj,
+              " ",
+              activeName,
+            ),
+            React.createElement(
+              "div",
+              {
+                className:
+                  "text-xl font-mono uppercase tracking-widest opacity-80 drop-shadow-sm",
+              },
+              crosshair?.activeErpCode || "",
+            ),
           ),
-        ),
-      ),
+        );
+      })(),
     showHelpPanel &&
       React.createElement(
         "div",
@@ -17178,11 +17769,12 @@ const AppUI = ({
           .avery-print-page {
             display: grid !important;
             grid-template-columns: 4in 4in !important;
+            grid-template-rows: repeat(7, 1.5in) !important;
             column-gap: 0.188in !important;
             row-gap: 0in !important;
             width: 8.5in !important;
             height: 11in !important;
-            padding-top: calc(0.25in - 2mm) !important;
+            padding-top: 0.25in !important;
             padding-bottom: 0.25in !important;
             padding-left: 0.156in !important;
             padding-right: 0.156in !important;
@@ -17204,18 +17796,16 @@ const AppUI = ({
             font-family: 'Bicyclette', 'Byciclette', 'Inter', system-ui, sans-serif !important;
           }
           .avery-label-border {
-            border: 1px dashed rgba(180, 169, 158, 0.4) !important;
+            outline: 1px dashed rgba(180, 169, 158, 0.4) !important;
+            outline-offset: -1px !important;
           }
           .avery-label-borderless {
-            border: 1px solid transparent !important;
+            outline: 1px solid transparent !important;
+            outline-offset: -1px !important;
           }
           .sami-sidebar {
-            width: calc(0.45in + 3mm) !important;
-            height: calc(100% + 6mm) !important;
-            margin-top: -3mm !important;
-            margin-bottom: -3mm !important;
-            margin-left: -3mm !important;
-            padding-left: 3mm !important;
+            width: 0.45in !important;
+            height: 100% !important;
             box-sizing: border-box !important;
             display: flex !important;
             align-items: center !important;
@@ -17248,7 +17838,7 @@ const AppUI = ({
           }
           .sami-label {
             font-weight: 800 !important;
-            width: 0.85in !important;
+            width: 1.1in !important;
             flex-shrink: 0 !important;
             color: #1a201c !important;
             font-size: 6.5pt !important;
