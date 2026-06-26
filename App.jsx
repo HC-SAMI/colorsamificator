@@ -8898,6 +8898,7 @@ const App = () => {
   const [showFullscreenSpectral, setShowFullscreenSpectral] = useState(true);
   const [showFullscreenPalette, setShowFullscreenPalette] = useState(false);
   const [showFullscreenImageOverlay, setShowFullscreenImageOverlay] = useState(true);
+  const [showFullscreenSpaces, setShowFullscreenSpaces] = useState(false);
   const [showCompareDivider, setShowCompareDivider] = useState(true);
   const [showHelpPanel, setShowHelpPanel] = useState(false);
   const [showDatabaseManager, setShowDatabaseManager] = useState(false);
@@ -11522,6 +11523,8 @@ const App = () => {
     setShowFullscreenPalette,
     showFullscreenImageOverlay,
     setShowFullscreenImageOverlay,
+    showFullscreenSpaces,
+    setShowFullscreenSpaces,
     showCompareDivider,
     setShowCompareDivider,
     showHelpPanel,
@@ -13938,6 +13941,8 @@ const AppUI = ({
   setShowFullscreenPalette,
   showFullscreenImageOverlay,
   setShowFullscreenImageOverlay,
+  showFullscreenSpaces,
+  setShowFullscreenSpaces,
   showCompareDivider,
   setShowCompareDivider,
   showHelpPanel,
@@ -17049,6 +17054,19 @@ const AppUI = ({
           React.createElement(
             "button",
             {
+              onClick: () => setShowFullscreenSpaces(!showFullscreenSpaces),
+              className:
+                "bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg flex items-center gap-2",
+            },
+            React.createElement(Icon, {
+              name: showFullscreenSpaces ? "sliders-horizontal" : "sliders",
+              className: "w-4 h-4",
+            }),
+            showFullscreenSpaces ? "Hide Values" : "Show Values"
+          ),
+          React.createElement(
+            "button",
+            {
               onClick: () => setShowFullscreenImageOverlay(!showFullscreenImageOverlay),
               className:
                 "bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg flex items-center gap-2",
@@ -17081,6 +17099,30 @@ const AppUI = ({
                   ? `#${item.erpCode}`
                   : "\u2014";
             const h = info.hex;
+
+            // Compute extra color spaces
+            const itemColor = new Color("oklch", [item.L, item.C, item.H]);
+            const displayHex = info.hex;
+            
+            const rCo = itemColor.to("srgb").coords;
+            const r_ = Math.max(0, Math.min(1, rCo[0]));
+            const g_ = Math.max(0, Math.min(1, rCo[1]));
+            const b_ = Math.max(0, Math.min(1, rCo[2]));
+            const k_ = 1 - Math.max(r_, g_, b_);
+            const c_ = k_ === 1 ? 0 : (1 - r_ - k_) / (1 - k_);
+            const m_ = k_ === 1 ? 0 : (1 - g_ - k_) / (1 - k_);
+            const y_ = k_ === 1 ? 0 : (1 - b_ - k_) / (1 - k_);
+            const displayCmyk = `CMYK: [${Math.round(c_ * 100)}%, ${Math.round(m_ * 100)}%, ${Math.round(y_ * 100)}%, ${Math.round(k_ * 100)}%]`;
+            
+            const lab = itemColor.to("lab");
+            const fmt = (v, d = 3) => (isNaN(v) ? "0.000" : Number(v).toFixed(d));
+            const displayCielab = `CIELAB: [${fmt(lab.coords[0], 1)}, ${fmt(lab.coords[1], 1)}, ${fmt(lab.coords[2], 1)}]`;
+            
+            const hsl = itemColor.to("hsl");
+            const displayHsl = `HSL: [${fmt(hsl.coords[0], 1)}, ${fmt(hsl.coords[1], 1)}%, ${fmt(hsl.coords[2], 1)}%]`;
+            
+            const displayOklch = `OKLCH: [${fmt(itemColor.coords[0], 3)}, ${fmt(itemColor.coords[1], 3)}, ${fmt(itemColor.coords[2], 1)}]`;
+
             return React.createElement(
               "div",
               {
@@ -17130,6 +17172,19 @@ const AppUI = ({
                   },
                   item.erpCode,
                 ),
+                showFullscreenSpaces && React.createElement(
+                  "div",
+                  {
+                    onClick: (e) => e.stopPropagation(),
+                    className:
+                      "mt-3 pt-3 border-t border-current/20 font-mono text-xs flex flex-col gap-1.5 opacity-90 backdrop-blur-[2px] bg-black/5 p-2 rounded-lg max-w-fit cursor-text select-text",
+                  },
+                  React.createElement("div", { className: "font-bold" }, `HEX: ${displayHex}`),
+                  React.createElement("div", {}, displayCmyk),
+                  React.createElement("div", {}, displayCielab),
+                  React.createElement("div", {}, displayHsl),
+                  React.createElement("div", {}, displayOklch),
+                )
               ),
             );
           }),
