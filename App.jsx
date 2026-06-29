@@ -7351,7 +7351,7 @@ const SpectralGraph = ({
     return `rgba(${R},${G},${B},0.6)`;
   };
   const colors = useMemo(
-    () => SPECTRAL_TABLES.wavelengths.map((w) => wavelengthToColor(1100 - w)),
+    () => SPECTRAL_TABLES.wavelengths.map((w) => wavelengthToColor(w)),
     [],
   );
   const data = useMemo(() => {
@@ -7690,16 +7690,33 @@ function normalizeBrandKey(s) {
     .replace(/ +(.)/g, (_, c) => c.toUpperCase());
 }
 const parseCSV = (csvText) => {
+  let textToParse = csvText;
+  const lines = csvText.split("\n");
+  let headerIndex = -1;
+  let isNix = false;
+
+  for (let i = 0; i < Math.min(20, lines.length); i++) {
+    if (lines[i].includes("Custom Collection Name") && lines[i].includes("Color Name")) {
+      headerIndex = i;
+      isNix = true;
+      break;
+    }
+  }
+
+  if (isNix) {
+    textToParse = lines.slice(headerIndex).join("\n");
+  }
+
+  let parsed = [];
   if (!window.Papa) {
     console.error(
       "PapaParse library not loaded! Falling back to primitive parser.",
     );
-    const lines = csvText.split("\n");
-    if (lines.length < 2) return [];
-    const headers = lines[0].split(",").map((h) => h.replace(/\r$/, "").trim());
-    const result = [];
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i].replace(/\r$/, "");
+    const parseLines = textToParse.split("\n");
+    if (parseLines.length < 2) return [];
+    const headers = parseLines[0].split(",").map((h) => h.replace(/\r$/, "").trim());
+    for (let i = 1; i < parseLines.length; i++) {
+      const line = parseLines[i].replace(/\r$/, "");
       if (!line.trim()) continue;
       const row = [];
       let inQuotes = false;
@@ -7716,12 +7733,35 @@ const parseCSV = (csvText) => {
       headers.forEach((h, idx) => {
         obj[h] = row[idx] ? row[idx].trim() : "";
       });
-      result.push(obj);
+      parsed.push(obj);
     }
-    return result;
+  } else {
+    parsed = window.Papa.parse(textToParse, { header: true, skipEmptyLines: true }).data;
   }
-  return window.Papa.parse(csvText, { header: true, skipEmptyLines: true })
-    .data;
+
+  if (isNix) {
+    parsed = parsed.map((row) => {
+      const newRow = { Type: "DB" };
+      newRow.Tags = row["Custom Collection Name"] || "";
+      newRow.Noun = row["Color Name"] || "";
+      newRow.Adjective = row["Color Code"] || "";
+      newRow.Measurement_Device = row["Nix Device"] || "";
+      newRow.Measurement_Date = row["Date Saved"] || "";
+      newRow.Measurement_Method = row["Measurement Mode"] || "";
+      newRow.Illuminant = row["Illuminant"] || "";
+      newRow.Observer = row["Observer"] || "";
+
+      for (let i = 400; i <= 700; i += 10) {
+        const key = `R${i} nm`;
+        if (row[key] !== undefined) {
+          newRow[key] = row[key];
+        }
+      }
+      return newRow;
+    });
+  }
+
+  return parsed;
 };
 const processCSVData = (
   parsedData,
@@ -10695,443 +10735,40 @@ const App = () => {
   const handleSystemImport = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (results) => {
-        const newNames = { ...names };
-        const newAdjs = { ...adjectives };
-        const newNotes = { ...dictNotes };
-        const newSavedColors = { ...savedColors };
-        const newTags = { ...dictTags };
-        const newSavedPalettes = [...savedPalettes];
-        const newColorData = colorData
-          ? JSON.parse(JSON.stringify(colorData))
-          : {};
-        const parsedSettings = {
-          lightL: groupSettings.lightL,
-          neutralC: groupSettings.neutralC,
-          vividC: groupSettings.vividC,
-          neutrals: [],
-          hues: [],
-          overrides: [],
-        };
-        let hasImportedSettings = false,
-          hasNeutrals = false,
-          hasHues = false,
-          hasOverrides = false,
-          hasImportedPalettes = false;
-        results.data.forEach((row) => {
-          let targetType = String(row.Type || "")
-            .toUpperCase()
-            .trim();
-          if (targetType === "SETTING") {
-            hasImportedSettings = true;
-            const prop = row.Noun || row.ID;
-            if (prop === "lightL" && row.OKLCH_L)
-              parsedSettings.lightL = parseFloat(row.OKLCH_L);
-            if (prop === "neutralC" && row.OKLCH_C)
-              parsedSettings.neutralC = parseFloat(row.OKLCH_C);
-            if (prop === "vividC" && row.OKLCH_C)
-              parsedSettings.vividC = parseFloat(row.OKLCH_C);
-          } else if (targetType === "NEUTRAL_REGION") {
-            hasImportedSettings = true;
-            hasNeutrals = true;
-            parsedSettings.neutrals.push({
-              id: row.Adjective || row.ID || crypto.randomUUID(),
-              name: row.Noun || "",
-              maxL: parseFloat(row.OKLCH_L) || 0,
-            });
-          } else if (targetType === "HUE_REGION") {
-            hasImportedSettings = true;
-            hasHues = true;
-            parsedSettings.hues.push({
-              id: row.Adjective || row.ID || crypto.randomUUID(),
-              name: row.Noun || "",
-              maxH: parseFloat(row.OKLCH_H) || 0,
-            });
-          } else if (targetType === "OVERRIDE") {
-            hasImportedSettings = true;
-            hasOverrides = true;
-            parsedSettings.overrides.push({
-              id: row.Tags || row.ID || crypto.randomUUID(),
-              condition: row.Adjective || "",
-              name: row.Noun || "",
-            });
-          } else if (targetType === "PALETTE") {
-            hasImportedPalettes = true;
-            try {
-              const colors = JSON.parse(row.Note || "[]");
-              const paletteId = row.Tags || row.ID || crypto.randomUUID();
-              const existingIdx = newSavedPalettes.findIndex(
-                (p) => p.id === paletteId,
-              );
-              if (existingIdx >= 0) {
-                newSavedPalettes[existingIdx] = {
-                  id: paletteId,
-                  name: row.Noun || "Imported Palette",
-                  colors,
-                };
-              } else {
-                newSavedPalettes.push({
-                  id: paletteId,
-                  name: row.Noun || "Imported Palette",
-                  colors,
-                });
-              }
-            } catch (e2) {}
-          }
-        });
-        const importGridData = generateGridData(
-          parsedSettings.lightL,
-          parsedSettings.neutralC,
-          parsedSettings.vividC,
-          hasNeutrals ? parsedSettings.neutrals : groupSettings.neutrals,
-          hasHues ? parsedSettings.hues : groupSettings.hues,
-          hasOverrides ? parsedSettings.overrides : groupSettings.overrides,
-        );
-        results.data.forEach((row) => {
-          let pL = null,
-            pC = null,
-            pH = null;
-          let spectral2 = null;
-          const spectralValues = SPECTRAL_TABLES.wavelengths.map((w) => {
-            const val = row[`R${w} nm`];
-            const parsed = parseFloat(val);
-            return isNaN(parsed) ? null : parsed;
-          });
-          if (spectralValues.every((v) => v !== null)) {
-            spectral2 = spectralValues;
-            const xyzStandard = calculateXYZFromSpectral(spectral2, 2, "D65");
-            const tc = new Color("xyz-d65", xyzStandard).to("oklch");
-            pL = Math.max(0, Math.min(1, tc.coords[0]));
-            pC = Math.max(0, Math.min(0.4, tc.coords[1]));
-            pH = isNaN(tc.coords[2]) ? 0 : ((tc.coords[2] % 360) + 360) % 360;
-          } else {
-            try {
-              let tc;
-              if (row.OKLCH_L && row.OKLCH_C && row.OKLCH_H) {
-                tc = new Color("oklch", [
-                  parseFloat(row.OKLCH_L),
-                  parseFloat(row.OKLCH_C),
-                  parseFloat(row.OKLCH_H),
-                ]);
-              } else if (row.HEX) {
-                let ch = String(row.HEX).trim();
-                if (!ch.startsWith("#")) ch = "#" + ch;
-                tc = new Color(ch);
-              }
-              if (tc) {
-                const o = tc.to("oklch");
-                pL = Math.max(0, Math.min(1, o.coords[0]));
-                pC = Math.max(0, Math.min(0.4, o.coords[1]));
-                pH = isNaN(o.coords[2]) ? 0 : ((o.coords[2] % 360) + 360) % 360;
-              }
-            } catch (err) {}
-          }
-          let targetType = String(row.Type || "")
-            .toUpperCase()
-            .trim();
-          if (!targetType && pL !== null) targetType = "PIN";
-          if (
-            targetType === "DB" ||
-            targetType === "BRAND" ||
-            targetType === "SPECTRAL"
-          ) {
-            const brandRaw = (row.Adjective || row.Brand || "").trim();
-            const name = (row.Noun || row.Name || "").trim() || "Unnamed";
-            const url = (row.ERP_Code || row.URL || "").trim();
-            const image = (row.Note || row.Image || "").trim();
-            const finalBrand = normalizeBrandKey(brandRaw) || brandRaw;
-            if (finalBrand) {
-              const hex =
-                row.HEX ||
-                (pL !== null
-                  ? new Color("oklch", [pL, pC, pH])
-                      .clone()
-                      .toGamut({ space: "srgb" })
-                      .toString({ format: "hex" })
-                  : "#B1BC83");
-              if (!newColorData[finalBrand]) newColorData[finalBrand] = [];
-              const existingIdx = newColorData[finalBrand].findIndex(
-                (c) => c.name.toLowerCase() === name.toLowerCase(),
-              );
-              const colorObj = {
-                name,
-                hex,
-                L: pL !== null ? pL : 0.5,
-                C: pC !== null ? pC : 0,
-                H: pH !== null ? pH : 0,
-                sheen: (row.Sheen || row.sheen || "").trim(),
-                doorProfile: (row.Profile || row.Door_Profile || row.DoorProfile || row.doorProfile || "").trim(),
-                visualTexture: (row.Visual_Pattern || row.VisualPattern || row.Visual_Texture || row.VisualTexture || row.visualTexture || "").trim(),
-                tactileTexture: (row.Tactile_Texture || row.TactileTexture || row.tactileTexture || "").trim(),
-                material: (row.Material || row.material || "").trim(),
-              };
-              if (row.Tags)
-                colorObj.tags =
-                  typeof row.Tags === "string"
-                    ? row.Tags.split(",")
-                        .map((t) => t.trim())
-                        .filter(Boolean)
-                    : Array.isArray(row.Tags)
-                      ? row.Tags
-                      : [];
-              if (spectral2) colorObj.spectral = spectral2;
-              if (url) colorObj.url = url;
-              if (image) colorObj.image = image;
-              if (row.Illuminant)
-                colorObj.illuminant = String(row.Illuminant).trim();
-              if (row.Observer)
-                colorObj.observer = parseInt(row.Observer, 10) || void 0;
-              if (row.Measurement_Method)
-                colorObj.measurementMethod = String(
-                  row.Measurement_Method,
-                ).trim();
-              if (row.Date) colorObj.measurementDate = String(row.Date).trim();
-              else if (row.Measurement_Date)
-                colorObj.measurementDate = String(row.Measurement_Date).trim();
-              if (row.Device)
-                colorObj.measurementDevice = String(row.Device).trim();
-              else if (row.Measurement_Device)
-                colorObj.measurementDevice = String(
-                  row.Measurement_Device,
-                ).trim();
-              if (row.Method)
-                colorObj.measurementMethod = String(row.Method).trim();
-              if (existingIdx >= 0)
-                newColorData[finalBrand][existingIdx] = {
-                  ...newColorData[finalBrand][existingIdx],
-                  ...colorObj,
-                };
-              else newColorData[finalBrand].push(colorObj);
-            }
-          } else if (targetType === "PIN" && pL !== null) {
-            const pinId = row.ID || crypto.randomUUID();
-            const a = pC * Math.sin((pH * Math.PI) / 180);
-            const b = pC * Math.cos((pH * Math.PI) / 180);
-            const cStr = Math.round(pC * 100)
-              .toString()
-              .padStart(2, "0");
-            const hStr = Math.round(pH).toString().padStart(3, "0");
-            const anchorId = `${cStr}-${hStr}`;
-            const adjId = getLStr(pL);
-             newSavedColors[pinId] = {
-              id: pinId,
-              type: "pin",
-              L: pL,
-              C: pC,
-              H: pH,
-              nameOverride: row.Noun || "",
-              adjOverride: row.Adjective || "",
-              notes: row.Note || "",
-              erpCode:
-                row.ERP_Code || getExactErpCode(pL, pC, pC === 0 ? 0 : pH),
-              sheen: (row.Sheen || row.sheen || "").trim(),
-              doorProfile: (row.Profile || row.Door_Profile || row.DoorProfile || row.doorProfile || "").trim(),
-              visualTexture: (row.Visual_Pattern || row.VisualPattern || row.Visual_Texture || row.VisualTexture || row.visualTexture || "").trim(),
-              tactileTexture: (row.Tactile_Texture || row.TactileTexture || row.tactileTexture || "").trim(),
-              material: (row.Material || row.material || "").trim(),
-              adjId,
-              anchorId,
-              color:
-                row.HEX ||
-                new Color("oklch", [pL, pC, pH])
-                  .clone()
-                  .toGamut({ space: "srgb" })
-                  .toString({ format: "hex" }),
-              a,
-              b,
-              spectral: spectral2,
-            };
-            if (row.Illuminant)
-              newSavedColors[pinId].illuminant = String(row.Illuminant).trim();
-            if (row.Observer)
-              newSavedColors[pinId].observer =
-                parseInt(row.Observer, 10) || void 0;
-            if (row.Measurement_Method)
-              newSavedColors[pinId].measurementMethod = String(
-                row.Measurement_Method,
-              ).trim();
-            if (row.Measurement_Date)
-              newSavedColors[pinId].measurementDate = String(
-                row.Measurement_Date,
-              ).trim();
-            if (row.Measurement_Device)
-              newSavedColors[pinId].measurementDevice = String(
-                row.Measurement_Device,
-              ).trim();
-            if (row.Tags)
-              newTags[pinId] = row.Tags.split(",")
-                .map((t) => t.trim())
-                .filter(Boolean);
-            if (typeof pinsAdded !== "undefined") pinsAdded++;
-          } else if (targetType === "NOUN") {
-            const parts = String(row.OKLCH_L || "").split("-");
-            let minL = 0,
-              maxL = 1;
-            if (parts.length === 2) {
-              minL = parseFloat(parts[0]) || 0;
-              maxL = parseFloat(parts[1]) || 1;
-            } else if (parts.length === 1 && parts[0] !== "") {
-              minL = parseFloat(parts[0]) || 0;
-              maxL = parseFloat(parts[0]) || 1;
-            } else if (pL !== null) {
-              minL = maxL = pL;
-            }
-            const C = pC !== null ? pC : 0;
-            const H = pH !== null ? pH : 0;
-            let id = row.ID;
-            if (!id) {
-              id = `col-${minL}-${maxL}-${C.toFixed(2)}-${H.toFixed(2)}`;
-            }
-            newSavedColors[id] = {
-              id,
-              type: "nounColumn",
-              nameOverride: row.Noun || "",
-              C,
-              H,
-              minL,
-              maxL,
-              a: C * Math.sin((H * Math.PI) / 180),
-              b: C * Math.cos((H * Math.PI) / 180),
-              notes: row.Note || "",
-            };
-            if (row.Noun !== void 0 && row.Noun !== "") newNames[id] = row.Noun;
-            if (row.Note !== void 0 && row.Note !== "") newNotes[id] = row.Note;
-            if (row.Tags)
-              newTags[id] = row.Tags.split(",")
-                .map((t) => t.trim())
-                .filter(Boolean);
-          } else if (
-            (targetType === "GRID" ||
-              targetType === "ANCHOR" ||
-              targetType === "NOUN_COLUMN") &&
-            row.ID
-          ) {
-            const C = pC !== null ? pC : 0;
-            const H = pH !== null ? pH : 0;
-            if (targetType === "NOUN_COLUMN") {
-              const id = row.ID;
-              const parts = (row.OKLCH_L || "").split("-");
-              let minL = 0,
-                maxL = 1;
-              if (parts.length === 2) {
-                minL = parseFloat(parts[0]);
-                maxL = parseFloat(parts[1]);
-              }
-              newSavedColors[id] = {
-                id,
-                type: "nounColumn",
-                nameOverride: row.Noun || "",
-                C,
-                H,
-                minL,
-                maxL,
-                a: C * Math.sin((H * Math.PI) / 180),
-                b: C * Math.cos((H * Math.PI) / 180),
-                notes: row.Note || "",
-              };
-              if (row.Noun !== void 0 && row.Noun !== "")
-                newNames[id] = row.Noun;
-              if (row.Note !== void 0 && row.Note !== "")
-                newNotes[id] = row.Note;
-              if (row.Tags)
-                newTags[id] = row.Tags.split(",")
-                  .map((t) => t.trim())
-                  .filter(Boolean);
-            } else {
-              if (row.Noun !== void 0 && row.Noun !== "")
-                newNames[row.ID] = row.Noun;
-              if (row.Note !== void 0 && row.Note !== "")
-                newNotes[row.ID] = row.Note;
-              if (row.Tags)
-                newTags[row.ID] = row.Tags.split(",")
-                  .map((t) => t.trim())
-                  .filter(Boolean);
-              let lStr = null;
-              if (row.Adjective !== void 0 && row.Adjective !== "") {
-                if (pL !== null) {
-                  lStr = getLStr(pL);
-                } else if (row.ERP_Code && row.ERP_Code.length >= 2) {
-                  lStr = row.ERP_Code.substring(0, 2);
-                }
-                if (lStr) newAdjs[lStr] = row.Adjective;
-              }
-              if (
-                String(row.Locked).toUpperCase() === "TRUE" &&
-                pL !== null &&
-                pC !== null &&
-                pH !== null
-              ) {
-                const anchorId = row.ID;
-                const adjId = lStr || getLStr(pL);
-                const a = pC * Math.sin((pH * Math.PI) / 180);
-                const b = pC * Math.cos((pH * Math.PI) / 180);
-                newSavedColors[anchorId] = {
-                  id: anchorId,
-                  type: "anchor",
-                  L: pL,
-                  C: pC,
-                  H: pH,
-                  a,
-                  b,
-                  erpCode: row.ERP_Code || getExactErpCode(pL, pC, pH),
-                  adjId,
-                  anchorId,
-                  nameOverride: "",
-                  adjOverride: "",
-                  notes: "",
-                  color: new Color("oklch", [pL, pC, pH])
-                    .clone()
-                    .toGamut({ space: "srgb" })
-                    .toString({ format: "hex" }),
-                };
-              }
-            }
-          } else if (targetType === "ADJECTIVE") {
-            if (row.Adjective !== void 0 && row.Adjective !== "") {
-              const lStr =
-                (row.ID && row.ID.trim()) ||
-                (row.OKLCH_L &&
-                  typeof row.OKLCH_L === "string" &&
-                  row.OKLCH_L.trim()) ||
-                (pL !== null ? getLStr(pL) : null) ||
-                (row.ERP_Code && row.ERP_Code.length >= 2
-                  ? row.ERP_Code.substring(0, 2)
-                  : null);
-              if (lStr) newAdjs[lStr.trim()] = row.Adjective;
-            }
-          }
-        });
-        if (hasImportedSettings) {
-          setGroupSettings({
-            lightL: parsedSettings.lightL,
-            neutralC: parsedSettings.neutralC,
-            vividC: parsedSettings.vividC,
-            neutrals: hasNeutrals
-              ? parsedSettings.neutrals
-              : groupSettings.neutrals,
-            hues: hasHues ? parsedSettings.hues : groupSettings.hues,
-            overrides: hasOverrides
-              ? parsedSettings.overrides
-              : groupSettings.overrides,
-          });
-        }
-        if (hasImportedPalettes) {
-          setSavedPalettes(newSavedPalettes);
-        }
-        setNames(newNames);
-        setAdjectives(newAdjs);
-        setDictNotes(newNotes);
-        setSavedColors(newSavedColors);
-        setDictTags(newTags);
-        if (Object.keys(newColorData).length > 0) {
-          updateColorData(newColorData);
-        }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target.result;
+      const parsed = parseCSV(text);
+      if (!parsed.length) {
         e.target.value = "";
-      },
-    });
+        return;
+      }
+      const processed = processCSVData(
+        parsed,
+        colorData,
+        savedColors,
+        names,
+        adjectives,
+        dictNotes,
+        dictTags,
+        groupSettings,
+        savedPalettes
+      );
+      if (processed.newGroupSettings) {
+        setGroupSettings(processed.newGroupSettings);
+      }
+      setNames(processed.newNames);
+      setAdjectives(processed.newAdjs);
+      setDictNotes(processed.newNotes);
+      setSavedColors(processed.newSavedColors);
+      setDictTags(processed.newTags);
+      setSavedPalettes(processed.newSavedPalettes);
+      if (Object.keys(processed.newColorData).length > 0) {
+        updateColorData(processed.newColorData);
+      }
+      e.target.value = "";
+    };
+    reader.readAsText(file);
   };
   const addToPalette = () => {
     if (!crosshair) return;
