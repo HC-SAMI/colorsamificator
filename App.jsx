@@ -895,7 +895,7 @@ const CommercialMatches = ({
     .toUpperCase();
   const fmt = (v, d = 3) => (isNaN(v) ? "0.000" : Number(v).toFixed(d));
   const [fullscreenImage, setFullscreenImage] = useState(null);
-  const [maxDeltaE, setMaxDeltaE] = useState(5);
+  const [maxDeltaE, setMaxDeltaE] = useState(1.0);
   const [searchQuery, setSearchQuery] = useState("");
   const filteredMatches = useMemo(() => {
     if (!colorData || Object.keys(colorData).length === 0) return null;
