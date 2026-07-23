@@ -3791,7 +3791,7 @@ ${item.erpCode}`,
                   "td",
                   {
                     className:
-                      "p-2 max-w-[120px] truncate text-[9px] font-mono",
+                      "p-2 w-full truncate text-[9px] font-mono",
                   },
                   item.erpCode?.startsWith("http")
                     ? React.createElement(
@@ -3938,7 +3938,7 @@ ${item.erpCode}`,
                 originalIndex: item.originalIndex,
               }),
             className: `flex flex-col gap-2 group cursor-pointer transition-all items-center`,
-            style: { width: `${Math.max(48, baseMatrixSize * swatchZoom)}px` },
+            style: { width: `${72 * swatchZoom}px` },
           },
           React.createElement(
             "div",
@@ -4054,7 +4054,7 @@ ${item.erpCode}`,
                 ),
             ),
           ),
-          React.createElement(
+          swatchZoom >= 0.9 && React.createElement(
             "div",
             {
               className:
@@ -8934,7 +8934,7 @@ const App = () => {
   const [viewMode, setViewMode] = useState("dots");
   const [swatchLayout, setSwatchLayout] = useState("gallery");
   const [viewportTagFilter, setViewportTagFilter] = useState("");
-  const [swatchZoom, setSwatchZoom] = useState(1);
+  const [swatchZoom, setSwatchZoom] = useState(2);
   const [showFullscreenPreview, setShowFullscreenPreview] = useState(false);
   const [showCompareFullscreen, setShowCompareFullscreen] = useState(false);
   const [showFullscreenSpectral, setShowFullscreenSpectral] = useState(true);
@@ -11749,52 +11749,56 @@ const ViewDatabase = ({
   const handleSaveEdit = (e) => {
     e.preventDefault();
     const updated = { ...dataForUpdates };
-    updated[editingItem.brand] = [...updated[editingItem.brand]];
-    updated[editingItem.brand][editingItem.originalIndex] = {
-      ...updated[editingItem.brand][editingItem.originalIndex],
+    
+    const originalBrand = editingItem.originalBrand || editingItem.brand;
+    const oldItem = updated[originalBrand][editingItem.originalIndex];
+
+    const newItem = {
+      ...oldItem,
       name: editingItem.displayName,
       url: editingItem.erpCode,
       image: editingItem.note,
       hex: editingItem.hex,
       tags: editingItem.tags,
+      brand: editingItem.brand,
       spectral: editingItem.spectralStr
         ? editingItem.spectralStr.split(",").map(Number)
-        : updated[editingItem.brand][editingItem.originalIndex].spectral,
+        : oldItem.spectral,
     };
-    let L = updated[editingItem.brand][editingItem.originalIndex].L;
-    let C = updated[editingItem.brand][editingItem.originalIndex].C;
-    let H = updated[editingItem.brand][editingItem.originalIndex].H;
+    
     let tc;
-    if (
-      updated[editingItem.brand][editingItem.originalIndex].spectral &&
-      updated[editingItem.brand][editingItem.originalIndex].spectral.length ===
-        31
-    ) {
+    if (newItem.spectral && newItem.spectral.length === 31) {
       try {
-        tc = new Color(
-          "xyz-d65",
-          calculateXYZFromSpectral(
-            updated[editingItem.brand][editingItem.originalIndex].spectral,
-            2,
-            "D65",
-          ),
-        ).to("oklch");
+        tc = new Color("xyz-d65", calculateXYZFromSpectral(newItem.spectral, 2, "D65")).to("oklch");
       } catch (e2) {}
     }
-    if (!tc && editingItem.hex) {
-      try {
-        tc = createColorFromHex(editingItem.hex).to("oklch");
-      } catch (e2) {}
+    if (!tc && newItem.hex) {
+      try { tc = createColorFromHex(newItem.hex).to("oklch"); } catch (e2) {}
     }
     if (tc) {
-      updated[editingItem.brand][editingItem.originalIndex].L = tc.coords[0];
-      updated[editingItem.brand][editingItem.originalIndex].C = tc.coords[1];
-      updated[editingItem.brand][editingItem.originalIndex].H = isNaN(
-        tc.coords[2],
-      )
-        ? 0
-        : ((tc.coords[2] % 360) + 360) % 360;
+      newItem.L = tc.coords[0];
+      newItem.C = tc.coords[1];
+      newItem.H = isNaN(tc.coords[2]) ? 0 : ((tc.coords[2] % 360) + 360) % 360;
     }
+
+    if (editingItem.brand !== originalBrand) {
+      updated[originalBrand] = [...updated[originalBrand]];
+      updated[originalBrand].splice(editingItem.originalIndex, 1);
+      if (updated[originalBrand].length === 0) {
+        delete updated[originalBrand];
+      }
+      
+      if (!updated[editingItem.brand]) {
+        updated[editingItem.brand] = [];
+      } else {
+        updated[editingItem.brand] = [...updated[editingItem.brand]];
+      }
+      updated[editingItem.brand].push(newItem);
+    } else {
+      updated[editingItem.brand] = [...updated[editingItem.brand]];
+      updated[editingItem.brand][editingItem.originalIndex] = newItem;
+    }
+
     updateColorData(updated);
     setEditingItem(null);
   };
@@ -12259,6 +12263,7 @@ const ViewDatabase = ({
                         e.stopPropagation();
                         setEditingItem({
                           ...item,
+                          originalBrand: item.brand,
                           spectralStr: item.spectral
                             ? item.spectral.join(",")
                             : "",
@@ -12617,7 +12622,7 @@ const ViewDatabase = ({
                     "td",
                     {
                       className:
-                        "p-2 max-w-[120px] truncate text-[9px] font-mono",
+                        "p-2 w-full truncate text-[9px] font-mono",
                     },
                     item.erpCode?.startsWith("http")
                       ? React.createElement(
@@ -12667,6 +12672,7 @@ const ViewDatabase = ({
                           e.stopPropagation();
                           setEditingItem({
                             ...item,
+                            originalBrand: item.brand,
                             spectralStr: item.spectral
                               ? item.spectral.join(",")
                               : "",
@@ -12705,7 +12711,7 @@ const ViewDatabase = ({
                 className:
                   "flex flex-col group cursor-pointer transition-all items-center gap-2",
                 style: {
-                  width: `${Math.max(48, baseMatrixSize * swatchZoom)}px`,
+                  width: `${72 * swatchZoom}px`,
                 },
               },
               React.createElement(
@@ -12794,6 +12800,7 @@ const ViewDatabase = ({
                         e.stopPropagation();
                         setEditingItem({
                           ...item,
+                          originalBrand: item.brand,
                           spectralStr: item.spectral
                             ? item.spectral.join(",")
                             : "",
@@ -12845,7 +12852,7 @@ const ViewDatabase = ({
                       ),
                   ),
               ),
-              React.createElement(
+              swatchZoom >= 0.9 && React.createElement(
                 "div",
                 {
                   className:
@@ -13105,11 +13112,17 @@ const ViewDatabase = ({
                   { className: "flex-1" },
                   React.createElement(
                     "div",
-                    {
+                    { className: "flex items-center gap-2 mb-1" },
+                    React.createElement("input", {
                       className:
-                        "text-[10px] font-bold text-slate-400 uppercase tracking-widest",
-                    },
-                    editingItem.brand,
+                        "text-[10px] font-bold text-slate-500 uppercase tracking-widest bg-transparent border-b border-dashed border-slate-300 dark:border-neutral-600 outline-none focus:border-sky-500 w-full",
+                      value: editingItem.brand,
+                      onChange: (e) => setEditingItem({ ...editingItem, brand: e.target.value }),
+                      list: "brand-options"
+                    }),
+                    React.createElement("datalist", { id: "brand-options" },
+                      Object.keys(dataForUpdates).map(b => React.createElement("option", { key: b, value: b }))
+                    )
                   ),
                   React.createElement("input", {
                     required: true,
@@ -16011,8 +16024,8 @@ const AppUI = ({
                   }),
                   React.createElement("input", {
                     type: "range",
-                    min: "0.3",
-                    max: "2.5",
+                    min: "0.1",
+                    max: "5",
                     step: "0.1",
                     value: swatchZoom,
                     onChange: (e) => setSwatchZoom(parseFloat(e.target.value)),
