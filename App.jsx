@@ -389,12 +389,21 @@ const calculateXYZFromSpectral = (spectral, observer, illuminant) => {
   const k = 1 / sumY;
   return [X * k, Y * k, Z * k];
 };
-const getWhitePoint = (observer, illuminant) => {
+const getWhitePoint = (observer, illuminant, isSpectral = false) => {
+  if (!isSpectral) {
+    let illKey = String(illuminant || "").toUpperCase();
+    if (illKey.includes("D50")) {
+      return observer === 10 ? [0.96720, 1.00000, 0.81427] : [0.96422, 1.00000, 0.82521];
+    }
+    if (illKey.includes("D65")) {
+      return observer === 10 ? [0.94811, 1.00000, 1.07304] : [0.95047, 1.00000, 1.08883];
+    }
+  }
   const perfectReflector = new Array(31).fill(1);
   return calculateXYZFromSpectral(perfectReflector, observer, illuminant);
 };
 const xyzToLab = (xyz, whitePoint) => {
-  const f = (t) => (t > 0.008856 ? Math.pow(t, 1 / 3) : 7.787 * t + 16 / 116);
+  const f = (t) => (t > 0.008856451679035631 ? Math.pow(t, 1 / 3) : (841 / 108) * t + 16 / 116);
   const fx = f(xyz[0] / whitePoint[0]);
   const fy = f(xyz[1] / whitePoint[1]);
   const fz = f(xyz[2] / whitePoint[2]);
@@ -415,7 +424,7 @@ const calculateDeltaEFromSpectral = (
 ) => {
   const xyzA = calculateXYZFromSpectral(spectralA, observer, illuminant);
   const xyzB = calculateXYZFromSpectral(spectralB, observer, illuminant);
-  const wp = getWhitePoint(observer, illuminant);
+  const wp = getWhitePoint(observer, illuminant, true);
   const labA = xyzToLab(xyzA, wp);
   const labB = xyzToLab(xyzB, wp);
   const cA = new Color("lab", labA);
@@ -436,9 +445,9 @@ const getGeneralBradfordAdaptationMatrix = (ws, wd) => {
     [ 0.0389, -0.0685,  1.0296]
   ];
   const MBFD_inv = [
-    [ 0.9869929, -0.1470543,  0.1599627],
-    [ 0.4323053,  0.5183603,  0.0492912],
-    [-0.0085287,  0.0490340,  0.9684867]
+    [ 0.9869929054667123, -0.14705425642099013, 0.15996265166373122 ],
+    [ 0.43230526972339456, 0.5183602715367776, 0.0492912282128556 ],
+    [ -0.008528664575177328, 0.04004282165408487, 0.9684866957875501 ]
   ];
   const lms_s = multiplyMatrixVector(MBFD, ws);
   const lms_d = multiplyMatrixVector(MBFD, wd);
@@ -471,10 +480,35 @@ const labToXyz = (lab, whitePoint) => {
   const delta = 6 / 29;
   const fx3 = fx * fx * fx;
   const fz3 = fz * fz * fz;
-  const x = fx > delta ? fx3 : (fx - 16 / 116) / 7.787;
-  const y = fy > delta ? fy * fy * fy : (fy - 16 / 116) / 7.787;
-  const z = fz > delta ? fz3 : (fz - 16 / 116) / 7.787;
+  const k = 108 / 841;
+  const x = fx > delta ? fx3 : (fx - 16 / 116) * k;
+  const y = fy > delta ? fy * fy * fy : (fy - 16 / 116) * k;
+  const z = fz > delta ? fz3 : (fz - 16 / 116) * k;
   return [x * whitePoint[0], y * whitePoint[1], z * whitePoint[2]];
+};
+
+const srgbToXyzD65Raw = (r, g, b) => {
+  r = r / 255;
+  g = g / 255;
+  b = b / 255;
+  r = r > 0.04045 ? Math.pow((r + 0.055) / 1.055, 2.4) : r / 12.92;
+  g = g > 0.04045 ? Math.pow((g + 0.055) / 1.055, 2.4) : g / 12.92;
+  b = b > 0.04045 ? Math.pow((b + 0.055) / 1.055, 2.4) : b / 12.92;
+  let x = r * 0.4124564 + g * 0.3575761 + b * 0.1804375;
+  let y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750;
+  let z = r * 0.0193339 + g * 0.1191920 + b * 0.9503041;
+  return [x, y, z];
+};
+
+const createColorFromHex = (hex) => {
+  let ch = hex.replace("#", "").trim();
+  if (ch.length === 3) ch = ch.split("").map((c) => c + c).join("");
+  const r = parseInt(ch.substring(0, 2), 16);
+  const g = parseInt(ch.substring(2, 4), 16);
+  const b = parseInt(ch.substring(4, 6), 16);
+  if (isNaN(r) || isNaN(g) || isNaN(b)) throw new Error("Invalid hex");
+  const xyz = srgbToXyzD65Raw(r, g, b);
+  return new Color("xyz-d65", xyz);
 };
 
 const ColorConverter = ({
@@ -519,12 +553,23 @@ const ColorConverter = ({
   let varLch = null;
   if (spectral) {
     varXYZ = calculateXYZFromSpectral(spectral, observer, illuminant);
-    const wp = getWhitePoint(observer, illuminant);
+    const wp = getWhitePoint(observer, illuminant, true);
     varLab = xyzToLab(varXYZ, wp);
     varLch = labToLch(varLab);
   } else {
-    const targetXyzSpace = illuminant === "D50" ? "xyz-d50" : "xyz-d65";
-    varXYZ = c.to(targetXyzSpace).coords;
+    const xyzD65 = c.to("xyz-d65").coords;
+    if (illuminant === "D65") {
+      varXYZ = xyzD65;
+    } else {
+      const wpD65 = getWhitePoint(observer, "D65");
+      const wpTarget = getWhitePoint(observer, illuminant);
+      const M_adapt = getGeneralBradfordAdaptationMatrix(wpD65, wpTarget);
+      varXYZ = [
+        M_adapt[0][0] * xyzD65[0] + M_adapt[0][1] * xyzD65[1] + M_adapt[0][2] * xyzD65[2],
+        M_adapt[1][0] * xyzD65[0] + M_adapt[1][1] * xyzD65[1] + M_adapt[1][2] * xyzD65[2],
+        M_adapt[2][0] * xyzD65[0] + M_adapt[2][1] * xyzD65[1] + M_adapt[2][2] * xyzD65[2]
+      ];
+    }
     const wp = getWhitePoint(observer, illuminant);
     varLab = xyzToLab(varXYZ, wp);
     varLch = labToLch(varLab);
@@ -551,7 +596,7 @@ const ColorConverter = ({
         if (space === "Hex") {
           const ch = val.trim();
           if (/^#?[0-9a-fA-F]{3,8}$/.test(ch))
-            pc = new Color(ch.startsWith("#") ? ch : "#" + ch);
+            pc = createColorFromHex(ch.startsWith("#") ? ch : "#" + ch);
         } else if (space === "CMYK") {
           const p = val
             .replace(/[\[\]%]/g, "")
@@ -569,7 +614,7 @@ const ColorConverter = ({
             const r = (1 - cVal) * (1 - kVal);
             const g = (1 - mVal) * (1 - kVal);
             const b = (1 - yVal) * (1 - kVal);
-            pc = new Color("srgb", [r, g, b]);
+            pc = new Color("xyz-d65", srgbToXyzD65Raw(r * 255, g * 255, b * 255));
           }
         } else {
           const p = val
@@ -588,33 +633,11 @@ const ColorConverter = ({
               HSL: "hsl",
             };
             if (space === "RGB") {
-              pc = new Color("srgb", [p[0] / 255, p[1] / 255, p[2] / 255]);
+              pc = new Color("xyz-d65", srgbToXyzD65Raw(p[0], p[1], p[2]));
             } else if (space === "CIE LAB" || space === "CIE LCH" || space === "XYZ") {
-              let xyz_d65;
+              let xyzSource;
               if (space === "XYZ") {
-                if (illuminant === "D65") {
-                  xyz_d65 = p;
-                } else if (illuminant === "D50") {
-                  const M_D50_to_D65 = [
-                    [ 0.9555766, -0.0230380,  0.0631610],
-                    [-0.0283858,  1.0099424,  0.0210077],
-                    [ 0.0123140, -0.0205076,  1.3299215]
-                  ];
-                  xyz_d65 = [
-                    M_D50_to_D65[0][0] * p[0] + M_D50_to_D65[0][1] * p[1] + M_D50_to_D65[0][2] * p[2],
-                    M_D50_to_D65[1][0] * p[0] + M_D50_to_D65[1][1] * p[1] + M_D50_to_D65[1][2] * p[2],
-                    M_D50_to_D65[2][0] * p[0] + M_D50_to_D65[2][1] * p[1] + M_D50_to_D65[2][2] * p[2]
-                  ];
-                } else {
-                  const wpSource = getWhitePoint(observer, illuminant);
-                  const wpD65 = getWhitePoint(observer, "D65");
-                  const M_adapt = getGeneralBradfordAdaptationMatrix(wpSource, wpD65);
-                  xyz_d65 = [
-                    M_adapt[0][0] * p[0] + M_adapt[0][1] * p[1] + M_adapt[0][2] * p[2],
-                    M_adapt[1][0] * p[0] + M_adapt[1][1] * p[1] + M_adapt[1][2] * p[2],
-                    M_adapt[2][0] * p[0] + M_adapt[2][1] * p[1] + M_adapt[2][2] * p[2]
-                  ];
-                }
+                xyzSource = p;
               } else {
                 let lab = p;
                 if (space === "CIE LCH") {
@@ -622,29 +645,20 @@ const ColorConverter = ({
                   lab = [p[0], p[1] * Math.cos(hRad), p[1] * Math.sin(hRad)];
                 }
                 const wpSource = getWhitePoint(observer, illuminant);
-                const xyzSource = labToXyz(lab, wpSource);
-                if (illuminant === "D65") {
-                  xyz_d65 = xyzSource;
-                } else if (illuminant === "D50") {
-                  const M_D50_to_D65 = [
-                    [ 0.9555766, -0.0230380,  0.0631610],
-                    [-0.0283858,  1.0099424,  0.0210077],
-                    [ 0.0123140, -0.0205076,  1.3299215]
-                  ];
-                  xyz_d65 = [
-                    M_D50_to_D65[0][0] * xyzSource[0] + M_D50_to_D65[0][1] * xyzSource[1] + M_D50_to_D65[0][2] * xyzSource[2],
-                    M_D50_to_D65[1][0] * xyzSource[0] + M_D50_to_D65[1][1] * xyzSource[1] + M_D50_to_D65[1][2] * xyzSource[2],
-                    M_D50_to_D65[2][0] * xyzSource[0] + M_D50_to_D65[2][1] * xyzSource[1] + M_D50_to_D65[2][2] * xyzSource[2]
-                  ];
-                } else {
-                  const wpD65 = getWhitePoint(observer, "D65");
-                  const M_adapt = getGeneralBradfordAdaptationMatrix(wpSource, wpD65);
-                  xyz_d65 = [
-                    M_adapt[0][0] * xyzSource[0] + M_adapt[0][1] * xyzSource[1] + M_adapt[0][2] * xyzSource[2],
-                    M_adapt[1][0] * xyzSource[0] + M_adapt[1][1] * xyzSource[1] + M_adapt[1][2] * xyzSource[2],
-                    M_adapt[2][0] * xyzSource[0] + M_adapt[2][1] * xyzSource[1] + M_adapt[2][2] * xyzSource[2]
-                  ];
-                }
+                xyzSource = labToXyz(lab, wpSource);
+              }
+              let xyz_d65;
+              if (illuminant === "D65") {
+                xyz_d65 = xyzSource;
+              } else {
+                const wpSource = getWhitePoint(observer, illuminant);
+                const wpD65 = getWhitePoint(observer, "D65");
+                const M_adapt = getGeneralBradfordAdaptationMatrix(wpSource, wpD65);
+                xyz_d65 = [
+                  M_adapt[0][0] * xyzSource[0] + M_adapt[0][1] * xyzSource[1] + M_adapt[0][2] * xyzSource[2],
+                  M_adapt[1][0] * xyzSource[0] + M_adapt[1][1] * xyzSource[1] + M_adapt[1][2] * xyzSource[2],
+                  M_adapt[2][0] * xyzSource[0] + M_adapt[2][1] * xyzSource[1] + M_adapt[2][2] * xyzSource[2]
+                ];
               }
               if (xyz_d65) {
                 pc = new Color("xyz-d65", xyz_d65);
@@ -858,7 +872,7 @@ const ColorConverter = ({
           React.createElement(EditableColorField, {
             label: `XYZ (${illuminant}/${observer}\xB0)`,
             space: "XYZ",
-            value: `[${fmt(varXYZ[0])}, ${fmt(varXYZ[1])}, ${fmt(varXYZ[2])}]`,
+            value: `[${fmt(varXYZ[0], 5)}, ${fmt(varXYZ[1], 5)}, ${fmt(varXYZ[2], 5)}]`,
             onEdit,
           }),
         ) :
@@ -935,7 +949,7 @@ const CommercialMatches = ({
           ) {
             targetColor = new Color("oklch", [item.L, item.C, item.H]);
           } else {
-            targetColor = new Color(item.hex).to("oklch");
+            targetColor = createColorFromHex(item.hex).to("oklch");
           }
           const d = c.deltaE(targetColor, "OK") * 100;
           if (d <= maxDeltaE) {
@@ -1201,10 +1215,6 @@ const CommercialMatches = ({
             alt: "Fullscreen Match",
             className:
               "max-w-full max-h-full object-contain rounded shadow-2xl",
-            style: {
-              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-              maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-            },
             onClick: (e) => e.stopPropagation(),
           }),
           React.createElement(
@@ -4124,10 +4134,6 @@ ${item.erpCode}`,
             alt: "Fullscreen Image",
             className:
               "max-w-full max-h-full object-contain rounded shadow-2xl",
-            style: {
-              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-              maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-            },
             onClick: (e) => e.stopPropagation(),
           }),
           React.createElement(
@@ -5587,10 +5593,6 @@ const ViewPalette = ({
             alt: "Fullscreen Match",
             className:
               "max-w-full max-h-full object-contain rounded shadow-2xl",
-            style: {
-              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-              maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-            },
             onClick: (e) => e.stopPropagation(),
           }),
           React.createElement(
@@ -7934,8 +7936,8 @@ const processCSVData = (
       try {
         const xyzStandard = calculateXYZFromSpectral(spectral, 2, "D65");
         const tc = new Color("xyz-d65", xyzStandard).to("oklch");
-        pL = Math.max(0, Math.min(1, tc.coords[0]));
-        pC = Math.max(0, Math.min(0.4, tc.coords[1]));
+        pL = tc.coords[0];
+        pC = tc.coords[1];
         pH = isNaN(tc.coords[2]) ? 0 : ((tc.coords[2] % 360) + 360) % 360;
       } catch (e) {}
     } else {
@@ -7957,12 +7959,12 @@ const processCSVData = (
         } else if (row.HEX) {
           let ch = String(row.HEX).trim();
           if (!ch.startsWith("#")) ch = "#" + ch;
-          tc = new Color(ch);
+          tc = createColorFromHex(ch);
         }
         if (tc) {
           const o = tc.to("oklch");
-          pL = Math.max(0, Math.min(1, o.coords[0]));
-          pC = Math.max(0, Math.min(0.4, o.coords[1]));
+          pL = o.coords[0];
+          pC = o.coords[1];
           pH = isNaN(o.coords[2]) ? 0 : ((o.coords[2] % 360) + 360) % 360;
         }
       } catch (e) {}
@@ -8458,7 +8460,7 @@ const App = () => {
       noun = names[item.nounId] || "";
     }
     
-    const displayName = (`${adj} ${noun}`.trim() || "Unnamed").toUpperCase();
+    const displayName = item.nameOverride ? item.nameOverride.toUpperCase() : (`${adj} ${noun}`.trim() || "Unnamed").toUpperCase();
     let image = item.image;
     let sheen = item.sheen;
     let material = item.material;
@@ -8879,7 +8881,7 @@ const App = () => {
                   );
                   targetColor = new Color("xyz-d65", xyzStandard).to("oklch");
                 } else {
-                  targetColor = new Color(c.hex || "#000000").to("oklch");
+                  targetColor = createColorFromHex(c.hex || "#000000").to("oklch");
                 }
                 itemL = targetColor.coords[0];
                 itemC = targetColor.coords[1];
@@ -9424,8 +9426,8 @@ const App = () => {
     else document.documentElement.classList.remove("dark");
   }, [theme]);
   const handleUpdate = (pt, spectralData = null, commercialData = null) => {
-    const L = Math.max(0, Math.min(1, pt[0]));
-    const C = Math.max(0, Math.min(0.4, pt[1]));
+    const L = pt[0];
+    const C = pt[1];
     const rawH = pt[2] || 0;
     const H = isNaN(rawH) ? 0 : ((rawH % 360) + 360) % 360;
     setScrubL(L);
@@ -10162,7 +10164,7 @@ const App = () => {
                 );
                 c = new Color("xyz-d65", xyzStandard).to("oklch");
               } else {
-                c = new Color(item.hex).to("oklch");
+                c = createColorFromHex(item.hex).to("oklch");
               }
               l = c.coords[0];
               cVal = c.coords[1];
@@ -10885,6 +10887,83 @@ const App = () => {
       ),
     );
   };
+  const generateAutoPalette = (type) => {
+    if (!type || !crosshair) return;
+    const h = scrubH || 0;
+    const l = scrubL;
+    const c = scrubC;
+    let hues = [];
+    let Ls = [];
+    let Cs = [];
+    let names = [];
+    
+    switch (type) {
+      case "complementary":
+        hues = [h, (h + 180) % 360];
+        Ls = [l, l]; 
+        Cs = [c, c];
+        names = ["Base", "Complement"];
+        break;
+      case "analogous":
+        hues = [(h - 30 + 360) % 360, h, (h + 30) % 360];
+        Ls = [l, l, l]; 
+        Cs = [c, c, c];
+        names = ["Analogous -30°", "Base", "Analogous +30°"];
+        break;
+      case "triadic":
+        hues = [h, (h + 120) % 360, (h + 240) % 360];
+        Ls = [l, l, l]; 
+        Cs = [c, c, c];
+        names = ["Base", "Triad +120°", "Triad +240°"];
+        break;
+      case "tetradic":
+        hues = [h, (h + 90) % 360, (h + 180) % 360, (h + 270) % 360];
+        Ls = [l, l, l, l]; 
+        Cs = [c, c, c, c];
+        names = ["Base", "Tetrad +90°", "Complement", "Tetrad +270°"];
+        break;
+      case "split_complementary":
+        hues = [h, (h + 150) % 360, (h + 210) % 360];
+        Ls = [l, l, l]; 
+        Cs = [c, c, c];
+        names = ["Base", "Split +150°", "Split +210°"];
+        break;
+      case "monochromatic":
+        hues = [h, h, h, h, h];
+        Ls = [Math.max(0.1, l - 0.3), Math.max(0.2, l - 0.15), l, Math.min(0.9, l + 0.15), Math.min(0.95, l + 0.3)];
+        Cs = [c * 0.7, c * 0.85, c, c * 0.85, c * 0.7];
+        names = ["Darker", "Dark", "Base", "Light", "Lighter"];
+        break;
+      case "shades":
+        hues = [h, h, h, h, h];
+        Ls = [0.2, 0.4, 0.6, 0.8, 0.95];
+        Cs = [c * 0.5, c * 0.7, c * 0.9, c * 0.6, c * 0.3];
+        names = ["Shade 900", "Shade 700", "Shade 500", "Shade 300", "Shade 100"];
+        break;
+      default:
+        return;
+    }
+    
+    const newItems = hues.map((hue, i) => {
+      const targetL = Ls[i];
+      const targetC = Cs[i];
+      return {
+        id: crypto.randomUUID(),
+        L: targetL,
+        C: targetC,
+        H: hue,
+        erpCode: null,
+        adjId: null,
+        nounId: null,
+        pinId: null,
+        image: null,
+        brand: undefined,
+        originalIndex: undefined,
+        nameOverride: names[i]
+      };
+    });
+    setPalette(newItems);
+  };
   const isLight = scrubL > 0.65;
   const activeColorObj = new Color("oklch", [scrubL, scrubC, scrubH]);
   let labCoords;
@@ -10892,11 +10971,23 @@ const App = () => {
     crosshair?.activeSavedColor?.spectral || crosshair?.temporarySpectral;
   if (spectral) {
     const varXYZ = calculateXYZFromSpectral(spectral, observer, illuminant);
-    const wp = getWhitePoint(observer, illuminant);
+    const wp = getWhitePoint(observer, illuminant, true);
     labCoords = xyzToLab(varXYZ, wp);
   } else {
-    const targetXyzSpace = illuminant === "D50" ? "xyz-d50" : "xyz-d65";
-    const varXYZ = activeColorObj.to(targetXyzSpace).coords;
+    const xyzD65 = activeColorObj.to("xyz-d65").coords;
+    let varXYZ;
+    if (illuminant === "D65") {
+      varXYZ = xyzD65;
+    } else {
+      const wpD65 = getWhitePoint(observer, "D65");
+      const wpTarget = getWhitePoint(observer, illuminant);
+      const M_adapt = getGeneralBradfordAdaptationMatrix(wpD65, wpTarget);
+      varXYZ = [
+        M_adapt[0][0] * xyzD65[0] + M_adapt[0][1] * xyzD65[1] + M_adapt[0][2] * xyzD65[2],
+        M_adapt[1][0] * xyzD65[0] + M_adapt[1][1] * xyzD65[1] + M_adapt[1][2] * xyzD65[2],
+        M_adapt[2][0] * xyzD65[0] + M_adapt[2][1] * xyzD65[1] + M_adapt[2][2] * xyzD65[2]
+      ];
+    }
     const wp = getWhitePoint(observer, illuminant);
     labCoords = xyzToLab(varXYZ, wp);
   }
@@ -11098,6 +11189,7 @@ const App = () => {
     groupSettings,
     setGroupSettings,
     palette,
+    generateAutoPalette,
     setPalette,
     savedPalettes,
     setSavedPalettes,
@@ -11473,8 +11565,8 @@ const ViewDatabase = ({
           try {
             const xyzStandard = calculateXYZFromSpectral(c.spectral, 2, "D65");
             const col = new Color("xyz-d65", xyzStandard).to("oklch");
-            L = Math.max(0, Math.min(1, col.coords[0]));
-            C = Math.max(0, Math.min(0.4, col.coords[1]));
+            L = col.coords[0];
+            C = col.coords[1];
             H = isNaN(col.coords[2]) ? 0 : ((col.coords[2] % 360) + 360) % 360;
             hexVal = col.to("srgb").toString({ format: "hex" });
           } catch (e) {}
@@ -11482,12 +11574,12 @@ const ViewDatabase = ({
           let tc;
           if (c.hex) {
             try {
-              tc = new Color(c.hex).to("oklch");
+              tc = createColorFromHex(c.hex).to("oklch");
             } catch (e) {}
           }
           if (tc) {
-            L = Math.max(0, Math.min(1, tc.coords[0]));
-            C = Math.max(0, Math.min(0.4, tc.coords[1]));
+            L = tc.coords[0];
+            C = tc.coords[1];
             H = isNaN(tc.coords[2]) ? 0 : ((tc.coords[2] % 360) + 360) % 360;
           } else {
             L = 0.5;
@@ -11691,18 +11783,12 @@ const ViewDatabase = ({
     }
     if (!tc && editingItem.hex) {
       try {
-        tc = new Color(editingItem.hex).to("oklch");
+        tc = createColorFromHex(editingItem.hex).to("oklch");
       } catch (e2) {}
     }
     if (tc) {
-      updated[editingItem.brand][editingItem.originalIndex].L = Math.max(
-        0,
-        Math.min(1, tc.coords[0]),
-      );
-      updated[editingItem.brand][editingItem.originalIndex].C = Math.max(
-        0,
-        Math.min(0.4, tc.coords[1]),
-      );
+      updated[editingItem.brand][editingItem.originalIndex].L = tc.coords[0];
+      updated[editingItem.brand][editingItem.originalIndex].C = tc.coords[1];
       updated[editingItem.brand][editingItem.originalIndex].H = isNaN(
         tc.coords[2],
       )
@@ -12941,10 +13027,6 @@ const ViewDatabase = ({
             src: fullscreenImage,
             alt: "Fullscreen Preview",
             className: "max-w-full max-h-full object-contain cursor-default",
-            style: {
-              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-              maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-            },
             onClick: (e) => e.stopPropagation(),
           }),
           React.createElement(
@@ -13516,6 +13598,7 @@ const AppUI = ({
   groupSettings,
   setGroupSettings,
   palette,
+  generateAutoPalette,
   setPalette,
   savedPalettes,
   setSavedPalettes,
@@ -14831,6 +14914,29 @@ const AppUI = ({
                       className: "w-5 h-5",
                     }),
                   ),
+                ),
+                React.createElement(
+                  "div",
+                  { className: "flex gap-2 mt-1" },
+                  React.createElement(
+                    "select",
+                    {
+                      className: "flex-1 bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-[10px] uppercase font-bold tracking-wider text-slate-700 dark:text-neutral-300 outline-none hover:bg-slate-100 hover:dark:bg-neutral-800 cursor-pointer transition-colors",
+                      onChange: (e) => {
+                        generateAutoPalette(e.target.value);
+                        e.target.value = "";
+                      },
+                      value: ""
+                    },
+                    React.createElement("option", { value: "", disabled: true }, "✨ Auto-Generate..."),
+                    React.createElement("option", { value: "complementary" }, "Complementary"),
+                    React.createElement("option", { value: "analogous" }, "Analogous"),
+                    React.createElement("option", { value: "triadic" }, "Triadic"),
+                    React.createElement("option", { value: "tetradic" }, "Tetradic"),
+                    React.createElement("option", { value: "split_complementary" }, "Split Complement"),
+                    React.createElement("option", { value: "monochromatic" }, "Monochromatic"),
+                    React.createElement("option", { value: "shades" }, "Shades")
+                  )
                 ),
                 palette.length > 0 &&
                   React.createElement(
@@ -16751,9 +16857,15 @@ const AppUI = ({
             const y_ = k_ === 1 ? 0 : (1 - b_ - k_) / (1 - k_);
             const displayCmyk = `CMYK: [${Math.round(c_ * 100)}%, ${Math.round(m_ * 100)}%, ${Math.round(y_ * 100)}%, ${Math.round(k_ * 100)}%]`;
             
-            const lab = itemColor.to("lab");
+            let d65XYZ;
+            if (item.spectral && item.spectral.length === 31) {
+              d65XYZ = calculateXYZFromSpectral(item.spectral, 2, "D65");
+            } else {
+              d65XYZ = itemColor.to("xyz-d65").coords;
+            }
+            const labCoords = xyzToLab(d65XYZ, [0.95047, 1.00000, 1.08883]);
             const fmt = (v, d = 3) => (isNaN(v) ? "0.000" : Number(v).toFixed(d));
-            const displayCielab = `CIELAB: [${fmt(lab.coords[0], 1)}, ${fmt(lab.coords[1], 1)}, ${fmt(lab.coords[2], 1)}]`;
+            const displayCielab = `CIELAB: [${fmt(labCoords[0], 1)}, ${fmt(labCoords[1], 1)}, ${fmt(labCoords[2], 1)}]`;
             
             const hsl = itemColor.to("hsl");
             const displayHsl = `HSL: [${fmt(hsl.coords[0], 1)}, ${fmt(hsl.coords[1], 1)}%, ${fmt(hsl.coords[2], 1)}%]`;
