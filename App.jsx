@@ -1057,8 +1057,8 @@ const CommercialMatches = ({
               className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
               style: {
                 backgroundImage: `url(${match.image})`,
-                WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-                maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
               },
             }),
             React.createElement(
@@ -3446,8 +3446,8 @@ ${item.erpCode}`,
                             className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                             style: {
                               backgroundImage: `url(${item.image || item.note})`,
-                              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-                              maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                              maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                             },
                           }),
                         !item._inGamut &&
@@ -3738,8 +3738,8 @@ ${item.erpCode}`,
                         className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                         style: {
                           backgroundImage: `url(${item.image || item.note})`,
-                          WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-                          maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                          WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                          maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                         },
                       }),
                     item.hasSpectral &&
@@ -3954,8 +3954,8 @@ ${item.erpCode}`,
                 className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                 style: {
                   backgroundImage: `url(${item.image || item.note})`,
-                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-                  maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                  maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                 },
               }),
             !item._inGamut &&
@@ -5069,8 +5069,8 @@ const ViewPalette = ({
             className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
             style: {
               backgroundImage: `url(${item.image || item.note})`,
-              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-              maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+              maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
             },
           }),
         !new Color("oklch", [item.L, item.C, item.H]).inGamut("srgb") &&
@@ -10283,11 +10283,21 @@ const App = () => {
       let pinImage = null;
       let pinBrand = undefined;
       let pinOriginalIndex = undefined;
+      let pinSheen = undefined;
+      let pinMaterial = undefined;
+      let pinDoorProfile = undefined;
+      let pinTactileTexture = undefined;
+      let pinVisualTexture = undefined;
       if (crosshair.activeCommercial) {
         const m = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
         pinImage = m?.image || null;
         pinBrand = crosshair.activeCommercial.brand;
         pinOriginalIndex = crosshair.activeCommercial.originalIndex;
+        pinSheen = m?.sheen || "";
+        pinMaterial = m?.material || "";
+        pinDoorProfile = m?.doorProfile || "";
+        pinTactileTexture = m?.tactileTexture || "";
+        pinVisualTexture = m?.visualTexture || "";
       }
       setSavedColors((prev) => ({
         ...prev,
@@ -10316,6 +10326,11 @@ const App = () => {
           brand: pinBrand,
           originalIndex: pinOriginalIndex,
           image: pinImage,
+          sheen: pinSheen,
+          material: pinMaterial,
+          doorProfile: pinDoorProfile,
+          tactileTexture: pinTactileTexture,
+          visualTexture: pinVisualTexture,
         },
       }));
     }
@@ -12193,8 +12208,8 @@ const ViewDatabase = ({
                     className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                     style: {
                       backgroundImage: `url(${item.image || item.note})`,
-                      WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-                      maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                      WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                      maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                     },
                   }),
                 !item._inGamut &&
@@ -12501,8 +12516,8 @@ const ViewDatabase = ({
                           className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                           style: {
                             backgroundImage: `url(${item.image || item.note})`,
-                            WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-                            maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                            WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                            maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                           },
                         }),
                       (item.image || item.note?.startsWith("http")) &&
@@ -12728,8 +12743,8 @@ const ViewDatabase = ({
                     className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                     style: {
                       backgroundImage: `url(${item.image || item.note})`,
-                      WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-                      maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                      WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                      maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                     },
                   }),
                 !item._inGamut &&
@@ -14159,8 +14174,8 @@ const AppUI = ({
                             className: "absolute inset-0 bg-cover bg-center rounded-[inherit]",
                             style: {
                               backgroundImage: `url(${res.image})`,
-                              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-                              maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                              maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                             },
                           })
                         )
@@ -14245,8 +14260,8 @@ const AppUI = ({
                       className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                       style: {
                         backgroundImage: `url(${m.image})`,
-                        WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-                        maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                        WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                        maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                       },
                     });
                   })(),
@@ -14877,8 +14892,8 @@ const AppUI = ({
                           className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                           style: {
                             backgroundImage: `url(${info.image})`,
-                            WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-                            maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                            WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                            maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                           },
                         }),
                       React.createElement(
@@ -15053,8 +15068,8 @@ const AppUI = ({
                                 className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                                 style: {
                                   backgroundImage: `url(${compSlotA.image})`,
-                                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-                                  maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                                  maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                                 },
                               }),
                             !new Color("oklch", [
@@ -15215,8 +15230,8 @@ const AppUI = ({
                                 className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                                 style: {
                                   backgroundImage: `url(${compSlotB.image})`,
-                                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-                                  maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                                  maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                                 },
                               }),
                             !new Color("oklch", [
@@ -16525,8 +16540,8 @@ const AppUI = ({
                 className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none transition-transform duration-500 group-hover:scale-105",
                 style: {
                   backgroundImage: `url(${compSlotA.image})`,
-                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-                  maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                  maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                 },
               }),
             !cA.inGamut("srgb") &&
@@ -16593,8 +16608,8 @@ const AppUI = ({
                 className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none transition-transform duration-500 group-hover:scale-105",
                 style: {
                   backgroundImage: `url(${compSlotB.image})`,
-                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-                  maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                  maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                 },
               }),
             !cB.inGamut("srgb") &&
@@ -16907,8 +16922,8 @@ const AppUI = ({
                   className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none transition-transform duration-500 group-hover:scale-105",
                   style: {
                     backgroundImage: `url(${info.image})`,
-                    WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-                    maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                    WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                    maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                   },
                 }),
               React.createElement(
@@ -17083,8 +17098,8 @@ const AppUI = ({
               className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
               style: {
                 backgroundImage: `url(${previewImage})`,
-                WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
-                maskImage: "linear-gradient(to bottom, black 0%, transparent 100%)",
+                WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
               },
             }),
           React.createElement(
