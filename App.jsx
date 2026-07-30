@@ -17219,8 +17219,10 @@ const AppUI = ({
             
             const displayOklch = `OKLCH: [${fmt(itemColor.coords[0], 3)}, ${fmt(itemColor.coords[1], 3)}, ${fmt(itemColor.coords[2], 1)}]`;
 
-            const satVal = itemColor.coords[1] > 0 ? itemColor.coords[0] / itemColor.coords[1] : 0;
-            const displaySat = `SATURATION (S=L/C): ${fmt(satVal, 3)}`;
+            const L_ = itemColor.coords[0];
+            const C_ = itemColor.coords[1];
+            const satVal = L_ > 0 ? C_ / L_ : 0;
+            const displaySat = `SATURATION (S=C/L): ${fmt(satVal, 3)}`;
 
             return React.createElement(
               "div",
