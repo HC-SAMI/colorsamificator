@@ -12,6 +12,29 @@ const Icon = ({ name, className = "w-4 h-4" }) => {
   return React.createElement("span", { ref, style: { display: "contents" } });
 };
 window.Icon = Icon;
+const get7DigitOklch = (L, C, H) => {
+  const lVal = Math.min(99, Math.max(0, Math.round((L ?? 0) * 100))).toString().padStart(2, "0");
+  const cVal = Math.min(99, Math.max(0, Math.round((C ?? 0) * 100))).toString().padStart(2, "0");
+  const hDeg = (((H ?? 0) % 360) + 360) % 360;
+  const hVal = Math.min(359, Math.max(0, Math.round(hDeg)));
+  const hStr = hVal.toString().padStart(3, "0");
+  return `${lVal}${cVal}${hStr}`;
+};
+
+const extractCleanColorCode = (c) => {
+  if (!c) return "";
+  let val = c.code || c.erpCode || c.colorCode || c.number || "";
+  if (!val && c.url) {
+    if (typeof c.url === "string" && !c.url.startsWith("http://") && !c.url.startsWith("https://") && !c.url.startsWith("www.") && !c.url.includes("://")) {
+      val = c.url;
+    }
+  }
+  if (typeof val === "string" && (val.startsWith("http://") && !val.startsWith("https://") || val.startsWith("http://") || val.startsWith("https://") || val.startsWith("www.") || val.includes("://"))) {
+    val = "";
+  }
+  return val;
+};
+
 const LABEL_OPTIONS = {
   sheen: ['-', 'SM (Super Matte)', 'MT (Matte)', 'ST (Satin)', 'HG (High Gloss)'],
   visualPattern: ['-', 'V1 (Solid)', 'V2 (Straight Grain)', 'V3 (Cathedral Grain)', 'V4 (Rustic/Heavy)', 'V5 (Abstract/Stipple)'],
@@ -2917,64 +2940,93 @@ function getInheritedPinNames(
   adjectives,
   colorData = {},
 ) {
+  if (sc && sc.parentPinId && savedColors[sc.parentPinId]) {
+    const parent = savedColors[sc.parentPinId];
+    const parentRes = getInheritedPinNames(
+      parent,
+      savedColors,
+      names,
+      adjectives,
+      colorData,
+    );
+    return {
+      displayAdj: (sc.adjOverride || parentRes.displayAdj || "").trim().toUpperCase(),
+      displayName: (sc.nameOverride || parentRes.displayName || "").trim().toUpperCase(),
+      source: "pin",
+      sourceId: parent.id,
+    };
+  }
   let baseAdj = sc.adjOverride || adjectives[sc.adjId];
-  let baseName = sc.nameOverride || names[sc.anchorId];
+  let baseName = sc.nameOverride || names[sc.anchorId] || names[sc.nounId] || names[sc.id];
   let source = "anchor";
   let sourceId = sc.anchorId;
-  if (sc.anchorId && sc.anchorId.startsWith("commercial-")) {
-    const parts = sc.anchorId.split("-");
-    const brand = parts[1];
-    const index = parseInt(parts[2]);
-    const item = colorData[brand]?.[index];
-    if (item) {
-      source = "commercial";
-      sourceId = sc.anchorId;
-      if (!sc.nameOverride) baseName = item.displayName || item.name;
-      if (!sc.adjOverride) {
-        const lStr = getLStr(sc.L);
-        baseAdj = adjectives[lStr] || getBrandDisplayName(brand);
-      }
+
+  const isCommercial =
+    sc.brand !== undefined ||
+    (sc.anchorId && String(sc.anchorId).startsWith("commercial-"));
+
+  if (isCommercial) {
+    let item = null;
+    if (sc.anchorId && String(sc.anchorId).startsWith("commercial-")) {
+      const parts = sc.anchorId.split("-");
+      const brand = parts[1];
+      const index = parseInt(parts[2]);
+      item = colorData[brand]?.[index];
+    } else if (sc.brand !== undefined && sc.originalIndex !== undefined) {
+      item = colorData[sc.brand]?.[sc.originalIndex];
     }
+    source = "commercial";
+    sourceId = sc.anchorId || `commercial-${sc.brand}-${sc.originalIndex}`;
+    baseName = sc.nameOverride || "";
+    baseAdj = sc.adjOverride || "";
   } else if (!sc.nameOverride || !sc.adjOverride) {
-    const nc = savedColors[sc.anchorId];
+    const nc = savedColors[sc.anchorId] || savedColors[sc.nounId];
     if (nc && nc.type === "nounColumn") {
       source = "nounColumn";
       sourceId = nc.id;
-      if (!sc.nameOverride) baseName = nc.nameOverride || names[nc.id];
+      if (!sc.nameOverride) baseName = nc.nameOverride || names[nc.id] || baseName;
       if (!sc.adjOverride) {
         const lStr = getLStr(sc.L);
         baseAdj =
           adjectives[lStr] || `L ${nc.minL.toFixed(2)} - ${nc.maxL.toFixed(2)}`;
       }
     } else if (nc && nc.type === "anchor") {
-      if (!sc.nameOverride) baseName = nc.nameOverride || names[nc.anchorId];
-      if (!sc.adjOverride) baseAdj = nc.adjOverride || adjectives[nc.adjId];
+      if (!sc.nameOverride) baseName = nc.nameOverride || names[nc.anchorId] || baseName;
+      if (!sc.adjOverride) baseAdj = nc.adjOverride || adjectives[nc.adjId] || baseAdj;
     }
   }
+
   let inheritedAdj = baseAdj;
   let inheritedName = baseName;
+
   if (!inheritedName || !inheritedAdj) {
     let minDist = Infinity;
     let bestAnchor = null;
+    let scA = sc.a;
+    let scB = sc.b;
+    if ((scA === undefined || scB === undefined) && sc.C !== undefined && sc.H !== undefined) {
+      scA = sc.C * Math.cos((sc.H * Math.PI) / 180);
+      scB = sc.C * Math.sin((sc.H * Math.PI) / 180);
+    }
     Object.values(savedColors).forEach((other) => {
       if (other.type === "anchor") {
         const d =
           Math.pow(sc.L - other.L, 2) +
-          Math.pow(sc.a - other.a, 2) +
-          Math.pow(sc.b - other.b, 2);
+          Math.pow((scA ?? 0) - (other.a ?? 0), 2) +
+          Math.pow((scB ?? 0) - (other.b ?? 0), 2);
         if (d < minDist) {
           minDist = d;
           bestAnchor = other;
         }
       } else if (other.type === "nounColumn") {
-        const d = Math.pow(sc.a - other.a, 2) + Math.pow(sc.b - other.b, 2);
-        if (d < minDist && sc.L >= other.minL && sc.L <= other.maxL) {
+        const d = Math.pow((scA ?? 0) - (other.a ?? 0), 2) + Math.pow((scB ?? 0) - (other.b ?? 0), 2);
+        if (d < minDist && sc.L >= (other.minL ?? 0) && sc.L <= (other.maxL ?? 1)) {
           minDist = d;
           bestAnchor = other;
         }
       }
     });
-    if (bestAnchor && minDist < 0.01) {
+    if (bestAnchor) {
       source = bestAnchor.type === "nounColumn" ? "nounColumn" : "anchor";
       sourceId = bestAnchor.id;
       if (bestAnchor.type === "nounColumn") {
@@ -3000,15 +3052,28 @@ function getInheritedPinNames(
       }
     }
   }
-  if (!inheritedAdj) {
-    inheritedAdj = adjectives[sc.adjId] || `L=${sc.L?.toFixed(2) || "?"}`;
+
+  if (!inheritedAdj && sc.L !== undefined) {
+    const lStr = getLStr(sc.L);
+    inheritedAdj = adjectives[sc.adjId] || adjectives[lStr] || "";
   }
   if (!inheritedName) {
-    inheritedName = names[sc.anchorId] || "Unnamed Noun";
+    inheritedName =
+      (sc.anchorId && names[sc.anchorId]) ||
+      (sc.nounId && names[sc.nounId]) ||
+      (sc.id && names[sc.id]) ||
+      sc.displayName ||
+      sc.name ||
+      "";
   }
+
+  if (inheritedName === "Unnamed Noun" || inheritedName === "Unnamed") {
+    inheritedName = "";
+  }
+
   return {
-    displayAdj: inheritedAdj.trim().toUpperCase(),
-    displayName: inheritedName.trim().toUpperCase(),
+    displayAdj: (inheritedAdj || "").trim().toUpperCase(),
+    displayName: (inheritedName || "").trim().toUpperCase(),
     source,
     sourceId,
   };
@@ -6763,6 +6828,22 @@ const ViewPins = ({
               ),
             ),
           ),
+          React.createElement("div", {
+            className: "w-px h-4 bg-slate-300 dark:bg-neutral-600 mx-1",
+          }),
+          React.createElement(
+            "button",
+            {
+              onClick: () => {
+                if (onOpenAveryModal) onOpenAveryModal(selectedIds);
+              },
+              className:
+                "px-3 py-1 bg-emerald-500 hover:bg-emerald-600 text-white text-[10px] font-bold uppercase tracking-wider rounded flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer",
+              title: "Print Avery 5159 Labels for selected swatches",
+            },
+            React.createElement(Icon, { name: "printer", className: "w-3.5 h-3.5" }),
+            "Print Labels",
+          ),
           React.createElement(
             "button",
             {
@@ -8434,63 +8515,193 @@ const App = () => {
     return res;
   }, [savedColors]);
 
-  const getPaletteItemInfo = useCallback((item) => {
-    if (!item) return { hex: "#FFFFFF", displayName: "", erpCode: "", L: 0, C: 0, H: 0 };
-    const c = new Color("oklch", [item.L, item.C, item.H]);
-    const hex = c
-      .clone()
-      .toGamut({ space: "srgb" })
-      .toString({ format: "hex" })
-      .toUpperCase();
-    let pin = item.pinId ? savedColors[item.pinId] : null;
-    if (!pin) {
-      pin = Object.values(savedColors).find(
-        (sc) => sc.type === "pin" && sc.erpCode === item.erpCode,
-      );
-    }
-    
-    let adj = "";
-    let noun = "";
-    if (pin) {
-      const inherited = getInheritedPinNames(pin, savedColors, names, adjectives, colorData);
-      adj = inherited.displayAdj;
-      noun = inherited.displayName;
-    } else {
-      adj = adjectives[item.adjId] || "";
-      noun = names[item.nounId] || "";
-    }
-    
-    const displayName = item.nameOverride ? item.nameOverride.toUpperCase() : (`${adj} ${noun}`.trim() || "Unnamed").toUpperCase();
-    let image = item.image;
-    let sheen = item.sheen;
-    let material = item.material;
-    let visualTexture = item.visualTexture;
-    let tactileTexture = item.tactileTexture;
-    let doorProfile = item.doorProfile;
-    
-    if (pin) {
-      if (!image) image = pin.image || (pin.notes?.startsWith("http") ? pin.notes : null);
-      if (!sheen) sheen = pin.sheen;
-      if (!material) material = pin.material;
-      if (!visualTexture) visualTexture = pin.visualTexture;
-      if (!tactileTexture) tactileTexture = pin.tactileTexture;
-      if (!doorProfile) doorProfile = pin.doorProfile;
-    }
-    
-    if (item.brand !== undefined && item.originalIndex !== undefined) {
-      const cItem = colorData[item.brand]?.[item.originalIndex];
-      if (cItem) {
-        if (!image) image = cItem.image || null;
-        if (!sheen) sheen = cItem.sheen;
-        if (!material) material = cItem.material;
-        if (!visualTexture) visualTexture = cItem.visualTexture;
-        if (!tactileTexture) tactileTexture = cItem.tactileTexture;
-        if (!doorProfile) doorProfile = cItem.doorProfile;
+  const getPaletteItemInfo = useCallback(
+    (item) => {
+      if (!item)
+        return { hex: "#FFFFFF", displayName: "", erpCode: "", L: 0, C: 0, H: 0 };
+      const c = new Color("oklch", [item.L, item.C, item.H]);
+      const hex = c
+        .clone()
+        .toGamut({ space: "srgb" })
+        .toString({ format: "hex" })
+        .toUpperCase();
+      let cleanErp = extractCleanColorCode(item);
+      if (!cleanErp && item.brand !== undefined && item.originalIndex !== undefined) {
+        const cItem = colorData[item.brand]?.[item.originalIndex];
+        if (cItem) {
+          cleanErp = extractCleanColorCode(cItem);
+        }
       }
-    }
-    
-    return { hex, displayName, erpCode: item.erpCode || "N/A", L: item.L, C: item.C, H: item.H, pin, image, sheen, material, visualTexture, tactileTexture, doorProfile };
-  }, [savedColors, adjectives, names, colorData]);
+      let pin = item.pinId ? savedColors[item.pinId] : null;
+      if (!pin && item.id && savedColors[item.id]?.type === "pin") {
+        pin = savedColors[item.id];
+      }
+      if (!pin) {
+        pin = Object.values(savedColors).find(
+          (sc) => sc.type === "pin" && sc.erpCode === item.erpCode,
+        );
+      }
+
+      let adj = "";
+      let noun = "";
+      if (pin) {
+        const inherited = getInheritedPinNames(
+          pin,
+          savedColors,
+          names,
+          adjectives,
+          colorData,
+        );
+        adj = inherited.displayAdj;
+        noun = inherited.displayName;
+      } else {
+        adj = (
+          item.adjOverride ||
+          adjectives[item.adjId] ||
+          (item.L !== undefined && item.L !== null
+            ? adjectives[getLStr(item.L)]
+            : "") ||
+          ""
+        ).trim();
+
+        const nounFromDict = (id) => {
+          if (!id || String(id).startsWith("commercial-")) return null;
+          return names[id] || null;
+        };
+
+        noun = (
+          item.nameOverride ||
+          nounFromDict(item.nounId) ||
+          nounFromDict(item.anchorId) ||
+          nounFromDict(item.id) ||
+          ""
+        ).trim();
+
+        if (!noun && item.C !== undefined && item.H !== undefined) {
+          const cStr = Math.round(item.C * 100).toString().padStart(2, "0");
+          const hStr = Math.round(item.H).toString().padStart(3, "0");
+          const nId = `${cStr}-${hStr}`;
+          if (names[nId]) {
+            noun = names[nId].trim();
+          } else {
+            let itemA = item.a;
+            let itemB = item.b;
+            if (
+              (itemA === undefined || itemB === undefined) &&
+              item.C !== undefined &&
+              item.H !== undefined
+            ) {
+              itemA = item.C * Math.cos((item.H * Math.PI) / 180);
+              itemB = item.C * Math.sin((item.H * Math.PI) / 180);
+            }
+            let minDist = Infinity;
+            let bestNoun = "";
+            Object.values(savedColors).forEach((other) => {
+              if (other.type === "anchor" || other.type === "nounColumn") {
+                const oA =
+                  other.a !== undefined
+                    ? other.a
+                    : (other.C || 0) * Math.cos(((other.H || 0) * Math.PI) / 180);
+                const oB =
+                  other.b !== undefined
+                    ? other.b
+                    : (other.C || 0) * Math.sin(((other.H || 0) * Math.PI) / 180);
+                const d =
+                  Math.pow((itemA ?? 0) - oA, 2) + Math.pow((itemB ?? 0) - oB, 2);
+                const minL = other.minL !== undefined ? other.minL : -0.01;
+                const maxL = other.maxL !== undefined ? other.maxL : 1.01;
+                if (
+                  d < minDist &&
+                  (item.L === undefined ||
+                    (item.L >= minL - 0.001 && item.L <= maxL + 0.001))
+                ) {
+                  minDist = d;
+                  bestNoun =
+                    other.nameOverride ||
+                    names[other.id] ||
+                    names[other.anchorId] ||
+                    "";
+                }
+              }
+            });
+            if (bestNoun) {
+              noun = bestNoun.trim();
+            }
+          }
+        }
+      }
+
+      if (adj === "Unnamed" || adj === "Unnamed Adj") adj = "";
+      if (
+        noun === "Unnamed" ||
+        noun === "Unnamed Noun" ||
+        noun === "UNNAMED NOUN"
+      ) {
+        noun = "";
+      }
+
+      const derivedName = `${adj} ${noun}`.trim();
+      const displayName = (derivedName || "Unnamed").toUpperCase();
+
+      let image = item.image;
+      let sheen = item.sheen;
+      let material = item.material;
+      let visualTexture = item.visualTexture;
+      let tactileTexture = item.tactileTexture;
+      let doorProfile = item.doorProfile;
+
+      if (pin) {
+        if (!image)
+          image =
+            pin.image || (pin.notes?.startsWith("http") ? pin.notes : null);
+        if (!sheen) sheen = pin.sheen;
+        if (!material) material = pin.material;
+        if (!visualTexture) visualTexture = pin.visualTexture;
+        if (!tactileTexture) tactileTexture = pin.tactileTexture;
+        if (!doorProfile) doorProfile = pin.doorProfile;
+        if (pin.brand !== undefined && pin.originalIndex !== undefined) {
+          const cItem = colorData[pin.brand]?.[pin.originalIndex];
+          if (cItem) {
+            if (!image) image = cItem.image || null;
+            if (!sheen) sheen = cItem.sheen;
+            if (!material) material = cItem.material;
+            if (!visualTexture) visualTexture = cItem.visualTexture;
+            if (!tactileTexture) tactileTexture = cItem.tactileTexture;
+            if (!doorProfile) doorProfile = cItem.doorProfile;
+          }
+        }
+      }
+
+      if (item.brand !== undefined && item.originalIndex !== undefined) {
+        const cItem = colorData[item.brand]?.[item.originalIndex];
+        if (cItem) {
+          if (!image) image = cItem.image || null;
+          if (!sheen) sheen = cItem.sheen;
+          if (!material) material = cItem.material;
+          if (!visualTexture) visualTexture = cItem.visualTexture;
+          if (!tactileTexture) tactileTexture = cItem.tactileTexture;
+          if (!doorProfile) doorProfile = cItem.doorProfile;
+        }
+      }
+
+      return {
+        hex,
+        displayName,
+        erpCode: cleanErp || "N/A",
+        L: item.L,
+        C: item.C,
+        H: item.H,
+        pin,
+        image,
+        sheen,
+        material,
+        visualTexture,
+        tactileTexture,
+        doorProfile,
+      };
+    },
+    [savedColors, adjectives, names, colorData],
+  );
 
   const [groupSettings, setGroupSettings] = useState(
     initialState?.groupSettings || defaultGroupSettings,
@@ -8514,7 +8725,7 @@ const App = () => {
   const [printLabelErp, setPrintLabelErp] = useState(true);
   const [printLabelHex, setPrintLabelHex] = useState(true);
   const [printLabelOklch, setPrintLabelOklch] = useState(true);
-  const [printLabelBorders, setPrintLabelBorders] = useState(true);
+  const [printLabelBorders, setPrintLabelBorders] = useState(false);
 
   const [printLabelDoorProfile, setPrintLabelDoorProfile] = useState("SL (Slab)");
   const [printLabelSheen, setPrintLabelSheen] = useState("MT (Matte)");
@@ -8524,7 +8735,7 @@ const App = () => {
 
   const averySourceItems = useMemo(() => {
     if (averyPrintSourceType === "pins") {
-      return Object.values(savedColors).filter((sc) => sc.type === "pin").map((sc) => ({
+      const pins = Object.values(savedColors).filter((sc) => sc.type === "pin").map((sc) => ({
         id: sc.id,
         L: sc.L,
         C: sc.C,
@@ -8533,10 +8744,82 @@ const App = () => {
         adjId: sc.adjId,
         nounId: sc.anchorId,
         pinId: sc.id,
+        brand: sc.brand,
+        originalIndex: sc.originalIndex,
+        sheen: sc.sheen,
+        material: sc.material,
+        visualTexture: sc.visualTexture,
+        tactileTexture: sc.tactileTexture,
+        doorProfile: sc.doorProfile,
       }));
+      return pins;
+    }
+    if (averyPrintSourceType === "db" || averyPrintSourceType === "commercial") {
+      if (!colorData) return [];
+      const targetIds = new Set(
+        selectedPrintIds && selectedPrintIds.length > 0
+          ? selectedPrintIds
+          : (selectedIds && selectedIds.length > 0 ? selectedIds : [])
+      );
+      if (targetIds.size === 0) return [];
+
+      const dbItems = [];
+      Object.keys(colorData).forEach((brand) => {
+        (colorData[brand] || []).forEach((c, idx) => {
+          const itemId = `${brand}-${idx}`;
+          if (!targetIds.has(itemId)) return;
+
+          let L = c.L;
+          let C = c.C;
+          let H = c.H;
+          let hexVal = c.hex || "#000000";
+          if (c.spectral && c.spectral.length === 31) {
+            try {
+              const xyzStandard = calculateXYZFromSpectral(c.spectral, 2, "D65");
+              const col = new Color("xyz-d65", xyzStandard).to("oklch");
+              L = col.coords[0];
+              C = col.coords[1];
+              H = isNaN(col.coords[2]) ? 0 : ((col.coords[2] % 360) + 360) % 360;
+              hexVal = col.to("srgb").toString({ format: "hex" });
+            } catch (e) {}
+          } else if (L === undefined || L === null) {
+            let tc;
+            if (c.hex) {
+              try { tc = createColorFromHex(c.hex).to("oklch"); } catch (e) {}
+            }
+            if (tc) {
+              L = tc.coords[0];
+              C = tc.coords[1];
+              H = isNaN(tc.coords[2]) ? 0 : ((tc.coords[2] % 360) + 360) % 360;
+            } else {
+              L = 0.5; C = 0; H = 0;
+            }
+          }
+          const cleanCode = extractCleanColorCode(c);
+          dbItems.push({
+            id: itemId,
+            L,
+            C,
+            H,
+            hex: hexVal,
+            erpCode: cleanCode,
+            url: c.url || "",
+            commercialName: c.name || "",
+            brand,
+            originalIndex: idx,
+            sheen: c.sheen,
+            material: c.material,
+            visualTexture: c.visualTexture,
+            tactileTexture: c.tactileTexture,
+            doorProfile: c.doorProfile,
+            image: c.image || null,
+          });
+        });
+      });
+      return dbItems;
     }
     return palette;
-  }, [averyPrintSourceType, savedColors, palette]);
+  }, [averyPrintSourceType, savedColors, palette, colorData, selectedPrintIds, selectedIds]);
 
   const generateAveryPages = useCallback(() => {
     const activeItems = averySourceItems.filter((item) => selectedPrintIds.includes(item.id));
@@ -11550,6 +11833,7 @@ const ViewDatabase = ({
   handleBatchTag,
   handleBatchRemoveTag,
   globalTags,
+  onOpenAveryModal,
 }) => {
   const dataForUpdates = fullColorData || colorData;
   const [sortBy, setSortBy] = useState("brand");
@@ -11612,7 +11896,7 @@ const ViewDatabase = ({
           H,
           hex: hexVal,
           displayName: c.name || "",
-          erpCode: c.url || "",
+          erpCode: extractCleanColorCode(c),
           hasSpectral: !!c.spectral && c.spectral.length > 0,
           tags: c.tags || [],
           spectral: c.spectral,
@@ -12019,6 +12303,19 @@ const ViewDatabase = ({
             }),
             " Brand",
           ),
+        React.createElement(
+          "button",
+          {
+            onClick: () => {
+              if (onOpenAveryModal) onOpenAveryModal(selectedIds || []);
+            },
+            className:
+              "px-2.5 py-1 text-[9px] font-bold bg-emerald-500 hover:bg-emerald-600 text-white uppercase tracking-wider rounded flex items-center gap-1 shadow-sm transition-colors ml-auto",
+            title: "Print Avery 5159 Labels for selected commercial database items",
+          },
+          React.createElement(Icon, { name: "printer", className: "w-3 h-3" }),
+          selectedIds && selectedIds.length > 0 ? `Print Labels (${selectedIds.length})` : "Print Labels",
+        ),
       ),
       React.createElement(
         "div",
@@ -13024,6 +13321,22 @@ const ViewDatabase = ({
                 React.createElement("option", { key: t, value: t }, t),
               ),
             ),
+          ),
+          React.createElement("div", {
+            className: "w-px h-4 bg-slate-300 dark:bg-neutral-600 mx-1",
+          }),
+          React.createElement(
+            "button",
+            {
+              onClick: () => {
+                if (onOpenAveryModal) onOpenAveryModal(selectedIds);
+              },
+              className:
+                "px-3 py-1 bg-emerald-500 hover:bg-emerald-600 text-white text-[10px] font-bold uppercase tracking-wider rounded flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer",
+              title: "Print Avery 5159 Labels for selected swatches",
+            },
+            React.createElement(Icon, { name: "printer", className: "w-3.5 h-3.5" }),
+            "Print Labels",
           ),
           React.createElement(
             "button",
@@ -16271,6 +16584,12 @@ const AppUI = ({
                 handleBatchTag,
                 handleBatchRemoveTag,
                 globalTags,
+                onOpenAveryModal: (overrideIds) => {
+                  const ids = overrideIds || selectedIds;
+                  setAveryPrintSourceType("db");
+                  setSelectedPrintIds(ids);
+                  setShowAveryModal(true);
+                },
               }),
             activeTab === "3d" &&
               React.createElement(View3D, {
@@ -16900,6 +17219,9 @@ const AppUI = ({
             
             const displayOklch = `OKLCH: [${fmt(itemColor.coords[0], 3)}, ${fmt(itemColor.coords[1], 3)}, ${fmt(itemColor.coords[2], 1)}]`;
 
+            const satVal = itemColor.coords[1] > 0 ? itemColor.coords[0] / itemColor.coords[1] : 0;
+            const displaySat = `SATURATION (S=L/C): ${fmt(satVal, 3)}`;
+
             return React.createElement(
               "div",
               {
@@ -16961,6 +17283,7 @@ const AppUI = ({
                   React.createElement("div", {}, displayCielab),
                   React.createElement("div", {}, displayHsl),
                   React.createElement("div", {}, displayOklch),
+                  React.createElement("div", {}, displaySat),
                 )
               ),
             );
@@ -17737,6 +18060,40 @@ const AppUI = ({
                   { className: "flex-1 flex flex-col gap-3" },
                   React.createElement(
                     "div",
+                    { className: "flex items-center gap-1 bg-slate-100 dark:bg-neutral-800 p-1 rounded-lg border border-slate-200 dark:border-neutral-700 text-[10px] font-bold uppercase tracking-wider shrink-0" },
+                    [
+                      { id: "palette", label: "Palette" },
+                      { id: "pins", label: "Pins" },
+                      { id: "db", label: "Commercial DB" },
+                    ].map((src) =>
+                      React.createElement(
+                        "button",
+                        {
+                          key: src.id,
+                          onClick: () => {
+                            setAveryPrintSourceType(src.id);
+                            if (src.id === "palette") {
+                              setSelectedPrintIds(palette.map((p) => p.id));
+                            } else if (src.id === "pins") {
+                              const pins = Object.values(savedColors).filter((sc) => sc.type === "pin");
+                              setSelectedPrintIds(pins.map((p) => p.id));
+                            } else if (src.id === "db") {
+                              const sel = selectedIds && selectedIds.length > 0 ? selectedIds : [];
+                              setSelectedPrintIds(sel);
+                            }
+                          },
+                          className: `flex-1 py-1 px-2.5 rounded transition-colors text-center cursor-pointer ${
+                            averyPrintSourceType === src.id || (averyPrintSourceType === "commercial" && src.id === "db")
+                              ? "bg-white dark:bg-neutral-700 text-sky-600 dark:text-sky-400 shadow-sm font-extrabold"
+                              : "text-slate-500 hover:text-slate-700 dark:text-neutral-400 dark:hover:text-neutral-200"
+                          }`,
+                        },
+                        src.label
+                      )
+                    )
+                  ),
+                  React.createElement(
+                    "div",
                     { className: "flex items-center justify-between" },
                     React.createElement(
                       "h4",
@@ -17768,7 +18125,15 @@ const AppUI = ({
                   React.createElement(
                     "div",
                     { className: "flex-1 min-h-[160px] max-h-[220px] lg:max-h-[380px] overflow-y-auto border border-slate-200 dark:border-neutral-800 rounded-lg p-2 flex flex-col gap-1 bg-slate-50/50 dark:bg-neutral-900/20 custom-scrollbar" },
-                    averySourceItems.map((item) => {
+                    averySourceItems.length === 0
+                      ? React.createElement(
+                          "div",
+                          { className: "p-6 text-center text-xs text-slate-400 italic" },
+                          averyPrintSourceType === "db" || averyPrintSourceType === "commercial"
+                            ? "No colors selected from the Commercial DB. Select colors in the Database view to print labels."
+                            : "No colors available to print."
+                        )
+                      : averySourceItems.map((item) => {
                       const info = getPaletteItemInfo(item);
                       const isChecked = selectedPrintIds.includes(item.id);
                       const myConfig = printConfigs[item.id] || {};
@@ -17848,7 +18213,7 @@ const AppUI = ({
                             { label: "Profile", key: "doorProfile", global: printLabelDoorProfile, options: ['-', 'SL (Slab)', 'CS (Shaker)', 'SS (Slim)', 'RD (Reeded)', 'CT (Countertop)', 'WG (Wood-Framed Glass)', 'MG (Metal-framed Glass)'] },
                             { label: "Material", key: "material", global: printLabelMaterial, options: ['-', 'Solid Laminate', 'Textured Laminate', 'Lacquered MDF', 'Natural Oak', 'Natural Maple'] }
                           ].map((field) => {
-                            const effectiveGlobal = (info.pin && info.pin[field.key]) ? info.pin[field.key] : field.global;
+                            const effectiveGlobal = info[field.key] || field.global;
                             return React.createElement(
                               "div",
                               { key: field.key, className: "flex items-center justify-between gap-2" },
@@ -18123,18 +18488,19 @@ const AppUI = ({
             const info = getPaletteItemInfo(item);
             
             const config = printConfigs[item.id] || {};
-            const itemSheen = config.sheen ?? (info.pin?.sheen || null) ?? printLabelSheen;
-            const itemMaterial = config.material ?? (info.pin?.material || null) ?? printLabelMaterial;
-            const itemVisualTexture = config.visualTexture ?? (info.pin?.visualTexture || null) ?? printLabelVisualTexture;
-            const itemTactileTexture = config.tactileTexture ?? (info.pin?.tactileTexture || null) ?? printLabelTactileTexture;
-            const itemDoorProfile = config.doorProfile ?? (info.pin?.doorProfile || null) ?? printLabelDoorProfile;
+            const itemSheen = config.sheen ?? (info.sheen || null) ?? printLabelSheen;
+            const itemMaterial = config.material ?? (info.material || null) ?? printLabelMaterial;
+            const itemVisualTexture = config.visualTexture ?? (info.visualTexture || null) ?? printLabelVisualTexture;
+            const itemTactileTexture = config.tactileTexture ?? (info.tactileTexture || null) ?? printLabelTactileTexture;
+            const itemDoorProfile = config.doorProfile ?? (info.doorProfile || null) ?? printLabelDoorProfile;
             
             // Build the ID string like [Color]-[Sheen]-[Visual Pattern]-[Tactile Texture]-[Profile]
             const abbrSheen = itemSheen.split(' ')[0] || "XX";
             const abbrVisual = itemVisualTexture.split(' ')[0] || "XX";
             const abbrTactile = itemTactileTexture.split(' ')[0] || "XX";
             const abbrProfile = itemDoorProfile.split(' ')[0] || "XX";
-            const generatedIdStr = `${info.erpCode}-${abbrSheen}-${abbrVisual}-${abbrTactile}-${abbrProfile}`;
+            const labelColorCode = get7DigitOklch(info.L, info.C, info.H);
+            const generatedIdStr = `${labelColorCode}-${abbrSheen}-${abbrVisual}-${abbrTactile}-${abbrProfile}`;
 
             // Determine if the text in sidebar should be black or white for contrast
             // We use a simple luminous check, L from OKLCH is convenient (info.L)
@@ -18170,7 +18536,7 @@ const AppUI = ({
                   "div",
                   { className: "sami-row" },
                   React.createElement("span", { className: "sami-label" }, "COLOR CODE:"),
-                  React.createElement("span", { className: "sami-value" }, info.erpCode)
+                  React.createElement("span", { className: "sami-value" }, labelColorCode)
                 ),
                 // Row 3: Sheen
                 React.createElement(
