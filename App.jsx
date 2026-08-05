@@ -11185,63 +11185,300 @@ const App = () => {
       ),
     );
   };
-  const generateAutoPalette = (type) => {
-    if (!type || !crosshair) return;
-    const h = scrubH || 0;
-    const l = scrubL;
-    const c = scrubC;
+  const generateAutoPalette = (type = "luxury_interior") => {
+    const schemeType = type || "luxury_interior";
+    const h0 = scrubH || 0;
+    const l0 = scrubL !== undefined && scrubL !== null ? scrubL : 0.65;
+    const c0 = scrubC !== undefined && scrubC !== null ? scrubC : 0.08;
+
+    // Helper functions for pure relative OKLCH math
+    const clampL = (val) => Math.max(0.06, Math.min(0.97, val));
+    const clampC = (val) => Math.max(0.004, Math.min(0.30, val));
+    const modH = (val) => ((val % 360) + 360) % 360;
+
+    // 60-30-10 Rule Metadata:
+    // 60% Dominant (4 swatches, 15% ratio each = 60%)
+    // 30% Secondary (2 swatches, 15% ratio each = 30%)
+    // 10% Accent (1 swatch, 10% ratio = 10%)
+    const roles = [
+      { group: "60%", name: "Dominant", ratio: 15 },
+      { group: "60%", name: "Dominant", ratio: 15 },
+      { group: "60%", name: "Dominant", ratio: 15 },
+      { group: "60%", name: "Dominant", ratio: 15 },
+      { group: "30%", name: "Secondary", ratio: 15 },
+      { group: "30%", name: "Secondary", ratio: 15 },
+      { group: "10%", name: "Accent", ratio: 10 }
+    ];
+
     let hues = [];
     let Ls = [];
     let Cs = [];
     let names = [];
-    
-    switch (type) {
-      case "complementary":
-        hues = [h, (h + 180) % 360];
-        Ls = [l, l]; 
-        Cs = [c, c];
-        names = ["Base", "Complement"];
-        break;
-      case "analogous":
-        hues = [(h - 30 + 360) % 360, h, (h + 30) % 360];
-        Ls = [l, l, l]; 
-        Cs = [c, c, c];
-        names = ["Analogous -30°", "Base", "Analogous +30°"];
-        break;
-      case "triadic":
-        hues = [h, (h + 120) % 360, (h + 240) % 360];
-        Ls = [l, l, l]; 
-        Cs = [c, c, c];
-        names = ["Base", "Triad +120°", "Triad +240°"];
-        break;
-      case "tetradic":
-        hues = [h, (h + 90) % 360, (h + 180) % 360, (h + 270) % 360];
-        Ls = [l, l, l, l]; 
-        Cs = [c, c, c, c];
-        names = ["Base", "Tetrad +90°", "Complement", "Tetrad +270°"];
-        break;
-      case "split_complementary":
-        hues = [h, (h + 150) % 360, (h + 210) % 360];
-        Ls = [l, l, l]; 
-        Cs = [c, c, c];
-        names = ["Base", "Split +150°", "Split +210°"];
-        break;
-      case "monochromatic":
-        hues = [h, h, h, h, h];
-        Ls = [Math.max(0.1, l - 0.3), Math.max(0.2, l - 0.15), l, Math.min(0.9, l + 0.15), Math.min(0.95, l + 0.3)];
-        Cs = [c * 0.7, c * 0.85, c, c * 0.85, c * 0.7];
-        names = ["Darker", "Dark", "Base", "Light", "Lighter"];
-        break;
-      case "shades":
-        hues = [h, h, h, h, h];
-        Ls = [0.2, 0.4, 0.6, 0.8, 0.95];
-        Cs = [c * 0.5, c * 0.7, c * 0.9, c * 0.6, c * 0.3];
-        names = ["Shade 900", "Shade 700", "Shade 500", "Shade 300", "Shade 100"];
-        break;
+
+    switch (schemeType) {
+      case "luxury_interior":
+      case "creative_blend":
       default:
-        return;
+        // Signature 60-30-10 Architectural OKLCH Interior Suite
+        // 60% DOMINANT (4 Swatches): Plaster Wall, Primary Cabinetry, Secondary Millwork, Dark Trim
+        // 30% SECONDARY (2 Swatches): Island / Upholstery, Honed Marble Countertop
+        // 10% ACCENT (1 Swatch): Brushed Metal Hardware & Pop
+        hues = [
+          h0,                     // Wall Plaster (60%)
+          h0,                     // Primary Cabinetry (60%)
+          modH(h0 + 10),          // Secondary Millwork (60%)
+          h0,                     // Dark Trim & Base (60%)
+          modH(h0 - 15),          // Island / Upholstery (30%)
+          modH(h0 - 8),           // Marble Countertop (30%)
+          modH(h0 + 38)           // Hardware Accent (10%)
+        ];
+        Ls = [
+          clampL(l0 + 0.28),
+          l0,
+          clampL(l0 - 0.12),
+          clampL(l0 - 0.30),
+          clampL(l0 - 0.08),
+          clampL(l0 + 0.22),
+          clampL(l0 + 0.06)
+        ];
+        Cs = [
+          clampC(c0 * 0.35),
+          c0,
+          clampC(c0 * 0.85),
+          clampC(c0 * 0.65),
+          clampC(c0 * 0.90),
+          clampC(c0 * 0.40),
+          clampC(c0 * 1.25)
+        ];
+        names = [
+          "60% Dominant — Plaster Wall Canvas",
+          "60% Dominant — Primary Cabinetry Finish",
+          "60% Dominant — Secondary Millwork Tonal",
+          "60% Dominant — Architectural Trim & Shade",
+          "30% Secondary — Island & Upholstery",
+          "30% Secondary — Honed Marble Countertop",
+          "10% Accent — Metal Hardware & Pop"
+        ];
+        break;
+
+      case "quiet_luxury":
+      case "monochromatic":
+      case "shades":
+      case "monochromatic_layers":
+        // Quiet Luxury Monochromatic Spectrum (60-30-10 Rule)
+        // 60% DOMINANT (4 Swatches): Light Alabaster to Natural Wood
+        // 30% SECONDARY (2 Swatches): Deep Oak to Smoked Walnut
+        // 10% ACCENT (1 Swatch): Warm Bronze / Metallic Detail
+        hues = [h0, h0, h0, h0, h0, h0, modH(h0 + 25)];
+        Ls = [
+          clampL(l0 + 0.28),
+          clampL(l0 + 0.16),
+          l0,
+          clampL(l0 - 0.14),
+          clampL(l0 - 0.26),
+          clampL(l0 - 0.38),
+          clampL(l0 - 0.05)
+        ];
+        Cs = [
+          clampC(c0 * 0.35),
+          clampC(c0 * 0.60),
+          c0,
+          clampC(c0 * 0.85),
+          clampC(c0 * 0.75),
+          clampC(c0 * 0.50),
+          clampC(c0 * 1.20)
+        ];
+        names = [
+          "60% Dominant — Alabaster Wall Finish",
+          "60% Dominant — Sand Lime Plaster",
+          "60% Dominant — Primary Cabinetry Finish",
+          "60% Dominant — Natural Wood Grain",
+          "30% Secondary — Deep Oak Millwork",
+          "30% Secondary — Smoked Walnut Grounding",
+          "10% Accent — Warm Bronze Metallic Pop"
+        ];
+        break;
+
+      case "warm_wood_stone":
+      case "analogous":
+        // Warm Wood & Stone Organic Harmony (60-30-10 Rule)
+        // 60% DOMINANT (4 Swatches): Limestone Wall, Primary Wood, Honey Oak, Walnut Shade
+        // 30% SECONDARY (2 Swatches): Travertine Stone & Leather Upholstery
+        // 10% ACCENT (1 Swatch): Aged Brass Detail
+        hues = [
+          modH(h0 - 15),
+          h0,
+          modH(h0 + 12),
+          modH(h0 - 8),
+          modH(h0 + 22),
+          modH(h0 - 18),
+          modH(h0 + 35)
+        ];
+        Ls = [
+          clampL(l0 + 0.24),
+          l0,
+          clampL(l0 + 0.10),
+          clampL(l0 - 0.22),
+          clampL(l0 + 0.18),
+          clampL(l0 - 0.10),
+          clampL(l0 + 0.08)
+        ];
+        Cs = [
+          clampC(c0 * 0.45),
+          c0,
+          clampC(c0 * 0.80),
+          clampC(c0 * 0.70),
+          clampC(c0 * 0.50),
+          clampC(c0 * 0.90),
+          clampC(c0 * 1.25)
+        ];
+        names = [
+          "60% Dominant — Limestone Wall Base",
+          "60% Dominant — Main Cabinetry Finish",
+          "60% Dominant — Honey Oak Grain",
+          "60% Dominant — Deep Walnut Shade",
+          "30% Secondary — Travertine Stone Surface",
+          "30% Secondary — Leather Upholstery",
+          "10% Accent — Aged Brass Detail"
+        ];
+        break;
+
+      case "statement_millwork":
+      case "triadic":
+        // High-Contrast Architectural Millwork (60-30-10 Rule)
+        // 60% DOMINANT (4 Swatches): Crisp Architectural Wall, Deep Statement Cabinetry, Mid-Tone, Baseboard
+        // 30% SECONDARY (2 Swatches): Calacatta Quartz & Secondary Island Finish
+        // 10% ACCENT (1 Swatch): Polished Brass / Hardware Pop
+        hues = [
+          h0,                     // Wall (60%)
+          h0,                     // Statement Dark Cabinetry (60%)
+          modH(h0 + 8),           // Mid-Tone Transition (60%)
+          h0,                     // Baseboard Trim (60%)
+          modH(h0 - 12),          // Quartz Countertop (30%)
+          modH(h0 + 15),          // Secondary Island (30%)
+          modH(h0 + 40)           // Polished Brass (10%)
+        ];
+        Ls = [
+          clampL(l0 + 0.32),
+          clampL(l0 - 0.24),
+          l0,
+          clampL(l0 - 0.38),
+          clampL(l0 + 0.26),
+          clampL(l0 - 0.12),
+          clampL(l0 + 0.08)
+        ];
+        Cs = [
+          clampC(c0 * 0.30),
+          c0,
+          clampC(c0 * 0.85),
+          clampC(c0 * 0.50),
+          clampC(c0 * 0.35),
+          clampC(c0 * 0.90),
+          clampC(c0 * 1.30)
+        ];
+        names = [
+          "60% Dominant — Pure Architectural Wall",
+          "60% Dominant — Statement Dark Cabinetry",
+          "60% Dominant — Mid-Tone Millwork Finish",
+          "60% Dominant — Espresso Trim & Base",
+          "30% Secondary — Calacatta Quartz Surface",
+          "30% Secondary — Secondary Island Finish",
+          "10% Accent — Polished Brass Hardware"
+        ];
+        break;
+
+      case "muted_complement":
+      case "complementary":
+      case "split_complementary":
+      case "tetradic":
+        // Symmetrical OKLCH Complementary Matrix (60-30-10 Rule)
+        // 60% DOMINANT (4 Swatches): Primary Wall, Main Cabinetry, Soft Base Tint, Dark Shade
+        // 30% SECONDARY (2 Swatches): Muted Complement Accent Wall & Accent Cabinetry
+        // 10% ACCENT (1 Swatch): Warm Metal Detail
+        const hComp = modH(h0 + 180);
+        hues = [
+          h0,                     // Primary Wall (60%)
+          h0,                     // Main Cabinetry (60%)
+          h0,                     // Soft Base Tint (60%)
+          h0,                     // Dark Shade (60%)
+          hComp,                  // Complement Accent Wall (30%)
+          hComp,                  // Complement Cabinetry (30%)
+          modH(h0 + 32)           // Warm Metal Detail (10%)
+        ];
+        Ls = [
+          clampL(l0 + 0.26),
+          l0,
+          clampL(l0 + 0.12),
+          clampL(l0 - 0.26),
+          clampL(l0 + 0.20),
+          l0,
+          clampL(l0 + 0.08)
+        ];
+        Cs = [
+          clampC(c0 * 0.40),
+          c0,
+          clampC(c0 * 0.70),
+          clampC(c0 * 0.75),
+          clampC(c0 * 0.45),
+          clampC(c0 * 0.75),
+          clampC(c0 * 1.20)
+        ];
+        names = [
+          "60% Dominant — Primary Wall Canvas",
+          "60% Dominant — Main Cabinetry Finish",
+          "60% Dominant — Soft Base Tint",
+          "60% Dominant — Dark Millwork Shade",
+          "30% Secondary — Organic Muted Accent Wall",
+          "30% Secondary — Muted Accent Cabinetry",
+          "10% Accent — Warm Metal Detail"
+        ];
+        break;
+
+      case "atmospheric_interior":
+      case "atmospheric":
+        // Soft Atmospheric OKLCH Wash (60-30-10 Rule)
+        // 60% DOMINANT (4 Swatches): Plaster, Trim, Core Selection, Ambient Shadow
+        // 30% SECONDARY (2 Swatches): Marble Countertop, Secondary Wash
+        // 10% ACCENT (1 Swatch): Focal Hardware Pop
+        hues = [
+          h0,                     // Plaster (60%)
+          h0,                     // Linen Trim (60%)
+          modH(h0 + 8),           // Core Selection (60%)
+          modH(h0 - 8),           // Shadow (60%)
+          modH(h0 + 15),          // Marble Countertop (30%)
+          modH(h0 + 8),           // Secondary Wash (30%)
+          modH(h0 + 35)           // Hardware Pop (10%)
+        ];
+        Ls = [
+          clampL(l0 + 0.28),
+          clampL(l0 + 0.14),
+          l0,
+          clampL(l0 - 0.18),
+          clampL(l0 + 0.22),
+          clampL(l0 - 0.08),
+          clampL(l0 + 0.06)
+        ];
+        Cs = [
+          clampC(c0 * 0.30),
+          clampC(c0 * 0.55),
+          c0,
+          clampC(c0 * 0.80),
+          clampC(c0 * 0.35),
+          clampC(c0 * 0.90),
+          clampC(c0 * 1.25)
+        ];
+        names = [
+          "60% Dominant — Morning Light Plaster",
+          "60% Dominant — Soft Linen Trim",
+          "60% Dominant — Core Finish Selection",
+          "60% Dominant — Ambient Shadow Tone",
+          "30% Secondary — Soft Marble Countertop",
+          "30% Secondary — Secondary Millwork Wash",
+          "10% Accent — Focal Hardware Pop"
+        ];
+        break;
     }
-    
+
     const newItems = hues.map((hue, i) => {
       const targetL = Ls[i];
       const targetC = Cs[i];
@@ -11257,7 +11494,10 @@ const App = () => {
         image: null,
         brand: undefined,
         originalIndex: undefined,
-        nameOverride: names[i]
+        nameOverride: names[i],
+        roleGroup: roles[i].group,
+        roleName: roles[i].name,
+        ratio: roles[i].ratio
       };
     });
     setPalette(newItems);
@@ -11848,6 +12088,10 @@ const ViewDatabase = ({
   const [editingItem, setEditingItem] = useState(null);
   const [promptState, setPromptState] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
+  const [columnFilters, setColumnFilters] = useState({});
+  const [openFilterCol, setOpenFilterCol] = useState(null);
+  const [filterSearch, setFilterSearch] = useState("");
+
   const baseMatrixSize = 48;
   const baseListSize = 48;
   const allDbItems = useMemo(() => {
@@ -11919,6 +12163,455 @@ const ViewDatabase = ({
       ).sort(),
     [allDbItems],
   );
+
+  const colSortKeyMap = useMemo(
+    () => ({
+      displayName: "name",
+      brand: "brand",
+      sheen: "sheen",
+      doorProfile: "doorProfile",
+      visualTexture: "visualTexture",
+      tactileTexture: "tactileTexture",
+      material: "material",
+      erpCode: "erpCode",
+      deltaE: "deltae",
+      L: "lightness",
+      C: "chroma",
+      H: "hue",
+    }),
+    []
+  );
+
+  const COLUMNS_DEF = useMemo(
+    () => [
+      { id: "displayName", label: "Name", isNumeric: false },
+      { id: "brand", label: "Brand", isNumeric: false },
+      { id: "sheen", label: "Sheen", isNumeric: false },
+      { id: "doorProfile", label: "Profile", isNumeric: false },
+      { id: "visualTexture", label: "Vis. Pat", isNumeric: false },
+      { id: "tactileTexture", label: "Tac. Tex", isNumeric: false },
+      { id: "material", label: "Material", isNumeric: false },
+      { id: "erpCode", label: "Web Link", isNumeric: false },
+      { id: "deltaE", label: "ΔEok", isNumeric: true },
+      { id: "L", label: "L", isNumeric: true },
+      { id: "C", label: "C", isNumeric: true },
+      { id: "H", label: "H", isNumeric: true },
+    ],
+    []
+  );
+
+  const isColumnFiltered = useCallback(
+    (colId) => {
+      const f = columnFilters[colId];
+      if (!f) return false;
+      if (colId === "L" || colId === "C" || colId === "H" || colId === "deltaE") {
+        return (
+          (f.min !== undefined && f.min !== null && f.min !== "") ||
+          (f.max !== undefined && f.max !== null && f.max !== "")
+        );
+      }
+      if (f.textQuery && f.textQuery.trim() !== "") return true;
+      if (f.selectedValues && f.selectedValues instanceof Set) return true;
+      return false;
+    },
+    [columnFilters]
+  );
+
+  const getDistinctColumnValues = useCallback(
+    (colId) => {
+      const map = new Map();
+      allDbItems.forEach((item) => {
+        let passesOthers = true;
+        for (const otherCol of Object.keys(columnFilters)) {
+          if (otherCol === colId) continue;
+          const f = columnFilters[otherCol];
+          if (!f) continue;
+          if (
+            otherCol === "L" ||
+            otherCol === "C" ||
+            otherCol === "H" ||
+            otherCol === "deltaE"
+          ) {
+            const val = otherCol === "deltaE" ? item._d : item[otherCol];
+            const minVal =
+              f.min !== "" && f.min !== null && f.min !== undefined
+                ? parseFloat(f.min)
+                : null;
+            const maxVal =
+              f.max !== "" && f.max !== null && f.max !== undefined
+                ? parseFloat(f.max)
+                : null;
+            if (minVal !== null && (val === undefined || val === null || val < minVal))
+              passesOthers = false;
+            if (maxVal !== null && (val === undefined || val === null || val > maxVal))
+              passesOthers = false;
+          } else {
+            const raw = item[otherCol];
+            const strVal =
+              raw !== undefined && raw !== null && String(raw).trim() !== ""
+                ? String(raw).trim()
+                : "(Blank)";
+            if (
+              f.textQuery &&
+              !strVal.toLowerCase().includes(f.textQuery.toLowerCase().trim())
+            )
+              passesOthers = false;
+            if (
+              f.selectedValues &&
+              f.selectedValues instanceof Set &&
+              !f.selectedValues.has(strVal)
+            )
+              passesOthers = false;
+          }
+          if (!passesOthers) break;
+        }
+
+        if (!passesOthers) return;
+
+        const raw = item[colId];
+        const strVal =
+          raw !== undefined && raw !== null && String(raw).trim() !== ""
+            ? String(raw).trim()
+            : "(Blank)";
+        map.set(strVal, (map.get(strVal) || 0) + 1);
+      });
+
+      return Array.from(map.entries()).sort((a, b) => {
+        if (a[0] === "(Blank)") return 1;
+        if (b[0] === "(Blank)") return -1;
+        return a[0].localeCompare(b[0]);
+      });
+    },
+    [allDbItems, columnFilters]
+  );
+
+  const renderFilterPopover = (colId, label, isNumeric) => {
+    const cf = columnFilters[colId] || {};
+    const isFiltered = isColumnFiltered(colId);
+
+    if (isNumeric) {
+      return React.createElement(
+        "div",
+        {
+          className:
+            "absolute top-full left-0 mt-1 z-50 w-64 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 shadow-xl rounded-lg p-3 text-slate-800 dark:text-neutral-200 text-xs font-sans normal-case tracking-normal select-text text-left",
+          onClick: (e) => e.stopPropagation(),
+        },
+        React.createElement(
+          "div",
+          { className: "flex items-center justify-between pb-2 mb-2 border-b border-slate-100 dark:border-neutral-800 font-bold" },
+          React.createElement("span", { className: "text-slate-700 dark:text-neutral-300" }, `Filter: ${label}`),
+          React.createElement(
+            "button",
+            {
+              onClick: () => setOpenFilterCol(null),
+              className: "text-slate-400 hover:text-slate-600 dark:hover:text-neutral-200 p-0.5 rounded",
+            },
+            React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" })
+          )
+        ),
+        React.createElement(
+          "div",
+          { className: "flex flex-col gap-1 pb-2.5 mb-2 border-b border-slate-100 dark:border-neutral-800" },
+          React.createElement(
+            "button",
+            {
+              onClick: () => {
+                setSortBy(colSortKeyMap[colId]);
+                setSortAsc(true);
+              },
+              className: `flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-100 dark:hover:bg-neutral-800 text-left font-medium ${
+                sortBy === colSortKeyMap[colId] && sortAsc ? "text-sky-600 dark:text-sky-400 font-bold bg-sky-50 dark:bg-sky-900/30" : ""
+              }`,
+            },
+            React.createElement(Icon, { name: "arrow-up", className: "w-3.5 h-3.5" }),
+            "Sort Smallest to Largest"
+          ),
+          React.createElement(
+            "button",
+            {
+              onClick: () => {
+                setSortBy(colSortKeyMap[colId]);
+                setSortAsc(false);
+              },
+              className: `flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-100 dark:hover:bg-neutral-800 text-left font-medium ${
+                sortBy === colSortKeyMap[colId] && !sortAsc ? "text-sky-600 dark:text-sky-400 font-bold bg-sky-50 dark:bg-sky-900/30" : ""
+              }`,
+            },
+            React.createElement(Icon, { name: "arrow-down", className: "w-3.5 h-3.5" }),
+            "Sort Largest to Smallest"
+          )
+        ),
+        React.createElement(
+          "div",
+          { className: "flex flex-col gap-2" },
+          React.createElement("span", { className: "text-[10px] uppercase font-bold text-slate-400 tracking-wider" }, "Number Range"),
+          React.createElement(
+            "div",
+            { className: "grid grid-cols-2 gap-2" },
+            React.createElement(
+              "div",
+              {},
+              React.createElement("label", { className: "text-[10px] text-slate-500 dark:text-neutral-400 font-semibold block mb-0.5" }, "Min"),
+              React.createElement("input", {
+                type: "number",
+                step: "any",
+                placeholder: "Min...",
+                value: cf.min ?? "",
+                onChange: (e) => {
+                  const val = e.target.value;
+                  setColumnFilters((prev) => ({
+                    ...prev,
+                    [colId]: { ...prev[colId], min: val },
+                  }));
+                },
+                className: "w-full px-2 py-1 text-xs border border-slate-200 dark:border-neutral-700 bg-slate-50 dark:bg-neutral-800 rounded outline-none focus:border-sky-500",
+              })
+            ),
+            React.createElement(
+              "div",
+              {},
+              React.createElement("label", { className: "text-[10px] text-slate-500 dark:text-neutral-400 font-semibold block mb-0.5" }, "Max"),
+              React.createElement("input", {
+                type: "number",
+                step: "any",
+                placeholder: "Max...",
+                value: cf.max ?? "",
+                onChange: (e) => {
+                  const val = e.target.value;
+                  setColumnFilters((prev) => ({
+                    ...prev,
+                    [colId]: { ...prev[colId], max: val },
+                  }));
+                },
+                className: "w-full px-2 py-1 text-xs border border-slate-200 dark:border-neutral-700 bg-slate-50 dark:bg-neutral-800 rounded outline-none focus:border-sky-500",
+              })
+            )
+          )
+        ),
+        isFiltered &&
+          React.createElement(
+            "button",
+            {
+              onClick: () => {
+                setColumnFilters((prev) => {
+                  const copy = { ...prev };
+                  delete copy[colId];
+                  return copy;
+                });
+              },
+              className: "mt-3 w-full py-1 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded border border-rose-200 dark:border-rose-900 font-medium transition-colors",
+            },
+            "Clear Filter"
+          )
+      );
+    }
+
+    const distinctPairs = getDistinctColumnValues(colId);
+    const totalCount = distinctPairs.length;
+    const filteredPairs = filterSearch.trim()
+      ? distinctPairs.filter(([v]) => v.toLowerCase().includes(filterSearch.trim().toLowerCase()))
+      : distinctPairs;
+
+    const currentSelSet = cf.selectedValues instanceof Set
+      ? cf.selectedValues
+      : new Set(distinctPairs.map(([v]) => v));
+
+    return React.createElement(
+      "div",
+      {
+        className:
+          "absolute top-full left-0 mt-1 z-50 w-64 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 shadow-xl rounded-lg p-3 text-slate-800 dark:text-neutral-200 text-xs font-sans normal-case tracking-normal select-text text-left",
+        onClick: (e) => e.stopPropagation(),
+      },
+      React.createElement(
+        "div",
+        { className: "flex items-center justify-between pb-2 mb-2 border-b border-slate-100 dark:border-neutral-800 font-bold" },
+        React.createElement("span", { className: "text-slate-700 dark:text-neutral-300" }, `Filter: ${label}`),
+        React.createElement(
+          "button",
+          {
+            onClick: () => setOpenFilterCol(null),
+            className: "text-slate-400 hover:text-slate-600 dark:hover:text-neutral-200 p-0.5 rounded",
+          },
+          React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" })
+        )
+      ),
+      React.createElement(
+        "div",
+        { className: "flex flex-col gap-1 pb-2 mb-2 border-b border-slate-100 dark:border-neutral-800" },
+        React.createElement(
+          "button",
+          {
+            onClick: () => {
+              setSortBy(colSortKeyMap[colId]);
+              setSortAsc(true);
+            },
+            className: `flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-100 dark:hover:bg-neutral-800 text-left font-medium ${
+              sortBy === colSortKeyMap[colId] && sortAsc ? "text-sky-600 dark:text-sky-400 font-bold bg-sky-50 dark:bg-sky-900/30" : ""
+            }`,
+          },
+          React.createElement(Icon, { name: "arrow-up", className: "w-3.5 h-3.5" }),
+          "Sort A → Z"
+        ),
+        React.createElement(
+          "button",
+          {
+            onClick: () => {
+              setSortBy(colSortKeyMap[colId]);
+              setSortAsc(false);
+            },
+            className: `flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-100 dark:hover:bg-neutral-800 text-left font-medium ${
+              sortBy === colSortKeyMap[colId] && !sortAsc ? "text-sky-600 dark:text-sky-400 font-bold bg-sky-50 dark:bg-sky-900/30" : ""
+            }`,
+          },
+          React.createElement(Icon, { name: "arrow-down", className: "w-3.5 h-3.5" }),
+          "Sort Z → A"
+        )
+      ),
+      React.createElement(
+        "div",
+        { className: "mb-2" },
+        React.createElement("input", {
+          type: "text",
+          placeholder: "Search values...",
+          value: filterSearch,
+          onChange: (e) => setFilterSearch(e.target.value),
+          className: "w-full px-2 py-1 text-xs border border-slate-200 dark:border-neutral-700 bg-slate-50 dark:bg-neutral-800 rounded outline-none focus:border-sky-500",
+        })
+      ),
+      React.createElement(
+        "div",
+        { className: "flex items-center justify-between text-[11px] font-semibold text-sky-600 dark:text-sky-400 mb-1.5 px-1" },
+        React.createElement(
+          "button",
+          {
+            onClick: () => {
+              setColumnFilters((prev) => ({
+                ...prev,
+                [colId]: { ...prev[colId], selectedValues: null },
+              }));
+            },
+            className: "hover:underline",
+          },
+          "Select All"
+        ),
+        React.createElement(
+          "button",
+          {
+            onClick: () => {
+              setColumnFilters((prev) => ({
+                ...prev,
+                [colId]: { ...prev[colId], selectedValues: new Set() },
+              }));
+            },
+            className: "hover:underline text-slate-500 dark:text-neutral-400",
+          },
+          "Deselect All"
+        )
+      ),
+      React.createElement(
+        "div",
+        { className: "max-h-40 overflow-y-auto custom-scrollbar border border-slate-100 dark:border-neutral-800 rounded divide-y divide-slate-50 dark:divide-neutral-800/50" },
+        filteredPairs.length === 0
+          ? React.createElement("div", { className: "p-2 text-slate-400 text-[11px] italic text-center" }, "No matching values")
+          : filteredPairs.map(([val, count]) => {
+              const isChecked = currentSelSet.has(val);
+              return React.createElement(
+                "label",
+                {
+                  key: val,
+                  className: "flex items-center justify-between gap-2 px-2 py-1 hover:bg-slate-100 dark:hover:bg-neutral-800/70 cursor-pointer text-xs select-none",
+                },
+                React.createElement(
+                  "div",
+                  { className: "flex items-center gap-2 truncate min-w-0" },
+                  React.createElement("input", {
+                    type: "checkbox",
+                    checked: isChecked,
+                    onChange: () => {
+                      const nextSet = new Set(currentSelSet);
+                      if (isChecked) {
+                        nextSet.delete(val);
+                      } else {
+                        nextSet.add(val);
+                      }
+                      setColumnFilters((prev) => ({
+                        ...prev,
+                        [colId]: { ...prev[colId], selectedValues: nextSet },
+                      }));
+                    },
+                    className: "w-3.5 h-3.5 cursor-pointer accent-sky-500 shrink-0",
+                  }),
+                  React.createElement("span", { className: "truncate" }, val)
+                ),
+                React.createElement("span", { className: "text-[10px] text-slate-400 font-mono" }, count)
+              );
+            })
+      ),
+      isFiltered &&
+        React.createElement(
+          "button",
+          {
+            onClick: () => {
+              setColumnFilters((prev) => {
+                const copy = { ...prev };
+                delete copy[colId];
+                return copy;
+              });
+            },
+            className: "mt-2.5 w-full py-1 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded border border-rose-200 dark:border-rose-900 font-medium transition-colors",
+          },
+          "Clear Filter"
+        )
+    );
+  };
+
+  const renderFilterHeader = (colId, label, widthClass = "", alignRight = false, isNumeric = false) => {
+    const isFiltered = isColumnFiltered(colId);
+    const isOpen = openFilterCol === colId;
+    const sortKey = colSortKeyMap[colId];
+    const isSorted = sortBy === sortKey;
+
+    return React.createElement(
+      "th",
+      {
+        key: colId,
+        className: `p-2 text-xs font-bold select-none relative ${widthClass} ${alignRight ? "text-right" : "text-left"}`,
+      },
+      React.createElement(
+        "div",
+        {
+          className: `inline-flex items-center gap-1 cursor-pointer px-1.5 py-1 rounded transition-colors group ${
+            alignRight ? "ml-auto" : ""
+          } ${
+            isFiltered
+              ? "bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 font-black border border-sky-300 dark:border-sky-700"
+              : "hover:bg-slate-200/70 dark:hover:bg-neutral-800 text-slate-700 dark:text-neutral-300"
+          }`,
+          onClick: (e) => {
+            e.stopPropagation();
+            setFilterSearch("");
+            setOpenFilterCol(isOpen ? null : colId);
+          },
+        },
+        React.createElement("span", { className: "truncate" }, label),
+        React.createElement(Icon, {
+          name: isFiltered ? "filter-x" : "filter",
+          className: `w-3 h-3 transition-opacity ${
+            isFiltered ? "text-sky-600 dark:text-sky-400 opacity-100" : "opacity-40 group-hover:opacity-100"
+          }`,
+        }),
+        isSorted &&
+          React.createElement(Icon, {
+            name: sortAsc ? "arrow-up" : "arrow-down",
+            className: "w-3 h-3 text-sky-500 shrink-0",
+          })
+      ),
+      isOpen && renderFilterPopover(colId, label, isNumeric)
+    );
+  };
+
   const sortedItems = useMemo(() => {
     let items = [...allDbItems];
     if (enableDeltaE && crosshair) {
@@ -11967,6 +12660,30 @@ const ViewDatabase = ({
         ),
       );
     }
+    if (Object.keys(columnFilters).length > 0) {
+      items = items.filter((item) => {
+        for (const colId of Object.keys(columnFilters)) {
+          const f = columnFilters[colId];
+          if (!f) continue;
+          if (colId === "L" || colId === "C" || colId === "H" || colId === "deltaE") {
+            const minVal = (f.min !== "" && f.min !== null && f.min !== undefined) ? parseFloat(f.min) : null;
+            const maxVal = (f.max !== "" && f.max !== null && f.max !== undefined) ? parseFloat(f.max) : null;
+            const val = colId === "deltaE" ? item._d : item[colId];
+            if (minVal !== null && (val === undefined || val === null || isNaN(val) || val < minVal)) return false;
+            if (maxVal !== null && (val === undefined || val === null || isNaN(val) || val > maxVal)) return false;
+          } else {
+            const textQ = (f.textQuery || "").trim().toLowerCase();
+            const selSet = f.selectedValues && f.selectedValues instanceof Set ? f.selectedValues : null;
+            const raw = item[colId];
+            const strVal = raw !== undefined && raw !== null && String(raw).trim() !== "" ? String(raw).trim() : "(Blank)";
+
+            if (textQ && !strVal.toLowerCase().includes(textQ)) return false;
+            if (selSet && !selSet.has(strVal)) return false;
+          }
+        }
+        return true;
+      });
+    }
     items = items.map((item) => ({
       ...item,
       _inGamut: new Color("oklch", [item.L, item.C, item.H]).inGamut("srgb"),
@@ -12006,6 +12723,10 @@ const ViewDatabase = ({
           valA = (a.material || "").toLowerCase();
           valB = (b.material || "").toLowerCase();
           break;
+        case "erpCode":
+          valA = (a.erpCode || "").toLowerCase();
+          valB = (b.erpCode || "").toLowerCase();
+          break;
         case "lightness":
           valA = a.L;
           valB = b.L;
@@ -12044,6 +12765,7 @@ const ViewDatabase = ({
     enableDeltaE,
     maxDeltaE,
     crosshair,
+    columnFilters,
   ]);
   const handleSaveEdit = (e) => {
     e.preventDefault();
@@ -12379,9 +13101,59 @@ const ViewDatabase = ({
         ),
       ),
     ),
+    openFilterCol &&
+      React.createElement("div", {
+        className: "fixed inset-0 z-40 bg-transparent",
+        onClick: () => setOpenFilterCol(null),
+      }),
     React.createElement(
       "div",
       { className: "flex-1 overflow-y-auto custom-scrollbar relative p-4" },
+      (() => {
+        const activeCols = Object.keys(columnFilters).filter(isColumnFiltered);
+        if (activeCols.length === 0) return null;
+        return React.createElement(
+          "div",
+          { className: "flex flex-wrap items-center gap-2 mb-3 p-2 bg-sky-50/80 dark:bg-sky-950/40 border border-sky-200/80 dark:border-sky-800/60 rounded-lg text-xs" },
+          React.createElement("span", { className: "font-bold text-sky-900 dark:text-sky-200 text-[11px] uppercase tracking-wider flex items-center gap-1" },
+            React.createElement(Icon, { name: "filter", className: "w-3 h-3 text-sky-600 dark:text-sky-400" }),
+            "Active Column Filters:"
+          ),
+          activeCols.map((colId) => {
+            const colLabel = COLUMNS_DEF.find((c) => c.id === colId)?.label || colId;
+            return React.createElement(
+              "span",
+              {
+                key: colId,
+                className: "inline-flex items-center gap-1.5 px-2 py-0.5 bg-white dark:bg-neutral-800 text-sky-800 dark:text-sky-200 border border-sky-300 dark:border-sky-700 rounded-full text-[11px] font-medium shadow-2xs",
+              },
+              colLabel,
+              React.createElement(
+                "button",
+                {
+                  onClick: () => {
+                    setColumnFilters((prev) => {
+                      const copy = { ...prev };
+                      delete copy[colId];
+                      return copy;
+                    });
+                  },
+                  className: "hover:text-rose-500 rounded-full p-0.5",
+                },
+                React.createElement(Icon, { name: "x", className: "w-3 h-3" })
+              )
+            );
+          }),
+          React.createElement(
+            "button",
+            {
+              onClick: () => setColumnFilters({}),
+              className: "ml-auto text-[11px] font-bold text-rose-600 dark:text-rose-400 hover:underline uppercase tracking-wider",
+            },
+            "Clear All Column Filters"
+          )
+        );
+      })(),
       renderItems.length === 0 &&
         React.createElement(
           "div",
@@ -12716,39 +13488,18 @@ const ViewDatabase = ({
                   { className: "p-3 w-12 text-center" },
                   "Color",
                 ),
-                React.createElement("th", { className: "p-3" }, "Name"),
-                React.createElement("th", { className: "p-3 w-20" }, "Brand"),
-                React.createElement("th", { className: "p-3" }, "Sheen"),
-                React.createElement("th", { className: "p-3" }, "Profile"),
-                React.createElement("th", { className: "p-3" }, "Vis. Pat"),
-                React.createElement("th", { className: "p-3" }, "Tac. Tex"),
-                React.createElement("th", { className: "p-3" }, "Material"),
-                React.createElement(
-                  "th",
-                  { className: "p-3 w-40" },
-                  "Web Link",
-                ),
-                enableDeltaE &&
-                  React.createElement(
-                    "th",
-                    { className: "p-3 w-16 text-right text-emerald-600" },
-                    "\u0394Eok",
-                  ),
-                React.createElement(
-                  "th",
-                  { className: "p-3 w-16 text-right" },
-                  "L",
-                ),
-                React.createElement(
-                  "th",
-                  { className: "p-3 w-16 text-right" },
-                  "C",
-                ),
-                React.createElement(
-                  "th",
-                  { className: "p-3 w-16 text-right" },
-                  "H",
-                ),
+                renderFilterHeader("displayName", "Name"),
+                renderFilterHeader("brand", "Brand", "w-24"),
+                renderFilterHeader("sheen", "Sheen"),
+                renderFilterHeader("doorProfile", "Profile"),
+                renderFilterHeader("visualTexture", "Vis. Pat"),
+                renderFilterHeader("tactileTexture", "Tac. Tex"),
+                renderFilterHeader("material", "Material"),
+                renderFilterHeader("erpCode", "Web Link", "w-40"),
+                enableDeltaE && renderFilterHeader("deltaE", "\u0394Eok", "w-20", true, true),
+                renderFilterHeader("L", "L", "w-16", true, true),
+                renderFilterHeader("C", "C", "w-16", true, true),
+                renderFilterHeader("H", "H", "w-16", true, true),
                 React.createElement("th", { className: "p-3 w-12" }, "Edit"),
               ),
             ),
@@ -14116,6 +14867,32 @@ const AppUI = ({
 }) => {
   const isDark = theme === "dark";
   const [showViewFilters, setShowViewFilters] = useState(false);
+  const [draggedPaletteIndex, setDraggedPaletteIndex] = useState(null);
+  const [dragOverPaletteIndex, setDragOverPaletteIndex] = useState(null);
+
+  const handleReorderPalette = useCallback((sourceIdx, targetIdx) => {
+    if (
+      sourceIdx === null ||
+      targetIdx === null ||
+      isNaN(sourceIdx) ||
+      isNaN(targetIdx) ||
+      sourceIdx === targetIdx
+    )
+      return;
+    setPalette((prev) => {
+      if (
+        sourceIdx < 0 ||
+        sourceIdx >= prev.length ||
+        targetIdx < 0 ||
+        targetIdx >= prev.length
+      )
+        return prev;
+      const next = [...prev];
+      const [moved] = next.splice(sourceIdx, 1);
+      next.splice(targetIdx, 0, moved);
+      return next;
+    });
+  }, [setPalette]);
 
   const handlePrintAvery = () => {
     try {
@@ -15186,20 +15963,57 @@ const AppUI = ({
                 React.createElement(
                   "div",
                   { className: "flex flex-wrap gap-2" },
-                  palette.map((item) => {
+                  palette.map((item, idx) => {
                     const info = getPaletteItemInfo(item);
                     const displayName = info.displayName;
                     const h = info.hex;
+                    const isDragging = draggedPaletteIndex === idx;
+                    const isDragOver = dragOverPaletteIndex === idx;
                     return React.createElement(
                       "div",
                       {
-                        key: item.id,
-                        className:
-                          "relative group w-10 h-10 rounded-md shadow-sm border border-slate-200 dark:border-neutral-700 cursor-pointer overflow-hidden flex-shrink-0",
+                        key: item.id || `pal-${idx}`,
+                        draggable: true,
+                        onDragStart: (e) => {
+                          e.dataTransfer.setData("text/plain", idx.toString());
+                          e.dataTransfer.effectAllowed = "move";
+                          setDraggedPaletteIndex(idx);
+                        },
+                        onDragOver: (e) => {
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = "move";
+                          if (dragOverPaletteIndex !== idx) setDragOverPaletteIndex(idx);
+                        },
+                        onDragLeave: () => {
+                          if (dragOverPaletteIndex === idx) setDragOverPaletteIndex(null);
+                        },
+                        onDragEnd: () => {
+                          setDraggedPaletteIndex(null);
+                          setDragOverPaletteIndex(null);
+                        },
+                        onDrop: (e) => {
+                          e.preventDefault();
+                          const sourceIdx = parseInt(e.dataTransfer.getData("text/plain"), 10);
+                          setDraggedPaletteIndex(null);
+                          setDragOverPaletteIndex(null);
+                          handleReorderPalette(sourceIdx, idx);
+                        },
+                        className: `relative group w-10 h-10 rounded-md shadow-sm border transition-all cursor-grab active:cursor-grabbing overflow-hidden flex-shrink-0 ${
+                          isDragging
+                            ? "opacity-30 scale-90 border-dashed border-sky-400"
+                            : isDragOver
+                            ? "ring-2 ring-sky-500 scale-105 z-20 border-sky-400"
+                            : "border-slate-200 dark:border-neutral-700 hover:border-slate-400 dark:hover:border-neutral-500"
+                        }`,
                         style: { backgroundColor: h },
                         onClick: () => handleUpdate([item.L, item.C, item.H], item.spectral, item.brand !== undefined ? { brand: item.brand, originalIndex: item.originalIndex } : null),
-                        title: `${displayName} (${item.erpCode})`,
+                        title: `${displayName} (${item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")} ${item.roleName || (idx < 4 ? "Dominant" : idx < 6 ? "Secondary" : "Accent")} - #${item.erpCode}) - Drag to reorder`,
                       },
+                      React.createElement(
+                        "div",
+                        { className: "absolute top-0.5 left-0.5 opacity-0 group-hover:opacity-70 transition-opacity z-10 pointer-events-none text-white drop-shadow" },
+                        React.createElement(Icon, { name: "grip-vertical", className: "w-2.5 h-2.5" })
+                      ),
                       info.image &&
                         React.createElement("div", {
                           className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
@@ -15240,6 +16054,19 @@ const AppUI = ({
                           className: "w-2 h-2",
                         }),
                       ),
+                      React.createElement(
+                        "div",
+                        {
+                          className: `absolute bottom-0.5 right-0.5 px-1 py-0.2 rounded text-[7px] font-black uppercase tracking-tight pointer-events-none drop-shadow ${
+                            (item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")) === "60%"
+                              ? "bg-amber-950/80 text-amber-200 border border-amber-500/30"
+                              : (item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")) === "30%"
+                              ? "bg-sky-950/80 text-sky-200 border border-sky-500/30"
+                              : "bg-emerald-950/90 text-emerald-200 border border-emerald-500/30"
+                          }`
+                        },
+                        item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")
+                      ),
                     );
                   }),
                   React.createElement(
@@ -15269,14 +16096,13 @@ const AppUI = ({
                       },
                       value: ""
                     },
-                    React.createElement("option", { value: "", disabled: true }, "✨ Auto-Generate..."),
-                    React.createElement("option", { value: "complementary" }, "Complementary"),
-                    React.createElement("option", { value: "analogous" }, "Analogous"),
-                    React.createElement("option", { value: "triadic" }, "Triadic"),
-                    React.createElement("option", { value: "tetradic" }, "Tetradic"),
-                    React.createElement("option", { value: "split_complementary" }, "Split Complement"),
-                    React.createElement("option", { value: "monochromatic" }, "Monochromatic"),
-                    React.createElement("option", { value: "shades" }, "Shades")
+                    React.createElement("option", { value: "", disabled: true }, "🏛️ Auto-Generate 60-30-10 Palette..."),
+                    React.createElement("option", { value: "luxury_interior" }, "🏛️ Signature 60-30-10 Interior Suite (4 Dominant, 2 Secondary, 1 Accent)"),
+                    React.createElement("option", { value: "quiet_luxury" }, "🤍 Quiet Luxury Tonal Suite (60-30-10 Rule)"),
+                    React.createElement("option", { value: "warm_wood_stone" }, "🪵 Warm Wood & Stone Harmony (60-30-10 Rule)"),
+                    React.createElement("option", { value: "statement_millwork" }, "♟️ High-Contrast Millwork (60-30-10 Rule)"),
+                    React.createElement("option", { value: "muted_complement" }, "🍃 Muted Organic Complement (60-30-10 Rule)"),
+                    React.createElement("option", { value: "atmospheric_interior" }, "🌌 Soft Atmospheric Interior (60-30-10 Rule)")
                   )
                 ),
                 palette.length > 0 &&
@@ -17140,6 +17966,20 @@ const AppUI = ({
         },
         React.createElement(
           "div",
+          { className: "absolute top-8 left-8 z-[110] flex items-center gap-3 bg-black/60 backdrop-blur-md border border-white/20 px-5 py-2.5 rounded-full text-white shadow-xl pointer-events-none select-none" },
+          React.createElement("span", { className: "text-amber-400 font-black text-xs tracking-wider uppercase flex items-center gap-1.5" },
+            React.createElement(Icon, { name: "layers", className: "w-4 h-4" }),
+            "60-30-10 Interior Design Rule"
+          ),
+          React.createElement("span", { className: "text-white/30 text-xs" }, "•"),
+          React.createElement("span", { className: "text-amber-200 text-xs font-bold" }, "60% Dominant (4 Swatches)"),
+          React.createElement("span", { className: "text-white/30 text-xs" }, "•"),
+          React.createElement("span", { className: "text-sky-200 text-xs font-bold" }, "30% Secondary (2 Swatches)"),
+          React.createElement("span", { className: "text-white/30 text-xs" }, "•"),
+          React.createElement("span", { className: "text-emerald-300 text-xs font-bold" }, "10% Accent (1 Swatch)")
+        ),
+        React.createElement(
+          "div",
           { className: "absolute top-8 right-8 z-[110] flex gap-2" },
           React.createElement(
             "button",
@@ -17180,7 +18020,7 @@ const AppUI = ({
         React.createElement(
           "div",
           { className: "flex w-full h-full relative z-10" },
-          palette.map((item) => {
+          palette.map((item, idx) => {
             const info = getPaletteItemInfo(item);
             const displayName =
               info.displayName !== "Unnamed"
@@ -17189,6 +18029,8 @@ const AppUI = ({
                   ? `#${item.erpCode}`
                   : "\u2014";
             const h = info.hex;
+            const isDragging = draggedPaletteIndex === idx;
+            const isDragOver = dragOverPaletteIndex === idx;
 
             // Compute extra color spaces
             const itemColor = new Color("oklch", [item.L, item.C, item.H]);
@@ -17227,10 +18069,41 @@ const AppUI = ({
             return React.createElement(
               "div",
               {
-                key: item.id,
-                className:
-                  "flex-1 flex flex-col justify-end p-8 transition-all hover:flex-[1.2] cursor-pointer group relative overflow-hidden",
-                style: { backgroundColor: h },
+                key: item.id || `fsp-${idx}`,
+                draggable: true,
+                onDragStart: (e) => {
+                  e.dataTransfer.setData("text/plain", idx.toString());
+                  e.dataTransfer.effectAllowed = "move";
+                  setDraggedPaletteIndex(idx);
+                },
+                onDragOver: (e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  if (dragOverPaletteIndex !== idx) setDragOverPaletteIndex(idx);
+                },
+                onDragLeave: () => {
+                  if (dragOverPaletteIndex === idx) setDragOverPaletteIndex(null);
+                },
+                onDragEnd: () => {
+                  setDraggedPaletteIndex(null);
+                  setDragOverPaletteIndex(null);
+                },
+                onDrop: (e) => {
+                  e.preventDefault();
+                  const sourceIdx = parseInt(e.dataTransfer.getData("text/plain"), 10);
+                  setDraggedPaletteIndex(null);
+                  setDragOverPaletteIndex(null);
+                  handleReorderPalette(sourceIdx, idx);
+                },
+                className: `flex flex-col justify-end p-8 transition-all cursor-grab active:cursor-grabbing group relative overflow-hidden ${
+                  isDragging ? "opacity-30 scale-[0.97]" : ""
+                } ${
+                  isDragOver ? "ring-4 ring-sky-400 ring-inset z-30 scale-[0.99]" : ""
+                }`,
+                style: {
+                  backgroundColor: h,
+                  flex: `${item.ratio || (idx < 4 ? 15 : idx < 6 ? 15 : 10)} 1 0%`
+                },
                 onClick: () => {
                   handleUpdate(
                     [item.L, item.C, item.H],
@@ -17240,6 +18113,23 @@ const AppUI = ({
                   setShowFullscreenPalette(false);
                 },
               },
+              React.createElement(
+                "div",
+                { className: "absolute top-4 left-4 z-20 flex items-center gap-1.5 opacity-60 group-hover:opacity-100 transition-opacity bg-black/40 backdrop-blur-md px-3 py-1.5 rounded-full text-white text-[11px] font-bold tracking-wider uppercase pointer-events-none select-none shadow-md" },
+                React.createElement(Icon, { name: "grip-vertical", className: "w-3.5 h-3.5" }),
+                "Drag to reorder"
+              ),
+              React.createElement(
+                "div",
+                { className: `absolute top-4 right-4 z-20 flex items-center gap-1.5 backdrop-blur-md px-3 py-1.5 rounded-full text-white text-[11px] font-black tracking-widest uppercase pointer-events-none select-none shadow-md border border-white/20 ${
+                  (item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")) === "60%"
+                    ? "bg-amber-950/80 text-amber-200"
+                    : (item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")) === "30%"
+                    ? "bg-sky-950/80 text-sky-200"
+                    : "bg-emerald-950/90 text-emerald-200"
+                }` },
+                `${item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")} ${item.roleName || (idx < 4 ? "Dominant" : idx < 6 ? "Secondary" : "Accent")}`
+              ),
               info.image &&
                 showFullscreenImageOverlay &&
                 React.createElement("div", {
