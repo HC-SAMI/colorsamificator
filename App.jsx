@@ -23,15 +23,7 @@ const get7DigitOklch = (L, C, H) => {
 
 const extractCleanColorCode = (c) => {
   if (!c) return "";
-  let val = c.code || c.erpCode || c.colorCode || c.number || "";
-  if (!val && c.url) {
-    if (typeof c.url === "string" && !c.url.startsWith("http://") && !c.url.startsWith("https://") && !c.url.startsWith("www.") && !c.url.includes("://")) {
-      val = c.url;
-    }
-  }
-  if (typeof val === "string" && (val.startsWith("http://") && !val.startsWith("https://") || val.startsWith("http://") || val.startsWith("https://") || val.startsWith("www.") || val.includes("://"))) {
-    val = "";
-  }
+  let val = c.code || c.erpCode || c.url || c.colorCode || c.number || "";
   return val;
 };
 
@@ -282,15 +274,16 @@ const SliderGroup = ({ label, value, min, max, step, onChange, icon }) =>
       className: "w-full",
     }),
   );
-const CollapsiblePanel = ({ title, icon, children, defaultOpen = false }) => {
-  const [isOpen, setIsOpen] = useState(defaultOpen);
+const CollapsiblePanel = ({ id, title, icon, children, defaultOpen = false, forceOpen }) => {
+  const [internalOpen, setInternalOpen] = useState(defaultOpen);
+  const isOpen = forceOpen !== undefined ? forceOpen : internalOpen;
   return React.createElement(
     "div",
-    { className: "border-b border-slate-200 dark:border-neutral-800" },
+    { id, className: "border-b border-slate-200 dark:border-neutral-800" },
     React.createElement(
       "button",
       {
-        onClick: () => setIsOpen(!isOpen),
+        onClick: () => setInternalOpen(!isOpen),
         className:
           "w-full flex items-center justify-between p-4 hover:bg-slate-50 dark:hover:bg-neutral-800/50 transition-colors",
       },
@@ -1130,11 +1123,24 @@ const CommercialMatches = ({
           "div",
           {
             className:
-              "text-[9px] text-slate-500 dark:text-neutral-500 uppercase tracking-wider",
+              "text-[9px] text-slate-500 dark:text-neutral-500 uppercase tracking-wider flex items-center gap-1.5",
           },
           label,
           " \xB7 \u0394Eok ",
           fmt(match.d, 2),
+          (match.url || match.erpCode) && String(match.url || match.erpCode).startsWith("http") &&
+            React.createElement(
+              "a",
+              {
+                href: match.url || match.erpCode,
+                target: "_blank",
+                rel: "noopener noreferrer",
+                className: "text-sky-500 hover:underline flex items-center gap-0.5 lowercase tracking-normal font-medium ml-auto",
+                onClick: (e) => e.stopPropagation(),
+              },
+              React.createElement(Icon, { name: "external-link", className: "w-2.5 h-2.5 shrink-0" }),
+              "link"
+            ),
         ),
       ),
     );
@@ -1145,6 +1151,7 @@ const CommercialMatches = ({
     React.createElement(
       "div",
       {
+        id: "tour-commercial-controls",
         className:
           "flex flex-col gap-2 p-2 bg-slate-50 dark:bg-neutral-800/50 rounded border border-slate-100 dark:border-neutral-800",
       },
@@ -1198,6 +1205,7 @@ const CommercialMatches = ({
       ? React.createElement(
           "div",
           {
+            id: "tour-commercial-list",
             className:
               "flex flex-col gap-1.5 max-h-[400px] overflow-y-auto pr-1",
           },
@@ -6333,6 +6341,7 @@ const ViewPins = ({
           React.createElement(
             "button",
             {
+              id: "tour-pins-print-btn",
               onClick: () => {
                 setAveryPrintSourceType("pins");
                 setSelectedPrintIds(selectedIds);
@@ -8041,6 +8050,31 @@ const processCSVData = (
           let ch = String(row.HEX).trim();
           if (!ch.startsWith("#")) ch = "#" + ch;
           tc = createColorFromHex(ch);
+        } else if (
+          (row.CIE_L !== void 0 || row.Lab_L !== void 0 || row.LAB_L !== void 0) &&
+          (row.CIE_A !== void 0 || row.CIE_a !== void 0 || row.Lab_A !== void 0 || row.Lab_a !== void 0) &&
+          (row.CIE_B !== void 0 || row.CIE_b !== void 0 || row.Lab_B !== void 0 || row.Lab_b !== void 0) &&
+          (row.CIE_L || row.Lab_L || row.LAB_L) !== ""
+        ) {
+          const lVal = parseFloat(row.CIE_L || row.Lab_L || row.LAB_L || 0);
+          const aVal = parseFloat(row.CIE_A || row.CIE_a || row.Lab_A || row.Lab_a || 0);
+          const bVal = parseFloat(row.CIE_B || row.CIE_b || row.Lab_B || row.Lab_b || 0);
+          tc = new Color("lab", [lVal, aVal, bVal]);
+        } else if (
+          (row.RGB_R !== void 0 || row.RGB_r !== void 0) &&
+          (row.RGB_G !== void 0 || row.RGB_g !== void 0) &&
+          (row.RGB_B !== void 0 || row.RGB_b !== void 0) &&
+          (row.RGB_R || row.RGB_r) !== ""
+        ) {
+          let rVal = parseFloat(row.RGB_R || row.RGB_r || 0);
+          let gVal = parseFloat(row.RGB_G || row.RGB_g || 0);
+          let bVal = parseFloat(row.RGB_B || row.RGB_b || 0);
+          if (rVal > 1 || gVal > 1 || bVal > 1) {
+            rVal /= 255;
+            gVal /= 255;
+            bVal /= 255;
+          }
+          tc = new Color("srgb", [rVal, gVal, bVal]);
         }
         if (tc) {
           const o = tc.to("oklch");
@@ -8095,7 +8129,10 @@ const processCSVData = (
                 ? row.Tags
                 : [];
         if (spectral.length > 0) colorObj.spectral = spectral;
-        if (url) colorObj.url = url;
+        if (url) {
+          colorObj.url = url;
+          colorObj.erpCode = url;
+        }
         if (image) colorObj.image = image;
         if (row.Illuminant) colorObj.illuminant = String(row.Illuminant).trim();
         if (row.Observer)
@@ -8963,7 +9000,7 @@ const App = () => {
     if (uniqueFiles.includes("anchors.csv")) filesToLoad.push("anchors.csv");
     if (uniqueFiles.includes("pins.csv")) filesToLoad.push("pins.csv");
     uniqueFiles.forEach((f) => {
-      if (f !== "anchors.csv" && f !== "pins.csv") filesToLoad.push(f);
+      if (f !== "anchors.csv" && f !== "pins.csv" && f !== "template.csv") filesToLoad.push(f);
     });
     if (
       filesToLoad.length !== linkedFiles.length ||
@@ -9226,6 +9263,8 @@ const App = () => {
   const [showFullscreenSpaces, setShowFullscreenSpaces] = useState(false);
   const [showCompareDivider, setShowCompareDivider] = useState(true);
   const [showHelpPanel, setShowHelpPanel] = useState(false);
+  const [activeTourId, setActiveTourId] = useState(null);
+  const [forceCommercialMatchesOpen, setForceCommercialMatchesOpen] = useState(false);
   const [showDatabaseManager, setShowDatabaseManager] = useState(false);
   const [showFileManager, setShowFileManager] = useState(false);
   const [visualizeData, setVisualizeData] = useState(null);
@@ -10858,9 +10897,62 @@ const App = () => {
           OKLCH_L: adjId,
         });
       });
+      const getExtraColorValues = (L, C, H, hex) => {
+        try {
+          let col;
+          if (L !== undefined && L !== "" && C !== undefined && H !== undefined) {
+            col = new Color("oklch", [parseFloat(L), parseFloat(C), parseFloat(H)]);
+          } else if (hex) {
+            let ch = String(hex).trim();
+            if (!ch.startsWith("#")) ch = "#" + ch;
+            col = createColorFromHex(ch);
+          }
+          if (!col) return {};
+          const srgb = col.to("srgb");
+          const r = Math.round(Math.max(0, Math.min(1, srgb.coords[0])) * 255);
+          const g = Math.round(Math.max(0, Math.min(1, srgb.coords[1])) * 255);
+          const b = Math.round(Math.max(0, Math.min(1, srgb.coords[2])) * 255);
+
+          const rNorm = r / 255, gNorm = g / 255, bNorm = b / 255;
+          const k_ = 1 - Math.max(rNorm, gNorm, bNorm);
+          const c_ = k_ === 1 ? 0 : (1 - rNorm - k_) / (1 - k_);
+          const m_ = k_ === 1 ? 0 : (1 - gNorm - k_) / (1 - k_);
+          const y_ = k_ === 1 ? 0 : (1 - bNorm - k_) / (1 - k_);
+
+          const cPerc = `${Math.round(c_ * 100)}%`;
+          const mPerc = `${Math.round(m_ * 100)}%`;
+          const yPerc = `${Math.round(y_ * 100)}%`;
+          const kPerc = `${Math.round(k_ * 100)}%`;
+
+          const lab = col.to("lab");
+          const labL = lab.coords[0].toFixed(2);
+          const labA = lab.coords[1].toFixed(2);
+          const labB = lab.coords[2].toFixed(2);
+
+          return {
+            RGB_R: r,
+            RGB_G: g,
+            RGB_B: b,
+            RGB: `[${r}, ${g}, ${b}]`,
+            CMYK_C: cPerc,
+            CMYK_M: mPerc,
+            CMYK_Y: yPerc,
+            CMYK_K: kPerc,
+            CMYK: `[${cPerc}, ${mPerc}, ${yPerc}, ${kPerc}]`,
+            CIE_L: labL,
+            CIE_A: labA,
+            CIE_B: labB,
+            CIE_LAB: `[${labL}, ${labA}, ${labB}]`,
+          };
+        } catch (e) {
+          return {};
+        }
+      };
+
       Object.values(savedColors)
         .filter((sc) => sc.type === "pin")
         .forEach((sc) => {
+          const extra = getExtraColorValues(sc.L, sc.C, sc.H, sc.hex);
           pinsCsv.push({
             Type: "PIN",
             Noun: sc.nameOverride || "",
@@ -10870,6 +10962,7 @@ const App = () => {
             OKLCH_L: sc.L,
             OKLCH_C: sc.C,
             OKLCH_H: sc.H,
+            ...extra,
             ERP_Code: sc.erpCode,
             Sheen: sc.sheen || "",
             Profile: sc.doorProfile || "",
@@ -10934,38 +11027,85 @@ const App = () => {
           Tags: p.id,
         });
       });
-      const makeExportRow = (data) =>
-        Object.assign(
-          {
-            Type: "",
-            Noun: "",
-            Adjective: "",
-            Note: "",
-            Tags: "",
-            Locked: "",
-            HEX: "",
-            OKLCH_L: "",
-            OKLCH_C: "",
-            OKLCH_H: "",
-            ERP_Code: "",
-            Sheen: "",
-            Profile: "",
-            Visual_Pattern: "",
-            Tactile_Texture: "",
-            Material: "",
-            Spectral: "",
-            Illuminant: "",
-            Observer: "",
-            Measurement_Method: "",
-            Measurement_Date: "",
-            Measurement_Device: "",
-          },
-          data,
-        );
+      const makeExportRow = (data) => {
+        const base = {
+          Type: "",
+          Noun: "",
+          Adjective: "",
+          Note: "",
+          Tags: "",
+          Locked: "",
+          HEX: "",
+          OKLCH_L: "",
+          OKLCH_C: "",
+          OKLCH_H: "",
+          RGB_R: "",
+          RGB_G: "",
+          RGB_B: "",
+          RGB: "",
+          CMYK_C: "",
+          CMYK_M: "",
+          CMYK_Y: "",
+          CMYK_K: "",
+          CMYK: "",
+          CIE_L: "",
+          CIE_A: "",
+          CIE_B: "",
+          CIE_LAB: "",
+          ERP_Code: "",
+          Sheen: "",
+          Profile: "",
+          Visual_Pattern: "",
+          Tactile_Texture: "",
+          Material: "",
+          Spectral: "",
+          Illuminant: "",
+          Observer: "",
+          Measurement_Method: "",
+          Measurement_Date: "",
+          Measurement_Device: "",
+        };
+        if (SPECTRAL_TABLES) {
+          SPECTRAL_TABLES.wavelengths.forEach((w) => {
+            base[`R${w} nm`] = "";
+          });
+        }
+        return Object.assign(base, data);
+      };
       const zip = new JSZip();
       zip.file("anchors.csv", Papa.unparse(anchorsCsv.map(makeExportRow)));
       zip.file("pins.csv", Papa.unparse(pinsCsv.map(makeExportRow)));
       zip.file("palettes.csv", Papa.unparse(palettesCsv.map(makeExportRow)));
+
+      const templateExtra = getExtraColorValues(0.5, 0.1, 180, "#888888");
+      const templateRows = [
+        makeExportRow({
+          Type: "DB",
+          Noun: "Color Name",
+          Adjective: "Brand Name",
+          Note: "Image URL or Note",
+          Tags: "tag1, tag2",
+          Locked: "",
+          HEX: "#888888",
+          OKLCH_L: "0.5",
+          OKLCH_C: "0.1",
+          OKLCH_H: "180",
+          ...templateExtra,
+          ERP_Code: "https://example.com/color-link",
+          Sheen: "Matte",
+          Profile: "Flat",
+          Visual_Pattern: "Solid",
+          Tactile_Texture: "Smooth",
+          Material: "Laminate",
+          Spectral: "[0.1, 0.1, ...]",
+          Illuminant: "D65",
+          Observer: "2",
+          Measurement_Method: "Reflection",
+          Measurement_Date: "2026-01-01",
+          Measurement_Device: "Spectrophotometer",
+        }),
+      ];
+      zip.file("template.csv", Papa.unparse(templateRows));
       Object.keys(colorData || {}).forEach((brand) => {
         const brandData = colorData[brand].map((color, listIdx) => {
           const safeName = color.name || `unknown-${listIdx}`;
@@ -10975,6 +11115,7 @@ const App = () => {
             names[customId] !== void 0 ? names[customId] : color.name;
           const customNote =
             dictNotes[customId] !== void 0 ? dictNotes[customId] : color.image;
+          const extra = getExtraColorValues(color.L, color.C, color.H, color.hex);
           const row = {
             Type: "DB",
             Adjective: brand,
@@ -10983,6 +11124,7 @@ const App = () => {
             OKLCH_L: color.L !== void 0 ? color.L : "",
             OKLCH_C: color.C !== void 0 ? color.C : "",
             OKLCH_H: color.H !== void 0 ? color.H : "",
+            ...extra,
             ERP_Code: color.url || "",
             Note: customNote || "",
             Tags: (color.tags || dictTags[customId] || []).join(","),
@@ -11796,6 +11938,10 @@ const App = () => {
     setShowCompareDivider,
     showHelpPanel,
     setShowHelpPanel,
+    activeTourId,
+    setActiveTourId,
+    forceCommercialMatchesOpen,
+    setForceCommercialMatchesOpen,
     showDatabaseManager,
     setShowDatabaseManager,
     showFileManager,
@@ -12140,7 +12286,8 @@ const ViewDatabase = ({
           H,
           hex: hexVal,
           displayName: c.name || "",
-          erpCode: extractCleanColorCode(c),
+          erpCode: c.url || c.erpCode || extractCleanColorCode(c) || "",
+          url: c.url || c.erpCode || "",
           hasSpectral: !!c.spectral && c.spectral.length > 0,
           tags: c.tags || [],
           spectral: c.spectral,
@@ -12778,6 +12925,7 @@ const ViewDatabase = ({
       ...oldItem,
       name: editingItem.displayName,
       url: editingItem.erpCode,
+      erpCode: editingItem.erpCode,
       image: editingItem.note,
       hex: editingItem.hex,
       tags: editingItem.tags,
@@ -14759,6 +14907,10 @@ const AppUI = ({
   setShowCompareDivider,
   showHelpPanel,
   setShowHelpPanel,
+  activeTourId,
+  setActiveTourId,
+  forceCommercialMatchesOpen,
+  setForceCommercialMatchesOpen,
   showDatabaseManager,
   setShowDatabaseManager,
   showFileManager,
@@ -15181,6 +15333,7 @@ const AppUI = ({
             React.createElement(
               "button",
               {
+                id: "tour-help-btn",
                 onClick: () => setShowHelpPanel(true),
                 className:
                   "p-1.5 text-slate-400 hover:text-sky-500 hover:bg-sky-50 dark:hover:bg-sky-500/10 rounded-full transition-colors",
@@ -15195,7 +15348,7 @@ const AppUI = ({
         ),
         React.createElement(
           "div",
-          { className: "relative" },
+          { id: "tour-omnisearch", className: "relative" },
           React.createElement(Icon, {
             name: "search",
             className: "absolute left-2.5 top-2.5 w-3.5 h-3.5 text-slate-400",
@@ -15226,7 +15379,7 @@ const AppUI = ({
       searchQuery
         ? React.createElement(
             "div",
-            { className: "flex-1 overflow-y-auto p-2 flex flex-col gap-1" },
+            { id: "tour-search-results", className: "flex-1 overflow-y-auto p-2 flex flex-col gap-1" },
             searchResults.length === 0
               ? React.createElement(
                   "div",
@@ -15339,6 +15492,7 @@ const AppUI = ({
               React.createElement(
                 "div",
                 {
+                  id: "tour-swatch-box",
                   className:
                     "h-44 w-full relative rounded-2xl shadow-inner border border-black/5 dark:border-white/5 overflow-hidden transition-colors duration-300",
                   style: { backgroundColor: crosshairHex },
@@ -15491,6 +15645,7 @@ const AppUI = ({
                 React.createElement(
                   "div",
                   {
+                    id: "tour-sami-name-header",
                     className:
                       "absolute inset-0 flex flex-col items-center justify-center p-6 mt-1 z-20 pointer-events-none",
                     style: { color: isLight ? "#010D00" : "#F2E8DF" },
@@ -15592,6 +15747,7 @@ const AppUI = ({
                 React.createElement(
                   "div",
                   {
+                    id: "tour-color-spaces",
                     className:
                       "absolute bottom-4 left-5 pointer-events-none z-10",
                     style: { color: isLight ? "#010D00" : "#F2E8DF" },
@@ -15634,6 +15790,7 @@ const AppUI = ({
             React.createElement(
               "div",
               {
+                id: "tour-sliders-group",
                 className:
                   "p-5 flex flex-col gap-6 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900",
               },
@@ -15787,9 +15944,11 @@ const AppUI = ({
             React.createElement(
               CollapsiblePanel,
               {
+                id: "tour-commercial-matches-panel",
                 title: "Commercial Matches",
                 icon: "palette",
                 defaultOpen: false,
+                forceOpen: forceCommercialMatchesOpen,
               },
               React.createElement(CommercialMatches, {
                 crosshair: {
@@ -15962,7 +16121,7 @@ const AppUI = ({
                 ),
                 React.createElement(
                   "div",
-                  { className: "flex flex-wrap gap-2" },
+                  { id: "tour-palette-slots", className: "flex flex-wrap gap-2" },
                   palette.map((item, idx) => {
                     const info = getPaletteItemInfo(item);
                     const displayName = info.displayName;
@@ -16126,6 +16285,7 @@ const AppUI = ({
                     React.createElement(
                       "button",
                       {
+                        id: "tour-palette-print-btn",
                         onClick: () => {
                           setAveryPrintSourceType("palette");
                           setSelectedPrintIds(palette.map((item) => item.id));
@@ -16817,7 +16977,7 @@ const AppUI = ({
           { className: "flex-1 flex items-center min-w-0 mr-4 pb-1.5" },
           React.createElement(
             "div",
-            { className: "relative" },
+            { id: "tour-view-tabs", className: "relative" },
             React.createElement(
               "select",
               {
@@ -18427,6 +18587,161 @@ const AppUI = ({
             },
             React.createElement(
               "section",
+              { className: "p-6 rounded-2xl bg-gradient-to-br from-sky-500/10 via-indigo-500/5 to-purple-500/10 border-2 border-sky-500/30 dark:border-sky-500/20 shadow-sm" },
+              React.createElement(
+                "div",
+                { className: "flex items-center justify-between mb-3" },
+                React.createElement(
+                  "div",
+                  { className: "flex items-center gap-2.5" },
+                  React.createElement(Icon, { name: "sparkles", className: "w-5 h-5 text-sky-500" }),
+                  React.createElement(
+                    "h3",
+                    { className: "text-lg font-black uppercase tracking-wider text-slate-900 dark:text-white" },
+                    "Interactive Step-by-Step Guides"
+                  )
+                ),
+                React.createElement(
+                  "span",
+                  { className: "px-2.5 py-0.5 bg-sky-500 text-white rounded-full text-[9px] font-black uppercase tracking-widest shadow-sm" },
+                  "3 Guided Scenarios"
+                )
+              ),
+              React.createElement(
+                "p",
+                { className: "text-xs text-slate-600 dark:text-neutral-300 mb-5 leading-relaxed font-medium" },
+                "Launch interactive on-screen tours with automated UI highlights, sample test actions, and step-by-step guidance."
+              ),
+              React.createElement(
+                "div",
+                { className: "grid grid-cols-1 md:grid-cols-3 gap-4" },
+                // Card 1: Search & SAMI Name
+                React.createElement(
+                  "div",
+                  { className: "bg-white dark:bg-neutral-800/90 rounded-xl p-4 border border-slate-200 dark:border-neutral-700/80 flex flex-col justify-between shadow-sm hover:border-sky-500/50 transition-all hover:shadow-md group" },
+                  React.createElement(
+                    "div",
+                    { className: "flex flex-col gap-2" },
+                    React.createElement(
+                      "div",
+                      { className: "flex items-center justify-between" },
+                      React.createElement(
+                        "span",
+                        { className: "px-2 py-0.5 bg-sky-100 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400 text-[9px] font-black uppercase rounded tracking-wider" },
+                        "Scenario 1"
+                      ),
+                      React.createElement(Icon, { name: "search", className: "w-4 h-4 text-sky-500 group-hover:scale-110 transition-transform" })
+                    ),
+                    React.createElement(
+                      "h4",
+                      { className: "font-black text-sm text-slate-900 dark:text-white" },
+                      "Commercial Search & SAMI Name"
+                    ),
+                    React.createElement(
+                      "p",
+                      { className: "text-[11px] text-slate-500 dark:text-neutral-400 leading-relaxed" },
+                      "Search database catalogs, focus OKLCH coordinates, and learn the [Adjective] + [Noun] classification formula."
+                    )
+                  ),
+                  React.createElement(
+                    "button",
+                    {
+                      onClick: () => {
+                        setShowHelpPanel(false);
+                        setActiveTourId("search-sami");
+                      },
+                      className: "mt-4 w-full py-2 bg-sky-500 hover:bg-sky-600 active:scale-95 text-white font-bold text-xs uppercase tracking-wider rounded-lg shadow-sm transition-all flex items-center justify-center gap-1.5"
+                    },
+                    React.createElement(Icon, { name: "play", className: "w-3 h-3 fill-current" }),
+                    "Start Tour (4 Steps)"
+                  )
+                ),
+                // Card 2: Commercial Matches
+                React.createElement(
+                  "div",
+                  { className: "bg-white dark:bg-neutral-800/90 rounded-xl p-4 border border-slate-200 dark:border-neutral-700/80 flex flex-col justify-between shadow-sm hover:border-sky-500/50 transition-all hover:shadow-md group" },
+                  React.createElement(
+                    "div",
+                    { className: "flex flex-col gap-2" },
+                    React.createElement(
+                      "div",
+                      { className: "flex items-center justify-between" },
+                      React.createElement(
+                        "span",
+                        { className: "px-2 py-0.5 bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 text-[9px] font-black uppercase rounded tracking-wider" },
+                        "Scenario 2"
+                      ),
+                      React.createElement(Icon, { name: "palette", className: "w-4 h-4 text-indigo-500 group-hover:scale-110 transition-transform" })
+                    ),
+                    React.createElement(
+                      "h4",
+                      { className: "font-black text-sm text-slate-900 dark:text-white" },
+                      "Commercial Color Matches (\u0394Eok)"
+                    ),
+                    React.createElement(
+                      "p",
+                      { className: "text-[11px] text-slate-500 dark:text-neutral-400 leading-relaxed" },
+                      "Find perceptual twins across manufacturers, tune \u0394Eok thresholds, and open direct technical spec sheets."
+                    )
+                  ),
+                  React.createElement(
+                    "button",
+                    {
+                      onClick: () => {
+                        setShowHelpPanel(false);
+                        setActiveTourId("commercial-matches");
+                      },
+                      className: "mt-4 w-full py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-bold text-xs uppercase tracking-wider rounded-lg shadow-sm transition-all flex items-center justify-center gap-1.5"
+                    },
+                    React.createElement(Icon, { name: "play", className: "w-3 h-3 fill-current" }),
+                    "Start Tour (4 Steps)"
+                  )
+                ),
+                // Card 3: Palette & Avery Printing
+                React.createElement(
+                  "div",
+                  { className: "bg-white dark:bg-neutral-800/90 rounded-xl p-4 border border-slate-200 dark:border-neutral-700/80 flex flex-col justify-between shadow-sm hover:border-sky-500/50 transition-all hover:shadow-md group" },
+                  React.createElement(
+                    "div",
+                    { className: "flex flex-col gap-2" },
+                    React.createElement(
+                      "div",
+                      { className: "flex items-center justify-between" },
+                      React.createElement(
+                        "span",
+                        { className: "px-2 py-0.5 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 text-[9px] font-black uppercase rounded tracking-wider" },
+                        "Scenario 3"
+                      ),
+                      React.createElement(Icon, { name: "printer", className: "w-4 h-4 text-emerald-500 group-hover:scale-110 transition-transform" })
+                    ),
+                    React.createElement(
+                      "h4",
+                      { className: "font-black text-sm text-slate-900 dark:text-white" },
+                      "Palette Playground & Avery Labels"
+                    ),
+                    React.createElement(
+                      "p",
+                      { className: "text-[11px] text-slate-500 dark:text-neutral-400 leading-relaxed" },
+                      "Build 60-30-10 interior palettes, configure Avery 5159 sheets with SAMI metadata, and print or export PDF."
+                    )
+                  ),
+                  React.createElement(
+                    "button",
+                    {
+                      onClick: () => {
+                        setShowHelpPanel(false);
+                        setActiveTourId("print-labels");
+                      },
+                      className: "mt-4 w-full py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-xs uppercase tracking-wider rounded-lg shadow-sm transition-all flex items-center justify-center gap-1.5"
+                    },
+                    React.createElement(Icon, { name: "play", className: "w-3 h-3 fill-current" }),
+                    "Start Tour (4 Steps)"
+                  )
+                )
+              )
+            ),
+            React.createElement(
+              "section",
               null,
               React.createElement(
                 "h3",
@@ -18815,6 +19130,7 @@ const AppUI = ({
           React.createElement(
             "div",
             {
+              id: "tour-avery-modal",
               className:
                 "bg-white dark:bg-neutral-900 text-slate-800 dark:text-neutral-100 rounded-2xl w-full max-w-5xl h-[90vh] shadow-2xl flex flex-col border border-slate-200 dark:border-neutral-800 overflow-hidden",
             },
@@ -19472,6 +19788,30 @@ const AppUI = ({
         )
       )
     ),
+    activeTourId && window.GuidedTour &&
+      React.createElement(window.GuidedTour, {
+        activeTourId,
+        onClose: () => {
+          setActiveTourId(null);
+          setForceCommercialMatchesOpen(false);
+        },
+        onSwitchTour: (newTourId) => setActiveTourId(newTourId),
+        actions: {
+          searchQuery,
+          setSearchQuery,
+          searchResults,
+          handleUpdate,
+          openCommercialMatches: (open = true) => setForceCommercialMatchesOpen(open),
+          activeTab,
+          setActiveTab,
+          palette,
+          setPalette,
+          generateAutoPalette,
+          setShowAveryModal,
+          setAveryPrintSourceType,
+          setSelectedPrintIds,
+        }
+      })
   );
 };
 const rootItem = document.getElementById("root");
