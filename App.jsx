@@ -5986,6 +5986,7 @@ const ViewPins = ({
   setShowAveryModal,
   setSelectedPrintIds,
   setAveryPrintSourceType,
+  onOpenAveryModal,
 }) => {
   const [sortBy, setSortBy] = useState("layer");
   const [sortAsc, setSortAsc] = useState(true);
@@ -15143,8 +15144,8 @@ const AppUI = ({
                 row-gap: 0in !important;
                 width: 8.5in !important;
                 height: 11in !important;
-                padding-top: 0.25in !important;
-                padding-bottom: 0.25in !important;
+                padding-top: calc(0.25in + 1mm) !important;
+                padding-bottom: calc(0.25in - 1mm) !important;
                 padding-left: 0.156in !important;
                 padding-right: 0.156in !important;
                 box-sizing: border-box !important;
@@ -15179,23 +15180,28 @@ const AppUI = ({
                 display: flex !important;
                 align-items: center !important;
                 justify-content: center !important;
+                background-color: #2B4032 !important;
+                color: #F2E8DF !important;
+                border-radius: 0in !important;
                 -webkit-print-color-adjust: exact !important;
                 print-color-adjust: exact !important;
               }
               .sami-sidebar span {
                 transform: rotate(-90deg) !important;
-                font-weight: 900 !important;
-                font-size: 13pt !important;
-                letter-spacing: 0.1em !important;
+                font-weight: 700 !important;
+                font-size: 12pt !important;
+                letter-spacing: 0.08em !important;
+                color: #F2E8DF !important;
               }
               .sami-content {
                 flex-grow: 1 !important;
-                padding: 0.1in 0.15in !important;
+                padding: 0.08in 0.12in !important;
                 display: flex !important;
                 flex-direction: column !important;
                 justify-content: space-between !important;
                 height: 100% !important;
                 box-sizing: border-box !important;
+                position: relative !important;
               }
               .sami-row {
                 display: flex !important;
@@ -15206,10 +15212,10 @@ const AppUI = ({
                 position: relative !important;
               }
               .sami-label {
-                font-weight: 800 !important;
-                width: 1.1in !important;
+                font-weight: 600 !important;
+                width: 1.05in !important;
                 flex-shrink: 0 !important;
-                color: #1a201c !important;
+                color: #374151 !important;
                 font-size: 6.5pt !important;
               }
               .sami-label.right {
@@ -15219,20 +15225,20 @@ const AppUI = ({
                 padding-right: 0.05in !important;
               }
               .sami-value {
-                font-weight: 500 !important;
-                color: #2b332d !important;
+                font-weight: 400 !important;
+                color: #374151 !important;
                 white-space: nowrap !important;
                 overflow: hidden !important;
                 text-overflow: ellipsis !important;
               }
               .sami-value.sami-lg {
                 font-size: 9.5pt !important;
-                font-weight: 800 !important;
+                font-weight: 600 !important;
                 text-transform: uppercase !important;
               }
               .sami-line {
                 flex-grow: 1 !important;
-                border-bottom: 0.5px solid #a0a8a3 !important;
+                border-bottom: 0.5px solid #cbd5e1 !important;
                 min-width: 0.5in !important;
                 margin-bottom: 1pt !important;
               }
@@ -15240,7 +15246,8 @@ const AppUI = ({
                 margin-left: auto !important;
                 font-size: 6pt !important;
                 font-style: italic !important;
-                color: #88908a !important;
+                font-weight: 400 !important;
+                color: #94a3b8 !important;
               }
             </style>
           </head>
@@ -17692,6 +17699,12 @@ const AppUI = ({
                 setShowAveryModal,
                 setSelectedPrintIds,
                 setAveryPrintSourceType,
+                onOpenAveryModal: (overrideIds) => {
+                  const ids = overrideIds || selectedIds;
+                  setAveryPrintSourceType("pins");
+                  setSelectedPrintIds(ids);
+                  setShowAveryModal(true);
+                },
               }),
             activeTab === "nix" &&
               React.createElement(ViewNixSpectroErrorBoundary, {
@@ -19403,8 +19416,8 @@ const AppUI = ({
             row-gap: 0in !important;
             width: 8.5in !important;
             height: 11in !important;
-            padding-top: 0.25in !important;
-            padding-bottom: 0.25in !important;
+            padding-top: calc(0.25in + 1mm) !important;
+            padding-bottom: calc(0.25in - 1mm) !important;
             padding-left: 0.156in !important;
             padding-right: 0.156in !important;
             box-sizing: border-box !important;
@@ -19439,23 +19452,28 @@ const AppUI = ({
             display: flex !important;
             align-items: center !important;
             justify-content: center !important;
+            background-color: #2B4032 !important;
+            color: #F2E8DF !important;
+            border-radius: 0in !important;
             -webkit-print-color-adjust: exact !important;
             print-color-adjust: exact !important;
           }
           .sami-sidebar span {
             transform: rotate(-90deg) !important;
-            font-weight: 900 !important;
-            font-size: 13pt !important;
-            letter-spacing: 0.1em !important;
+            font-weight: 700 !important;
+            font-size: 12pt !important;
+            letter-spacing: 0.08em !important;
+            color: #F2E8DF !important;
           }
           .sami-content {
             flex-grow: 1 !important;
-            padding: 0.1in 0.15in !important;
+            padding: 0.08in 0.12in !important;
             display: flex !important;
             flex-direction: column !important;
             justify-content: space-between !important;
             height: 100% !important;
             box-sizing: border-box !important;
+            position: relative !important;
           }
           .sami-row {
             display: flex !important;
@@ -19466,10 +19484,10 @@ const AppUI = ({
             position: relative !important;
           }
           .sami-label {
-            font-weight: 800 !important;
-            width: 1.1in !important;
+            font-weight: 600 !important;
+            width: 1.05in !important;
             flex-shrink: 0 !important;
-            color: #1a201c !important;
+            color: #374151 !important;
             font-size: 6.5pt !important;
           }
           .sami-label.right {
@@ -19479,20 +19497,20 @@ const AppUI = ({
             padding-right: 0.05in !important;
           }
           .sami-value {
-            font-weight: 500 !important;
-            color: #2b332d !important;
+            font-weight: 400 !important;
+            color: #374151 !important;
             white-space: nowrap !important;
             overflow: hidden !important;
             text-overflow: ellipsis !important;
           }
           .sami-value.sami-lg {
             font-size: 9.5pt !important;
-            font-weight: 800 !important;
+            font-weight: 600 !important;
             text-transform: uppercase !important;
           }
           .sami-line {
             flex-grow: 1 !important;
-            border-bottom: 0.5px solid #a0a8a3 !important;
+            border-bottom: 0.5px solid #cbd5e1 !important;
             min-width: 0.5in !important;
             margin-bottom: 1pt !important;
           }
@@ -19500,7 +19518,8 @@ const AppUI = ({
             margin-left: auto !important;
             font-size: 6pt !important;
             font-style: italic !important;
-            color: #88908a !important;
+            font-weight: 400 !important;
+            color: #94a3b8 !important;
           }
         }
       `),
@@ -19532,10 +19551,6 @@ const AppUI = ({
             const labelColorCode = get7DigitOklch(info.L, info.C, info.H);
             const generatedIdStr = `${labelColorCode}-${abbrSheen}-${abbrVisual}-${abbrTactile}-${abbrProfile}`;
 
-            // Determine if the text in sidebar should be black or white for contrast
-            // We use a simple luminous check, L from OKLCH is convenient (info.L)
-            const sidebarTextColor = info.L > 0.65 ? "#000000" : "#FFFFFF";
-
             return React.createElement(
               "div",
               {
@@ -19547,40 +19562,109 @@ const AppUI = ({
                 "div",
                 {
                   className: "sami-sidebar",
-                  style: { backgroundColor: info.hex, color: sidebarTextColor }
+                  style: { backgroundColor: "#2B4032", color: "#F2E8DF" }
                 },
                 React.createElement("span", null, "SAMI")
               ),
               React.createElement(
                 "div",
                 { className: "sami-content" },
-                // Row 1: Name
+                // Approval block in the top right, aligned with row 2 (COLOR CODE)
+                React.createElement(
+                  "div",
+                  { 
+                    style: { 
+                      position: "absolute", 
+                      top: "0.23in", 
+                      right: "0.04in", 
+                      width: "1.32in", 
+                      height: "0.58in", 
+                      display: "flex", 
+                      flexDirection: "column", 
+                      justifyContent: "space-between", 
+                      color: "#4b5563", 
+                      fontSize: "4.8pt", 
+                      zIndex: 10, 
+                      backgroundColor: "white",
+                      border: "0.6px solid #cbd5e1",
+                      borderRadius: "2px",
+                      padding: "2px 3px",
+                      boxSizing: "border-box"
+                    } 
+                  },
+                  React.createElement(
+                    "div",
+                    {
+                      style: {
+                        fontSize: "4pt",
+                        fontWeight: 700,
+                        color: "#6b7280",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.02em",
+                        textAlign: "center",
+                        borderBottom: "0.5px solid #e2e8f0",
+                        paddingBottom: "1.5px",
+                        lineHeight: 1
+                      }
+                    },
+                    "For use by SAMI Design only"
+                  ),
+                  React.createElement(
+                    "div",
+                    { style: { display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "0 1px" } },
+                    React.createElement(
+                      "div",
+                      { style: { display: "flex", alignItems: "center", gap: "3px" } },
+                      React.createElement("div", { style: { width: "6.5px", height: "6.5px", border: "0.6px solid #9ca3af", boxSizing: "border-box", borderRadius: "1px" } }),
+                      React.createElement("span", { style: { fontWeight: 500, fontSize: "4.8pt", color: "#374151" } }, "Approved")
+                    ),
+                    React.createElement(
+                      "div",
+                      { style: { display: "flex", alignItems: "center", gap: "3px" } },
+                      React.createElement("div", { style: { width: "6.5px", height: "6.5px", border: "0.6px solid #9ca3af", boxSizing: "border-box", borderRadius: "1px" } }),
+                      React.createElement("span", { style: { fontWeight: 500, fontSize: "4.8pt", color: "#374151" } }, "Rejected")
+                    )
+                  ),
+                  React.createElement(
+                    "div",
+                    { style: { display: "flex", alignItems: "flex-end", gap: "3px", width: "100%", padding: "0 1px" } },
+                    React.createElement("span", { style: { fontWeight: 500, fontSize: "4.8pt", color: "#374151" } }, "Date:"),
+                    React.createElement("div", { style: { flexGrow: 1, borderBottom: "0.5px solid #cbd5e1", height: "6px" } })
+                  ),
+                  React.createElement(
+                    "div",
+                    { style: { display: "flex", alignItems: "flex-end", gap: "3px", width: "100%", padding: "0 1px" } },
+                    React.createElement("span", { style: { fontWeight: 500, fontSize: "4.8pt", color: "#374151" } }, "Sign:"),
+                    React.createElement("div", { style: { flexGrow: 1, borderBottom: "0.5px solid #cbd5e1", height: "6px" } })
+                  )
+                ),
+                // Row 1: Name (Full width available)
                 React.createElement(
                   "div",
                   { className: "sami-row" },
                   React.createElement("span", { className: "sami-label" }, "NAME:"),
-                  React.createElement("span", { className: "sami-value sami-lg uppercase" }, info.displayName)
+                  React.createElement("span", { className: "sami-value sami-lg uppercase", style: { maxWidth: "2.3in" } }, info.displayName)
                 ),
                 // Row 2: Color Code
                 React.createElement(
                   "div",
                   { className: "sami-row" },
                   React.createElement("span", { className: "sami-label" }, "COLOR CODE:"),
-                  React.createElement("span", { className: "sami-value" }, labelColorCode)
+                  React.createElement("span", { className: "sami-value", style: { maxWidth: "1.05in" } }, labelColorCode)
                 ),
                 // Row 3: Sheen
                 React.createElement(
                   "div",
                   { className: "sami-row" },
                   React.createElement("span", { className: "sami-label" }, "SHEEN:"),
-                  React.createElement("span", { className: "sami-value" }, itemSheen)
+                  React.createElement("span", { className: "sami-value", style: { maxWidth: "1.05in" } }, itemSheen)
                 ),
                 // Row 4: Visual Pattern
                 React.createElement(
                   "div",
                   { className: "sami-row" },
                   React.createElement("span", { className: "sami-label" }, "VISUAL PATTERN:"),
-                  React.createElement("span", { className: "sami-value" }, itemVisualTexture)
+                  React.createElement("span", { className: "sami-value", style: { maxWidth: "1.05in" } }, itemVisualTexture)
                 ),
                 // Row 5: Tactile Texture
                 React.createElement(
