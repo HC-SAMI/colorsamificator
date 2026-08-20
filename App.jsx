@@ -2963,8 +2963,8 @@ function getInheritedPinNames(
   }
   let baseAdj = sc.adjOverride || adjectives[sc.adjId];
   let baseName = sc.nameOverride || names[sc.anchorId] || names[sc.nounId] || names[sc.id];
-  let source = "anchor";
-  let sourceId = sc.anchorId;
+  let source = sc.parentPinId ? "pin" : "anchor";
+  let sourceId = sc.parentPinId || sc.anchorId;
 
   const isCommercial =
     sc.brand !== undefined ||
@@ -2972,18 +2972,20 @@ function getInheritedPinNames(
 
   if (isCommercial) {
     let item = null;
+    let brandName = sc.brand;
     if (sc.anchorId && String(sc.anchorId).startsWith("commercial-")) {
       const parts = sc.anchorId.split("-");
-      const brand = parts[1];
+      brandName = parts[1];
       const index = parseInt(parts[2]);
-      item = colorData[brand]?.[index];
+      item = colorData[brandName]?.[index];
     } else if (sc.brand !== undefined && sc.originalIndex !== undefined) {
+      brandName = sc.brand;
       item = colorData[sc.brand]?.[sc.originalIndex];
     }
     source = "commercial";
     sourceId = sc.anchorId || `commercial-${sc.brand}-${sc.originalIndex}`;
-    baseName = sc.nameOverride || "";
-    baseAdj = sc.adjOverride || "";
+    baseName = sc.nameOverride || item?.name || sc.displayName || sc.name || "";
+    baseAdj = sc.adjOverride || (brandName ? brandName.toUpperCase() : "");
   } else if (!sc.nameOverride || !sc.adjOverride) {
     const nc = savedColors[sc.anchorId] || savedColors[sc.nounId];
     if (nc && nc.type === "nounColumn") {
@@ -2996,15 +2998,24 @@ function getInheritedPinNames(
           adjectives[lStr] || `L ${nc.minL.toFixed(2)} - ${nc.maxL.toFixed(2)}`;
       }
     } else if (nc && nc.type === "anchor") {
-      if (!sc.nameOverride) baseName = nc.nameOverride || names[nc.anchorId] || baseName;
-      if (!sc.adjOverride) baseAdj = nc.adjOverride || adjectives[nc.adjId] || baseAdj;
+      source = "anchor";
+      sourceId = nc.id || nc.anchorId;
+      if (!sc.nameOverride) baseName = nc.nameOverride || names[nc.anchorId] || names[nc.id] || baseName;
+      if (!sc.adjOverride) baseAdj = nc.adjOverride || adjectives[nc.adjId] || adjectives[nc.id] || baseAdj;
+    } else if (sc.anchorId) {
+      if (names[sc.anchorId] && !sc.nameOverride) {
+        baseName = names[sc.anchorId];
+      }
+      if (sc.adjId && adjectives[sc.adjId] && !sc.adjOverride) {
+        baseAdj = adjectives[sc.adjId];
+      }
     }
   }
 
   let inheritedAdj = baseAdj;
   let inheritedName = baseName;
 
-  if (!inheritedName || !inheritedAdj) {
+  if ((!inheritedName || !inheritedAdj) && !sc.anchorId && !sc.parentPinId && !isCommercial) {
     let minDist = Infinity;
     let bestAnchor = null;
     let scA = sc.a;
@@ -4942,26 +4953,15 @@ const ViewPalette = ({
     setSavedColors((prev) => {
       const next = { ...prev };
       delete next[id];
-      let deletedAny = true;
-      while (deletedAny) {
-        deletedAny = false;
-        Object.values(next).forEach((sc) => {
-          if (sc.type === "anchor" && sc.anchorId === id && sc.isCustomAnchor) {
-            delete next[sc.id];
-            deletedAny = true;
-          } else if (sc.type === "pin" && sc.anchorId === id) {
-            delete next[sc.id];
-            deletedAny = true;
-          } else if (
-            sc.type === "pin" &&
-            sc.parentPinId &&
-            !next[sc.parentPinId]
-          ) {
-            delete next[sc.id];
-            deletedAny = true;
-          }
-        });
-      }
+      Object.values(next).forEach((sc) => {
+        if (sc.type === "anchor" && sc.anchorId === id && sc.isCustomAnchor) {
+          delete next[sc.id];
+        } else if (sc.type === "pin" && sc.anchorId === id) {
+          sc.anchorId = null;
+        } else if (sc.type === "pin" && sc.parentPinId === id) {
+          sc.parentPinId = null;
+        }
+      });
       return next;
     });
   };
@@ -8151,15 +8151,38 @@ const processCSVData = (
         colorsAdded++;
       }
     } else if (targetType === "PIN" && pL !== null) {
-      const pinId = row.ID || crypto.randomUUID();
+      const pinId =
+        row.ID || row.Id || row.Pin_ID || row.PinId || crypto.randomUUID();
       const a = pC * Math.sin((pH * Math.PI) / 180);
       const b = pC * Math.cos((pH * Math.PI) / 180);
       const cStr = Math.round(pC * 100)
         .toString()
         .padStart(2, "0");
       const hStr = Math.round(pH).toString().padStart(3, "0");
-      const anchorId = `${cStr}-${hStr}`;
-      const adjId = getLStr(pL);
+      const defaultAnchorId = `${cStr}-${hStr}`;
+      const explicitAnchorId =
+        row.Anchor_ID || row.AnchorId || row.anchorId || (row.Anchor ? String(row.Anchor) : null);
+      const anchorId = explicitAnchorId || defaultAnchorId;
+      const parentPinId =
+        row.Parent_Pin_ID ||
+        row.ParentPinId ||
+        row.parentPinId ||
+        row.Parent_ID ||
+        row.ParentId ||
+        row.Parent ||
+        null;
+      const adjId =
+        row.Adj_ID || row.AdjId || row.adjId || getLStr(pL);
+      const brand =
+        row.Brand || row.brand || row.Brand_Name || row.BrandName || undefined;
+      const originalIndex =
+        row.Original_Index !== undefined && row.Original_Index !== ""
+          ? parseInt(row.Original_Index, 10)
+          : row.originalIndex !== undefined && row.originalIndex !== ""
+            ? parseInt(row.originalIndex, 10)
+            : undefined;
+      const image = row.Image || row.image || undefined;
+
       newSavedColors[pinId] = {
         id: pinId,
         type: "pin",
@@ -8177,6 +8200,10 @@ const processCSVData = (
         material: (row.Material || row.material || "").trim(),
         adjId,
         anchorId,
+        parentPinId: parentPinId || null,
+        brand: brand || undefined,
+        originalIndex: isNaN(originalIndex) ? undefined : originalIndex,
+        image: image || undefined,
         color:
           row.HEX ||
           new Color("oklch", [pL, pC, pH])
@@ -8246,21 +8273,27 @@ const processCSVData = (
           .map((t) => t.trim())
           .filter(Boolean);
     } else if (
-      (targetType === "GRID" ||
-        targetType === "ANCHOR" ||
-        targetType === "NOUN_COLUMN") &&
-      row.ID
+      targetType === "GRID" ||
+      targetType === "ANCHOR" ||
+      targetType === "CUSTOM_ANCHOR" ||
+      targetType === "NOUN_COLUMN"
     ) {
       const C = pC !== null ? pC : 0;
       const H = pH !== null ? pH : 0;
+      const id =
+        row.ID ||
+        (pL !== null
+          ? `anchor-${Math.round(C * 100).toString().padStart(2, "0")}-${Math.round(H).toString().padStart(3, "0")}-${getLStr(pL)}`
+          : `noun-${crypto.randomUUID()}`);
       if (targetType === "NOUN_COLUMN") {
-        const id = row.ID;
         const parts = (row.OKLCH_L || "").split("-");
         let minL = 0,
           maxL = 1;
         if (parts.length === 2) {
-          minL = parseFloat(parts[0]);
-          maxL = parseFloat(parts[1]);
+          minL = parseFloat(parts[0]) || 0;
+          maxL = parseFloat(parts[1]) || 1;
+        } else if (pL !== null) {
+          minL = maxL = pL;
         }
         newSavedColors[id] = {
           id,
@@ -8281,10 +8314,10 @@ const processCSVData = (
             .map((t) => t.trim())
             .filter(Boolean);
       } else {
-        if (row.Noun !== void 0 && row.Noun !== "") newNames[row.ID] = row.Noun;
-        if (row.Note !== void 0 && row.Note !== "") newNotes[row.ID] = row.Note;
+        if (row.Noun !== void 0 && row.Noun !== "") newNames[id] = row.Noun;
+        if (row.Note !== void 0 && row.Note !== "") newNotes[id] = row.Note;
         if (row.Tags)
-          newTags[row.ID] = row.Tags.split(",")
+          newTags[id] = row.Tags.split(",")
             .map((t) => t.trim())
             .filter(Boolean);
         let lStr = null;
@@ -8296,18 +8329,12 @@ const processCSVData = (
           }
           if (lStr) newAdjs[lStr] = row.Adjective;
         }
-        if (
-          String(row.Locked).toUpperCase() === "TRUE" &&
-          pL !== null &&
-          pC !== null &&
-          pH !== null
-        ) {
-          const anchorId = row.ID;
+        if (pL !== null && pC !== null && pH !== null) {
           const adjId = lStr || getLStr(pL);
           const a = pC * Math.sin((pH * Math.PI) / 180);
           const b = pC * Math.cos((pH * Math.PI) / 180);
-          newSavedColors[anchorId] = {
-            id: anchorId,
+          newSavedColors[id] = {
+            id,
             type: "anchor",
             L: pL,
             C: pC,
@@ -8316,14 +8343,18 @@ const processCSVData = (
             b,
             erpCode: row.ERP_Code || getExactErpCode(pL, pC, pH),
             adjId,
-            anchorId,
-            nameOverride: "",
-            adjOverride: "",
-            notes: "",
-            color: new Color("oklch", [pL, pC, pH])
-              .clone()
-              .toGamut({ space: "srgb" })
-              .toString({ format: "hex" }),
+            anchorId: id,
+            isCustomAnchor: true,
+            locked: String(row.Locked).toUpperCase() !== "FALSE",
+            nameOverride: row.Noun || "",
+            adjOverride: row.Adjective || "",
+            notes: row.Note || "",
+            color:
+              row.HEX ||
+              new Color("oklch", [pL, pC, pH])
+                .clone()
+                .toGamut({ space: "srgb" })
+                .toString({ format: "hex" }),
           };
         }
       }
@@ -8432,6 +8463,19 @@ const App = () => {
         console.error("Failed to parse saved state:", e);
       }
     }
+    if (!parsed || Object.keys(parsed).length === 0) {
+      try {
+        const localRaw = localStorage.getItem("color-samificator-state");
+        if (localRaw) {
+          const localParsed = JSON.parse(localRaw);
+          if (localParsed && typeof localParsed === "object") {
+            parsed = localParsed;
+          }
+        }
+      } catch (e) {
+        console.warn("Could not load state from localStorage:", e);
+      }
+    }
     if (!parsed.savedColors) parsed.savedColors = {};
     if (!parsed.names) parsed.names = {};
     if (!parsed.dictNotes) parsed.dictNotes = {};
@@ -8497,39 +8541,17 @@ const App = () => {
   useEffect(() => {
     let needsCleanup = false;
     const next = { ...savedColors };
-    let deletedAny = true;
-    while (deletedAny) {
-      deletedAny = false;
-      Object.values(next).forEach((sc) => {
-        if (
-          sc.type === "anchor" &&
-          sc.anchorId &&
-          sc.anchorId.startsWith("custom-noun-") &&
-          !next[sc.anchorId]
-        ) {
-          delete next[sc.id];
-          deletedAny = true;
-          needsCleanup = true;
-        } else if (
-          sc.type === "pin" &&
-          sc.anchorId &&
-          sc.anchorId.startsWith("custom-noun-") &&
-          !next[sc.anchorId]
-        ) {
-          delete next[sc.id];
-          deletedAny = true;
-          needsCleanup = true;
-        } else if (
-          sc.type === "pin" &&
-          sc.parentPinId &&
-          !next[sc.parentPinId]
-        ) {
-          delete next[sc.id];
-          deletedAny = true;
-          needsCleanup = true;
-        }
-      });
-    }
+    Object.values(next).forEach((sc) => {
+      if (
+        sc.type === "anchor" &&
+        sc.anchorId &&
+        sc.anchorId.startsWith("custom-noun-") &&
+        !next[sc.anchorId]
+      ) {
+        delete next[sc.id];
+        needsCleanup = true;
+      }
+    });
     if (needsCleanup) {
       setSavedColors(next);
     }
@@ -9297,6 +9319,11 @@ const App = () => {
       return;
     }
     const timer = setTimeout(() => {
+      try {
+        localStorage.setItem("color-samificator-state", currentStateStr);
+      } catch (e) {
+        console.warn("Failed to persist state to localStorage:", e);
+      }
       setHistory((prev) => {
         const currentRecordStr = JSON.stringify(prev.list[prev.index]);
         if (currentRecordStr === currentStateStr) return prev;
@@ -10869,29 +10896,7 @@ const App = () => {
     try {
       const anchorsCsv = [];
       const pinsCsv = [];
-      Object.keys(names).forEach((id) => {
-        const name = names[id];
-        if (!name) return;
-        const nc = savedColors[id];
-        if (nc && nc.type === "nounColumn") {
-          anchorsCsv.push({
-            Type: "NOUN",
-            Noun: name,
-            Note: dictNotes[id] || "",
-            Tags: (dictTags[id] || []).join(","),
-            OKLCH_L: `${nc.minL}-${nc.maxL}`,
-            OKLCH_C: nc.C,
-            OKLCH_H: nc.H,
-          });
-        }
-      });
-      Object.keys(adjectives).forEach((adjId) => {
-        anchorsCsv.push({
-          Type: "ADJECTIVE",
-          Adjective: adjectives[adjId] || "",
-          OKLCH_L: adjId,
-        });
-      });
+
       const getExtraColorValues = (L, C, H, hex) => {
         try {
           let col;
@@ -10944,12 +10949,123 @@ const App = () => {
         }
       };
 
+      const exportedAnchorIds = new Set();
+      Object.values(savedColors).forEach((sc) => {
+        if (sc.type === "nounColumn") {
+          exportedAnchorIds.add(sc.id);
+          const nounName = sc.nameOverride || names[sc.id] || "";
+          anchorsCsv.push({
+            Type: "NOUN",
+            ID: sc.id || "",
+            Noun: nounName,
+            Note: sc.notes || dictNotes[sc.id] || "",
+            Tags: (dictTags[sc.id] || []).join(","),
+            OKLCH_L:
+              sc.minL !== undefined && sc.maxL !== undefined
+                ? `${sc.minL}-${sc.maxL}`
+                : sc.L !== undefined
+                  ? sc.L
+                  : "",
+            OKLCH_C: sc.C !== undefined ? sc.C : "",
+            OKLCH_H: sc.H !== undefined ? sc.H : "",
+          });
+        } else if (sc.type === "anchor") {
+          exportedAnchorIds.add(sc.id);
+          const extra = getExtraColorValues(sc.L, sc.C, sc.H, sc.color || sc.hex);
+          const anchorNoun = sc.nameOverride || names[sc.anchorId] || names[sc.id] || "";
+          const anchorAdj = sc.adjOverride || adjectives[sc.adjId] || adjectives[sc.id] || "";
+          anchorsCsv.push({
+            Type: "ANCHOR",
+            ID: sc.id || sc.anchorId || "",
+            Noun: anchorNoun,
+            Adjective: anchorAdj,
+            Note: sc.notes || dictNotes[sc.id] || dictNotes[sc.anchorId] || "",
+            Tags: (dictTags[sc.id] || dictTags[sc.anchorId] || []).join(","),
+            OKLCH_L: sc.L !== undefined ? sc.L : "",
+            OKLCH_C: sc.C !== undefined ? sc.C : "",
+            OKLCH_H: sc.H !== undefined ? sc.H : "",
+            ...extra,
+            HEX:
+              sc.color ||
+              (sc.L !== undefined && sc.C !== undefined && sc.H !== undefined
+                ? new Color("oklch", [sc.L, sc.C, sc.H])
+                    .clone()
+                    .toGamut({ space: "srgb" })
+                    .toString({ format: "hex" })
+                : ""),
+            Locked: sc.locked !== false ? "TRUE" : "FALSE",
+            ERP_Code: sc.erpCode || "",
+          });
+        }
+      });
+
+      Object.keys(names).forEach((id) => {
+        if (exportedAnchorIds.has(id)) return;
+        const name = names[id];
+        if (!name) return;
+        const nc = savedColors[id];
+        if (nc && nc.type === "nounColumn") {
+          anchorsCsv.push({
+            Type: "NOUN",
+            ID: id,
+            Noun: name,
+            Note: dictNotes[id] || "",
+            Tags: (dictTags[id] || []).join(","),
+            OKLCH_L: `${nc.minL}-${nc.maxL}`,
+            OKLCH_C: nc.C,
+            OKLCH_H: nc.H,
+          });
+        } else {
+          const parts = id.split("-");
+          let cVal = "";
+          let hVal = "";
+          let lVal = "";
+          if (parts.length === 2) {
+            cVal = (parseInt(parts[0], 10) / 100).toString();
+            hVal = parseInt(parts[1], 10).toString();
+          } else if (parts.length === 3) {
+            if (parts[0] === "UL") lVal = "0.95-1";
+            else if (parts[0] === "L") lVal = "0.5-0.95";
+            else if (parts[0] === "D") lVal = "0.2-0.5";
+            else if (parts[0] === "UD") lVal = "0-0.2";
+            cVal = (parseInt(parts[1], 10) / 100).toString();
+            hVal = parseInt(parts[2], 10).toString();
+          }
+          anchorsCsv.push({
+            Type: "NOUN",
+            ID: id,
+            Noun: name,
+            Note: dictNotes[id] || "",
+            Tags: (dictTags[id] || []).join(","),
+            OKLCH_L: lVal,
+            OKLCH_C: cVal,
+            OKLCH_H: hVal,
+          });
+        }
+      });
+
+      Object.keys(adjectives).forEach((adjId) => {
+        anchorsCsv.push({
+          Type: "ADJECTIVE",
+          ID: adjId,
+          Adjective: adjectives[adjId] || "",
+          OKLCH_L: adjId,
+        });
+      });
+
       Object.values(savedColors)
         .filter((sc) => sc.type === "pin")
         .forEach((sc) => {
           const extra = getExtraColorValues(sc.L, sc.C, sc.H, sc.hex);
           pinsCsv.push({
             Type: "PIN",
+            ID: sc.id || "",
+            Parent_Pin_ID: sc.parentPinId || "",
+            Anchor_ID: sc.anchorId || "",
+            Adj_ID: sc.adjId || "",
+            Brand: sc.brand || "",
+            Original_Index: sc.originalIndex !== undefined ? sc.originalIndex : "",
+            Image: sc.image || "",
             Noun: sc.nameOverride || "",
             Adjective: sc.adjOverride || "",
             Note: sc.notes || "",
@@ -11025,6 +11141,13 @@ const App = () => {
       const makeExportRow = (data) => {
         const base = {
           Type: "",
+          ID: "",
+          Parent_Pin_ID: "",
+          Anchor_ID: "",
+          Adj_ID: "",
+          Brand: "",
+          Original_Index: "",
+          Image: "",
           Noun: "",
           Adjective: "",
           Note: "",
@@ -15188,10 +15311,12 @@ const AppUI = ({
               }
               .sami-sidebar span {
                 transform: rotate(-90deg) !important;
-                font-weight: 700 !important;
-                font-size: 12pt !important;
-                letter-spacing: 0.08em !important;
+                font-weight: 800 !important;
+                font-size: 22pt !important;
+                letter-spacing: 0.12em !important;
                 color: #F2E8DF !important;
+                line-height: 1 !important;
+                display: inline-block !important;
               }
               .sami-content {
                 flex-grow: 1 !important;
@@ -19460,10 +19585,12 @@ const AppUI = ({
           }
           .sami-sidebar span {
             transform: rotate(-90deg) !important;
-            font-weight: 700 !important;
-            font-size: 12pt !important;
-            letter-spacing: 0.08em !important;
+            font-weight: 800 !important;
+            font-size: 22pt !important;
+            letter-spacing: 0.12em !important;
             color: #F2E8DF !important;
+            line-height: 1 !important;
+            display: inline-block !important;
           }
           .sami-content {
             flex-grow: 1 !important;
@@ -19569,26 +19696,27 @@ const AppUI = ({
               React.createElement(
                 "div",
                 { className: "sami-content" },
-                // Approval block in the top right, aligned with row 2 (COLOR CODE)
+                // Approval block in the right, vertically centered and enlarged
                 React.createElement(
                   "div",
                   { 
                     style: { 
                       position: "absolute", 
-                      top: "0.23in", 
-                      right: "0.04in", 
-                      width: "1.32in", 
-                      height: "0.58in", 
+                      top: "50%", 
+                      transform: "translateY(-50%)", 
+                      right: "0.06in", 
+                      width: "1.36in", 
+                      height: "0.88in", 
                       display: "flex", 
                       flexDirection: "column", 
                       justifyContent: "space-between", 
-                      color: "#4b5563", 
-                      fontSize: "4.8pt", 
+                      color: "#374151", 
+                      fontSize: "5pt", 
                       zIndex: 10, 
                       backgroundColor: "white",
                       border: "0.6px solid #cbd5e1",
                       borderRadius: "2px",
-                      padding: "2px 3px",
+                      padding: "3px 4px",
                       boxSizing: "border-box"
                     } 
                   },
@@ -19596,46 +19724,46 @@ const AppUI = ({
                     "div",
                     {
                       style: {
-                        fontSize: "4pt",
+                        fontSize: "4.5pt",
                         fontWeight: 700,
-                        color: "#6b7280",
+                        color: "#4b5563",
                         textTransform: "uppercase",
                         letterSpacing: "0.02em",
                         textAlign: "center",
                         borderBottom: "0.5px solid #e2e8f0",
-                        paddingBottom: "1.5px",
-                        lineHeight: 1
+                        paddingBottom: "2px",
+                        lineHeight: 1.1
                       }
                     },
                     "For use by SAMI Design only"
                   ),
                   React.createElement(
                     "div",
-                    { style: { display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "0 1px" } },
+                    { style: { display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "1px 2px" } },
                     React.createElement(
                       "div",
-                      { style: { display: "flex", alignItems: "center", gap: "3px" } },
-                      React.createElement("div", { style: { width: "6.5px", height: "6.5px", border: "0.6px solid #9ca3af", boxSizing: "border-box", borderRadius: "1px" } }),
-                      React.createElement("span", { style: { fontWeight: 500, fontSize: "4.8pt", color: "#374151" } }, "Approved")
+                      { style: { display: "flex", alignItems: "center", gap: "3.5px" } },
+                      React.createElement("div", { style: { width: "7.5px", height: "7.5px", border: "0.6px solid #6b7280", boxSizing: "border-box", borderRadius: "1px" } }),
+                      React.createElement("span", { style: { fontWeight: 600, fontSize: "5pt", color: "#374151" } }, "Approved")
                     ),
                     React.createElement(
                       "div",
-                      { style: { display: "flex", alignItems: "center", gap: "3px" } },
-                      React.createElement("div", { style: { width: "6.5px", height: "6.5px", border: "0.6px solid #9ca3af", boxSizing: "border-box", borderRadius: "1px" } }),
-                      React.createElement("span", { style: { fontWeight: 500, fontSize: "4.8pt", color: "#374151" } }, "Rejected")
+                      { style: { display: "flex", alignItems: "center", gap: "3.5px" } },
+                      React.createElement("div", { style: { width: "7.5px", height: "7.5px", border: "0.6px solid #6b7280", boxSizing: "border-box", borderRadius: "1px" } }),
+                      React.createElement("span", { style: { fontWeight: 600, fontSize: "5pt", color: "#374151" } }, "Rejected")
                     )
                   ),
                   React.createElement(
                     "div",
-                    { style: { display: "flex", alignItems: "flex-end", gap: "3px", width: "100%", padding: "0 1px" } },
-                    React.createElement("span", { style: { fontWeight: 500, fontSize: "4.8pt", color: "#374151" } }, "Date:"),
-                    React.createElement("div", { style: { flexGrow: 1, borderBottom: "0.5px solid #cbd5e1", height: "6px" } })
+                    { style: { display: "flex", alignItems: "flex-end", gap: "3px", width: "100%", padding: "1px 2px" } },
+                    React.createElement("span", { style: { fontWeight: 600, fontSize: "5pt", color: "#374151", minWidth: "22px" } }, "Date:"),
+                    React.createElement("div", { style: { flexGrow: 1, borderBottom: "0.6px solid #cbd5e1", height: "8px" } })
                   ),
                   React.createElement(
                     "div",
-                    { style: { display: "flex", alignItems: "flex-end", gap: "3px", width: "100%", padding: "0 1px" } },
-                    React.createElement("span", { style: { fontWeight: 500, fontSize: "4.8pt", color: "#374151" } }, "Sign:"),
-                    React.createElement("div", { style: { flexGrow: 1, borderBottom: "0.5px solid #cbd5e1", height: "6px" } })
+                    { style: { display: "flex", alignItems: "flex-end", gap: "3px", width: "100%", padding: "1px 2px" } },
+                    React.createElement("span", { style: { fontWeight: 600, fontSize: "5pt", color: "#374151", minWidth: "22px" } }, "Sign:"),
+                    React.createElement("div", { style: { flexGrow: 1, borderBottom: "0.6px solid #cbd5e1", height: "8px" } })
                   )
                 ),
                 // Row 1: Name (Full width available)
