@@ -2940,12 +2940,14 @@ const ViewChromaRings = ({
 };
 function getInheritedPinNames(
   sc,
-  savedColors,
-  names,
-  adjectives,
+  savedColors = {},
+  names = {},
+  adjectives = {},
   colorData = {},
 ) {
-  if (sc && sc.parentPinId && savedColors[sc.parentPinId]) {
+  if (!sc) return { displayAdj: "", displayName: "", source: "anchor", sourceId: "" };
+
+  if (sc.parentPinId && savedColors[sc.parentPinId]) {
     const parent = savedColors[sc.parentPinId];
     const parentRes = getInheritedPinNames(
       parent,
@@ -2954,142 +2956,196 @@ function getInheritedPinNames(
       adjectives,
       colorData,
     );
+    let finalAdj = (sc.adjOverride || parentRes.displayAdj || "").trim();
+    let finalName = (sc.nameOverride || parentRes.displayName || "").trim();
+    if (finalAdj.toLowerCase() === "unnamed" || finalAdj.toLowerCase() === "unnamed adj") finalAdj = "";
+    if (finalName.toLowerCase() === "unnamed" || finalName.toLowerCase() === "unnamed noun") finalName = "";
     return {
-      displayAdj: (sc.adjOverride || parentRes.displayAdj || "").trim().toUpperCase(),
-      displayName: (sc.nameOverride || parentRes.displayName || "").trim().toUpperCase(),
+      displayAdj: finalAdj.toUpperCase(),
+      displayName: finalName.toUpperCase(),
       source: "pin",
       sourceId: parent.id,
     };
   }
-  let baseAdj = sc.adjOverride || adjectives[sc.adjId];
-  let baseName = sc.nameOverride || names[sc.anchorId] || names[sc.nounId] || names[sc.id];
+
   let source = sc.parentPinId ? "pin" : "anchor";
-  let sourceId = sc.parentPinId || sc.anchorId;
+  let sourceId = sc.parentPinId || sc.anchorId || sc.nounId || sc.id || "";
 
-  const isCommercial =
-    sc.brand !== undefined ||
-    (sc.anchorId && String(sc.anchorId).startsWith("commercial-"));
+  // 1. Check user explicit overrides
+  let inheritedAdj = sc.adjOverride ? sc.adjOverride.trim() : "";
+  let inheritedName = sc.nameOverride ? sc.nameOverride.trim() : "";
 
-  if (isCommercial) {
-    let item = null;
-    let brandName = sc.brand;
-    if (sc.anchorId && String(sc.anchorId).startsWith("commercial-")) {
-      const parts = sc.anchorId.split("-");
-      brandName = parts[1];
-      const index = parseInt(parts[2]);
-      item = colorData[brandName]?.[index];
-    } else if (sc.brand !== undefined && sc.originalIndex !== undefined) {
-      brandName = sc.brand;
-      item = colorData[sc.brand]?.[sc.originalIndex];
-    }
-    source = "commercial";
-    sourceId = sc.anchorId || `commercial-${sc.brand}-${sc.originalIndex}`;
-    baseName = sc.nameOverride || item?.name || sc.displayName || sc.name || "";
-    baseAdj = sc.adjOverride || (brandName ? brandName.toUpperCase() : "");
-  } else if (!sc.nameOverride || !sc.adjOverride) {
-    const nc = savedColors[sc.anchorId] || savedColors[sc.nounId];
-    if (nc && nc.type === "nounColumn") {
-      source = "nounColumn";
-      sourceId = nc.id;
-      if (!sc.nameOverride) baseName = nc.nameOverride || names[nc.id] || baseName;
-      if (!sc.adjOverride) {
-        const lStr = getLStr(sc.L);
-        baseAdj =
-          adjectives[lStr] || `L ${nc.minL.toFixed(2)} - ${nc.maxL.toFixed(2)}`;
+  // 2. Check direct dictionary matches by IDs if name is not set
+  if (!inheritedName) {
+    const checkDict = (id) => {
+      if (!id || String(id).startsWith("commercial-")) return "";
+      const val = names[id];
+      if (val && typeof val === "string" && val.trim() && val.trim().toLowerCase() !== "unnamed" && val.trim().toLowerCase() !== "unnamed noun") {
+        return val.trim();
       }
-    } else if (nc && nc.type === "anchor") {
-      source = "anchor";
+      return "";
+    };
+
+    if (sc.anchorId && savedColors[sc.anchorId]) {
+      const nc = savedColors[sc.anchorId];
+      inheritedName = nc.nameOverride || checkDict(nc.id) || checkDict(nc.anchorId);
+      source = nc.type || "anchor";
       sourceId = nc.id || nc.anchorId;
-      if (!sc.nameOverride) baseName = nc.nameOverride || names[nc.anchorId] || names[nc.id] || baseName;
-      if (!sc.adjOverride) baseAdj = nc.adjOverride || adjectives[nc.adjId] || adjectives[nc.id] || baseAdj;
-    } else if (sc.anchorId) {
-      if (names[sc.anchorId] && !sc.nameOverride) {
-        baseName = names[sc.anchorId];
-      }
-      if (sc.adjId && adjectives[sc.adjId] && !sc.adjOverride) {
-        baseAdj = adjectives[sc.adjId];
-      }
+    } else if (sc.nounId && savedColors[sc.nounId]) {
+      const nc = savedColors[sc.nounId];
+      inheritedName = nc.nameOverride || checkDict(nc.id) || checkDict(nc.anchorId);
+      source = nc.type || "anchor";
+      sourceId = nc.id || nc.anchorId;
+    }
+
+    if (!inheritedName) {
+      inheritedName = checkDict(sc.anchorId) || checkDict(sc.nounId) || checkDict(sc.id);
     }
   }
 
-  let inheritedAdj = baseAdj;
-  let inheritedName = baseName;
+  // 3. Parametric coordinate lookup from C and H
+  const scC = sc.C !== undefined ? sc.C : (sc.c !== undefined ? sc.c : null);
+  const scH = sc.H !== undefined ? sc.H : (sc.h !== undefined ? sc.h : null);
+  const scL = sc.L !== undefined ? sc.L : (sc.l !== undefined ? sc.l : null);
 
-  if ((!inheritedName || !inheritedAdj) && !sc.anchorId && !sc.parentPinId && !isCommercial) {
-    let minDist = Infinity;
-    let bestAnchor = null;
+  if (!inheritedName && scC !== null && scH !== null) {
+    const cStr = Math.round(scC * 100).toString().padStart(2, "0");
+    const hStr = Math.round(scH).toString().padStart(3, "0");
+    const baseNounId = `${cStr}-${hStr}`;
+    let prefix = "L";
+    if (scL !== null) {
+      if (scL >= 0.95) prefix = "UL";
+      else if (scL >= 0.5) prefix = "L";
+      else if (scL >= 0.2) prefix = "D";
+      else prefix = "UD";
+    }
+    const prefNounId = `${prefix}-${baseNounId}`;
+    if (names[prefNounId] && names[prefNounId].trim() && names[prefNounId].trim().toLowerCase() !== "unnamed" && names[prefNounId].trim().toLowerCase() !== "unnamed noun") {
+      inheritedName = names[prefNounId].trim();
+      sourceId = prefNounId;
+    } else if (names[baseNounId] && names[baseNounId].trim() && names[baseNounId].trim().toLowerCase() !== "unnamed" && names[baseNounId].trim().toLowerCase() !== "unnamed noun") {
+      inheritedName = names[baseNounId].trim();
+      sourceId = baseNounId;
+    }
+  }
+
+  // 4. Spatial nearest-neighbor search across savedColors (nounColumns/anchors) and names dictionary
+  if (!inheritedName && scC !== null && scH !== null) {
     let scA = sc.a;
     let scB = sc.b;
-    if ((scA === undefined || scB === undefined) && sc.C !== undefined && sc.H !== undefined) {
-      scA = sc.C * Math.cos((sc.H * Math.PI) / 180);
-      scB = sc.C * Math.sin((sc.H * Math.PI) / 180);
+    if (scA === undefined || scB === undefined) {
+      scA = scC * Math.cos((scH * Math.PI) / 180);
+      scB = scC * Math.sin((scH * Math.PI) / 180);
     }
+
+    let minDist = Infinity;
+    let bestNoun = "";
+    let bestSourceId = sourceId;
+    let bestSourceType = source;
+
+    // Check savedColors nounColumns and anchors
     Object.values(savedColors).forEach((other) => {
-      if (other.type === "anchor") {
-        const d =
-          Math.pow(sc.L - other.L, 2) +
-          Math.pow((scA ?? 0) - (other.a ?? 0), 2) +
-          Math.pow((scB ?? 0) - (other.b ?? 0), 2);
-        if (d < minDist) {
+      if (other.type === "nounColumn" || other.type === "anchor") {
+        const oName = (other.nameOverride || names[other.id] || names[other.anchorId] || "").trim();
+        if (!oName || oName.toLowerCase() === "unnamed" || oName.toLowerCase() === "unnamed noun") return;
+        const oA = other.a !== undefined ? other.a : (other.C || 0) * Math.cos(((other.H || 0) * Math.PI) / 180);
+        const oB = other.b !== undefined ? other.b : (other.C || 0) * Math.sin(((other.H || 0) * Math.PI) / 180);
+        const minL = other.minL !== undefined ? other.minL : (other.L !== undefined ? other.L - 0.05 : -0.01);
+        const maxL = other.maxL !== undefined ? other.maxL : (other.L !== undefined ? other.L + 0.05 : 1.01);
+        const midL = (minL + maxL) / 2;
+        const inL = scL === null || (scL >= minL - 0.01 && scL <= maxL + 0.01);
+        const dL = scL !== null ? (scL - midL) : 0;
+        const d = Math.pow(scA - oA, 2) + Math.pow(scB - oB, 2) + Math.pow(dL * 0.4, 2);
+        if (d < minDist && (inL || d < minDist * 0.5)) {
           minDist = d;
-          bestAnchor = other;
-        }
-      } else if (other.type === "nounColumn") {
-        const d = Math.pow((scA ?? 0) - (other.a ?? 0), 2) + Math.pow((scB ?? 0) - (other.b ?? 0), 2);
-        if (d < minDist && sc.L >= (other.minL ?? 0) && sc.L <= (other.maxL ?? 1)) {
-          minDist = d;
-          bestAnchor = other;
+          bestNoun = oName;
+          bestSourceId = other.id;
+          bestSourceType = other.type;
         }
       }
     });
-    if (bestAnchor) {
-      source = bestAnchor.type === "nounColumn" ? "nounColumn" : "anchor";
-      sourceId = bestAnchor.id;
-      if (bestAnchor.type === "nounColumn") {
-        if (!inheritedAdj) {
-          const lStr = getLStr(sc.L);
-          inheritedAdj =
-            adjectives[lStr] ||
-            `L ${bestAnchor.minL.toFixed(2)} - ${bestAnchor.maxL.toFixed(2)}`;
-        }
-        if (!inheritedName)
-          inheritedName = bestAnchor.nameOverride || names[bestAnchor.id];
+
+    // Check all entries in names dictionary
+    Object.entries(names).forEach(([k, val]) => {
+      if (!val || typeof val !== "string") return;
+      const cleanVal = val.trim();
+      if (!cleanVal || cleanVal.toLowerCase() === "unnamed" || cleanVal.toLowerCase() === "unnamed noun") return;
+      if (String(k).startsWith("commercial-")) return;
+
+      const parts = k.split("-");
+      let nC = 0, nH = 0, nMidL = 0.5;
+      if (parts.length === 2 && !isNaN(parseInt(parts[0], 10)) && !isNaN(parseInt(parts[1], 10))) {
+        nC = parseInt(parts[0], 10) / 100;
+        nH = parseInt(parts[1], 10);
+      } else if (parts.length === 3 && !isNaN(parseInt(parts[1], 10)) && !isNaN(parseInt(parts[2], 10))) {
+        const pref = parts[0];
+        nC = parseInt(parts[1], 10) / 100;
+        nH = parseInt(parts[2], 10);
+        if (pref === "UL") nMidL = 0.975;
+        else if (pref === "L") nMidL = 0.725;
+        else if (pref === "D") nMidL = 0.35;
+        else if (pref === "UD") nMidL = 0.1;
       } else {
-        if (!inheritedAdj)
-          inheritedAdj =
-            bestAnchor.adjOverride ||
-            adjectives[bestAnchor.id] ||
-            adjectives[bestAnchor.adjId];
-        if (!inheritedName)
-          inheritedName =
-            bestAnchor.nameOverride ||
-            names[bestAnchor.id] ||
-            names[bestAnchor.anchorId];
+        return;
+      }
+
+      const nA = nC * Math.cos((nH * Math.PI) / 180);
+      const nB = nC * Math.sin((nH * Math.PI) / 180);
+      const dL = scL !== null ? (scL - nMidL) : 0;
+      const d = Math.pow(scA - nA, 2) + Math.pow(scB - nB, 2) + Math.pow(dL * 0.4, 2);
+      if (d < minDist) {
+        minDist = d;
+        bestNoun = cleanVal;
+        bestSourceId = k;
+        bestSourceType = "anchor";
+      }
+    });
+
+    if (bestNoun) {
+      inheritedName = bestNoun;
+      sourceId = bestSourceId;
+      source = bestSourceType;
+    }
+  }
+
+  // 5. Resolve Adjective
+  if (!inheritedAdj) {
+    if (sc.adjId && adjectives[sc.adjId] && adjectives[sc.adjId].trim()) {
+      inheritedAdj = adjectives[sc.adjId].trim();
+    } else if (scL !== null) {
+      const lStr = getLStr(scL);
+      if (adjectives[lStr] && adjectives[lStr].trim()) {
+        inheritedAdj = adjectives[lStr].trim();
+      } else {
+        let closestLDist = Infinity;
+        let bestLAdj = "";
+        Object.entries(adjectives).forEach(([k, v]) => {
+          if (!v || typeof v !== "string" || !v.trim()) return;
+          const numL = parseFloat(k);
+          if (!isNaN(numL)) {
+            const diff = Math.abs(numL - scL);
+            if (diff < closestLDist) {
+              closestLDist = diff;
+              bestLAdj = v.trim();
+            }
+          }
+        });
+        if (bestLAdj) inheritedAdj = bestLAdj;
       }
     }
   }
 
-  if (!inheritedAdj && sc.L !== undefined) {
-    const lStr = getLStr(sc.L);
-    inheritedAdj = adjectives[sc.adjId] || adjectives[lStr] || "";
-  }
-  if (!inheritedName) {
-    inheritedName =
-      (sc.anchorId && names[sc.anchorId]) ||
-      (sc.nounId && names[sc.nounId]) ||
-      (sc.id && names[sc.id]) ||
-      sc.displayName ||
-      sc.name ||
-      "";
-  }
-
-  if (inheritedName === "Unnamed Noun" || inheritedName === "Unnamed") {
+  // Sanitize
+  if (inheritedName.toLowerCase() === "unnamed" || inheritedName.toLowerCase() === "unnamed noun") {
     inheritedName = "";
+  }
+  if (inheritedAdj.toLowerCase() === "unnamed" || inheritedAdj.toLowerCase() === "unnamed adj") {
+    inheritedAdj = "";
   }
 
   return {
-    displayAdj: (inheritedAdj || "").trim().toUpperCase(),
-    displayName: (inheritedName || "").trim().toUpperCase(),
+    displayAdj: inheritedAdj.toUpperCase(),
+    displayName: inheritedName.toUpperCase(),
     source,
     sourceId,
   };
@@ -8598,106 +8654,27 @@ const App = () => {
         );
       }
 
-      let adj = "";
-      let noun = "";
-      if (pin) {
-        const inherited = getInheritedPinNames(
-          pin,
-          savedColors,
-          names,
-          adjectives,
-          colorData,
-        );
-        adj = inherited.displayAdj;
-        noun = inherited.displayName;
-      } else {
-        adj = (
-          item.adjOverride ||
-          adjectives[item.adjId] ||
-          (item.L !== undefined && item.L !== null
-            ? adjectives[getLStr(item.L)]
-            : "") ||
-          ""
-        ).trim();
+      const targetObj = pin || item;
+      const inherited = getInheritedPinNames(
+        targetObj,
+        savedColors,
+        names,
+        adjectives,
+        colorData,
+      );
+      let adj = (inherited.displayAdj || "").trim();
+      let noun = (inherited.displayName || "").trim();
 
-        const nounFromDict = (id) => {
-          if (!id || String(id).startsWith("commercial-")) return null;
-          return names[id] || null;
-        };
-
-        noun = (
-          item.nameOverride ||
-          nounFromDict(item.nounId) ||
-          nounFromDict(item.anchorId) ||
-          nounFromDict(item.id) ||
-          ""
-        ).trim();
-
-        if (!noun && item.C !== undefined && item.H !== undefined) {
-          const cStr = Math.round(item.C * 100).toString().padStart(2, "0");
-          const hStr = Math.round(item.H).toString().padStart(3, "0");
-          const nId = `${cStr}-${hStr}`;
-          if (names[nId]) {
-            noun = names[nId].trim();
-          } else {
-            let itemA = item.a;
-            let itemB = item.b;
-            if (
-              (itemA === undefined || itemB === undefined) &&
-              item.C !== undefined &&
-              item.H !== undefined
-            ) {
-              itemA = item.C * Math.cos((item.H * Math.PI) / 180);
-              itemB = item.C * Math.sin((item.H * Math.PI) / 180);
-            }
-            let minDist = Infinity;
-            let bestNoun = "";
-            Object.values(savedColors).forEach((other) => {
-              if (other.type === "anchor" || other.type === "nounColumn") {
-                const oA =
-                  other.a !== undefined
-                    ? other.a
-                    : (other.C || 0) * Math.cos(((other.H || 0) * Math.PI) / 180);
-                const oB =
-                  other.b !== undefined
-                    ? other.b
-                    : (other.C || 0) * Math.sin(((other.H || 0) * Math.PI) / 180);
-                const d =
-                  Math.pow((itemA ?? 0) - oA, 2) + Math.pow((itemB ?? 0) - oB, 2);
-                const minL = other.minL !== undefined ? other.minL : -0.01;
-                const maxL = other.maxL !== undefined ? other.maxL : 1.01;
-                if (
-                  d < minDist &&
-                  (item.L === undefined ||
-                    (item.L >= minL - 0.001 && item.L <= maxL + 0.001))
-                ) {
-                  minDist = d;
-                  bestNoun =
-                    other.nameOverride ||
-                    names[other.id] ||
-                    names[other.anchorId] ||
-                    "";
-                }
-              }
-            });
-            if (bestNoun) {
-              noun = bestNoun.trim();
-            }
-          }
-        }
-      }
-
-      if (adj === "Unnamed" || adj === "Unnamed Adj") adj = "";
+      if (adj.toUpperCase() === "UNNAMED" || adj.toUpperCase() === "UNNAMED ADJ") adj = "";
       if (
-        noun === "Unnamed" ||
-        noun === "Unnamed Noun" ||
-        noun === "UNNAMED NOUN"
+        noun.toUpperCase() === "UNNAMED" ||
+        noun.toUpperCase() === "UNNAMED NOUN"
       ) {
         noun = "";
       }
 
       const derivedName = `${adj} ${noun}`.trim();
-      const displayName = (derivedName || "Unnamed").toUpperCase();
+      const displayName = (derivedName || noun || adj || (cleanErp ? `#${cleanErp}` : "\u2014")).toUpperCase();
 
       let image = item.image;
       let sheen = item.sheen;
@@ -9957,7 +9934,19 @@ const App = () => {
             bestAnchor.parentNounId || `${bestAnchor.cStr}-${bestAnchor.hStr}`;
         }
       } else {
-        nearestAnchorId = "";
+        const cStr = Math.round(effectiveC * 100).toString().padStart(2, "0");
+        const hStr = Math.round(effectiveH).toString().padStart(3, "0");
+        const baseId = `${cStr}-${hStr}`;
+        const prefix =
+          effectiveL >= 0.95
+            ? "UL"
+            : effectiveL >= 0.5
+            ? "L"
+            : effectiveL >= 0.2
+            ? "D"
+            : "UD";
+        const prefId = `${prefix}-${baseId}`;
+        nearestAnchorId = names[prefId] ? prefId : (names[baseId] ? baseId : prefId);
       }
     }
     const exactErpCode = getExactErpCode(scrubL, scrubC, scrubH);
@@ -10971,6 +10960,7 @@ const App = () => {
           });
         } else if (sc.type === "anchor") {
           exportedAnchorIds.add(sc.id);
+          if (sc.anchorId) exportedAnchorIds.add(sc.anchorId);
           const extra = getExtraColorValues(sc.L, sc.C, sc.H, sc.color || sc.hex);
           const anchorNoun = sc.nameOverride || names[sc.anchorId] || names[sc.id] || "";
           const anchorAdj = sc.adjOverride || adjectives[sc.adjId] || adjectives[sc.id] || "";
@@ -11057,17 +11047,24 @@ const App = () => {
         .filter((sc) => sc.type === "pin")
         .forEach((sc) => {
           const extra = getExtraColorValues(sc.L, sc.C, sc.H, sc.hex);
+          const pinNames = getInheritedPinNames(
+            sc,
+            savedColors,
+            names,
+            adjectives,
+            colorData,
+          );
           pinsCsv.push({
             Type: "PIN",
             ID: sc.id || "",
             Parent_Pin_ID: sc.parentPinId || "",
-            Anchor_ID: sc.anchorId || "",
+            Anchor_ID: sc.anchorId || pinNames.sourceId || "",
             Adj_ID: sc.adjId || "",
             Brand: sc.brand || "",
             Original_Index: sc.originalIndex !== undefined ? sc.originalIndex : "",
             Image: sc.image || "",
-            Noun: sc.nameOverride || "",
-            Adjective: sc.adjOverride || "",
+            Noun: sc.nameOverride || pinNames.displayName || "",
+            Adjective: sc.adjOverride || pinNames.displayAdj || "",
             Note: sc.notes || "",
             Tags: (dictTags[sc.id] || []).join(","),
             OKLCH_L: sc.L,
@@ -11839,9 +11836,34 @@ const App = () => {
           inherited: inherited2,
         };
       }
+      let activeNoun = names[crosshair?.nearestAnchorId] || "";
+      let activeAdj = adjectives[crosshair?.nearestAdjId] || "";
+      if (!activeNoun || activeNoun === "Unnamed" || activeNoun === "Unnamed Noun" || !activeAdj) {
+        const derived = getInheritedPinNames(
+          {
+            L: crosshair?.rawL,
+            C: crosshair?.rawC,
+            H: crosshair?.rawH,
+            a: crosshair?.a,
+            b: crosshair?.b,
+            anchorId: crosshair?.nearestAnchorId,
+            adjId: crosshair?.nearestAdjId,
+          },
+          savedColors,
+          names,
+          adjectives,
+          colorData,
+        );
+        if (!activeNoun || activeNoun === "Unnamed" || activeNoun === "Unnamed Noun") {
+          activeNoun = derived.displayName;
+        }
+        if (!activeAdj) {
+          activeAdj = derived.displayAdj;
+        }
+      }
       return {
-        adj: adjectives[crosshair?.nearestAdjId] || "",
-        name: names[crosshair?.nearestAnchorId] || "",
+        adj: activeAdj,
+        name: activeNoun,
         notes: dictNotes[crosshair?.nearestAnchorId] || "",
       };
     }
