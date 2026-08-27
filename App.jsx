@@ -11929,6 +11929,17 @@ const App = () => {
       inherited,
     };
   }, [crosshair, savedColors, adjectives, names, dictNotes]);
+
+  if (!colorData) {
+    return React.createElement(
+      "div",
+      { className: "min-h-screen flex flex-col items-center justify-center p-6 text-center bg-[#0f172a] text-slate-100 font-sans" },
+      React.createElement("div", { className: "w-12 h-12 border-4 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin mb-4" }),
+      React.createElement("h2", { className: "text-xl font-bold text-slate-200 tracking-wide" }, "The ColorSAMificator"),
+      React.createElement("p", { className: "text-sm text-slate-400 mt-2 font-mono" }, "Loading datasets...")
+    );
+  }
+
   const activeAdj = activeData.adj;
   const activeName = activeData.name;
   const activeNotes = activeData.notes;
@@ -14721,5176 +14732,133 @@ const ViewDatabase = ({
                     "w-full bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-3 py-2 text-sm font-mono",
                   placeholder: "https://",
                 }),
-              ),
-              React.createElement(
-                "div",
-                { className: "grid grid-cols-2 gap-3" },
-                [
-                  { label: "Sheen", key: "sheen", options: LABEL_OPTIONS.sheen },
-                  { label: "Profile", key: "doorProfile", options: LABEL_OPTIONS.doorProfile },
-                  { label: "Visual Pattern", key: "visualTexture", options: LABEL_OPTIONS.visualPattern },
-                  { label: "Tactile Texture", key: "tactileTexture", options: LABEL_OPTIONS.tactileTexture },
-                  { label: "Material", key: "material", options: LABEL_OPTIONS.material },
-                ].map((field) => 
-                  React.createElement(
-                    "div",
-                    { key: field.key },
-                    React.createElement(
-                      "label",
-                      { className: "block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1" },
-                      field.label
-                    ),
-                    React.createElement("select", {
-                      value: editingItem[field.key] || "",
-                      onChange: (e) => setEditingItem({ ...editingItem, [field.key]: e.target.value }),
-                      className: "w-full bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs text-slate-900 dark:text-white outline-none cursor-pointer"
-                    }, field.options.map(opt => React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)))
-                  )
-                )
-              ),
-              React.createElement(
-                "div",
-                null,
-                React.createElement(
-                  "label",
-                  {
-                    className:
-                      "block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1",
-                  },
-                  "Spectral Data (31 values, comma sep)",
-                ),
-                React.createElement("textarea", {
-                  value: editingItem.spectralStr,
-                  onChange: (e) =>
-                    setEditingItem({
-                      ...editingItem,
-                      spectralStr: e.target.value,
-                    }),
-                  className:
-                    "w-full bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-3 py-2 text-xs font-mono h-24 custom-scrollbar mb-2",
-                  placeholder: "0.21,0.22,...",
-                }),
-              ),
-              editingItem.spectralStr &&
-                editingItem.spectralStr.split(",").length === 31 &&
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "mt-2 pt-4 border-t border-slate-200 dark:border-neutral-800",
-                  },
-                  React.createElement(
-                    "label",
-                    {
-                      className:
-                        "block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2",
-                    },
-                    "Spectral Graph & Meta",
-                  ),
-                  React.createElement(SpectralGraph, {
-                    spectralData: editingItem.spectralStr
-                      .split(",")
-                      .map(Number),
-                    theme: document.documentElement.classList.contains("dark")
-                      ? "dark"
-                      : "light",
-                    meta: editingItem,
-                  }),
-                ),
-              React.createElement(
-                "div",
-                {
-                  className:
-                    "flex gap-4 pt-4 mt-2 border-t border-slate-200 dark:border-neutral-800",
-                },
-                React.createElement(
-                  "button",
-                  {
-                    type: "button",
-                    onClick: () => handleDeleteItem(editingItem),
-                    className:
-                      "px-4 py-2 bg-rose-50 hover:bg-rose-100 text-rose-600 dark:bg-rose-500/10 dark:hover:bg-rose-500/20 rounded font-bold uppercase tracking-wider text-[11px] transition-colors",
-                  },
-                  React.createElement(Icon, {
-                    name: "trash-2",
-                    className: "w-3.5 h-3.5 inline mr-1",
-                  }),
-                  " ",
-                  "Delete Item",
-                ),
-                React.createElement(
-                  "button",
-                  {
-                    type: "button",
-                    onClick: () => setEditingItem(null),
-                    className:
-                      "ml-auto px-4 py-2 text-slate-500 hover:text-slate-800 font-bold uppercase tracking-wider text-[11px]",
-                  },
-                  "Cancel",
-                ),
-                React.createElement(
-                  "button",
-                  {
-                    type: "submit",
-                    className:
-                      "px-6 py-2 bg-sky-500 hover:bg-sky-600 text-white rounded font-bold uppercase tracking-wider text-[11px] shadow-sm",
-                  },
-                  React.createElement(Icon, {
-                    name: "save",
-                    className: "w-3.5 h-3.5 inline mr-1",
-                  }),
-                  " ",
-                  "Save",
-                ),
-              ),
-            ),
-          ),
-        ),
-        document.body,
-      ),
-  );
-};
-const FileManager = ({ linkedFiles, setLinkedFiles, onClose }) => {
-  const [newFileName, setNewFileName] = useState("");
-  const handleAddFile = () => {
-    const trimmed = newFileName.trim();
-    if (trimmed && !linkedFiles.includes(trimmed)) {
-      setLinkedFiles([...linkedFiles, trimmed]);
-      setNewFileName("");
-    }
-  };
-  const handleRemoveFile = async (fileToRemove) => {
-    setLinkedFiles(linkedFiles.filter((f) => f !== fileToRemove));
-  };
-  return React.createElement(
-    "div",
-    {
-      className:
-        "fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4",
-    },
-    React.createElement(
-      "div",
-      {
-        className:
-          "bg-white dark:bg-neutral-900 rounded-xl shadow-2xl w-full max-w-md flex flex-col max-h-[90vh] border border-slate-200 dark:border-neutral-800 overflow-hidden",
-      },
-      React.createElement(
-        "div",
-        {
-          className:
-            "flex items-center justify-between p-4 border-b border-slate-100 dark:border-neutral-800 bg-slate-50/50 dark:bg-neutral-900/50",
-        },
-        React.createElement(
-          "h2",
-          {
-            className:
-              "text-lg font-bold text-slate-800 dark:text-neutral-100 flex items-center gap-2",
-          },
-          React.createElement(Icon, {
-            name: "folder",
-            className: "w-5 h-5 text-blue-500",
-          }),
-          "Linked CSV Files",
-        ),
-        React.createElement(
-          "button",
-          {
-            onClick: onClose,
-            className:
-              "p-1.5 rounded-md hover:bg-slate-200 dark:hover:bg-neutral-800 text-slate-500 transition-colors",
-          },
-          React.createElement(Icon, { name: "x", className: "w-5 h-5" }),
-        ),
-      ),
-      React.createElement(
-        "div",
-        { className: "p-4 flex-1 overflow-y-auto" },
-        React.createElement(
-          "p",
-          { className: "text-sm text-slate-600 dark:text-neutral-400 mb-4" },
-          "These CSV files will be automatically loaded when the application starts. When you export the app state to HTML, this list is saved.",
-        ),
-        React.createElement(
-          "div",
-          { className: "space-y-2 mb-6" },
-          linkedFiles.map((file) =>
-            React.createElement(
-              "div",
-              {
-                key: file,
-                className:
-                  "flex items-center justify-between p-2 bg-slate-50 dark:bg-neutral-800/50 rounded-lg border border-slate-200 dark:border-neutral-700",
-              },
-              React.createElement(
-                "div",
-                {
-                  className:
-                    "flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-neutral-300",
-                },
-                React.createElement(Icon, {
-                  name: "file-text",
-                  className: "w-4 h-4 text-slate-400",
-                }),
-                file,
-              ),
-              React.createElement(
-                "button",
-                {
-                  onClick: () => handleRemoveFile(file),
-                  className:
-                    "p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 rounded transition-colors",
-                  title: "Remove file link",
-                },
-                React.createElement(Icon, {
-                  name: "trash-2",
-                  className: "w-4 h-4",
-                }),
-              ),
-            ),
-          ),
-          linkedFiles.length === 0 &&
-            React.createElement(
-              "div",
-              {
-                className:
-                  "text-center p-4 text-sm text-slate-500 dark:text-neutral-500 italic border border-dashed border-slate-300 dark:border-neutral-700 rounded-lg",
-              },
-              "No files linked.",
-            ),
-        ),
-        React.createElement(
-          "div",
-          { className: "flex gap-2" },
-          React.createElement("input", {
-            type: "text",
-            value: newFileName,
-            onChange: (e) => setNewFileName(e.target.value),
-            placeholder: "e.g. Uniboard.csv",
-            className:
-              "flex-1 px-3 py-2 text-sm bg-white dark:bg-neutral-950 border border-slate-300 dark:border-neutral-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-neutral-200",
-            onKeyDown: (e) => {
-              if (e.key === "Enter") handleAddFile();
-            },
-          }),
-          React.createElement(
-            "button",
-            {
-              onClick: handleAddFile,
-              disabled: !newFileName.trim(),
-              className:
-                "px-3 py-2 bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 dark:disabled:bg-neutral-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-1",
-            },
-            React.createElement(Icon, { name: "plus", className: "w-4 h-4" }),
-            "Add",
-          ),
-        ),
-      ),
-    ),
-  );
-};
-const AppUI = ({
-  theme,
-  setTheme,
-  activeTab,
-  setActiveTab,
-  names,
-  setNames,
-  adjectives,
-  setAdjectives,
-  filterSameAdjective,
-  setFilterSameAdjective,
-  filterSameNoun,
-  setFilterSameNoun,
-  dictNotes,
-  setDictNotes,
-  dictTags,
-  setDictTags,
-  globalTags,
-  savedColors,
-  setSavedColors,
-  groupSettings,
-  setGroupSettings,
-  palette,
-  generateAutoPalette,
-  setPalette,
-  savedPalettes,
-  setSavedPalettes,
-  selectedSavedPaletteId,
-  setSelectedSavedPaletteId,
-  isSavingPalette,
-  setIsSavingPalette,
-  newPaletteName,
-  setNewPaletteName,
-  searchQuery,
-  setSearchQuery,
-  selectedIds,
-  setSelectedIds,
-  observer,
-  setObserver,
-  illuminant,
-  setIlluminant,
-  handleBatchTag,
-  handleBatchRemoveTag,
-  viewportVisibility,
-  setViewportVisibility,
-  showVisibilityMenu,
-  setShowVisibilityMenu,
-  visibilityMenuRef,
-  viewportSearchQuery,
-  setViewportSearchQuery,
-  viewMode,
-  setViewMode,
-  swatchLayout,
-  setSwatchLayout,
-  swatchZoom,
-  setSwatchZoom,
-  viewportTagFilter,
-  setViewportTagFilter,
-  filterL,
-  setFilterL,
-  filterC,
-  setFilterC,
-  filterH,
-  setFilterH,
-  filterPt,
-  scrubL,
-  setScrubL,
-  scrubC,
-  setScrubC,
-  scrubH,
-  setScrubH,
-  setTemporarySpectral,
-  compSlotA,
-  setCompSlotA,
-  compSlotB,
-  setCompSlotB,
-  showFullscreenPreview,
-  setShowFullscreenPreview,
-  showCompareFullscreen,
-  setShowCompareFullscreen,
-  showFullscreenSpectral,
-  setShowFullscreenSpectral,
-  showFullscreenPalette,
-  setShowFullscreenPalette,
-  showFullscreenImageOverlay,
-  setShowFullscreenImageOverlay,
-  showFullscreenSpaces,
-  setShowFullscreenSpaces,
-  showCompareDivider,
-  setShowCompareDivider,
-  showHelpPanel,
-  setShowHelpPanel,
-  showDatabaseManager,
-  setShowDatabaseManager,
-  showFileManager,
-  setShowFileManager,
-  showAveryModal,
-  setShowAveryModal,
-  averyPrintSourceType,
-  setAveryPrintSourceType,
-  averySourceItems,
-  selectedPrintIds,
-  setSelectedPrintIds,
-  printConfigs,
-  setPrintConfigs,
-  printStartIndex,
-  setPrintStartIndex,
-  printLabelSwatches,
-  setPrintLabelSwatches,
-  printLabelNames,
-  setPrintLabelNames,
-  printLabelErp,
-  setPrintLabelErp,
-  printLabelHex,
-  setPrintLabelHex,
-  printLabelOklch,
-  setPrintLabelOklch,
-  printLabelBorders,
-  setPrintLabelBorders,
-  printLabelDoorProfile,
-  setPrintLabelDoorProfile,
-  printLabelSheen,
-  setPrintLabelSheen,
-  printLabelVisualTexture,
-  setPrintLabelVisualTexture,
-  printLabelTactileTexture,
-  setPrintLabelTactileTexture,
-  printLabelMaterial,
-  setPrintLabelMaterial,
-  generateAveryPages,
-  getPaletteItemInfo,
-  linkedFiles,
-  setLinkedFiles,
-  colorData,
-  filteredColorData,
-  updateColorData,
-  visualizeData,
-  setVisualizeData,
-  history,
-  isUndoing,
-  currentStateStr,
-  handleUndo,
-  handleRedo,
-  canUndo,
-  canRedo,
-  lockedNouns,
-  lockedAdjectives,
-  filteredViewData,
-  handleUpdate,
-  handlePointClick,
-  handleVisualize,
-  crosshair,
-  gridData,
-  isLight,
-  activeColorObj,
-  labValues,
-  colorGroup,
-  isOutOfGamut,
-  crosshairHex,
-  activeData,
-  activeAdj,
-  activeName,
-  activeNotes,
-  isPinned,
-  isAnchorLocked,
-  isInputDisabled,
-  activeItemId,
-  activeTags,
-  addTag,
-  removeTag,
-  adjInputClass,
-  nounInputClass,
-  deltaEOK,
-  deltaE2000,
-  tabs,
-  searchResults,
-  handleSaveApp,
-  handleSystemExport,
-  handleImportCSV,
-  handleSyncToCSV,
-  addToPalette,
-  removeFromPalette,
-  saveCurrentPalette,
-  confirmSavePalette,
-  cancelSavePalette,
-  loadPalette,
-  deleteSavedPalette,
-  replaceInPalette,
-  onAdjChange,
-  onNameChange,
-  onNotesChange,
-  toggleAnchorLock,
-  togglePin,
-  updateSavedColor,
-  spectral,
-  tetheringPinId,
-  setTetheringPinId,
-}) => {
-  const isDark = theme === "dark";
-  const [showViewFilters, setShowViewFilters] = useState(false);
-  const [draggedPaletteIndex, setDraggedPaletteIndex] = useState(null);
-  const [dragOverPaletteIndex, setDragOverPaletteIndex] = useState(null);
+      x��}�v�H��{E�]]E��4I]JV��c�vY�}K]}f�>e��D�A ��T.?��̙�=�0/���{�~����'lD&.�����d�Z�鲘H�%2nA{66G���M��$����s?ʻRB:��CG����dzY����s�S���M�0�ș���:�S��7�l,��~�|?�l���%�ʊ_q�q��g?��嫓��/�������Wi|�~��4�ӺL�2W����A��B���s?�������"5tĪۺ:���խ��rVn�L�g��9`Exa�ͼ.�tP�P5��&��i���r�{���	!�� %� -����٢/荂DӟL
+�0��'9���f8H.ޒ�8�{�8��E�����|����}��΃����YC��d>����67:(e���g���П䰤5�}���˟9��(��o*ؾ%��J:Z����̋���O�<���u;ݏ���so�i�6=��>�����;]�!�U�$S/}��� ���=��8N�쟢�hP�e�e�o�<��ԟ���[r��wآ]d���+��e� �I��� �{Q�d�H�8�%q�t���Y�pAe�p�o��rY=\C���{�\7������7���>m�o^������5�䒵
+���Y�H��U�y�B:�6�VJI��H0�<�r�t��lQ�M2��s�)�P4��%���<(����Y1��<UX�w%(e����4����B����XV���2�Q�R(j��(&��h�F���^6I�0{)"�H�HI�M�� ����&�g�	�T�oB�Q�Y~��׍�4U��0 t��l�C?:�g�� 6+�p�o��_���9����]�^�����ޘ�X'�>&��=ͬyF�C�%3�5y�瞲%y��V6I[�i/%"��r2��VW���|��$����L���/�(&ѧK�,��/X/��n�L����k^ɇ��,�,�ܗ���\�\ֻs\�����Sn3"��JU`�+/��.g.�_&t������0��	Jf���:z�Sq�-�����67 ��8��l �Q�����A-����âL�ߌj���]��Ȍ�U��̢!N��x�P��5Dl� =f3-?7[�����5z2Ou�rm:DY�Ö���.��}.��9�ڗF�y��yLj�D�5���v8�B�>���R
+�%��y���N$�[�|����fQ�[R<۴.I��̛��L���%����V�=V��Q?�ܟ��0���e1}���}��� 8YN���܋�3X���������S,�"��3�7R-�g�#-B���&�ϱ
+��~�����]d�q+��t���+&�Ni��{�jY#O����>�:�ci��CHpJ�e���&w����h.�~VV�ب�A�X�ll��_�-z!Ҝ�y�j�?�Sz�ρ(�Yy�e4!]4���7Oi ����O��SZ��܁��
+�<��E���C�PP{�4� 0�����:U����Yo⣱��������	�?�����Py�N�8��(Rs�V�mA�'�y5�*�RzeF�@߫7Ľ���$#���}Ͻ��yo>e3����@�g�7�fo[��Qv <��Y0��5_�8���K
+.ϯ4,��_�����qFR�A��D���p���
+� ���r��"�:3Q;��V�P�R/<�$�$�k;i9J�`@���C䈫�(��)��H�[�(/
+�.��<���a\��Hy2��n�CY��������f �CBm�%e��b_$����+I3+��R��EgS�� �AZA)Ӥ��eÚ�/���iC��LB`sp�Jd�f��m霧s2�AN#6����y��G��(�^L�0�$a�zv>����m� vx�2$˽4�����2^�"�Ӽ����������3��� �d ��jմ�
+��}0Y�M���0�]iּ�,�	æ	�A�V���dqD*��Feډ�l�b��%A�li6nL��V�L�g���5۟�.�U���*v�ơd���=�O�ԋ�h��6?�m���j-iD��U�T��j����2'  E$H��Y�Q��@�j���^�|� qI�D(p)ǸB<1مX��يn'(rC��d �����]ゲ��$�rФe,rPRbrS�.,����'e�-�ܯ�".D'��|��t�&�*���cׂ:A�,�.��G����X~�.��?~�+�Jh(����>�K�c/��'��<z=�Ы��L���oG}d� U&�l_�`E)ڦF��R�W����������<��)��.|�[�d�yL]96D�H�2@�G�
+�7X�X-�QU�_�L� �ơ?�'w�����-t�s ��=-��o�a�U�˿��i���Vj����e���4�*I���������h����i��&�_��E�w�"� �>)�F/���7.^<��p��ŋ�oo��O+�o
+�^u���������>��e�4��/����_�xg����Y���z�[�C��E�c���$9�s<�(�� �%^������Oa��U]_񿰏�ЯX��s��q4-kk_����Ώ��@�ů��3��(����~zY�-���M3ipEI<��(�x���	���<��(/�)0fs��,�T����C���>�� �A��`T����u�s?Z�CW�� ���O�.��������ժ~�㌞y��.!q,����s�BYP���hE�P�H�@[������S�����+6�I����?�C���*~��?N�9�K/K?,����8��E�C�w��@zyP.��EB���~��+n������~���H�Nh�}�+�8�p���Gs��	Tz��/�р��iZ����(���sMx�/���&����a �A:Ќ��<p⪪�����)~�R)=��^�	k z��(r�q�H'�	(ʥӼ���"<��5���|q���iP	�WR�r���#PP.�Zb)����7��/��/8I��YZW|�&�jEY]�8F�����}8�5�U�u���7GǕו՗)H�8`�jb~�,�+��_�h|�x[x"܆h|�|]Z^�h|Ŀ������LY��Ḍ�4�R��w��"㞠� ���P���E2�΄"v�$��/����fA��L��_�i*�q��>E��/�}�d�:���>�5���Y����?E}0���O�R��Ψ��
+����.��C;N�,�y,�F*��g�G9홂���g:(o�#s�.�L�G���E���o�|�AA9����fW�(5��W��٫ ��B|Mfq������Q�;�����.5do:-t��W�@��"X�dꇹ����a?<�_��TD鵟-�<��J-�T���F���4ԥG�%��?���I\��y���I�%U��a#W:A^��q |)�ّ
+��9��V�Zκ���#^���&�������o\Ѻ ���`�]�g]�]i����Ԍ܇�,�~��8�
+e� {�i�2��"�IP/�ڻ�Ӧ�?G]+�U���qꅙ�y|�����Y���ҍ�ۚ�BC�!LjueC�UK��=6��)�b�=�����v3�L�f�?9�r~Ƕ�UM
+?���k��T�.�^x/�~6�7\�����}[z�2�fC�w��n��`��������/��O��Ұ�թ�)}\�?.*��ʅ7V)�_l�"���6譃/ߊo� �O�Rg���:^O|~톕1��Pk�6	m��W���>��fH����&:QQN%��֔C�Gaԥ��~������W�N2�2N���i��I{��o���
+�[��{���s�oU�1��3���_��0���8�n��I:?�C/z�Q�}Ï ����?â�q�gh�e�,'q�[$�ǲ'�'��b�`�i6P�O^�>:�
+��	����C�, 6L��:�"�eE�b�/�f��4���4��]���@�(9�T�����}W��ݝG/O���c2��a}l���|o*kGϷ�?~���P�@�.�}w��+��Hf�z�3��$ۿ{-�Y�,�A�xI��a�}w�e���</��!t�T�����ۅ�}�ۃ����@U�����K: ��~'�/A��;�Hc�o��]�[�N_q�4Z�}�+w�xQ��F���[��`����^p�Tq�ڷO�CKE�g�ּO���T�Z�h��7��rB��7���rԿ(�ᏌjG�E zQ��b3��;���xUK{��-2�����K|�I���	�YK���]��Zl[�2���`S�'�?���kvU��>��+V
+��A�S^����b�1l!΢=6�J������Arќ�|�����m�j�� H5Kvk}�<�/z��io�������I��^w@�+���%{��V��*�:��x�7 ^h�D�:t��<���6�J?���P�{xI_C����6�ӌ��*�]�g�we
+�S(��y
+4Vcw�5rf�2Z ��	�,�<$iM�k,a�yDqOe�:��[��M�m��p�(2�����ָY�bq{����@�����HLZlM��_h�r��gổ�9�p�}¼�
+�%��Ȭ�ȁzC'6����Ά&�E�0Y8�V��V8/4T�5����6�����(5�yd��q�񽽡�(����&6"쇻Ȩ�c_%��P����ѬP;�sp(�2w3�5�;�vwꉍ�0�̺�([��K&�F�/%�ǂ): �m�Ҷ-گ�)n����{y�[�|#o�06�z�y	"�po��!tQT�T\��_�o/����N����?��|n�f�m�B��{�iNᴳ�8ؔM��5��r�9���=�7���Ͻ���#Ѝ�)���!��(c�P����i�f�EC)�&~�ږ�e#�
+��x����;A�k�ې}�Z� -7��g���^x6׽��)V8�Rb���p��gg5�m3M����i��Pmd����$��8�àp����LD��1���!�c�-����`��uS�;y(tMc��.���1:�l�lb�V}2z����:���[�D,�Ui��O�dk�C�޽��?3Ӡ�K�5ke�V�F�y�M�|8���ZBJ�I�!7��޳����/Xwj&|=���U�*y���X׎6�}�gcFI\�;Rt��C+��.,�i;Ўˡ��}�H��i��7cM!!��^ب$Ua8�#v-<�/l�m��l6��ަ���a����^-V� �>�5�6�bFa0b�k������l�LYhP�zo[ֻ��P�J����^⨋����C�lY�$L�0P
+L8����=+���:N��AcZ�0��$Uũ�s�қ?Ow|��s@�J��qٲ��°t�GW乆˚�c���~�3
+�ӽmok�����6���+���G*�Y�4��n����&��wG>��n6,��_>{���&�^�8!?=�+t<l|��`�]U����	�$�����ّ�	�%���wwY�����SR�4���G�}��ޅ)^��,��A��-s��(V��Y�ߠ/lӻʋq�]-��������0���&��&|�P�1v ��"���ƻ��S��j��D&�M� ��@��8��~��iׯZSM��/�&�O�Ri�f�O�F�p�c����5.�z<܄9��)��L��{�v��;�`>U����7�~����Ko8�Y����(?�D,�G3T.��z�-�+�����c��Q�7���f����q�T@�{oG����M �ђ�~.9��.���w�E�5/�+zTr��)1�ά��ɛ��W!�0vV/�ʶS���~B���tM0K�*�4/���|�$֨�N-/�t�:���^���&=���\[��R��\�q�c�4Ƽ�~5�0��F�J�R ���aF���������݈�Q��a0F�����fB��� F�7K��>�|A�����v5ˮ��X���Jk�!_���༆��A�I�NBUx˕W�*�o��"�c��n�"�ycP���qC�!B����(��xA��ˆ�n�׏*4w�Mh���(`�A@RL�/�4�C�������|
+�q�.��(<���#������2��-��dz��%�
+ֲ�/We����/��-�2q�V��t:�yiEF��'Б�����o�a\��/�<���6|�Ԑ[Ϊփ5���p�4J]s��L:%\��QI�u�v�ŸeN��{���^B4.�U���/Ё��~��-��K ���M���!Ɛ�j�Q�we���A����;��Dj����m�~�?O��z�k�w$M�0/,y`��08�O����js��daQok�	n������\�d�5�D Z4��S���L4�N��/�.��� ęsT��'�c�I�qX���sfu
+aǪ���=��(��q6�BԀv���NP�P]�j�Sm�kG�C��gT��̴(���Rs���zN(��rO��-��Ȣ�� �й:{Csږ���BC��w�4�~����O���W�P����mtPM����� D�j"=�$�V4�æ೵��U�6�_qf,��!Red�����H�7�(�]��tI.�d+5�GQ9����Aېq����gﰿcM��\����1�tRB����2��q�F"F�+����C�G�_����|\�G���)TvT���m���)6b��?y��K�.��-tf�GC�4�U�>`$���Euo�/���F�Q�� 
+�irO��mf�3	a�s&ђH�ܫ��4�fe���c�6�djq* �T�@�m9��ke}T�sJn�BG���J\}@��m1�F�)xhK��0y����O{�����B�:w��7Z�Fkh��:48��5�9�k��T۲`���Z�Ud����[n�^:����d�蟡`�ם7b���.�;U�R��I��7��������I��{eE���"��R4�&Lj<N������2�\i�Rӹ�w��3'�렀o���0���}S�8΂�Y�-�ͫpc�?`[d�ٶ�Noe@yݷ�_ZF�e�<�j�Y�v��� \��_�He���^�������aD�u�����z��݁�N���w���fv��_��(��R�����f�?�;��[=�ک�W} �-�m�s���~�Jǣ"X'���`8x��
+�*�Ti�(+�[׫HvF��f�b�i��r�i�igaoȗǅ��믤�lJ���)z�v(-Ԝ�����p���I.{��K7tOH(���=׃�2Qg`�Se�z	�
+���-��E��v �$>%��]M.)�A�8��h*�G�Ny0We��1k��4���j���(	"u��DVH���T��>�+rdX��ӟY�����p��#%�X����1L ��NS�1�<�K튡.BP3����>:h����l8�����;��8�j�@7�g�F,�e0��	׼�j��H��w-�:� ��4�;"�<�ZH.h�EdI�5w#vCYD���LT�mE�g����h�������Oc��/:3X�%{?Z�u�X�:��8�Z�~~�O/���_��VS�7A�^�'��7R�R� 흘�s�5,?_}�#Db�_�*�J�{�tA�+|Қ�s"�}-c�~�Q���ž�qJd|�gr�k��&�p�N:~W�����MO�;MW����z1���o��+*�<W���e��T���O^�4�=x�*� �Ho�_���C�����Jr�+��z}�1��w]�~̃_����-�M3�w�ʼ���Z���ʥ7����`�Xƥ��j��:�5>7��rio�EW}e��*?�.;P�[��VXR�+O�k����z���?���4���G��~�;^F{>��^\�"�E���|U��\�p#ݔ�R�j�K�~��4��k7A�)Mf�%91����p:6��F���!Q�};g2�����]D�b�tW�7`�@��=�M�ӧ�[c�JI<w�jym�Wn�b��6�$&I�G�n^1@��6:+�J���Ф��S
+���O�c���L�ܳ���e9��B�H������{�ne��m�;���}�fٻ������u���d�=dj&%T=7Zn���*�Qزo����_���G|%r��Kf�ύ��h�`� 38��"/n����Ї�5�.}qB9��2w�F �8�ۀ����"ҏaA�K�oy�Q���̴ښo����;��q�����m�s�6��G���Iwk��l�vP�1\\+���b�p��m�n*��Ўqݠ1s�E�ݶv6�&d|��/Fۣ���o�w�+�����
+s��;�|�h�h�z>�!�@#�o��ֽ����}m�}�)���?bp�~?	.�iw�e[͘cl퐨��Q'ſ;SX���rC�T�����|�nv��9��?{x@��#��bD^�����x��)�6��vq0P�\���:���Y_1A�vB�z���Ȓ��tY��D��	��!\Z�#L�Ѳ�z�?奦FǶH};��F�Kf5^����t��8D�*d��h�~���Ջ�L���6Ic�2>��
+���>6˳ܧ)��K�(�A{	��`������1��^�W��ç���(
+&���)v�M5i���x����\��1|�߾J�^)��q~�
+������bh��֮�M	�U���J�=�����+?�0G��$�Cd�"'�9�{H���qK�9 6h�̀ԭd����}�䵻����r��h����/������
+��)E�e���G�Z�m��n]'�\��X������Bhb�n���7����c���o��r$i2���!�^4�CC�^]#bY��vF�V|CgaXn>�A��v�a�&��
 
-  const handleReorderPalette = useCallback((sourceIdx, targetIdx) => {
-    if (
-      sourceIdx === null ||
-      targetIdx === null ||
-      isNaN(sourceIdx) ||
-      isNaN(targetIdx) ||
-      sourceIdx === targetIdx
-    )
-      return;
-    setPalette((prev) => {
-      if (
-        sourceIdx < 0 ||
-        sourceIdx >= prev.length ||
-        targetIdx < 0 ||
-        targetIdx >= prev.length
-      )
-        return prev;
-      const next = [...prev];
-      const [moved] = next.splice(sourceIdx, 1);
-      next.splice(targetIdx, 0, moved);
-      return next;
-    });
-  }, [setPalette]);
-
-  const handlePrintAvery = () => {
-    try {
-      const printContainer = document.querySelector('.print-avery-container');
-      if (!printContainer) {
-        window.print();
-        return;
-      }
-      
-      const printWindow = window.open("", "_blank");
-      if (!printWindow) {
-        alert("Your browser blocked the pop-up print window. Standard printing will be used. Please enable pop-ups for this site, or open the app in a new tab to bypass this iframe restriction.");
-        window.print();
-        return;
-      }
-      
-      printWindow.document.write(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>SAMI Color Labels</title>
-            <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-            <style>
-              body, html {
-                margin: 0 !important;
-                padding: 0 !important;
-                width: 8.5in !important;
-                height: 11in !important;
-                background: white !important;
-                font-family: 'Bicyclette', 'Byciclette', 'Inter', system-ui, sans-serif !important;
-                -webkit-print-color-adjust: exact !important;
-                print-color-adjust: exact !important;
-              }
-              @page {
-                size: 8.5in 11in;
-                margin: 0;
-              }
-              body {
-                background-color: #f1f5f9;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                padding: 20px 0;
-                overflow-y: auto;
-              }
-              .print-avery-container {
-                display: block !important;
-                background: white !important;
-                box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
-                border-radius: 8px;
-                padding: 0;
-                margin-bottom: 20px;
-              }
-              
-              /* Print only styles to remove background, shadows and custom margins */
-              @media print {
-                body {
-                  background: white !important;
-                  padding: 0 !important;
-                }
-                .print-avery-container {
-                  box-shadow: none !important;
-                  border-radius: 0 !important;
-                  margin-bottom: 0 !important;
-                }
-                .no-print {
-                  display: none !important;
-                }
-              }
-              
-              .no-print-header {
-                width: 8.5in;
-                background: #1e293b;
-                color: #f8fafc;
-                padding: 12px 20px;
-                border-radius: 8px;
-                margin-bottom: 12px;
-                box-sizing: border-box;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-              }
-              .no-print-header h1 {
-                margin: 0;
-                font-size: 14px;
-                font-weight: 700;
-                letter-spacing: 0.05em;
-              }
-              .print-btn {
-                background: #10b981;
-                color: white;
-                border: none;
-                padding: 6px 16px;
-                border-radius: 6px;
-                font-weight: 700;
-                font-size: 12px;
-                cursor: pointer;
-                transition: background 0.2s;
-              }
-              .print-btn:hover {
-                background: #059669;
-              }
-              
-              .avery-print-page {
-                display: grid !important;
-                grid-template-columns: 4in 4in !important;
-                grid-template-rows: repeat(7, 1.5in) !important;
-                column-gap: 0.188in !important;
-                row-gap: 0in !important;
-                width: 8.5in !important;
-                height: 11in !important;
-                padding-top: calc(0.25in + 1mm) !important;
-                padding-bottom: calc(0.25in - 1mm) !important;
-                padding-left: 0.156in !important;
-                padding-right: 0.156in !important;
-                box-sizing: border-box !important;
-                page-break-after: always !important;
-                page-break-inside: avoid !important;
-                align-content: start !important;
-                background: white !important;
-              }
-              .avery-label-cell {
-                width: 4in !important;
-                height: 1.5in !important;
-                box-sizing: border-box !important;
-                padding: 0 !important;
-                display: flex !important;
-                overflow: visible !important;
-                background: white !important;
-                border-radius: 0in !important;
-                font-family: 'Bicyclette', 'Byciclette', 'Inter', system-ui, sans-serif !important;
-              }
-              .avery-label-border {
-                outline: 1px dashed rgba(180, 169, 158, 0.4) !important;
-                outline-offset: -1px !important;
-              }
-              .avery-label-borderless {
-                outline: 1px solid transparent !important;
-                outline-offset: -1px !important;
-              }
-              .sami-sidebar {
-                width: 0.45in !important;
-                height: 100% !important;
-                box-sizing: border-box !important;
-                display: flex !important;
-                align-items: center !important;
-                justify-content: center !important;
-                background-color: #2B4032 !important;
-                color: #F2E8DF !important;
-                border-radius: 0in !important;
-                -webkit-print-color-adjust: exact !important;
-                print-color-adjust: exact !important;
-              }
-              .sami-sidebar span {
-                transform: rotate(-90deg) !important;
-                font-weight: 800 !important;
-                font-size: 22pt !important;
-                letter-spacing: 0.12em !important;
-                color: #F2E8DF !important;
-                line-height: 1 !important;
-                display: inline-block !important;
-              }
-              .sami-content {
-                flex-grow: 1 !important;
-                padding: 0.08in 0.12in !important;
-                display: flex !important;
-                flex-direction: column !important;
-                justify-content: space-between !important;
-                height: 100% !important;
-                box-sizing: border-box !important;
-                position: relative !important;
-              }
-              .sami-row {
-                display: flex !important;
-                align-items: baseline !important;
-                font-size: 6.5pt !important;
-                line-height: 1.1 !important;
-                width: 100% !important;
-                position: relative !important;
-              }
-              .sami-label {
-                font-weight: 600 !important;
-                width: 1.05in !important;
-                flex-shrink: 0 !important;
-                color: #374151 !important;
-                font-size: 6.5pt !important;
-              }
-              .sami-label.right {
-                width: auto !important;
-                margin-left: auto !important;
-                padding-left: 0.1in !important;
-                padding-right: 0.05in !important;
-              }
-              .sami-value {
-                font-weight: 400 !important;
-                color: #374151 !important;
-                white-space: nowrap !important;
-                overflow: hidden !important;
-                text-overflow: ellipsis !important;
-              }
-              .sami-value.sami-lg {
-                font-size: 9.5pt !important;
-                font-weight: 600 !important;
-                text-transform: uppercase !important;
-              }
-              .sami-line {
-                flex-grow: 1 !important;
-                border-bottom: 0.5px solid #cbd5e1 !important;
-                min-width: 0.5in !important;
-                margin-bottom: 1pt !important;
-              }
-              .sami-id {
-                margin-left: auto !important;
-                font-size: 6pt !important;
-                font-style: italic !important;
-                font-weight: 400 !important;
-                color: #94a3b8 !important;
-              }
-            </style>
-          </head>
-          <body>
-            <div class="no-print-header no-print">
-              <h1>SAMI COLOR LABEL PRINT VIEW</h1>
-              <button class="print-btn" onclick="window.print()">Print This Page</button>
-            </div>
-            <div class="print-avery-container">
-              ${printContainer.innerHTML}
-            </div>
-            <script>
-              window.addEventListener('load', () => {
-                setTimeout(() => {
-                  window.print();
-                }, 500);
-              });
-            </script>
-          </body>
-        </html>
-      `);
-      printWindow.document.close();
-    } catch (e) {
-      console.error(e);
-      window.print();
-    }
-  };
-  return React.createElement(
-    "div",
-    { className: "flex flex-col md:flex-row h-screen overflow-hidden" },
-    React.createElement(
-      "aside",
-      {
-        className:
-          "w-full md:w-96 flex flex-col bg-white dark:bg-neutral-900 border-b md:border-b-0 md:border-r border-slate-200 dark:border-neutral-800 z-10 h-[45vh] md:h-screen overflow-y-auto custom-scrollbar shrink-0",
-      },
-      React.createElement(
-        "div",
-        {
-          className:
-            "p-4 border-b border-slate-200 dark:border-neutral-800 flex flex-col gap-3 sticky top-0 bg-white/95 dark:bg-neutral-900/95 backdrop-blur z-20",
-        },
-        React.createElement(
-          "div",
-          { className: "flex justify-between items-center" },
-          React.createElement(
-            "div",
-            { className: "flex items-center gap-2" },
-            React.createElement(
-              "h1",
-              {
-                className:
-                  "text-lg font-black tracking-tight text-slate-800 dark:text-neutral-100 leading-none truncate pr-2",
-              },
-              "The Color",
-              React.createElement(
-                "span",
-                { style: { color: "var(--c-dark)" } },
-                "SAMI",
-              ),
-              "ficator",
-            ),
-            React.createElement(
-              "button",
-              {
-                onClick: () => setShowFileManager(true),
-                className:
-                  "p-1.5 text-slate-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-500/10 rounded-full transition-colors",
-                title: "Manage Linked CSV Files",
-              },
-              React.createElement(Icon, {
-                name: "folder",
-                className: "w-4 h-4",
-              }),
-            ),
-            React.createElement(
-              "button",
-              {
-                onClick: () => setShowHelpPanel(true),
-                className:
-                  "p-1.5 text-slate-400 hover:text-sky-500 hover:bg-sky-50 dark:hover:bg-sky-500/10 rounded-full transition-colors",
-                title: "Help & Guide",
-              },
-              React.createElement(Icon, {
-                name: "help-circle",
-                className: "w-4 h-4",
-              }),
-            ),
-          ),
-        ),
-        React.createElement(
-          "div",
-          { className: "relative" },
-          React.createElement(Icon, {
-            name: "search",
-            className: "absolute left-2.5 top-2.5 w-3.5 h-3.5 text-slate-400",
-          }),
-          React.createElement("input", {
-            type: "text",
-            value: searchQuery,
-            onChange: (e) => setSearchQuery(e.target.value),
-            placeholder: "Omnisearch names, codes, notes...",
-            className:
-              "w-full bg-slate-100 dark:bg-neutral-800 border border-transparent rounded-md pl-8 pr-8 py-2 text-[10px] font-bold uppercase tracking-widest focus:ring-1 focus:ring-sky-500 outline-none text-slate-900 dark:text-white placeholder:text-slate-400 focus:bg-white dark:focus:bg-neutral-900 transition-all",
-          }),
-          searchQuery &&
-            React.createElement(
-              "button",
-              {
-                onClick: () => setSearchQuery(""),
-                className:
-                  "absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200",
-              },
-              React.createElement(Icon, {
-                name: "x",
-                className: "w-3.5 h-3.5",
-              }),
-            ),
-        ),
-      ),
-      searchQuery
-        ? React.createElement(
-            "div",
-            { className: "flex-1 overflow-y-auto p-2 flex flex-col gap-1" },
-            searchResults.length === 0
-              ? React.createElement(
-                  "div",
-                  {
-                    className:
-                      "p-6 text-[10px] font-bold uppercase tracking-widest text-slate-400 text-center",
-                  },
-                  "No results found",
-                )
-              : searchResults.map((res) =>
-                  React.createElement(
-                    "button",
-                    {
-                      key: res.key,
-                      onClick: () => {
-                        handleUpdate(
-                          [res.L, res.C, res.H],
-                          res.spectral,
-                          res.commercial,
-                        );
-                        setSearchQuery("");
-                      },
-                      className:
-                        "flex items-center gap-4 p-3 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded-xl text-left transition-all border border-transparent hover:border-slate-200 dark:hover:border-neutral-700 group",
-                    },
-                    res.image
-                      ? React.createElement(
-                          "div",
-                          {
-                            className:
-                              "w-10 h-10 rounded-lg shadow-sm border border-slate-200 dark:border-neutral-700 shrink-0 group-hover:scale-105 transition-transform relative overflow-hidden",
-                            style: { backgroundColor: res.color },
-                          },
-                          React.createElement("div", {
-                            className: "absolute inset-0 bg-cover bg-center rounded-[inherit]",
-                            style: {
-                              backgroundImage: `url(${res.image})`,
-                              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                              maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                            },
-                          })
-                        )
-                      : React.createElement("div", {
-                          className:
-                            "w-10 h-10 rounded-lg shadow-sm border border-slate-200 dark:border-neutral-700 shrink-0 group-hover:scale-105 transition-transform",
-                          style: { backgroundColor: res.color },
-                        }),
-                    React.createElement(
-                      "div",
-                      { className: "min-w-0 flex-1" },
-                      React.createElement(
-                        "div",
-                        { className: "flex items-center gap-1.5" },
-                        React.createElement(
-                          "div",
-                          {
-                            className:
-                              "text-xs font-black uppercase tracking-widest text-slate-800 dark:text-neutral-200 truncate",
-                          },
-                          res.displayName,
-                        ),
-                        res.note === "Verified Spectral Data" &&
-                          React.createElement(Icon, {
-                            name: "check-circle",
-                            className: "w-3.5 h-3.5 text-emerald-500 shrink-0",
-                            title: "Verified with Spectral Data",
-                          }),
-                      ),
-                      React.createElement(
-                        "div",
-                        { className: "flex items-center gap-2 mt-1" },
-                        res.erpCode &&
-                          React.createElement(
-                            "span",
-                            {
-                              className:
-                                "text-[9px] font-mono text-sky-600 dark:text-sky-400 font-bold",
-                            },
-                            res.erpCode,
-                          ),
-                        React.createElement(
-                          "span",
-                          {
-                            className:
-                              "text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-neutral-500",
-                          },
-                          res.erpCode ? `\u2022 ${res.type}` : res.type,
-                        ),
-                      ),
-                      res.note &&
-                        res.note !== "Verified Spectral Data" &&
-                        React.createElement(
-                          "div",
-                          {
-                            className:
-                              "text-[10px] text-slate-500 dark:text-neutral-400 italic mt-1 truncate",
-                          },
-                          res.note,
-                        ),
-                    ),
-                  ),
-                ),
-          )
-        : React.createElement(
-            React.Fragment,
-            null,
-            React.createElement(
-              "div",
-              { className: "p-3 bg-white dark:bg-neutral-900" },
-              React.createElement(
-                "div",
-                {
-                  className:
-                    "h-44 w-full relative rounded-2xl shadow-inner border border-black/5 dark:border-white/5 overflow-hidden transition-colors duration-300",
-                  style: { backgroundColor: crosshairHex },
-                },
-                crosshair?.activeCommercial &&
-                  (() => {
-                    const m = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
-                    return m?.image && React.createElement("div", {
-                      className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
-                      style: {
-                        backgroundImage: `url(${m.image})`,
-                        WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                        maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                      },
-                    });
-                  })(),
-                isOutOfGamut &&
-                  React.createElement("div", {
-                    className: "absolute inset-0 pointer-events-none",
-                    style: {
-                      backgroundImage:
-                        "repeating-linear-gradient(45deg, rgba(0,0,0,0.2), rgba(0,0,0,0.2) 10px, rgba(255,255,255,0.2) 10px, rgba(255,255,255,0.2) 20px)",
-                    },
-                  }),
-                React.createElement(
-                  "div",
-                  {
-                    className: "absolute top-4 left-5 z-10 pointer-events-none",
-                    style: { color: isLight ? "#010D00" : "#F2E8DF" },
-                  },
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "text-xl font-black tracking-tight drop-shadow-md font-mono",
-                    },
-                    crosshair?.activeErpCode || "",
-                  ),
-                  isOutOfGamut &&
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "mt-1 inline-block px-1.5 py-0.5 bg-red-500/90 text-white text-[8px] font-bold uppercase tracking-widest rounded shadow-sm backdrop-blur-sm border border-red-400/30",
-                      },
-                      "Out of sRGB Gamut",
-                    ),
-                ),
-                (getGlobalDuplicate(
-                  names,
-                  adjectives,
-                  crosshair?.activeSavedColor?.type === "pin"
-                    ? crosshair.activeSavedColor.id
-                    : crosshair?.nearestAdjId,
-                  activeAdj,
-                  savedColors,
-                  crosshair?.activeSavedColor?.type === "pin"
-                    ? !!crosshair.activeSavedColor.adjOverride
-                    : true,
-                  crosshair?.activeSavedColor?.type === "pin"
-                    ? crosshair?.nearestAdjId
-                    : null,
-                ) ||
-                  getGlobalDuplicate(
-                    names,
-                    adjectives,
-                    crosshair?.activeSavedColor?.type === "pin"
-                      ? crosshair.activeSavedColor.id
-                      : crosshair?.nearestAnchorId,
-                    activeName,
-                    savedColors,
-                    crosshair?.activeSavedColor?.type === "pin"
-                      ? !!crosshair.activeSavedColor.nameOverride
-                      : true,
-                    crosshair?.activeSavedColor?.type === "pin"
-                      ? crosshair?.nearestAnchorId
-                      : null,
-                  )) &&
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "absolute top-4 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-[9px] font-bold px-2 py-1 rounded shadow-lg flex items-center gap-1.5 z-40 backdrop-blur-sm uppercase tracking-wider border border-red-400/30",
-                    },
-                    React.createElement(Icon, {
-                      name: "alert-triangle",
-                      className: "w-3 h-3",
-                    }),
-                    "Conflict",
-                  ),
-                React.createElement(
-                  "div",
-                  {
-                    className: "absolute top-3.5 right-4 flex gap-1 z-30",
-                    style: { color: isLight ? "#010D00" : "#F2E8DF" },
-                  },
-                  React.createElement(
-                    "button",
-                    {
-                      onClick: toggleAnchorLock,
-                      className: `p-1.5 rounded-lg transition-colors ${isAnchorLocked ? "opacity-100" : "opacity-60 hover:opacity-100"}`,
-                      title: isAnchorLocked
-                        ? "Unlock Grid Anchor"
-                        : "Lock Grid Anchor",
-                    },
-                    React.createElement(Icon, {
-                      name: isAnchorLocked ? "lock" : "unlock",
-                      className: "w-3.5 h-3.5 drop-shadow-sm",
-                    }),
-                  ),
-                  React.createElement(
-                    "button",
-                    {
-                      onClick: togglePin,
-                      className: `p-1.5 rounded-lg transition-colors ${isPinned ? "opacity-100" : "opacity-60 hover:opacity-100"}`,
-                      title: isPinned
-                        ? "Remove Free Pin"
-                        : "Pin Free Coordinate",
-                    },
-                    React.createElement(Icon, {
-                      name: "map-pin",
-                      className: "w-3.5 h-3.5 drop-shadow-sm",
-                    }),
-                  ),
-                  React.createElement(
-                    "button",
-                    {
-                      onClick: () => setShowFullscreenPreview(true),
-                      className:
-                        "p-1.5 rounded-lg transition-colors opacity-60 hover:opacity-100",
-                    },
-                    React.createElement(Icon, {
-                      name: "maximize",
-                      className: "w-3.5 h-3.5 drop-shadow-sm",
-                    }),
-                  ),
-                  isOutOfGamut &&
-                    React.createElement(
-                      "div",
-                      {
-                        className: "p-1.5 text-red-500 dark:text-red-400",
-                        title: "Out of sRGB Gamut",
-                      },
-                      React.createElement(Icon, {
-                        name: "alert-triangle",
-                        className: "w-3.5 h-3.5 drop-shadow-sm",
-                      }),
-                    ),
-                ),
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "absolute inset-0 flex flex-col items-center justify-center p-6 mt-1 z-20 pointer-events-none",
-                    style: { color: isLight ? "#010D00" : "#F2E8DF" },
-                  },
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "relative w-full flex justify-center items-center group/adj",
-                    },
-                    React.createElement("input", {
-                      type: "text",
-                      value: activeAdj,
-                      onChange: (e) => onAdjChange(e.target.value),
-                      placeholder: "Adjective",
-                      className: adjInputClass,
-                      disabled:
-                        isInputDisabled ||
-                        (crosshair?.activeSavedColor?.type !== "pin" &&
-                          lockedAdjectives[crosshair?.nearestAdjId]),
-                    }),
-                    crosshair?.activeSavedColor?.type === "pin" &&
-                      crosshair.activeSavedColor.adjOverride &&
-                      React.createElement(
-                        "button",
-                        {
-                          onClick: () => updateSavedColor("adjOverride", ""),
-                          className: `absolute right-0 opacity-0 group-hover/adj:opacity-100 transition-opacity p-1 rounded-full pointer-events-auto ${isLight ? "hover:bg-black/10" : "hover:bg-white/10"}`,
-                          title: "Revert to inherited adjective",
-                        },
-                        React.createElement(Icon, {
-                          name: "rotate-ccw",
-                          className: "w-3 h-3",
-                        }),
-                      ),
-                  ),
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "relative w-full flex justify-center items-center group/noun",
-                    },
-                    React.createElement("input", {
-                      type: "text",
-                      value: activeName,
-                      onChange: (e) => onNameChange(e.target.value),
-                      placeholder: "Noun",
-                      className: nounInputClass,
-                      disabled:
-                        isInputDisabled ||
-                        (crosshair?.activeSavedColor?.type !== "pin" &&
-                          lockedNouns[crosshair?.nearestAnchorId]),
-                    }),
-                    crosshair?.activeSavedColor?.type === "pin" &&
-                      crosshair.activeSavedColor.nameOverride &&
-                      React.createElement(
-                        "button",
-                        {
-                          onClick: () => updateSavedColor("nameOverride", ""),
-                          className: `absolute right-0 opacity-0 group-hover/noun:opacity-100 transition-opacity p-1 rounded-full pointer-events-auto ${isLight ? "hover:bg-black/10" : "hover:bg-white/10"}`,
-                          title: "Revert to inherited noun",
-                        },
-                        React.createElement(Icon, {
-                          name: "rotate-ccw",
-                          className: "w-4 h-4",
-                        }),
-                      ),
-                  ),
-                  crosshair?.snapDist > 1e-4 &&
-                    crosshair?.snapTarget &&
-                    !crosshair.exactSavedColor &&
-                    React.createElement(
-                      "button",
-                      {
-                        onClick: () =>
-                          handleUpdate([
-                            crosshair.snapTarget.L,
-                            crosshair.snapTarget.C,
-                            crosshair.snapTarget.H,
-                          ]),
-                        className: `mt-2 px-3 py-1 text-[9px] font-bold uppercase tracking-widest rounded-full border transition-all flex items-center justify-center gap-1.5 active:scale-95 pointer-events-auto`,
-                        style: {
-                          color: isLight ? "#010D00" : "#F2E8DF",
-                          borderColor: isLight
-                            ? "rgba(1,13,0,0.35)"
-                            : "rgba(242,232,223,0.50)",
-                          backgroundColor: "transparent",
-                        },
-                      },
-                      React.createElement(Icon, {
-                        name: "magnet",
-                        className: "w-3 h-3",
-                      }),
-                      " Snap \u0394Eok:",
-                      " ",
-                      (crosshair.snapDist * 100).toFixed(2),
-                    ),
-                ),
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "absolute bottom-4 left-5 pointer-events-none z-10",
-                    style: { color: isLight ? "#010D00" : "#F2E8DF" },
-                  },
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "text-[8px] font-black uppercase tracking-widest opacity-80 drop-shadow-md mb-0.5",
-                    },
-                    `CIELAB (${illuminant}/${observer}\xB0)`,
-                  ),
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "text-[10px] font-bold tracking-tight font-mono drop-shadow-md",
-                    },
-                    labValues,
-                  ),
-                ),
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "absolute bottom-4 right-5 pointer-events-none z-10",
-                    style: { color: isLight ? "#010D00" : "#F2E8DF" },
-                  },
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "text-[10px] font-black uppercase tracking-widest opacity-80 drop-shadow-md text-right",
-                    },
-                    colorGroup,
-                  ),
-                ),
-              ),
-            ),
-            React.createElement(
-              "div",
-              {
-                className:
-                  "p-5 flex flex-col gap-6 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900",
-              },
-              React.createElement(SliderGroup, {
-                label: "Lightness",
-                value: scrubL,
-                min: 0,
-                max: 1,
-                step: 0.001,
-                onChange: (v) => {
-                  setScrubL(v);
-                  setTemporarySpectral(null);
-                },
-                icon: "sun",
-              }),
-              React.createElement(SliderGroup, {
-                label: "Chroma",
-                value: scrubC,
-                min: 0,
-                max: 0.4,
-                step: 0.001,
-                onChange: (v) => {
-                  setScrubC(v);
-                  setTemporarySpectral(null);
-                },
-                icon: "zap",
-              }),
-              React.createElement(SliderGroup, {
-                label: "Hue",
-                value: scrubH,
-                min: 0,
-                max: 360,
-                step: 0.1,
-                onChange: (v) => {
-                  setScrubH(v);
-                  setTemporarySpectral(null);
-                },
-                icon: "compass",
-              }),
-              crosshair?.activeSavedColor?.type === "pin" &&
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "mt-4 pt-4 border-t border-slate-100 dark:border-neutral-800",
-                  },
-                  React.createElement(
-                    "div",
-                    { className: "flex items-center justify-between mb-2" },
-                    React.createElement(
-                      "span",
-                      {
-                        className:
-                          "text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-neutral-500",
-                      },
-                      "Tethering",
-                    ),
-                    tetheringPinId === crosshair.activeSavedColor.id
-                      ? React.createElement(
-                          "button",
-                          {
-                            onClick: () => setTetheringPinId(null),
-                            className:
-                              "text-[9px] font-bold uppercase text-red-500 hover:text-red-600 flex items-center gap-1",
-                          },
-                          React.createElement(Icon, {
-                            name: "x",
-                            className: "w-3 h-3",
-                          }),
-                          " Cancel",
-                        )
-                      : React.createElement(
-                          "button",
-                          {
-                            onClick: () =>
-                              setTetheringPinId(crosshair.activeSavedColor.id),
-                            className:
-                              "text-[9px] font-bold uppercase text-sky-500 hover:text-sky-600 flex items-center gap-1",
-                          },
-                          React.createElement(Icon, {
-                            name: "link",
-                            className: "w-3 h-3",
-                          }),
-                          " Change Source",
-                        ),
-                  ),
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "bg-slate-50 dark:bg-neutral-800/50 rounded-lg p-2 border border-slate-100 dark:border-neutral-800",
-                    },
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "text-[9px] text-slate-500 dark:text-neutral-400 flex items-center gap-2",
-                      },
-                      React.createElement(Icon, {
-                        name: "info",
-                        className: "w-3 h-3",
-                      }),
-                      tetheringPinId === crosshair.activeSavedColor.id
-                        ? React.createElement(
-                            "span",
-                            { className: "text-sky-500 animate-pulse" },
-                            "Click any point on the map to tether...",
-                          )
-                        : React.createElement(
-                            "span",
-                            null,
-                            "Inheriting from:",
-                            " ",
-                            React.createElement(
-                              "b",
-                              {
-                                className:
-                                  "text-slate-700 dark:text-neutral-200 uppercase",
-                              },
-                              activeData?.inherited?.source === "pin"
-                                ? `Pin ${activeData.inherited.sourceId.substring(0, 8)}`
-                                : `Anchor ${activeData?.inherited?.sourceId || "None"}`,
-                            ),
-                          ),
-                    ),
-                  ),
-                ),
-            ),
-            React.createElement(
-              CollapsiblePanel,
-              { title: "Conversions", icon: "sliders", defaultOpen: false },
-              React.createElement(ColorConverter, {
-                crosshair: {
-                  rawL: scrubL,
-                  rawC: scrubC,
-                  rawH: scrubH,
-                  L: scrubL,
-                  C: scrubC,
-                  H: scrubH,
-                  activeSavedColor: crosshair.activeSavedColor,
-                  temporarySpectral: crosshair.temporarySpectral,
-                },
-                onEdit: handleUpdate,
-                observer,
-                setObserver,
-                illuminant,
-                setIlluminant,
-                colorData,
-              }),
-            ),
-            React.createElement(
-              CollapsiblePanel,
-              {
-                title: "Commercial Matches",
-                icon: "palette",
-                defaultOpen: false,
-              },
-              React.createElement(CommercialMatches, {
-                crosshair: {
-                  rawL: scrubL,
-                  rawC: scrubC,
-                  rawH: scrubH,
-                  L: scrubL,
-                  C: scrubC,
-                  H: scrubH,
-                  activeSavedColor: crosshair.activeSavedColor,
-                },
-                colorData,
-                filterSameAdjective,
-                filterSameNoun,
-                names,
-                adjectives,
-                gridData,
-                savedColors,
-                onSelectColor: handlePointClick,
-              }),
-            ),
-            crosshair?.activeSavedColor?.spectral &&
-              React.createElement(
-                CollapsiblePanel,
-                {
-                  title: "Spectral Response",
-                  icon: "activity",
-                  defaultOpen: false,
-                },
-                React.createElement(SpectralGraph, {
-                  spectralData: crosshair.activeSavedColor.spectral,
-                  theme,
-                  meta: {
-                    illuminant:
-                      crosshair.activeSavedColor.illuminant || illuminant,
-                    observer: crosshair.activeSavedColor.observer || observer,
-                    measurementMethod:
-                      crosshair.activeSavedColor.measurementMethod,
-                    measurementDate: crosshair.activeSavedColor.measurementDate,
-                    measurementDevice:
-                      crosshair.activeSavedColor.measurementDevice,
-                  },
-                }),
-              ),
-            React.createElement(
-              CollapsiblePanel,
-              { title: "Harmonies", icon: "aperture", defaultOpen: false },
-              React.createElement(ColorHarmonies, {
-                L: scrubL,
-                C: scrubC,
-                H: scrubH,
-                handlePointClick,
-              }),
-            ),
-            React.createElement(
-              CollapsiblePanel,
-              {
-                title: "Palette Playground",
-                icon: "palette",
-                defaultOpen: false,
-              },
-              React.createElement(
-                "div",
-                { className: "flex flex-col gap-3" },
-                React.createElement(
-                  "div",
-                  { className: "flex items-center justify-between gap-2" },
-                  isSavingPalette
-                    ? React.createElement(
-                        "div",
-                        { className: "flex items-center gap-2 w-full" },
-                        React.createElement("input", {
-                          type: "text",
-                          value: newPaletteName,
-                          onChange: (e) => setNewPaletteName(e.target.value),
-                          className:
-                            "flex-1 bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs text-slate-700 dark:text-neutral-300 outline-none focus:border-sky-500",
-                          placeholder: "Palette name...",
-                          autoFocus: true,
-                          onKeyDown: (e) => {
-                            if (e.key === "Enter") confirmSavePalette();
-                            if (e.key === "Escape") cancelSavePalette();
-                          },
-                        }),
-                        React.createElement(
-                          "button",
-                          {
-                            onClick: confirmSavePalette,
-                            disabled: !newPaletteName.trim(),
-                            className:
-                              "px-2 py-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-300 disabled:dark:bg-neutral-700 text-white rounded text-xs transition-colors",
-                            title: "Confirm Save",
-                          },
-                          React.createElement(Icon, {
-                            name: "check",
-                            className: "w-3.5 h-3.5",
-                          }),
-                        ),
-                        React.createElement(
-                          "button",
-                          {
-                            onClick: cancelSavePalette,
-                            className:
-                              "px-2 py-1.5 bg-slate-200 hover:bg-slate-300 dark:bg-neutral-700 dark:hover:bg-neutral-600 text-slate-700 dark:text-neutral-300 rounded text-xs transition-colors",
-                            title: "Cancel",
-                          },
-                          React.createElement(Icon, {
-                            name: "x",
-                            className: "w-3.5 h-3.5",
-                          }),
-                        ),
-                      )
-                    : React.createElement(
-                        React.Fragment,
-                        null,
-                        React.createElement(
-                          "select",
-                          {
-                            onChange: loadPalette,
-                            className:
-                              "flex-1 bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs text-slate-700 dark:text-neutral-300 outline-none focus:border-sky-500",
-                            value: selectedSavedPaletteId,
-                          },
-                          React.createElement(
-                            "option",
-                            { value: "", disabled: true },
-                            "Load saved palette...",
-                          ),
-                          savedPalettes.map((p) =>
-                            React.createElement(
-                              "option",
-                              { key: p.id, value: p.id },
-                              p.name,
-                              " (",
-                              p.colors.length,
-                              " colors)",
-                            ),
-                          ),
-                        ),
-                        selectedSavedPaletteId &&
-                          React.createElement(
-                            "button",
-                            {
-                              onClick: deleteSavedPalette,
-                              className:
-                                "px-2 py-1.5 bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-500 rounded text-xs transition-colors flex items-center justify-center",
-                              title: "Delete saved palette",
-                            },
-                            React.createElement(Icon, {
-                              name: "trash-2",
-                              className: "w-3.5 h-3.5",
-                            }),
-                          ),
-                        React.createElement(
-                          "button",
-                          {
-                            onClick: saveCurrentPalette,
-                            disabled: palette.length === 0,
-                            className:
-                              "px-3 py-1.5 bg-sky-500 hover:bg-sky-600 disabled:bg-slate-300 disabled:dark:bg-neutral-700 text-white rounded text-xs font-medium transition-colors flex items-center gap-1.5",
-                            title: "Save current palette",
-                          },
-                          React.createElement(Icon, {
-                            name: "save",
-                            className: "w-3.5 h-3.5",
-                          }),
-                          "Save",
-                        ),
-                      ),
-                ),
-                React.createElement(
-                  "div",
-                  { className: "flex flex-wrap gap-2" },
-                  palette.map((item, idx) => {
-                    const info = getPaletteItemInfo(item);
-                    const displayName = info.displayName;
-                    const h = info.hex;
-                    const isDragging = draggedPaletteIndex === idx;
-                    const isDragOver = dragOverPaletteIndex === idx;
-                    return React.createElement(
-                      "div",
-                      {
-                        key: item.id || `pal-${idx}`,
-                        draggable: true,
-                        onDragStart: (e) => {
-                          e.dataTransfer.setData("text/plain", idx.toString());
-                          e.dataTransfer.effectAllowed = "move";
-                          setDraggedPaletteIndex(idx);
-                        },
-                        onDragOver: (e) => {
-                          e.preventDefault();
-                          e.dataTransfer.dropEffect = "move";
-                          if (dragOverPaletteIndex !== idx) setDragOverPaletteIndex(idx);
-                        },
-                        onDragLeave: () => {
-                          if (dragOverPaletteIndex === idx) setDragOverPaletteIndex(null);
-                        },
-                        onDragEnd: () => {
-                          setDraggedPaletteIndex(null);
-                          setDragOverPaletteIndex(null);
-                        },
-                        onDrop: (e) => {
-                          e.preventDefault();
-                          const sourceIdx = parseInt(e.dataTransfer.getData("text/plain"), 10);
-                          setDraggedPaletteIndex(null);
-                          setDragOverPaletteIndex(null);
-                          handleReorderPalette(sourceIdx, idx);
-                        },
-                        className: `relative group w-10 h-10 rounded-md shadow-sm border transition-all cursor-grab active:cursor-grabbing overflow-hidden flex-shrink-0 ${
-                          isDragging
-                            ? "opacity-30 scale-90 border-dashed border-sky-400"
-                            : isDragOver
-                            ? "ring-2 ring-sky-500 scale-105 z-20 border-sky-400"
-                            : "border-slate-200 dark:border-neutral-700 hover:border-slate-400 dark:hover:border-neutral-500"
-                        }`,
-                        style: { backgroundColor: h },
-                        onClick: () => handleUpdate([item.L, item.C, item.H], item.spectral, item.brand !== undefined ? { brand: item.brand, originalIndex: item.originalIndex } : null),
-                        title: `${displayName} (${item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")} ${item.roleName || (idx < 4 ? "Dominant" : idx < 6 ? "Secondary" : "Accent")} - #${item.erpCode}) - Drag to reorder`,
-                      },
-                      React.createElement(
-                        "div",
-                        { className: "absolute top-0.5 left-0.5 opacity-0 group-hover:opacity-70 transition-opacity z-10 pointer-events-none text-white drop-shadow" },
-                        React.createElement(Icon, { name: "grip-vertical", className: "w-2.5 h-2.5" })
-                      ),
-                      info.image &&
-                        React.createElement("div", {
-                          className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
-                          style: {
-                            backgroundImage: `url(${info.image})`,
-                            WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                            maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                          },
-                        }),
-                      React.createElement(
-                        "button",
-                        {
-                          onClick: (e) => {
-                            e.stopPropagation();
-                            removeFromPalette(item.id);
-                          },
-                          className:
-                            "absolute top-0.5 right-0.5 w-3.5 h-3.5 bg-black/40 hover:bg-red-50 text-white rounded flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all z-10",
-                        },
-                        React.createElement(Icon, {
-                          name: "x",
-                          className: "w-2.5 h-2.5",
-                        }),
-                      ),
-                      React.createElement(
-                        "button",
-                        {
-                          onClick: (e) => {
-                            e.stopPropagation();
-                            replaceInPalette(item.id);
-                          },
-                          className:
-                            "absolute bottom-0.5 left-0.5 w-3.5 h-3.5 bg-black/40 hover:bg-sky-500 text-white rounded flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all z-10",
-                          title: "Replace with current color",
-                        },
-                        React.createElement(Icon, {
-                          name: "refresh-cw",
-                          className: "w-2 h-2",
-                        }),
-                      ),
-                      React.createElement(
-                        "div",
-                        {
-                          className: `absolute bottom-0.5 right-0.5 px-1 py-0.2 rounded text-[7px] font-black uppercase tracking-tight pointer-events-none drop-shadow ${
-                            (item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")) === "60%"
-                              ? "bg-amber-950/80 text-amber-200 border border-amber-500/30"
-                              : (item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")) === "30%"
-                              ? "bg-sky-950/80 text-sky-200 border border-sky-500/30"
-                              : "bg-emerald-950/90 text-emerald-200 border border-emerald-500/30"
-                          }`
-                        },
-                        item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")
-                      ),
-                    );
-                  }),
-                  React.createElement(
-                    "button",
-                    {
-                      onClick: addToPalette,
-                      className:
-                        "w-10 h-10 rounded-md border border-dashed border-slate-300 dark:border-neutral-700 flex items-center justify-center text-slate-400 hover:text-sky-500 hover:border-sky-500 transition-colors bg-slate-50 dark:bg-neutral-800/50",
-                      title: "Add Current Color",
-                    },
-                    React.createElement(Icon, {
-                      name: "plus",
-                      className: "w-5 h-5",
-                    }),
-                  ),
-                ),
-                React.createElement(
-                  "div",
-                  { className: "flex gap-2 mt-1" },
-                  React.createElement(
-                    "select",
-                    {
-                      className: "flex-1 bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-[10px] uppercase font-bold tracking-wider text-slate-700 dark:text-neutral-300 outline-none hover:bg-slate-100 hover:dark:bg-neutral-800 cursor-pointer transition-colors",
-                      onChange: (e) => {
-                        generateAutoPalette(e.target.value);
-                        e.target.value = "";
-                      },
-                      value: ""
-                    },
-                    React.createElement("option", { value: "", disabled: true }, "🏛️ Auto-Generate 60-30-10 Palette..."),
-                    React.createElement("option", { value: "luxury_interior" }, "🏛️ Signature 60-30-10 Interior Suite (4 Dominant, 2 Secondary, 1 Accent)"),
-                    React.createElement("option", { value: "quiet_luxury" }, "🤍 Quiet Luxury Tonal Suite (60-30-10 Rule)"),
-                    React.createElement("option", { value: "warm_wood_stone" }, "🪵 Warm Wood & Stone Harmony (60-30-10 Rule)"),
-                    React.createElement("option", { value: "statement_millwork" }, "♟️ High-Contrast Millwork (60-30-10 Rule)"),
-                    React.createElement("option", { value: "muted_complement" }, "🍃 Muted Organic Complement (60-30-10 Rule)"),
-                    React.createElement("option", { value: "atmospheric_interior" }, "🌌 Soft Atmospheric Interior (60-30-10 Rule)")
-                  )
-                ),
-                palette.length > 0 &&
-                  React.createElement(
-                    "div",
-                    { className: "flex gap-2 mt-1" },
-                    React.createElement(
-                      "button",
-                      {
-                        onClick: () => setShowFullscreenPalette(true),
-                        className:
-                          "flex-1 py-1.5 border border-slate-300 dark:border-neutral-700 hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-700 dark:text-neutral-300 font-bold text-[10px] uppercase tracking-wider rounded transition-colors flex items-center justify-center gap-1",
-                        title: "Fullscreen Palette",
-                      },
-                      React.createElement(Icon, {
-                        name: "maximize",
-                        className: "w-3.5 h-3.5",
-                      }),
-                      "Fullscreen",
-                    ),
-                    React.createElement(
-                      "button",
-                      {
-                        onClick: () => {
-                          setAveryPrintSourceType("palette");
-                          setSelectedPrintIds(palette.map((item) => item.id));
-                          setShowAveryModal(true);
-                        },
-                        className:
-                          "flex-1 py-1.5 border border-slate-300 dark:border-neutral-700 hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-700 dark:text-neutral-300 font-bold text-[10px] uppercase tracking-wider rounded transition-colors flex items-center justify-center gap-1",
-                        title: "Print Avery 5159 Labels",
-                      },
-                      React.createElement(Icon, {
-                        name: "printer",
-                        className: "w-3.5 h-3.5",
-                      }),
-                      "Print Avery",
-                    ),
-                    React.createElement(
-                      "button",
-                      {
-                        onClick: () => setPalette([]),
-                        className:
-                          "py-1.5 px-3 border border-red-200 dark:border-red-900/30 hover:bg-red-50 text-red-500 font-bold text-[10px] uppercase tracking-wider rounded transition-colors flex items-center justify-center",
-                        title: "Clear Palette",
-                      },
-                      React.createElement(Icon, {
-                        name: "trash-2",
-                        className: "w-3.5 h-3.5",
-                      }),
-                    ),
-                  ),
-              ),
-            ),
-            React.createElement(
-              CollapsiblePanel,
-              {
-                title: "Delta E Comparisons",
-                icon: "git-compare",
-                defaultOpen: false,
-              },
-              React.createElement(
-                "div",
-                { className: "flex flex-col gap-4" },
-                React.createElement(
-                  "div",
-                  { className: "flex gap-3" },
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "flex-1 border border-slate-200 dark:border-neutral-700 rounded-lg overflow-hidden flex flex-col relative group h-24 bg-white dark:bg-neutral-900",
-                    },
-                    compSlotA
-                      ? React.createElement(
-                          React.Fragment,
-                          null,
-                          React.createElement(
-                            "div",
-                            {
-                              className:
-                                "flex-1 w-full relative cursor-pointer hover:opacity-90 transition-opacity",
-                              onClick: () =>
-                                handleUpdate(
-                                  [compSlotA.L, compSlotA.C, compSlotA.H],
-                                  compSlotA.spectral,
-                                  compSlotA.brand !== undefined ? { brand: compSlotA.brand, originalIndex: compSlotA.originalIndex } : null
-                                ),
-                              style: {
-                                backgroundColor: new Color("oklch", [
-                                  compSlotA.L,
-                                  compSlotA.C,
-                                  compSlotA.H,
-                                ])
-                                  .clone()
-                                  .toGamut({ space: "srgb" })
-                                  .toString({ format: "hex" }),
-                              },
-                            },
-                            compSlotA.image &&
-                              React.createElement("div", {
-                                className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
-                                style: {
-                                  backgroundImage: `url(${compSlotA.image})`,
-                                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                                  maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                                },
-                              }),
-                            !new Color("oklch", [
-                              compSlotA.L,
-                              compSlotA.C,
-                              compSlotA.H,
-                            ]).inGamut("srgb") &&
-                              React.createElement("div", {
-                                className:
-                                  "absolute inset-0 pointer-events-none",
-                                style: {
-                                  backgroundImage:
-                                    "repeating-linear-gradient(45deg, rgba(0,0,0,0.2), rgba(0,0,0,0.2) 10px, rgba(255,255,255,0.2) 10px, rgba(255,255,255,0.2) 20px)",
-                                },
-                              }),
-                          ),
-                          React.createElement(
-                            "div",
-                            {
-                              className:
-                                "p-1.5 text-center text-[9px] font-mono text-slate-600 dark:text-neutral-400 bg-slate-50 dark:bg-neutral-800/50 border-t border-slate-200 dark:border-neutral-700 cursor-pointer flex items-center justify-center gap-1",
-                              onClick: () =>
-                                handleUpdate(
-                                  [compSlotA.L, compSlotA.C, compSlotA.H],
-                                  compSlotA.spectral,
-                                  compSlotA.brand !== undefined ? { brand: compSlotA.brand, originalIndex: compSlotA.originalIndex } : null
-                                ),
-                            },
-                            !new Color("oklch", [
-                              compSlotA.L,
-                              compSlotA.C,
-                              compSlotA.H,
-                            ]).inGamut("srgb") &&
-                              React.createElement(Icon, {
-                                name: "alert-triangle",
-                                className: "w-3 h-3 text-red-500",
-                                title: "Out of sRGB Gamut",
-                              }),
-                            React.createElement(
-                              "span",
-                              null,
-                              "L:",
-                              compSlotA.L.toFixed(2),
-                              " C:",
-                              compSlotA.C.toFixed(2),
-                              " H:",
-                              compSlotA.H.toFixed(0),
-                              "\xB0",
-                            ),
-                          ),
-                          React.createElement(
-                            "button",
-                            {
-                              onClick: (e) => {
-                                e.stopPropagation();
-                                setCompSlotA(null);
-                              },
-                              className:
-                                "absolute top-1.5 right-1.5 bg-black/40 hover:bg-black/60 text-white p-1 rounded opacity-0 group-hover:opacity-100 z-10",
-                            },
-                            React.createElement(Icon, {
-                              name: "x",
-                              className: "w-3 h-3",
-                            }),
-                          ),
-                        )
-                      : React.createElement(
-                          "button",
-                          {
-                            onClick: () => {
-                              let loadedImage = null;
-                              let loadedBrand = undefined;
-                              let loadedIndex = undefined;
-                              if (crosshair?.activeCommercial) {
-                                const m = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
-                                loadedImage = m?.image || null;
-                                loadedBrand = crosshair.activeCommercial.brand;
-                                loadedIndex = crosshair.activeCommercial.originalIndex;
-                              } else if (crosshair?.activeSavedColor?.type === "pin") {
-                                const pinObj = savedColors[crosshair.activeSavedColor.id];
-                                loadedImage = pinObj?.image || (pinObj?.notes?.startsWith("http") ? pinObj.notes : null);
-                                loadedBrand = pinObj?.brand;
-                                loadedIndex = pinObj?.originalIndex;
-                              }
-                              setCompSlotA({
-                                L: scrubL,
-                                C: scrubC,
-                                H: scrubH,
-                                erpCode: crosshair?.activeErpCode || "",
-                                adjId: crosshair?.activeSavedColor
-                                  ? crosshair.activeSavedColor.adjId
-                                  : crosshair?.nearestAdjId,
-                                nounId: crosshair?.activeSavedColor
-                                  ? crosshair.activeSavedColor.anchorId
-                                  : crosshair?.nearestAnchorId,
-                                adjOverride:
-                                  crosshair?.activeSavedColor?.adjOverride,
-                                nameOverride:
-                                  crosshair?.activeSavedColor?.nameOverride,
-                                type: crosshair?.activeSavedColor?.type,
-                                spectral: crosshair?.activeSavedColor?.spectral,
-                                image: loadedImage,
-                                brand: loadedBrand,
-                                originalIndex: loadedIndex,
-                              });
-                            },
-                            className:
-                              "w-full h-full flex flex-col items-center justify-center hover:bg-slate-50 dark:hover:bg-neutral-800 text-slate-400 hover:text-sky-500 transition-colors",
-                          },
-                          React.createElement(Icon, {
-                            name: "plus",
-                            className: "w-6 h-6 mb-1",
-                          }),
-                          React.createElement(
-                            "span",
-                            {
-                              className:
-                                "text-[9px] font-bold uppercase tracking-wider",
-                            },
-                            "Load Current",
-                          ),
-                        ),
-                  ),
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "flex-1 border border-slate-200 dark:border-neutral-700 rounded-lg overflow-hidden flex flex-col relative group h-24 bg-white dark:bg-neutral-900",
-                    },
-                    compSlotB
-                      ? React.createElement(
-                          React.Fragment,
-                          null,
-                          React.createElement(
-                            "div",
-                            {
-                              className:
-                                "flex-1 w-full relative cursor-pointer hover:opacity-90 transition-opacity",
-                              onClick: () =>
-                                handleUpdate(
-                                  [compSlotB.L, compSlotB.C, compSlotB.H],
-                                  compSlotB.spectral,
-                                  compSlotB.brand !== undefined ? { brand: compSlotB.brand, originalIndex: compSlotB.originalIndex } : null
-                                ),
-                              style: {
-                                backgroundColor: new Color("oklch", [
-                                  compSlotB.L,
-                                  compSlotB.C,
-                                  compSlotB.H,
-                                ])
-                                  .clone()
-                                  .toGamut({ space: "srgb" })
-                                  .toString({ format: "hex" }),
-                              },
-                            },
-                            compSlotB.image &&
-                              React.createElement("div", {
-                                className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
-                                style: {
-                                  backgroundImage: `url(${compSlotB.image})`,
-                                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                                  maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                                },
-                              }),
-                            !new Color("oklch", [
-                              compSlotB.L,
-                              compSlotB.C,
-                              compSlotB.H,
-                            ]).inGamut("srgb") &&
-                              React.createElement("div", {
-                                className:
-                                  "absolute inset-0 pointer-events-none",
-                                style: {
-                                  backgroundImage:
-                                    "repeating-linear-gradient(45deg, rgba(0,0,0,0.2), rgba(0,0,0,0.2) 10px, rgba(255,255,255,0.2) 10px, rgba(255,255,255,0.2) 20px)",
-                                },
-                              }),
-                          ),
-                          React.createElement(
-                            "div",
-                            {
-                              className:
-                                "p-1.5 text-center text-[9px] font-mono text-slate-600 dark:text-neutral-400 bg-slate-50 dark:bg-neutral-800/50 border-t border-slate-200 dark:border-neutral-700 cursor-pointer flex items-center justify-center gap-1",
-                              onClick: () =>
-                                handleUpdate(
-                                  [compSlotB.L, compSlotB.C, compSlotB.H],
-                                  compSlotB.spectral,
-                                  compSlotB.brand !== undefined ? { brand: compSlotB.brand, originalIndex: compSlotB.originalIndex } : null
-                                ),
-                            },
-                            !new Color("oklch", [
-                              compSlotB.L,
-                              compSlotB.C,
-                              compSlotB.H,
-                            ]).inGamut("srgb") &&
-                              React.createElement(Icon, {
-                                name: "alert-triangle",
-                                className: "w-3 h-3 text-red-500",
-                                title: "Out of sRGB Gamut",
-                              }),
-                            React.createElement(
-                              "span",
-                              null,
-                              "L:",
-                              compSlotB.L.toFixed(2),
-                              " C:",
-                              compSlotB.C.toFixed(2),
-                              " H:",
-                              compSlotB.H.toFixed(0),
-                              "\xB0",
-                            ),
-                          ),
-                          React.createElement(
-                            "button",
-                            {
-                              onClick: (e) => {
-                                e.stopPropagation();
-                                setCompSlotB(null);
-                              },
-                              className:
-                                "absolute top-1.5 right-1.5 bg-black/40 hover:bg-black/60 text-white p-1 rounded opacity-0 group-hover:opacity-100 z-10",
-                            },
-                            React.createElement(Icon, {
-                              name: "x",
-                              className: "w-3 h-3",
-                            }),
-                          ),
-                        )
-                      : React.createElement(
-                          "button",
-                          {
-                            onClick: () => {
-                              let loadedImage = null;
-                              let loadedBrand = undefined;
-                              let loadedIndex = undefined;
-                              if (crosshair?.activeCommercial) {
-                                const m = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
-                                loadedImage = m?.image || null;
-                                loadedBrand = crosshair.activeCommercial.brand;
-                                loadedIndex = crosshair.activeCommercial.originalIndex;
-                              } else if (crosshair?.activeSavedColor?.type === "pin") {
-                                const pinObj = savedColors[crosshair.activeSavedColor.id];
-                                loadedImage = pinObj?.image || (pinObj?.notes?.startsWith("http") ? pinObj.notes : null);
-                                loadedBrand = pinObj?.brand;
-                                loadedIndex = pinObj?.originalIndex;
-                              }
-                              setCompSlotB({
-                                L: scrubL,
-                                C: scrubC,
-                                H: scrubH,
-                                erpCode: crosshair?.activeErpCode || "",
-                                adjId: crosshair?.activeSavedColor
-                                  ? crosshair.activeSavedColor.adjId
-                                  : crosshair?.nearestAdjId,
-                                nounId: crosshair?.activeSavedColor
-                                  ? crosshair.activeSavedColor.anchorId
-                                  : crosshair?.nearestAnchorId,
-                                adjOverride:
-                                  crosshair?.activeSavedColor?.adjOverride,
-                                nameOverride:
-                                  crosshair?.activeSavedColor?.nameOverride,
-                                type: crosshair?.activeSavedColor?.type,
-                                spectral: crosshair?.activeSavedColor?.spectral,
-                                image: loadedImage,
-                                brand: loadedBrand,
-                                originalIndex: loadedIndex,
-                              });
-                            },
-                            className:
-                              "w-full h-full flex flex-col items-center justify-center hover:bg-slate-50 dark:hover:bg-neutral-800 text-slate-400 hover:text-sky-500 transition-colors",
-                          },
-                          React.createElement(Icon, {
-                            name: "plus",
-                            className: "w-6 h-6 mb-1",
-                          }),
-                          React.createElement(
-                            "span",
-                            {
-                              className:
-                                "text-[9px] font-bold uppercase tracking-wider",
-                            },
-                            "Load Current",
-                          ),
-                        ),
-                  ),
-                ),
-                compSlotA &&
-                  compSlotB &&
-                  React.createElement(
-                    "div",
-                    { className: "flex flex-col gap-3" },
-                    React.createElement(
-                      "div",
-                      { className: "grid grid-cols-2 gap-2 mt-2" },
-                      React.createElement(
-                        "div",
-                        {
-                          className:
-                            "bg-slate-50 dark:bg-neutral-800/50 border border-slate-200 dark:border-neutral-700/50 rounded p-2 text-center",
-                        },
-                        React.createElement(
-                          "div",
-                          {
-                            className:
-                              "text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400 mb-1",
-                          },
-                          "Delta E OK",
-                        ),
-                        React.createElement(
-                          "div",
-                          {
-                            className:
-                              "text-lg font-mono font-black text-slate-800 dark:text-neutral-200",
-                          },
-                          deltaEOK,
-                        ),
-                      ),
-                      React.createElement(
-                        "div",
-                        {
-                          className:
-                            "bg-slate-50 dark:bg-neutral-800/50 border border-slate-200 dark:border-neutral-700/50 rounded p-2 text-center",
-                        },
-                        React.createElement(
-                          "div",
-                          {
-                            className:
-                              "text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400 mb-1",
-                          },
-                          "Delta E 2000",
-                        ),
-                        React.createElement(
-                          "div",
-                          {
-                            className:
-                              "text-lg font-mono font-black text-slate-800 dark:text-neutral-200",
-                          },
-                          deltaE2000,
-                        ),
-                      ),
-                    ),
-                    compSlotA.spectral &&
-                      compSlotB.spectral &&
-                      React.createElement(
-                        "div",
-                        {
-                          className:
-                            "bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800/30 rounded p-2",
-                        },
-                        React.createElement(
-                          "div",
-                          {
-                            className:
-                              "text-[9px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400 mb-1 flex items-center gap-1",
-                          },
-                          React.createElement(Icon, {
-                            name: "activity",
-                            className: "w-3 h-3",
-                          }),
-                          " ",
-                          "Metamerism Index (MI)",
-                        ),
-                        React.createElement(
-                          "div",
-                          { className: "grid grid-cols-3 gap-2 mt-1.5" },
-                          React.createElement(
-                            "div",
-                            { className: "text-center" },
-                            React.createElement(
-                              "div",
-                              {
-                                className:
-                                  "text-[8px] uppercase text-amber-600/70 dark:text-amber-500/70",
-                              },
-                              "Illuminant A",
-                            ),
-                            React.createElement(
-                              "div",
-                              {
-                                className:
-                                  "text-sm font-mono font-bold text-amber-800 dark:text-amber-300",
-                              },
-                              calculateDeltaEFromSpectral(
-                                compSlotA.spectral,
-                                compSlotB.spectral,
-                                observer,
-                                "A",
-                              ).toFixed(2),
-                            ),
-                          ),
-                          React.createElement(
-                            "div",
-                            {
-                              className:
-                                "text-center border-l border-amber-200 dark:border-amber-800/30",
-                            },
-                            React.createElement(
-                              "div",
-                              {
-                                className:
-                                  "text-[8px] uppercase text-amber-600/70 dark:text-amber-500/70",
-                              },
-                              "Illuminant F2",
-                            ),
-                            React.createElement(
-                              "div",
-                              {
-                                className:
-                                  "text-sm font-mono font-bold text-amber-800 dark:text-amber-300",
-                              },
-                              calculateDeltaEFromSpectral(
-                                compSlotA.spectral,
-                                compSlotB.spectral,
-                                observer,
-                                "F2",
-                              ).toFixed(2),
-                            ),
-                          ),
-                          React.createElement(
-                            "div",
-                            {
-                              className:
-                                "text-center border-l border-amber-200 dark:border-amber-800/30",
-                            },
-                            React.createElement(
-                              "div",
-                              {
-                                className:
-                                  "text-[8px] uppercase text-amber-600/70 dark:text-amber-500/70",
-                              },
-                              "Illuminant F11",
-                            ),
-                            React.createElement(
-                              "div",
-                              {
-                                className:
-                                  "text-sm font-mono font-bold text-amber-800 dark:text-amber-300",
-                              },
-                              calculateDeltaEFromSpectral(
-                                compSlotA.spectral,
-                                compSlotB.spectral,
-                                observer,
-                                "F11",
-                              ).toFixed(2),
-                            ),
-                          ),
-                        ),
-                        React.createElement(
-                          "div",
-                          {
-                            className:
-                              "text-[8px] text-amber-600/80 dark:text-amber-500/80 mt-1.5 text-center italic",
-                          },
-                          "MI > 1.0 indicates a definite mismatch under the test illuminant.",
-                        ),
-                      ),
-                    React.createElement(
-                      "button",
-                      {
-                        onClick: () => setShowCompareFullscreen(true),
-                        className:
-                          "w-full py-2.5 border border-slate-300 dark:border-neutral-700 hover:bg-slate-100 text-slate-700 dark:text-neutral-300 font-bold text-[10px] uppercase tracking-wider rounded transition-colors flex items-center justify-center gap-2",
-                      },
-                      React.createElement(Icon, {
-                        name: "columns",
-                        className: "w-3.5 h-3.5",
-                      }),
-                      " Fullscreen Compare",
-                    ),
-                  ),
-              ),
-            ),
-            React.createElement(
-              CollapsiblePanel,
-              { title: "Tags", icon: "tag", defaultOpen: false },
-              React.createElement(
-                "div",
-                { className: "flex flex-col gap-3" },
-                React.createElement(
-                  "div",
-                  { className: "flex flex-wrap gap-1.5" },
-                  activeTags.map((tag) =>
-                    React.createElement(
-                      "span",
-                      {
-                        key: tag,
-                        className:
-                          "flex items-center gap-1 bg-sky-100 dark:bg-sky-500/20 text-sky-700 dark:text-sky-300 px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider border border-sky-200 dark:border-sky-500/30",
-                      },
-                      tag,
-                      React.createElement(
-                        "button",
-                        {
-                          onClick: () => removeTag(tag),
-                          className:
-                            "hover:text-red-500 transition-colors ml-0.5",
-                          disabled: isInputDisabled,
-                        },
-                        React.createElement(Icon, {
-                          name: "x",
-                          className: "w-2.5 h-2.5",
-                        }),
-                      ),
-                    ),
-                  ),
-                  activeTags.length === 0 &&
-                    React.createElement(
-                      "span",
-                      { className: "text-[9px] text-slate-400 italic" },
-                      "No tags added.",
-                    ),
-                ),
-                React.createElement(
-                  "div",
-                  { className: "flex flex-col gap-2" },
-                  React.createElement(
-                    "select",
-                    {
-                      className:
-                        "w-full bg-slate-50 dark:bg-neutral-800/50 border border-slate-200 dark:border-neutral-700/50 rounded-lg p-2.5 text-[10px] uppercase font-bold tracking-wider focus:outline-none focus:border-sky-500 text-slate-900 dark:text-white transition-colors appearance-none cursor-pointer",
-                      disabled: isInputDisabled,
-                      onChange: (e) => {
-                        if (e.target.value) {
-                          addTag(e.target.value);
-                          e.target.value = "";
-                        }
-                      },
-                    },
-                    React.createElement(
-                      "option",
-                      { value: "" },
-                      "Apply existing tag...",
-                    ),
-                    globalTags.map((t) =>
-                      React.createElement("option", { key: t, value: t }, t),
-                    ),
-                  ),
-                  React.createElement("input", {
-                    type: "text",
-                    placeholder: "Or type new tag & press Enter...",
-                    className:
-                      "w-full bg-slate-50 dark:bg-neutral-800/50 border border-slate-200 dark:border-neutral-700/50 rounded-lg p-2.5 text-[10px] uppercase font-bold tracking-wider focus:outline-none focus:border-sky-500 text-slate-900 dark:text-white transition-colors",
-                    disabled: isInputDisabled,
-                    onKeyDown: (e) => {
-                      if (e.key === "Enter" && e.target.value.trim()) {
-                        addTag(e.target.value.trim());
-                        e.target.value = "";
-                      }
-                    },
-                  }),
-                ),
-              ),
-            ),
-            React.createElement(
-              CollapsiblePanel,
-              {
-                title: "Anchor Notes",
-                icon: "sticky-note",
-                defaultOpen: false,
-              },
-              React.createElement(
-                "div",
-                { className: "flex flex-col gap-2" },
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400 mb-1 flex justify-between items-center",
-                  },
-                  React.createElement(
-                    "span",
-                    null,
-                    "Notes for",
-                    " ",
-                    crosshair?.activeSavedColor?.type === "pin"
-                      ? "Custom Pin"
-                      : crosshair?.nearestAnchorId,
-                  ),
-                ),
-                React.createElement("textarea", {
-                  className:
-                    "w-full h-28 bg-slate-50 dark:bg-neutral-800/50 border border-slate-200 dark:border-neutral-700/50 rounded-lg p-3 text-xs focus:outline-none focus:border-sky-500 text-slate-900 dark:text-white custom-scrollbar resize-none transition-colors",
-                  placeholder: "Add notes...",
-                  value: activeNotes,
-                  onChange: (e) => onNotesChange(e.target.value),
-                  disabled: isInputDisabled,
-                }),
-              ),
-            ),
-          ),
-    ),
-    React.createElement(
-      "main",
-      {
-        className:
-          "flex-1 flex flex-col overflow-hidden bg-slate-50 dark:bg-neutral-950 relative",
-      },
-      React.createElement(
-        "div",
-        {
-          className:
-            "flex items-center justify-between px-4 pt-4 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 z-10 flex-shrink-0",
-        },
-        React.createElement(
-          "div",
-          { className: "flex-1 flex items-center min-w-0 mr-4 pb-1.5" },
-          React.createElement(
-            "div",
-            { className: "relative" },
-            React.createElement(
-              "select",
-              {
-                value: activeTab,
-                onChange: (e) => setActiveTab(e.target.value),
-                className:
-                  "appearance-none pl-4 pr-10 py-2 text-[12px] font-black uppercase tracking-widest rounded-lg border-2 bg-white dark:bg-neutral-800 outline-none cursor-pointer transition-colors hover:bg-slate-50 dark:hover:bg-neutral-700 min-w-[220px]",
-                style: {
-                  textTransform: "uppercase",
-                  color: isDark ? "#F2E8DF" : "#010D00",
-                  borderColor: isDark ? "#F2E8DF" : "#010D00",
-                },
-              },
-              tabs.map((tab) =>
-                React.createElement(
-                  "option",
-                  {
-                    key: tab.id,
-                    value: tab.id,
-                    style: {
-                      color: isDark ? "#F2E8DF" : "#010D00",
-                      background: isDark ? "#052212" : "#F2E8DF",
-                    },
-                  },
-                  tab.label,
-                ),
-              ),
-            ),
-            React.createElement(Icon, {
-              name: "chevron-down",
-              className:
-                "w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none",
-              style: { color: isDark ? "#F2E8DF" : "#010D00" },
-            }),
-          ),
-        ),
-        React.createElement(
-          "div",
-          { className: "flex items-center gap-1 shrink-0 pb-1.5" },
-          React.createElement(
-            "button",
-            {
-              onClick: handleUndo,
-              disabled: !canUndo,
-              className: `p-2 rounded-md transition-colors ${canUndo ? "hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400" : "text-slate-300 dark:text-neutral-700 cursor-not-allowed"}`,
-              title: "Undo (Ctrl+Z)",
-            },
-            React.createElement(Icon, { name: "undo", className: "w-4 h-4" }),
-          ),
-          React.createElement(
-            "button",
-            {
-              onClick: handleRedo,
-              disabled: !canRedo,
-              className: `p-2 rounded-md transition-colors ${canRedo ? "hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400" : "text-slate-300 dark:text-neutral-700 cursor-not-allowed"}`,
-              title: "Redo (Ctrl+Y)",
-            },
-            React.createElement(Icon, { name: "redo", className: "w-4 h-4" }),
-          ),
-          React.createElement("div", {
-            className: "w-px h-4 bg-slate-300 dark:bg-neutral-700 mx-1",
-          }),
-          React.createElement(
-            "button",
-            {
-              onClick: handleSaveApp,
-              className:
-                "p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors",
-              title: "Save App State (.html)",
-            },
-            React.createElement(Icon, { name: "save", className: "w-4 h-4" }),
-          ),
-          React.createElement(
-            "label",
-            {
-              className:
-                "p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 cursor-pointer transition-colors",
-              title: "Import CSV",
-            },
-            React.createElement(Icon, { name: "upload", className: "w-4 h-4" }),
-            React.createElement("input", {
-              type: "file",
-              accept:
-                ".csv,text/csv,application/csv,text/comma-separated-values,application/vnd.ms-excel",
-              className: "hidden",
-              onChange: handleImportCSV,
-              onClick: (e) => {
-                e.target.value = null;
-              },
-            }),
-          ),
-          React.createElement(
-            "button",
-            {
-              onClick: handleSystemExport,
-              className:
-                "p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors",
-              title: "Export CSV",
-            },
-            React.createElement(Icon, {
-              name: "download",
-              className: "w-4 h-4",
-            }),
-          ),
-          React.createElement(
-            "button",
-            {
-              onClick: () => setTheme(theme === "dark" ? "light" : "dark"),
-              className:
-                "p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors",
-              title: "Toggle Theme",
-            },
-            React.createElement(Icon, {
-              name: theme === "dark" ? "sun" : "moon",
-              className: "w-4 h-4",
-            }),
-          ),
-        ),
-      ),
-      React.createElement(
-        "div",
-        { className: "flex-1 relative overflow-hidden p-4" },
-        React.createElement(
-          "div",
-          {
-            className:
-              "absolute inset-4 rounded-xl border border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 overflow-hidden shadow-sm flex flex-col",
-          },
-          ["slice", "chroma", "top", "3d", "db"].includes(activeTab) &&
-            React.createElement(
-              "div",
-              {
-                className:
-                  "px-4 py-2 border-b border-slate-100 dark:border-neutral-800 bg-slate-50/30 dark:bg-neutral-900/30 flex flex-wrap items-center gap-4 z-20",
-              },
-              React.createElement(
-                "div",
-                { className: "flex items-center gap-2" },
-                React.createElement(
-                  "span",
-                  {
-                    className: "text-[10px] font-bold text-slate-400 uppercase",
-                  },
-                  "View:",
-                ),
-                React.createElement(
-                  "select",
-                  {
-                    value: viewMode,
-                    onChange: (e) => setViewMode(e.target.value),
-                    className:
-                      "bg-slate-200/50 dark:bg-neutral-800 rounded px-2 py-1.5 text-[10px] font-black uppercase tracking-tight text-slate-700 dark:text-neutral-300 outline-none hover:bg-slate-300/50 dark:hover:bg-neutral-700 transition-colors cursor-pointer border border-transparent focus:border-sky-500",
-                  },
-                  React.createElement("option", { value: "dots" }, "Dots"),
-                  React.createElement("option", { value: "bins" }, "Bins"),
-                  React.createElement(
-                    "option",
-                    { value: "swatches" },
-                    "Swatches",
-                  ),
-                ),
-              ),
-              (viewMode === "swatches" || activeTab === "db") &&
-                React.createElement(
-                  "div",
-                  { className: "flex items-center gap-2" },
-                  React.createElement(
-                    "span",
-                    {
-                      className:
-                        "text-[10px] font-bold text-slate-400 uppercase",
-                    },
-                    "Layout:",
-                  ),
-                  React.createElement(
-                    "select",
-                    {
-                      value: swatchLayout,
-                      onChange: (e) => setSwatchLayout(e.target.value),
-                      className:
-                        "bg-slate-200/50 dark:bg-neutral-800 rounded px-2 py-1.5 text-[10px] font-black uppercase tracking-tight text-slate-700 dark:text-neutral-300 outline-none hover:bg-slate-300/50 dark:hover:bg-neutral-700 transition-colors cursor-pointer border border-transparent focus:border-sky-500",
-                    },
-                    React.createElement("option", { value: "table" }, "Table"),
-                    React.createElement(
-                      "option",
-                      { value: "gallery" },
-                      "Gallery",
-                    ),
-                    React.createElement(
-                      "option",
-                      { value: "matrix" },
-                      "Matrix",
-                    ),
-                  ),
-                ),
-              React.createElement("div", {
-                className: "h-4 w-px bg-slate-200 dark:bg-neutral-800",
-              }),
-              React.createElement(
-                "div",
-                { className: "flex items-center gap-3" },
-                React.createElement(
-                  "div",
-                  {
-                    className: "flex items-center gap-2 relative",
-                    ref: visibilityMenuRef,
-                  },
-                  React.createElement(Icon, {
-                    name: "eye",
-                    className: "w-3.5 h-3.5 text-slate-400",
-                  }),
-                  React.createElement(
-                    "button",
-                    {
-                      onClick: () => setShowVisibilityMenu(!showVisibilityMenu),
-                      className:
-                        "bg-transparent border-none rounded text-[10px] font-bold uppercase tracking-widest text-slate-700 dark:text-neutral-300 outline-none cursor-pointer flex items-center gap-1",
-                    },
-                    "Visibility",
-                    React.createElement(Icon, {
-                      name: "chevron-down",
-                      className: "w-3 h-3",
-                    }),
-                  ),
-                  showVisibilityMenu &&
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "absolute top-full left-0 mt-2 w-48 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-lg shadow-xl z-[200] flex flex-col p-2 text-xs",
-                      },
-                      React.createElement(
-                        "label",
-                        {
-                          className:
-                            "flex items-center gap-2 px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded cursor-pointer text-slate-700 dark:text-neutral-300",
-                        },
-                        React.createElement("input", {
-                          type: "checkbox",
-                          checked: viewportVisibility.pins,
-                          onChange: (e) =>
-                            setViewportVisibility((prev) => ({
-                              ...prev,
-                              pins: e.target.checked,
-                            })),
-                          className:
-                            "rounded border-slate-300 text-sky-500 focus:ring-sky-500",
-                        }),
-                        "Pins",
-                      ),
-                      React.createElement(
-                        "label",
-                        {
-                          className:
-                            "flex items-center gap-2 px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded cursor-pointer text-slate-700 dark:text-neutral-300",
-                        },
-                        React.createElement("input", {
-                          type: "checkbox",
-                          checked: viewportVisibility.anchors,
-                          onChange: (e) =>
-                            setViewportVisibility((prev) => ({
-                              ...prev,
-                              anchors: e.target.checked,
-                            })),
-                          className:
-                            "rounded border-slate-300 text-sky-500 focus:ring-sky-500",
-                        }),
-                        "Anchors (Grid)",
-                      ),
-                      React.createElement("div", {
-                        className: "h-px bg-slate-200 dark:bg-neutral-800 my-1",
-                      }),
-                      React.createElement(
-                        "details",
-                        { className: "px-2 py-1.5", open: true },
-                        React.createElement(
-                          "summary",
-                          { className: "cursor-pointer text-slate-700 dark:text-neutral-300 font-bold" },
-                          "Commercial Colors"
-                        ),
-                        colorData &&
-                          Object.keys(colorData).map((brand) =>
-                            React.createElement(
-                              "label",
-                              {
-                                key: brand,
-                                className:
-                                  "flex items-center gap-2 px-2 py-1 pl-4 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded cursor-pointer text-slate-500 dark:text-neutral-400 mt-1",
-                              },
-                              React.createElement("input", {
-                                type: "checkbox",
-                                checked:
-                                  activeTab === "db" ? viewportVisibility.brands[brand] !== false : viewportVisibility.brands[brand] === true,
-                                onChange: (e) =>
-                                  setViewportVisibility((prev) => ({
-                                    ...prev,
-                                    brands: {
-                                      ...prev.brands,
-                                      [brand]: e.target.checked,
-                                    },
-                                  })),
-                                className:
-                                  "rounded border-slate-300 text-emerald-500 focus:ring-emerald-500 w-3 h-3",
-                              }),
-                              getBrandDisplayName(brand),
-                            ),
-                          ),
-                      ),
-                    ),
-                ),
-                React.createElement(
-                  "div",
-                  { className: "relative" },
-                  React.createElement(Icon, {
-                    name: "search",
-                    className:
-                      "absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400",
-                  }),
-                  React.createElement("input", {
-                    type: "text",
-                    value: viewportSearchQuery,
-                    onChange: (e) => setViewportSearchQuery(e.target.value),
-                    placeholder: "Search...",
-                    className:
-                      "w-32 bg-slate-200/40 dark:bg-neutral-800/50 border border-transparent rounded-lg pl-7 pr-2 py-1.5 text-[10px] font-bold uppercase tracking-widest focus:ring-1 focus:ring-sky-500 outline-none text-slate-900 dark:text-white placeholder:text-slate-400 transition-all",
-                  }),
-                ),
-                React.createElement(
-                  "div",
-                  { className: "relative" },
-                  React.createElement(Icon, {
-                    name: "tag",
-                    className:
-                      "absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400",
-                  }),
-                  React.createElement(
-                    "select",
-                    {
-                      value: viewportTagFilter,
-                      onChange: (e) => setViewportTagFilter(e.target.value),
-                      className:
-                        "w-32 bg-slate-200/40 dark:bg-neutral-800/50 border border-transparent rounded-lg pl-7 pr-2 py-1.5 text-[10px] font-bold uppercase tracking-widest focus:ring-1 focus:ring-sky-500 outline-none text-slate-900 dark:text-white transition-all appearance-none cursor-pointer",
-                    },
-                    React.createElement("option", { value: "" }, "All Tags"),
-                    globalTags.map((t) =>
-                      React.createElement("option", { key: t, value: t }, t),
-                    ),
-                  ),
-                ),
-              ),
-              (viewMode === "swatches" || activeTab === "db") &&
-                React.createElement(
-                  "div",
-                  { className: "ml-auto flex items-center gap-3" },
-                  React.createElement(Icon, {
-                    name: "zoom-in",
-                    className: "w-3.5 h-3.5 text-slate-400",
-                  }),
-                  React.createElement("input", {
-                    type: "range",
-                    min: "0.1",
-                    max: "5",
-                    step: "0.1",
-                    value: swatchZoom,
-                    onChange: (e) => setSwatchZoom(parseFloat(e.target.value)),
-                    className:
-                      "w-24 accent-sky-500 opacity-60 hover:opacity-100 transition-opacity cursor-pointer",
-                  }),
-                  React.createElement(
-                    "span",
-                    {
-                      className:
-                        "text-[10px] font-mono text-slate-400 min-w-[30px]",
-                    },
-                    Math.round(swatchZoom * 100),
-                    "%",
-                  ),
-                ),
-            ),
-          React.createElement(
-            "div",
-            { className: "flex-1 relative overflow-hidden" },
-            ["slice", "chroma", "top", "3d", "db"].includes(activeTab) &&
-              React.createElement(
-                "div",
-                { className: "absolute top-4 left-4 z-50" },
-                React.createElement(
-                  "button",
-                  {
-                    onClick: () => setShowViewFilters(!showViewFilters),
-                    className:
-                      "flex justify-center items-center w-8 h-8 bg-white/80 dark:bg-neutral-900/80 rounded-lg border border-slate-200 dark:border-neutral-800 backdrop-blur-md shadow-sm text-slate-500 hover:text-sky-600 dark:text-neutral-400 dark:hover:text-sky-400 transition-colors",
-                    title: "View Filters",
-                  },
-                  React.createElement(Icon, {
-                    name: "sliders-horizontal",
-                    className: "w-4 h-4",
-                  }),
-                ),
-                showViewFilters &&
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "mt-2 flex flex-col gap-4 bg-white/95 dark:bg-neutral-900/95 p-4 rounded-xl border border-slate-200 dark:border-neutral-800 backdrop-blur-md shadow-xl w-56 animate-in fade-in zoom-in-95 duration-200 origin-top-left",
-                    },
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "flex items-center justify-between border-b border-slate-100 dark:border-neutral-800 pb-2",
-                      },
-                      React.createElement(
-                        "label",
-                        {
-                          className:
-                            "text-xs font-semibold tracking-wider text-slate-500 dark:text-neutral-400",
-                        },
-                        "View Filters",
-                      ),
-                      React.createElement(
-                        "button",
-                        {
-                          onClick: () => setShowViewFilters(false),
-                          className:
-                            "text-slate-400 hover:text-slate-600 dark:hover:text-neutral-200",
-                          title: "Close Filters",
-                        },
-                        React.createElement(Icon, {
-                          name: "x",
-                          className: "w-3.5 h-3.5",
-                        }),
-                      ),
-                    ),
-                    React.createElement(
-                      "div",
-                      { className: "flex flex-col gap-2" },
-                      React.createElement(
-                        "div",
-                        {
-                          className:
-                            "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono",
-                        },
-                        React.createElement("span", null, "Lightness"),
-                        React.createElement(
-                          "span",
-                          {
-                            className:
-                              "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded",
-                          },
-                          "\xB1 ",
-                          filterL.toFixed(2),
-                        ),
-                      ),
-                      React.createElement("input", {
-                        type: "range",
-                        min: "0",
-                        max: "1",
-                        step: "0.01",
-                        value: filterL,
-                        onChange: (e) => setFilterL(Number(e.target.value)),
-                        className: "w-full accent-sky-500",
-                      }),
-                    ),
-                    React.createElement(
-                      "div",
-                      { className: "flex flex-col gap-2" },
-                      React.createElement(
-                        "div",
-                        {
-                          className:
-                            "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono",
-                        },
-                        React.createElement("span", null, "Chroma"),
-                        React.createElement(
-                          "span",
-                          {
-                            className:
-                              "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded",
-                          },
-                          "\xB1 ",
-                          filterC.toFixed(2),
-                        ),
-                      ),
-                      React.createElement("input", {
-                        type: "range",
-                        min: "0",
-                        max: "0.4",
-                        step: "0.01",
-                        value: filterC,
-                        onChange: (e) => setFilterC(Number(e.target.value)),
-                        className: "w-full accent-sky-500",
-                      }),
-                    ),
-                    React.createElement(
-                      "div",
-                      { className: "flex flex-col gap-2" },
-                      React.createElement(
-                        "div",
-                        {
-                          className:
-                            "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono",
-                        },
-                        React.createElement("span", null, "Hue"),
-                        React.createElement(
-                          "span",
-                          {
-                            className:
-                              "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded",
-                          },
-                          "\xB1 ",
-                          filterH.toFixed(2),
-                          "\xB0",
-                        ),
-                      ),
-                      React.createElement("input", {
-                        type: "range",
-                        min: "0",
-                        max: "180",
-                        step: "0.01",
-                        value: filterH,
-                        onChange: (e) => setFilterH(Number(e.target.value)),
-                        className: "w-full accent-sky-500",
-                      }),
-                    ),
-                    React.createElement(
-                      "div",
-                      { className: "flex flex-col gap-2 border-t border-slate-100 dark:border-neutral-800 pt-2 mt-1" },
-                      React.createElement(
-                        "div",
-                        { className: "flex items-center justify-between" },
-                        React.createElement(
-                          "span",
-                          { className: "text-[10px] uppercase text-slate-400 font-mono" },
-                          "Same Adjective"
-                        ),
-                        React.createElement("button", {
-                          onClick: () => setFilterSameAdjective(!filterSameAdjective),
-                          className: `w-9 h-5 flex items-center rounded-full p-1 transition-colors duration-200 focus:outline-none ${
-                            filterSameAdjective ? "bg-sky-500" : "bg-slate-200 dark:bg-neutral-800"
-                          }`,
-                          title: "Toggle Same Adjective"
-                        },
-                          React.createElement("div", {
-                            className: `bg-white w-3 h-3 rounded-full shadow-md transform transition-transform duration-200 ${
-                              filterSameAdjective ? "translate-x-4" : "translate-x-0"
-                            }`
-                          })
-                        )
-                      ),
-                      React.createElement(
-                        "div",
-                        { className: "flex items-center justify-between" },
-                        React.createElement(
-                          "span",
-                          { className: "text-[10px] uppercase text-slate-400 font-mono" },
-                          "Same Noun"
-                        ),
-                        React.createElement("button", {
-                          onClick: () => setFilterSameNoun(!filterSameNoun),
-                          className: `w-9 h-5 flex items-center rounded-full p-1 transition-colors duration-200 focus:outline-none ${
-                            filterSameNoun ? "bg-sky-500" : "bg-slate-200 dark:bg-neutral-800"
-                          }`,
-                          title: "Toggle Same Noun"
-                        },
-                          React.createElement("div", {
-                            className: `bg-white w-3 h-3 rounded-full shadow-md transform transition-transform duration-200 ${
-                              filterSameNoun ? "translate-x-4" : "translate-x-0"
-                            }`
-                          })
-                        )
-                      )
-                    ),
-                  ),
-              ),
-            activeTab === "db" &&
-              React.createElement(ViewDatabase, {
-                colorData: filteredColorData,
-                fullColorData: colorData,
-                updateColorData,
-                swatchLayout,
-                swatchZoom,
-                handlePointClick,
-                crosshair,
-                searchTerm: viewportSearchQuery,
-                tagFilter: viewportTagFilter,
-                filterPt,
-                selectedIds,
-                setSelectedIds,
-                handleBatchTag,
-                handleBatchRemoveTag,
-                globalTags,
-                onOpenAveryModal: (overrideIds) => {
-                  const ids = overrideIds || selectedIds;
-                  setAveryPrintSourceType("db");
-                  setSelectedPrintIds(ids);
-                  setShowAveryModal(true);
-                },
-              }),
-            activeTab === "3d" &&
-              React.createElement(View3D, {
-                colorData: filteredColorData,
-                points: filteredViewData.points,
-                crosshair,
-                handlePointClick,
-                theme,
-                names,
-                adjectives,
-                savedColors: filteredViewData.savedColors,
-                lockedNouns,
-                lockedAdjectives,
-                tetheringPinId,
-                filterPt,
-              }),
-            activeTab === "slice" &&
-              React.createElement(ViewVertical, {
-                colorData: filteredColorData,
-                points: filteredViewData.points,
-                crosshair,
-                handlePointClick,
-                theme,
-                names,
-                adjectives,
-                savedColors: filteredViewData.savedColors,
-                lockedNouns,
-                lockedAdjectives,
-                viewMode,
-                tetheringPinId,
-                swatchLayout,
-                swatchZoom,
-                viewportSearchQuery,
-                filterPt,
-                filterL,
-                filterC,
-                filterH,
-                groupSettings,
-              }),
-            activeTab === "chroma" &&
-              React.createElement(ViewChromaRings, {
-                colorData: filteredColorData,
-                points: filteredViewData.points,
-                crosshair,
-                handlePointClick,
-                theme,
-                names,
-                adjectives,
-                savedColors: filteredViewData.savedColors,
-                lockedNouns,
-                lockedAdjectives,
-                viewMode,
-                tetheringPinId,
-                swatchLayout,
-                swatchZoom,
-                viewportSearchQuery,
-                filterPt,
-                filterL,
-                filterC,
-                filterH,
-                groupSettings,
-              }),
-            activeTab === "top" &&
-              React.createElement(ViewTopDown, {
-                colorData: filteredColorData,
-                points: filteredViewData.points,
-                baseAnchors: filteredViewData.baseAnchors,
-                crosshair,
-                handlePointClick,
-                theme,
-                names,
-                adjectives,
-                savedColors: filteredViewData.savedColors,
-                lockedNouns,
-                lockedAdjectives,
-                viewMode,
-                tetheringPinId,
-                swatchLayout,
-                swatchZoom,
-                viewportSearchQuery,
-                filterPt,
-                filterL,
-                filterC,
-                filterH,
-                groupSettings,
-              }),
-            activeTab === "groups" &&
-              React.createElement(ViewGroups, {
-                settings: groupSettings,
-                setSettings: setGroupSettings,
-              }),
-            activeTab === "adjectives" &&
-              React.createElement(ViewAdjectives, {
-                points: filteredViewData.points,
-                names,
-                adjectives,
-                setAdjectives,
-                handlePointClick,
-                crosshair,
-                lockedAdjectives,
-                savedColors,
-                onVisualize: handleVisualize,
-              }),
-            activeTab === "palette" &&
-              React.createElement(ViewPalette, {
-                baseAnchors: filteredViewData.baseAnchors,
-                points: filteredViewData.points,
-                handlePointClick,
-                names,
-                setNames,
-                adjectives,
-                setAdjectives,
-                dictNotes,
-                lockedNouns,
-                lockedAdjectives,
-                savedColors,
-                setSavedColors,
-                dictTags,
-                onVisualize: handleVisualize,
-              }),
-            activeTab === "pins" &&
-              React.createElement(ViewPins, {
-                handlePointClick,
-                names,
-                adjectives,
-                dictNotes,
-                savedColors,
-                setSavedColors,
-                dictTags,
-                setDictTags,
-                globalTags,
-                selectedIds,
-                setSelectedIds,
-                handleBatchTag,
-                handleBatchRemoveTag,
-                setShowAveryModal,
-                setSelectedPrintIds,
-                setAveryPrintSourceType,
-                onOpenAveryModal: (overrideIds) => {
-                  const ids = overrideIds || selectedIds;
-                  setAveryPrintSourceType("pins");
-                  setSelectedPrintIds(ids);
-                  setShowAveryModal(true);
-                },
-              }),
-            activeTab === "nix" &&
-              React.createElement(window.ViewNixSpectroErrorBoundary || ViewNixSpectroErrorBoundaryFallback, {
-                handlePointClick,
-                savedColors,
-                setSavedColors,
-                theme,
-                names,
-                adjectives,
-                dictNotes,
-                setDictNotes,
-                dictTags,
-                setDictTags,
-                getPaletteItemInfo,
-              }),
-          ),
-        ),
-      ),
-    ),
-    showCompareFullscreen &&
-      compSlotA &&
-      compSlotB &&
-      (() => {
-        const cA = new Color("oklch", [compSlotA.L, compSlotA.C, compSlotA.H]);
-        const hA = cA
-          .clone()
-          .toGamut({ space: "srgb" })
-          .toString({ format: "hex" });
-        const cB = new Color("oklch", [compSlotB.L, compSlotB.C, compSlotB.H]);
-        const hB = cB
-          .clone()
-          .toGamut({ space: "srgb" })
-          .toString({ format: "hex" });
-        const nA =
-          compSlotA.type === "pin"
-            ? (() => {
-                const info = getInheritedPinNames(compSlotA, savedColors, names, adjectives);
-                return `${info.displayAdj} ${info.displayName}`.trim();
-              })()
-            : `${adjectives[compSlotA.adjId] || ""} ${names[compSlotA.nounId] || ""}`.trim();
-        const nB =
-          compSlotB.type === "pin"
-            ? (() => {
-                const info = getInheritedPinNames(compSlotB, savedColors, names, adjectives);
-                return `${info.displayAdj} ${info.displayName}`.trim();
-              })()
-            : `${adjectives[compSlotB.adjId] || ""} ${names[compSlotB.nounId] || ""}`.trim();
-        const displayA =
-          nA || (compSlotA.erpCode ? `#${compSlotA.erpCode}` : "\u2014");
-        const displayB =
-          nB || (compSlotB.erpCode ? `#${compSlotB.erpCode}` : "\u2014");
-        return React.createElement(
-          "div",
-          {
-            className:
-              "fixed inset-0 z-[100] flex animate-in fade-in duration-300",
-          },
-          React.createElement(
-            "div",
-            { className: "absolute top-8 right-8 z-[110] flex gap-2" },
-            (compSlotA.image || compSlotB.image) &&
-              React.createElement(
-                "button",
-                {
-                  onClick: () =>
-                    setShowFullscreenImageOverlay(!showFullscreenImageOverlay),
-                  className:
-                    "bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg flex items-center gap-2",
-                },
-                React.createElement(Icon, {
-                  name: showFullscreenImageOverlay ? "image-off" : "image",
-                  className: "w-4 h-4",
-                }),
-                showFullscreenImageOverlay ? "Hide Images" : "Show Images",
-              ),
-            (compSlotA.spectral || compSlotB.spectral) &&
-              React.createElement(
-                "button",
-                {
-                  onClick: () =>
-                    setShowFullscreenSpectral(!showFullscreenSpectral),
-                  className:
-                    "bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg flex items-center gap-2",
-                },
-                React.createElement(Icon, {
-                  name: "activity",
-                  className: "w-4 h-4",
-                }),
-                showFullscreenSpectral ? "Hide Spectral" : "Show Spectral",
-              ),
-            React.createElement(
-              "button",
-              {
-                onClick: () => setShowCompareDivider(!showCompareDivider),
-                className:
-                  "bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg flex items-center gap-2",
-              },
-              React.createElement(Icon, {
-                name: showCompareDivider ? "eye-off" : "eye",
-                className: "w-4 h-4",
-              }),
-              showCompareDivider ? "Hide Divider" : "Show Divider",
-            ),
-            React.createElement(
-              "button",
-              {
-                onClick: () => setShowCompareFullscreen(false),
-                className:
-                  "bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg",
-              },
-              "Close Compare",
-            ),
-          ),
-          React.createElement(
-            "div",
-            {
-              className:
-                "flex-1 flex flex-col justify-between p-16 relative transition-colors duration-300 cursor-pointer group overflow-hidden",
-              style: {
-                backgroundColor: hA,
-                color: compSlotA.L > 0.65 ? "#010D00" : "#F2E8DF",
-              },
-              onClick: () => {
-                handleUpdate(
-                  [compSlotA.L, compSlotA.C, compSlotA.H],
-                  compSlotA.spectral,
-                  compSlotA.brand !== undefined ? { brand: compSlotA.brand, originalIndex: compSlotA.originalIndex } : null
-                );
-                setShowCompareFullscreen(false);
-              },
-            },
-            compSlotA.image &&
-              showFullscreenImageOverlay &&
-              React.createElement("div", {
-                className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none transition-transform duration-500 group-hover:scale-105",
-                style: {
-                  backgroundImage: `url(${compSlotA.image})`,
-                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                  maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                },
-              }),
-            !cA.inGamut("srgb") &&
-              React.createElement("div", {
-                className: "absolute inset-0 pointer-events-none",
-                style: {
-                  backgroundImage:
-                    "repeating-linear-gradient(45deg, rgba(0,0,0,0.2), rgba(0,0,0,0.2) 20px, rgba(255,255,255,0.2) 20px, rgba(255,255,255,0.2) 40px)",
-                },
-              }),
-            React.createElement(
-              "div",
-              {
-                className:
-                  "text-center relative z-10 group-hover:scale-105 transition-transform mb-12",
-              },
-              React.createElement(
-                "div",
-                {
-                  className:
-                    "text-6xl font-black mb-4 tracking-tight uppercase drop-shadow-md flex items-center justify-center gap-4",
-                },
-                displayA,
-                !cA.inGamut("srgb") &&
-                  React.createElement(Icon, {
-                    name: "alert-triangle",
-                    className: "w-12 h-12 text-red-500 drop-shadow-md",
-                    title: "Out of sRGB Gamut",
-                  }),
-              ),
-              React.createElement(
-                "div",
-                {
-                  className:
-                    "text-xl font-mono uppercase tracking-widest opacity-80 drop-shadow-sm",
-                },
-                compSlotA.erpCode,
-              ),
-            ),
-          ),
-          showCompareDivider &&
-            React.createElement("div", { className: "w-8 bg-black z-[105]" }),
-          React.createElement(
-            "div",
-            {
-              className:
-                "flex-1 flex flex-col justify-between p-16 relative transition-colors duration-300 cursor-pointer group overflow-hidden",
-              style: {
-                backgroundColor: hB,
-                color: compSlotB.L > 0.65 ? "#010D00" : "#F2E8DF",
-              },
-              onClick: () => {
-                handleUpdate(
-                  [compSlotB.L, compSlotB.C, compSlotB.H],
-                  compSlotB.spectral,
-                  compSlotB.brand !== undefined ? { brand: compSlotB.brand, originalIndex: compSlotB.originalIndex } : null
-                );
-                setShowCompareFullscreen(false);
-              },
-            },
-            compSlotB.image &&
-              showFullscreenImageOverlay &&
-              React.createElement("div", {
-                className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none transition-transform duration-500 group-hover:scale-105",
-                style: {
-                  backgroundImage: `url(${compSlotB.image})`,
-                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                  maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                },
-              }),
-            !cB.inGamut("srgb") &&
-              React.createElement("div", {
-                className: "absolute inset-0 pointer-events-none",
-                style: {
-                  backgroundImage:
-                    "repeating-linear-gradient(45deg, rgba(0,0,0,0.2), rgba(0,0,0,0.2) 20px, rgba(255,255,255,0.2) 20px, rgba(255,255,255,0.2) 40px)",
-                },
-              }),
-            React.createElement(
-              "div",
-              {
-                className:
-                  "text-center relative z-10 group-hover:scale-105 transition-transform mb-12",
-              },
-              React.createElement(
-                "div",
-                {
-                  className:
-                    "text-6xl font-black mb-4 tracking-tight uppercase drop-shadow-md flex items-center justify-center gap-4",
-                },
-                displayB,
-                !cB.inGamut("srgb") &&
-                  React.createElement(Icon, {
-                    name: "alert-triangle",
-                    className: "w-12 h-12 text-red-500 drop-shadow-md",
-                    title: "Out of sRGB Gamut",
-                  }),
-              ),
-              React.createElement(
-                "div",
-                {
-                  className:
-                    "text-xl font-mono uppercase tracking-widest opacity-80 drop-shadow-sm",
-                },
-                compSlotB.erpCode,
-              ),
-            ),
-          ),
-          showFullscreenSpectral &&
-            (compSlotA.spectral || compSlotB.spectral) &&
-            React.createElement(
-              "div",
-              {
-                onClick: (e) => e.stopPropagation(),
-                className:
-                  "absolute bottom-16 left-1/2 -translate-x-1/2 w-[800px] max-w-[90vw] bg-black/60 backdrop-blur-2xl p-6 rounded-3xl shadow-2xl border border-white/10 z-[120] pointer-events-auto",
-              },
-              React.createElement(SpectralGraph, {
-                spectralData: compSlotA.spectral || compSlotB.spectral,
-                spectralDataB:
-                  compSlotA.spectral && compSlotB.spectral
-                    ? compSlotB.spectral
-                    : void 0,
-                colorA: compSlotA.spectral ? hA : void 0,
-                colorB: compSlotB.spectral ? hB : void 0,
-                theme: "dark",
-                meta: compSlotA.spectral ? compSlotA : compSlotB,
-                metaB:
-                  compSlotA.spectral && compSlotB.spectral ? compSlotB : void 0,
-              }),
-            ),
-          React.createElement(
-            "div",
-            {
-              className:
-                "absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-black/50 backdrop-blur-2xl p-8 rounded-3xl text-center shadow-2xl text-white border border-white/10 flex flex-col gap-2 pointer-events-none z-[120]",
-            },
-            React.createElement(
-              "div",
-              {
-                className:
-                  "text-xs font-bold uppercase tracking-[0.2em] opacity-60 mb-2",
-              },
-              "Delta Distance",
-            ),
-            React.createElement(
-              "div",
-              {
-                className:
-                  "text-5xl font-black font-mono text-sky-400 drop-shadow-md",
-              },
-              deltaEOK,
-              " ",
-              React.createElement(
-                "span",
-                { className: "text-sm text-white/50 tracking-normal ml-1" },
-                "OK",
-              ),
-            ),
-            React.createElement(
-              "div",
-              {
-                className:
-                  "text-2xl font-bold font-mono opacity-80 drop-shadow-md",
-              },
-              deltaE2000,
-              " ",
-              React.createElement(
-                "span",
-                { className: "text-[10px] text-white/50 tracking-normal ml-1" },
-                "2000",
-              ),
-            ),
-            compSlotA.spectral &&
-              compSlotB.spectral &&
-              React.createElement(
-                "div",
-                {
-                  className:
-                    "mt-4 pt-4 border-t border-white/10 flex flex-col gap-2",
-                },
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "text-[10px] font-bold uppercase tracking-[0.2em] opacity-60 mb-1",
-                  },
-                  "Metamerism Index",
-                ),
-                React.createElement(
-                  "div",
-                  { className: "flex gap-4 justify-center" },
-                  React.createElement(
-                    "div",
-                    { className: "text-center" },
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "text-[9px] uppercase text-amber-400/80 mb-0.5",
-                      },
-                      "Illum A",
-                    ),
-                    React.createElement(
-                      "div",
-                      {
-                        className: "text-lg font-mono font-bold text-amber-400",
-                      },
-                      calculateDeltaEFromSpectral(
-                        compSlotA.spectral,
-                        compSlotB.spectral,
-                        observer,
-                        "A",
-                      ).toFixed(2),
-                    ),
-                  ),
-                  React.createElement(
-                    "div",
-                    { className: "text-center" },
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "text-[9px] uppercase text-amber-400/80 mb-0.5",
-                      },
-                      "Illum F2",
-                    ),
-                    React.createElement(
-                      "div",
-                      {
-                        className: "text-lg font-mono font-bold text-amber-400",
-                      },
-                      calculateDeltaEFromSpectral(
-                        compSlotA.spectral,
-                        compSlotB.spectral,
-                        observer,
-                        "F2",
-                      ).toFixed(2),
-                    ),
-                  ),
-                  React.createElement(
-                    "div",
-                    { className: "text-center" },
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "text-[9px] uppercase text-amber-400/80 mb-0.5",
-                      },
-                      "Illum F11",
-                    ),
-                    React.createElement(
-                      "div",
-                      {
-                        className: "text-lg font-mono font-bold text-amber-400",
-                      },
-                      calculateDeltaEFromSpectral(
-                        compSlotA.spectral,
-                        compSlotB.spectral,
-                        observer,
-                        "F11",
-                      ).toFixed(2),
-                    ),
-                  ),
-                ),
-              ),
-          ),
-        );
-      })(),
-    showFullscreenPalette &&
-      palette.length > 0 &&
-      React.createElement(
-        "div",
-        {
-          className:
-            "fixed inset-0 z-[100] flex animate-in fade-in duration-300 bg-neutral-950",
-        },
-        React.createElement(
-          "div",
-          { className: "absolute top-8 left-8 z-[110] flex items-center gap-3 bg-black/60 backdrop-blur-md border border-white/20 px-5 py-2.5 rounded-full text-white shadow-xl pointer-events-none select-none" },
-          React.createElement("span", { className: "text-amber-400 font-black text-xs tracking-wider uppercase flex items-center gap-1.5" },
-            React.createElement(Icon, { name: "layers", className: "w-4 h-4" }),
-            "60-30-10 Interior Design Rule"
-          ),
-          React.createElement("span", { className: "text-white/30 text-xs" }, "•"),
-          React.createElement("span", { className: "text-amber-200 text-xs font-bold" }, "60% Dominant (4 Swatches)"),
-          React.createElement("span", { className: "text-white/30 text-xs" }, "•"),
-          React.createElement("span", { className: "text-sky-200 text-xs font-bold" }, "30% Secondary (2 Swatches)"),
-          React.createElement("span", { className: "text-white/30 text-xs" }, "•"),
-          React.createElement("span", { className: "text-emerald-300 text-xs font-bold" }, "10% Accent (1 Swatch)")
-        ),
-        React.createElement(
-          "div",
-          { className: "absolute top-8 right-8 z-[110] flex gap-2" },
-          React.createElement(
-            "button",
-            {
-              onClick: () => setShowFullscreenSpaces(!showFullscreenSpaces),
-              className:
-                "bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg flex items-center gap-2",
-            },
-            React.createElement(Icon, {
-              name: showFullscreenSpaces ? "sliders-horizontal" : "sliders",
-              className: "w-4 h-4",
-            }),
-            showFullscreenSpaces ? "Hide Values" : "Show Values"
-          ),
-          React.createElement(
-            "button",
-            {
-              onClick: () => setShowFullscreenImageOverlay(!showFullscreenImageOverlay),
-              className:
-                "bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg flex items-center gap-2",
-            },
-            React.createElement(Icon, {
-              name: showFullscreenImageOverlay ? "image-off" : "image",
-              className: "w-4 h-4",
-            }),
-            showFullscreenImageOverlay ? "Hide Images" : "Show Images"
-          ),
-          React.createElement(
-            "button",
-            {
-              onClick: () => setShowFullscreenPalette(false),
-              className:
-                "bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg",
-            },
-            "Close Palette"
-          )
-        ),
-        React.createElement(
-          "div",
-          { className: "flex w-full h-full relative z-10" },
-          palette.map((item, idx) => {
-            const info = getPaletteItemInfo(item);
-            const displayName =
-              info.displayName !== "Unnamed"
-                ? info.displayName
-                : item.erpCode
-                  ? `#${item.erpCode}`
-                  : "\u2014";
-            const h = info.hex;
-            const isDragging = draggedPaletteIndex === idx;
-            const isDragOver = dragOverPaletteIndex === idx;
-
-            // Compute extra color spaces
-            const itemColor = new Color("oklch", [item.L, item.C, item.H]);
-            const displayHex = info.hex;
-            
-            const rCo = itemColor.to("srgb").coords;
-            const r_ = Math.max(0, Math.min(1, rCo[0]));
-            const g_ = Math.max(0, Math.min(1, rCo[1]));
-            const b_ = Math.max(0, Math.min(1, rCo[2]));
-            const k_ = 1 - Math.max(r_, g_, b_);
-            const c_ = k_ === 1 ? 0 : (1 - r_ - k_) / (1 - k_);
-            const m_ = k_ === 1 ? 0 : (1 - g_ - k_) / (1 - k_);
-            const y_ = k_ === 1 ? 0 : (1 - b_ - k_) / (1 - k_);
-            const displayCmyk = `CMYK: [${Math.round(c_ * 100)}%, ${Math.round(m_ * 100)}%, ${Math.round(y_ * 100)}%, ${Math.round(k_ * 100)}%]`;
-            
-            let d65XYZ;
-            if (item.spectral && item.spectral.length === 31) {
-              d65XYZ = calculateXYZFromSpectral(item.spectral, 2, "D65");
-            } else {
-              d65XYZ = itemColor.to("xyz-d65").coords;
-            }
-            const labCoords = xyzToLab(d65XYZ, [0.95047, 1.00000, 1.08883]);
-            const fmt = (v, d = 3) => (isNaN(v) ? "0.000" : Number(v).toFixed(d));
-            const displayCielab = `CIELAB: [${fmt(labCoords[0], 1)}, ${fmt(labCoords[1], 1)}, ${fmt(labCoords[2], 1)}]`;
-            
-            const hsl = itemColor.to("hsl");
-            const displayHsl = `HSL: [${fmt(hsl.coords[0], 1)}, ${fmt(hsl.coords[1], 1)}%, ${fmt(hsl.coords[2], 1)}%]`;
-            
-            const displayOklch = `OKLCH: [${fmt(itemColor.coords[0], 3)}, ${fmt(itemColor.coords[1], 3)}, ${fmt(itemColor.coords[2], 1)}]`;
-
-            const L_ = itemColor.coords[0];
-            const C_ = itemColor.coords[1];
-            const satVal = L_ > 0 ? C_ / L_ : 0;
-            const displaySat = `SATURATION (S=C/L): ${fmt(satVal, 3)}`;
-
-            return React.createElement(
-              "div",
-              {
-                key: item.id || `fsp-${idx}`,
-                draggable: true,
-                onDragStart: (e) => {
-                  e.dataTransfer.setData("text/plain", idx.toString());
-                  e.dataTransfer.effectAllowed = "move";
-                  setDraggedPaletteIndex(idx);
-                },
-                onDragOver: (e) => {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = "move";
-                  if (dragOverPaletteIndex !== idx) setDragOverPaletteIndex(idx);
-                },
-                onDragLeave: () => {
-                  if (dragOverPaletteIndex === idx) setDragOverPaletteIndex(null);
-                },
-                onDragEnd: () => {
-                  setDraggedPaletteIndex(null);
-                  setDragOverPaletteIndex(null);
-                },
-                onDrop: (e) => {
-                  e.preventDefault();
-                  const sourceIdx = parseInt(e.dataTransfer.getData("text/plain"), 10);
-                  setDraggedPaletteIndex(null);
-                  setDragOverPaletteIndex(null);
-                  handleReorderPalette(sourceIdx, idx);
-                },
-                className: `flex flex-col justify-end p-8 transition-all cursor-grab active:cursor-grabbing group relative overflow-hidden ${
-                  isDragging ? "opacity-30 scale-[0.97]" : ""
-                } ${
-                  isDragOver ? "ring-4 ring-sky-400 ring-inset z-30 scale-[0.99]" : ""
-                }`,
-                style: {
-                  backgroundColor: h,
-                  flex: `${item.ratio || (idx < 4 ? 15 : idx < 6 ? 15 : 10)} 1 0%`
-                },
-                onClick: () => {
-                  handleUpdate(
-                    [item.L, item.C, item.H],
-                    item.spectral,
-                    item.brand !== undefined ? { brand: item.brand, originalIndex: item.originalIndex } : null
-                  );
-                  setShowFullscreenPalette(false);
-                },
-              },
-              React.createElement(
-                "div",
-                { className: "absolute top-4 left-4 z-20 flex items-center gap-1.5 opacity-60 group-hover:opacity-100 transition-opacity bg-black/40 backdrop-blur-md px-3 py-1.5 rounded-full text-white text-[11px] font-bold tracking-wider uppercase pointer-events-none select-none shadow-md" },
-                React.createElement(Icon, { name: "grip-vertical", className: "w-3.5 h-3.5" }),
-                "Drag to reorder"
-              ),
-              React.createElement(
-                "div",
-                { className: `absolute top-4 right-4 z-20 flex items-center gap-1.5 backdrop-blur-md px-3 py-1.5 rounded-full text-white text-[11px] font-black tracking-widest uppercase pointer-events-none select-none shadow-md border border-white/20 ${
-                  (item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")) === "60%"
-                    ? "bg-amber-950/80 text-amber-200"
-                    : (item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")) === "30%"
-                    ? "bg-sky-950/80 text-sky-200"
-                    : "bg-emerald-950/90 text-emerald-200"
-                }` },
-                `${item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")} ${item.roleName || (idx < 4 ? "Dominant" : idx < 6 ? "Secondary" : "Accent")}`
-              ),
-              info.image &&
-                showFullscreenImageOverlay &&
-                React.createElement("div", {
-                  className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none transition-transform duration-500 group-hover:scale-105",
-                  style: {
-                    backgroundImage: `url(${info.image})`,
-                    WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                    maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                  },
-                }),
-              React.createElement(
-                "div",
-                {
-                  className:
-                    "transition-opacity duration-300 flex flex-col gap-1 relative z-10",
-                  style: { color: item.L > 0.65 ? "#010D00" : "#F2E8DF" },
-                },
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "text-2xl font-black uppercase tracking-tight drop-shadow-md",
-                  },
-                  displayName,
-                ),
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "text-sm font-mono font-bold tracking-widest opacity-80",
-                  },
-                  item.erpCode,
-                ),
-                showFullscreenSpaces && React.createElement(
-                  "div",
-                  {
-                    onClick: (e) => e.stopPropagation(),
-                    className:
-                      "mt-3 pt-3 border-t border-current/20 font-mono text-xs flex flex-col gap-1.5 opacity-90 backdrop-blur-[2px] bg-black/5 p-2 rounded-lg max-w-fit cursor-text select-text",
-                  },
-                  React.createElement("div", { className: "font-bold" }, `HEX: ${displayHex}`),
-                  React.createElement("div", {}, displayCmyk),
-                  React.createElement("div", {}, displayCielab),
-                  React.createElement("div", {}, displayHsl),
-                  React.createElement("div", {}, displayOklch),
-                  React.createElement("div", {}, displaySat),
-                )
-              ),
-            );
-          }),
-        ),
-      ),
-    visualizeData &&
-      React.createElement(
-        "div",
-        {
-          className:
-            "fixed inset-0 z-[100] flex animate-in fade-in duration-300 bg-neutral-950/60 backdrop-blur-xl items-center justify-center p-8",
-        },
-        React.createElement(
-          "div",
-          {
-            className:
-              "bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col overflow-hidden border border-slate-200 dark:border-neutral-800",
-          },
-          React.createElement(
-            "div",
-            {
-              className:
-                "flex items-center justify-between p-6 border-b border-slate-200 dark:border-neutral-800",
-            },
-            React.createElement(
-              "h2",
-              {
-                className:
-                  "text-2xl font-black uppercase tracking-tight text-slate-900 dark:text-white",
-              },
-              visualizeData.title,
-            ),
-            React.createElement(
-              "button",
-              {
-                onClick: () => setVisualizeData(null),
-                className:
-                  "p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-full hover:bg-slate-100 dark:hover:bg-neutral-800 transition-colors",
-              },
-              React.createElement(Icon, { name: "x", className: "w-6 h-6" }),
-            ),
-          ),
-          React.createElement(
-            "div",
-            { className: "flex-1 overflow-y-auto p-6 custom-scrollbar" },
-            React.createElement(
-              "div",
-              {
-                className:
-                  "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4",
-              },
-              visualizeData.items.map((item, i) => {
-                const c = new Color("oklch", [item.L, item.C, item.H]);
-                const hex = c
-                  .clone()
-                  .toGamut({ space: "srgb" })
-                  .toString({ format: "hex" })
-                  .toUpperCase();
-                const isLight2 = item.L > 0.65;
-                return React.createElement(
-                  "div",
-                  {
-                    key: i,
-                    className: "flex flex-col gap-2 group cursor-pointer",
-                    onClick: () => {
-                      handleUpdate([item.L, item.C, item.H]);
-                      setVisualizeData(null);
-                    },
-                  },
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "w-full aspect-square rounded-xl shadow-sm border border-slate-200 dark:border-neutral-800 relative overflow-hidden transition-transform group-hover:scale-105",
-                      style: { backgroundColor: hex },
-                    },
-                    !c.inGamut("srgb") &&
-                      React.createElement("div", {
-                        className: "absolute inset-0 pointer-events-none",
-                        style: {
-                          backgroundImage:
-                            "repeating-linear-gradient(45deg, rgba(0,0,0,0.2), rgba(0,0,0,0.2) 5px, rgba(255,255,255,0.2) 5px, rgba(255,255,255,0.2) 10px)",
-                        },
-                      }),
-                  ),
-                  React.createElement(
-                    "div",
-                    { className: "flex flex-col" },
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "text-[10px] font-bold uppercase tracking-wider truncate text-slate-900 dark:text-white",
-                      },
-                      item.displayName,
-                    ),
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "text-[9px] font-mono mt-0.5 text-slate-500 dark:text-neutral-400",
-                      },
-                      item.erpCode,
-                    ),
-                  ),
-                );
-              }),
-            ),
-          ),
-        ),
-      ),
-    showFullscreenPreview &&
-      !showCompareFullscreen &&
-      (() => {
-        let previewImage = null;
-        if (crosshair?.activeCommercial) {
-          const m = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
-          previewImage = m?.image || null;
-        } else if (crosshair?.activeSavedColor?.type === "pin") {
-          const pinObj = savedColors[crosshair.activeSavedColor.id];
-          previewImage = pinObj?.image || (pinObj?.notes?.startsWith("http") ? pinObj.notes : null);
-        }
-        return React.createElement(
-          "div",
-          {
-            className:
-              "fixed inset-0 z-[100] flex flex-col items-center justify-end p-20 animate-in fade-in duration-300 cursor-pointer overflow-hidden",
-            style: { backgroundColor: crosshairHex },
-            onClick: () => setShowFullscreenPreview(false),
-          },
-          previewImage &&
-            showFullscreenImageOverlay &&
-            React.createElement("div", {
-              className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
-              style: {
-                backgroundImage: `url(${previewImage})`,
-                WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-              },
-            }),
-          React.createElement(
-            "div",
-            { className: "absolute top-8 right-8 z-[110] flex gap-2" },
-            previewImage &&
-              React.createElement(
-                "button",
-                {
-                  onClick: (e) => {
-                    e.stopPropagation();
-                    setShowFullscreenImageOverlay(!showFullscreenImageOverlay);
-                  },
-                  className:
-                    "bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg flex items-center gap-2",
-                },
-                React.createElement(Icon, {
-                  name: showFullscreenImageOverlay ? "image-off" : "image",
-                  className: "w-4 h-4",
-                }),
-                showFullscreenImageOverlay ? "Hide Images" : "Show Images",
-              ),
-            React.createElement(
-              "button",
-              {
-                onClick: (e) => {
-                  e.stopPropagation();
-                  setShowFullscreenPreview(false);
-                },
-                className:
-                  "bg-black/40 hover:bg-black/60 text-white px-6 py-3 rounded-md font-bold text-xs uppercase tracking-widest backdrop-blur-md shadow-lg",
-              },
-              "Close Preview",
-            )
-          ),
-          React.createElement(
-            "div",
-            {
-              className:
-                "bg-black/10 backdrop-blur-xl p-10 rounded-2xl text-center shadow-2xl pointer-events-none relative z-20",
-              style: { color: isLight ? "#010D00" : "#F2E8DF" },
-            },
-            React.createElement(
-              "div",
-              {
-                className:
-                  "text-6xl font-black mb-4 tracking-tight uppercase drop-shadow-md",
-              },
-              activeAdj,
-              " ",
-              activeName,
-            ),
-            React.createElement(
-              "div",
-              {
-                className:
-                  "text-xl font-mono uppercase tracking-widest opacity-80 drop-shadow-sm",
-              },
-              crosshair?.activeErpCode || "",
-            ),
-          ),
-        );
-      })(),
-    showHelpPanel &&
-      React.createElement(
-        "div",
-        {
-          className:
-            "fixed inset-0 z-[100] flex animate-in fade-in duration-300 bg-neutral-950/80 backdrop-blur-md items-center justify-center p-4 md:p-8",
-        },
-        React.createElement(
-          "div",
-          {
-            className:
-              "bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden border border-slate-200 dark:border-neutral-800",
-          },
-          React.createElement(
-            "div",
-            {
-              className:
-                "flex items-center justify-between p-6 border-b border-slate-200 dark:border-neutral-800 bg-slate-50 dark:bg-neutral-900/50",
-            },
-            React.createElement(
-              "h2",
-              {
-                className:
-                  "text-2xl font-black uppercase tracking-tight text-slate-900 dark:text-white flex items-center gap-3",
-              },
-              React.createElement(Icon, {
-                name: "help-circle",
-                className: "w-6 h-6 text-sky-500",
-              }),
-              "App Guide & OKLCH Concepts",
-            ),
-            React.createElement(
-              "button",
-              {
-                onClick: () => setShowHelpPanel(false),
-                className:
-                  "p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-full hover:bg-slate-200 dark:hover:bg-neutral-800 transition-colors",
-              },
-              React.createElement(Icon, { name: "x", className: "w-6 h-6" }),
-            ),
-          ),
-          React.createElement(
-            "div",
-            {
-              className:
-                "flex-1 overflow-y-auto p-6 md:p-10 custom-scrollbar text-slate-700 dark:text-neutral-300 space-y-10",
-            },
-            React.createElement(
-              "section",
-              null,
-              React.createElement(
-                "h3",
-                {
-                  className:
-                    "text-xl font-black uppercase tracking-widest text-slate-900 dark:text-white mb-4 border-b border-slate-200 dark:border-neutral-800 pb-2",
-                },
-                "What is OKLCH?",
-              ),
-              React.createElement(
-                "p",
-                { className: "mb-4 leading-relaxed" },
-                "OKLCH is a perceptually uniform color space. Unlike RGB or HEX, which are built for screens, OKLCH is built for human eyes. It ensures that changes in color values match how we actually perceive those changes.",
-              ),
-              React.createElement(
-                "div",
-                { className: "grid grid-cols-1 md:grid-cols-3 gap-6" },
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "bg-slate-50 dark:bg-neutral-800/50 p-5 rounded-xl border border-slate-100 dark:border-neutral-800",
-                  },
-                  React.createElement(
-                    "div",
-                    { className: "text-lg font-black text-sky-500 mb-2" },
-                    "L (Lightness)",
-                  ),
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "text-sm font-bold uppercase tracking-wider opacity-60 mb-2",
-                    },
-                    "0 to 1 (or 0% to 100%)",
-                  ),
-                  React.createElement(
-                    "p",
-                    { className: "text-sm leading-relaxed" },
-                    "How bright or dark the color is. 0 is pure black, 1 is pure white. Because it's perceptually uniform, a lightness of 0.5 always looks exactly halfway between black and white.",
-                  ),
-                ),
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "bg-slate-50 dark:bg-neutral-800/50 p-5 rounded-xl border border-slate-100 dark:border-neutral-800",
-                  },
-                  React.createElement(
-                    "div",
-                    { className: "text-lg font-black text-pink-500 mb-2" },
-                    "C (Chroma)",
-                  ),
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "text-sm font-bold uppercase tracking-wider opacity-60 mb-2",
-                    },
-                    "0 to ~0.4 (or higher)",
-                  ),
-                  React.createElement(
-                    "p",
-                    { className: "text-sm leading-relaxed" },
-                    "The intensity, purity, or saturation of the color. 0 is completely grayscale (white, gray, or black). Higher values are more vivid. The maximum chroma depends on the lightness and hue.",
-                  ),
-                ),
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "bg-slate-50 dark:bg-neutral-800/50 p-5 rounded-xl border border-slate-100 dark:border-neutral-800",
-                  },
-                  React.createElement(
-                    "div",
-                    { className: "text-lg font-black text-emerald-500 mb-2" },
-                    "H (Hue)",
-                  ),
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "text-sm font-bold uppercase tracking-wider opacity-60 mb-2",
-                    },
-                    "0 to 360 degrees",
-                  ),
-                  React.createElement(
-                    "p",
-                    { className: "text-sm leading-relaxed" },
-                    "The actual color family (red, green, blue, etc.), arranged in a circle. 0/360 is pinkish-red, 90 is yellow-green, 180 is cyan/teal, and 270 is blue.",
-                  ),
-                ),
-              ),
-            ),
-            React.createElement(
-              "section",
-              null,
-              React.createElement(
-                "h3",
-                {
-                  className:
-                    "text-xl font-black uppercase tracking-widest text-slate-900 dark:text-white mb-4 border-b border-slate-200 dark:border-neutral-800 pb-2",
-                },
-                "Navigation & Views",
-              ),
-              React.createElement(
-                "div",
-                { className: "grid grid-cols-1 sm:grid-cols-2 gap-4" },
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "flex gap-4 p-4 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl",
-                  },
-                  React.createElement(
-                    "div",
-                    { className: "mt-1 text-sky-500" },
-                    React.createElement(Icon, {
-                      name: "box",
-                      className: "w-6 h-6",
-                    }),
-                  ),
-                  React.createElement(
-                    "div",
-                    null,
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "font-black uppercase tracking-widest mb-1 text-slate-900 dark:text-white",
-                      },
-                      "3D View",
-                    ),
-                    React.createElement(
-                      "p",
-                      { className: "text-sm leading-relaxed opacity-80" },
-                      "Explore the entire color gamut in a 3D scatter plot. Rotate, zoom, and pan to understand the shape of the color space.",
-                    ),
-                  ),
-                ),
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "flex gap-4 p-4 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl",
-                  },
-                  React.createElement(
-                    "div",
-                    { className: "mt-1 text-sky-500" },
-                    React.createElement(Icon, {
-                      name: "align-center-vertical",
-                      className: "w-6 h-6",
-                    }),
-                  ),
-                  React.createElement(
-                    "div",
-                    null,
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "font-black uppercase tracking-widest mb-1 text-slate-900 dark:text-white",
-                      },
-                      "Vertical Slice",
-                    ),
-                    React.createElement(
-                      "p",
-                      { className: "text-sm leading-relaxed opacity-80" },
-                      "A 2D cross-section showing Lightness (Y-axis) vs Chroma (X-axis) locked at the current Hue. Great for finding the most vivid color at a specific hue.",
-                    ),
-                  ),
-                ),
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "flex gap-4 p-4 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl",
-                  },
-                  React.createElement(
-                    "div",
-                    { className: "mt-1 text-sky-500" },
-                    React.createElement(Icon, {
-                      name: "target",
-                      className: "w-6 h-6",
-                    }),
-                  ),
-                  React.createElement(
-                    "div",
-                    null,
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "font-black uppercase tracking-widest mb-1 text-slate-900 dark:text-white",
-                      },
-                      "Chroma Rings",
-                    ),
-                    React.createElement(
-                      "p",
-                      { className: "text-sm leading-relaxed opacity-80" },
-                      "A polar view showing Hue (angle) vs Chroma (distance from center) locked at the current Lightness. Useful for finding complementary colors.",
-                    ),
-                  ),
-                ),
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "flex gap-4 p-4 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl",
-                  },
-                  React.createElement(
-                    "div",
-                    { className: "mt-1 text-sky-500" },
-                    React.createElement(Icon, {
-                      name: "map",
-                      className: "w-6 h-6",
-                    }),
-                  ),
-                  React.createElement(
-                    "div",
-                    null,
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "font-black uppercase tracking-widest mb-1 text-slate-900 dark:text-white",
-                      },
-                      "Top-Down",
-                    ),
-                    React.createElement(
-                      "p",
-                      { className: "text-sm leading-relaxed opacity-80" },
-                      "A flattened 2D map of Hue vs Chroma, ignoring Lightness. Gives a bird's-eye view of all available colors.",
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            React.createElement(
-              "section",
-              null,
-              React.createElement(
-                "h3",
-                {
-                  className:
-                    "text-xl font-black uppercase tracking-widest text-slate-900 dark:text-white mb-4 border-b border-slate-200 dark:border-neutral-800 pb-2",
-                },
-                "Tools & Features",
-              ),
-              React.createElement(
-                "div",
-                { className: "space-y-4" },
-                React.createElement(
-                  "div",
-                  { className: "flex gap-4" },
-                  React.createElement(
-                    "div",
-                    { className: "mt-1 text-slate-400" },
-                    React.createElement(Icon, {
-                      name: "map-pin",
-                      className: "w-5 h-5",
-                    }),
-                  ),
-                  React.createElement(
-                    "div",
-                    null,
-                    React.createElement(
-                      "div",
-                      { className: "font-bold text-slate-900 dark:text-white" },
-                      "Pins & Anchors",
-                    ),
-                    React.createElement(
-                      "p",
-                      { className: "text-sm leading-relaxed opacity-80" },
-                      "Click the Pin icon to save a specific coordinate. Anchors are predefined grid points. You can lock anchors to prevent them from being renamed.",
-                    ),
-                  ),
-                ),
-                React.createElement(
-                  "div",
-                  { className: "flex gap-4" },
-                  React.createElement(
-                    "div",
-                    { className: "mt-1 text-slate-400" },
-                    React.createElement(Icon, {
-                      name: "palette",
-                      className: "w-5 h-5",
-                    }),
-                  ),
-                  React.createElement(
-                    "div",
-                    null,
-                    React.createElement(
-                      "div",
-                      { className: "font-bold text-slate-900 dark:text-white" },
-                      "Palette & Compare",
-                    ),
-                    React.createElement(
-                      "p",
-                      { className: "text-sm leading-relaxed opacity-80" },
-                      "Add colors to your Palette for quick access. Use the Compare slots (A and B) to see two colors side-by-side and calculate their perceptual difference (Delta E).",
-                    ),
-                  ),
-                ),
-                React.createElement(
-                  "div",
-                  { className: "flex gap-4" },
-                  React.createElement(
-                    "div",
-                    { className: "mt-1 text-slate-400" },
-                    React.createElement(Icon, {
-                      name: "type",
-                      className: "w-5 h-5",
-                    }),
-                  ),
-                  React.createElement(
-                    "div",
-                    null,
-                    React.createElement(
-                      "div",
-                      { className: "font-bold text-slate-900 dark:text-white" },
-                      "Naming System",
-                    ),
-                    React.createElement(
-                      "p",
-                      { className: "text-sm leading-relaxed opacity-80" },
-                      "Colors are named using an Adjective (based on Lightness) and a Noun (based on Hue and Chroma). You can override these names for specific pins.",
-                    ),
-                  ),
-                ),
-                React.createElement(
-                  "div",
-                  { className: "flex gap-4" },
-                  React.createElement(
-                    "div",
-                    { className: "mt-1 text-slate-400" },
-                    React.createElement(Icon, {
-                      name: "activity",
-                      className: "w-5 h-5",
-                    }),
-                  ),
-                  React.createElement(
-                    "div",
-                    null,
-                    React.createElement(
-                      "div",
-                      { className: "font-bold text-slate-900 dark:text-white" },
-                      "Delta E (\u0394E)",
-                    ),
-                    React.createElement(
-                      "p",
-                      { className: "text-sm leading-relaxed opacity-80" },
-                      "A metric for understanding how different two colors look to the human eye. A Delta E < 1 is generally imperceptible. Delta E OK uses the OKLCH space, while Delta E 2000 is an older, widely used standard.",
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    showFileManager &&
-      React.createElement(FileManager, {
-        linkedFiles,
-        setLinkedFiles,
-        onClose: () => setShowFileManager(false),
-      }),
-    showDatabaseManager &&
-      React.createElement(DatabaseManager, {
-        colorData,
-        updateColorData,
-        swatchLayout,
-        swatchZoom,
-        handlePointClick,
-        crosshair,
-        onClose: () => setShowDatabaseManager(false),
-      }),
-    showAveryModal &&
-      ReactDOM.createPortal(
-        React.createElement(
-          "div",
-          {
-            className:
-              "fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/40 dark:bg-black/60 backdrop-blur-sm p-4 md:p-8 animate-in fade-in duration-300",
-          },
-          React.createElement(
-            "div",
-            {
-              className:
-                "bg-white dark:bg-neutral-900 text-slate-800 dark:text-neutral-100 rounded-2xl w-full max-w-5xl h-[90vh] shadow-2xl flex flex-col border border-slate-200 dark:border-neutral-800 overflow-hidden",
-            },
-            // Header
-            React.createElement(
-              "div",
-              {
-                className:
-                  "p-4 border-b border-slate-200 dark:border-neutral-800 flex justify-between items-center bg-slate-50 dark:bg-neutral-800/50 rounded-t-2xl",
-              },
-              React.createElement(
-                "h3",
-                { className: "font-bold flex items-center gap-2 text-slate-900 dark:text-white" },
-                React.createElement(Icon, {
-                  name: "printer",
-                  className: "w-5 h-5 text-sky-500",
-                }),
-                " Avery 5159 Color Label Designer",
-              ),
-              React.createElement(
-                "button",
-                {
-                  onClick: () => setShowAveryModal(false),
-                  className: "text-slate-400 hover:text-slate-600 dark:hover:text-neutral-200",
-                },
-                React.createElement(Icon, { name: "x", className: "w-5 h-5" }),
-              ),
-            ),
-            // Body
-            React.createElement(
-              "div",
-              {
-                className:
-                  "flex-1 flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-slate-200 dark:divide-neutral-800 overflow-hidden",
-              },
-              // Left Panel (Design & Settings)
-              React.createElement(
-                "div",
-                {
-                  className:
-                    "w-full md:w-[360px] p-5 overflow-y-auto flex flex-col gap-5 bg-slate-50/50 dark:bg-neutral-900/10 custom-scrollbar",
-                },
-                React.createElement(
-                  "div",
-                  { className: "flex flex-col gap-1.5" },
-                  React.createElement(
-                    "h4",
-                    { className: "text-xs font-bold uppercase tracking-wider text-slate-400" },
-                    "1. Starting Label Position"
-                  ),
-                  React.createElement(
-                    "p",
-                    { className: "text-xs text-slate-500 leading-normal" },
-                    "Avoid wasting labels by starting from any slot. Click a slot in the preview grid or select below."
-                  ),
-                  React.createElement(
-                    "select",
-                    {
-                      value: printStartIndex,
-                      onChange: (e) => setPrintStartIndex(parseInt(e.target.value) || 1),
-                      className:
-                        "w-full mt-1.5 bg-white dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-3 py-2 text-xs text-slate-700 dark:text-neutral-300 outline-none focus:border-sky-500",
-                    },
-                    Array.from({ length: 14 }).map((_, i) =>
-                      React.createElement("option", { key: i, value: i + 1 }, `Label Slot ${i + 1}`)
-                    )
-                  )
-                ),
-                React.createElement(
-                  "div",
-                  { className: "flex flex-col gap-3" },
-                  React.createElement(
-                    "h4",
-                    { className: "text-xs font-bold uppercase tracking-wider text-slate-400" },
-                    "2. SAMI Label Details"
-                  ),
-                  [
-                    { label: "Sheen", value: printLabelSheen, setter: setPrintLabelSheen, options: ['SM (Super Matte)', 'MT (Matte)', 'ST (Satin)', 'HG (High Gloss)'] },
-                    { label: "Visual Pattern", value: printLabelVisualTexture, setter: setPrintLabelVisualTexture, options: ['V1 (Solid)', 'V2 (Straight Grain)', 'V3 (Cathedral Grain)', 'V4 (Rustic/Heavy)', 'V5 (Abstract/Stipple)'] },
-                    { label: "Tactile Texture", value: printLabelTactileTexture, setter: setPrintLabelTactileTexture, options: ['T1 (Smooth)', 'T2 (Stipple)', 'T3 (Linear Grain)', 'T4 (EIR/Natural)'] },
-                    { label: "Door Profile", value: printLabelDoorProfile, setter: setPrintLabelDoorProfile, options: ['SL (Slab)', 'CS (Shaker)', 'SS (Slim)', 'RD (Reeded)', 'CT (Countertop)', 'WG (Wood-Framed Glass)', 'MG (Metal-framed Glass)'] },
-                    { label: "Material", value: printLabelMaterial, setter: setPrintLabelMaterial, options: ['Solid Laminate', 'Textured Laminate', 'Lacquered MDF', 'Natural Oak', 'Natural Maple'] },
-                  ].map((field, idx) =>
-                    React.createElement(
-                      "div",
-                      { key: idx, className: "flex flex-col gap-1" },
-                      React.createElement("label", { className: "text-[10px] uppercase font-bold text-slate-500" }, field.label),
-                      React.createElement("select", {
-                        value: field.value,
-                        onChange: (e) => field.setter(e.target.value),
-                        className: "bg-white dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs text-slate-700 dark:text-neutral-300 w-full outline-none focus:border-sky-500 transition-colors"
-                      },
-                        field.options.map(opt => React.createElement("option", { key: opt, value: opt }, opt))
-                      )
-                    )
-                  )
-                ),
-                React.createElement(
-                  "div",
-                  { className: "flex flex-col gap-3 py-2 border-t border-slate-200 dark:border-neutral-800" },
-                  React.createElement(
-                    "h4",
-                    { className: "text-xs font-bold uppercase tracking-wider text-slate-400" },
-                    "3. Layout Alignment"
-                  ),
-                  React.createElement(
-                    "label",
-                    { className: "flex items-center gap-2.5 cursor-pointer text-xs select-none" },
-                    React.createElement("input", {
-                      type: "checkbox",
-                      checked: printLabelBorders,
-                      onChange: (e) => setPrintLabelBorders(e.target.checked),
-                      className: "rounded border-slate-300 text-sky-500 focus:ring-sky-500 h-3.5 w-3.5",
-                    }),
-                    React.createElement("span", { className: "text-slate-700 dark:text-neutral-300 font-medium" }, "Show layout guidelines (dashed)")
-                  )
-                ),
-                React.createElement(
-                  "div",
-                  { className: "mt-auto pt-4 border-t border-slate-200 dark:border-neutral-800 text-xs text-slate-500 flex flex-col gap-1" },
-                  React.createElement("div", null, `Checked Colors: ${averySourceItems.filter((p) => selectedPrintIds.includes(p.id)).length} of ${averySourceItems.length}`),
-                  React.createElement("div", null, `Sheets needed: ${generateAveryPages().length} page(s)`)
-                )
-              ),
-              // Right Panel (Interactive sheet grid and Selector)
-              React.createElement(
-                "div",
-                {
-                  className:
-                    "flex-1 p-5 overflow-y-auto flex flex-col lg:flex-row gap-6 custom-scrollbar bg-white dark:bg-neutral-900",
-                },
-                // Selection list
-                React.createElement(
-                  "div",
-                  { className: "flex-1 flex flex-col gap-3" },
-                  React.createElement(
-                    "div",
-                    { className: "flex items-center gap-1 bg-slate-100 dark:bg-neutral-800 p-1 rounded-lg border border-slate-200 dark:border-neutral-700 text-[10px] font-bold uppercase tracking-wider shrink-0" },
-                    [
-                      { id: "palette", label: "Palette" },
-                      { id: "pins", label: "Pins" },
-                      { id: "db", label: "Commercial DB" },
-                    ].map((src) =>
-                      React.createElement(
-                        "button",
-                        {
-                          key: src.id,
-                          onClick: () => {
-                            setAveryPrintSourceType(src.id);
-                            if (src.id === "palette") {
-                              setSelectedPrintIds(palette.map((p) => p.id));
-                            } else if (src.id === "pins") {
-                              const pins = Object.values(savedColors).filter((sc) => sc.type === "pin");
-                              setSelectedPrintIds(pins.map((p) => p.id));
-                            } else if (src.id === "db") {
-                              const sel = selectedIds && selectedIds.length > 0 ? selectedIds : [];
-                              setSelectedPrintIds(sel);
-                            }
-                          },
-                          className: `flex-1 py-1 px-2.5 rounded transition-colors text-center cursor-pointer ${
-                            averyPrintSourceType === src.id || (averyPrintSourceType === "commercial" && src.id === "db")
-                              ? "bg-white dark:bg-neutral-700 text-sky-600 dark:text-sky-400 shadow-sm font-extrabold"
-                              : "text-slate-500 hover:text-slate-700 dark:text-neutral-400 dark:hover:text-neutral-200"
-                          }`,
-                        },
-                        src.label
-                      )
-                    )
-                  ),
-                  React.createElement(
-                    "div",
-                    { className: "flex items-center justify-between" },
-                    React.createElement(
-                      "h4",
-                      { className: "font-semibold text-xs uppercase tracking-wider text-slate-400" },
-                      "Select Colors to Print"
-                    ),
-                    React.createElement(
-                      "div",
-                      { className: "flex gap-2" },
-                      React.createElement(
-                        "button",
-                        {
-                          onClick: () => setSelectedPrintIds(averySourceItems.map((p) => p.id)),
-                          className: "text-[10px] text-sky-500 hover:underline hover:text-sky-600 font-bold uppercase tracking-wider",
-                        },
-                        "All"
-                      ),
-                      React.createElement("span", { className: "text-slate-300 dark:text-neutral-700" }, "|"),
-                      React.createElement(
-                        "button",
-                        {
-                          onClick: () => setSelectedPrintIds([]),
-                          className: "text-[10px] text-slate-500 hover:underline hover:text-slate-600 font-bold uppercase tracking-wider",
-                        },
-                        "None"
-                      )
-                    )
-                  ),
-                  React.createElement(
-                    "div",
-                    { className: "flex-1 min-h-[160px] max-h-[220px] lg:max-h-[380px] overflow-y-auto border border-slate-200 dark:border-neutral-800 rounded-lg p-2 flex flex-col gap-1 bg-slate-50/50 dark:bg-neutral-900/20 custom-scrollbar" },
-                    averySourceItems.length === 0
-                      ? React.createElement(
-                          "div",
-                          { className: "p-6 text-center text-xs text-slate-400 italic" },
-                          averyPrintSourceType === "db" || averyPrintSourceType === "commercial"
-                            ? "No colors selected from the Commercial DB. Select colors in the Database view to print labels."
-                            : "No colors available to print."
-                        )
-                      : averySourceItems.map((item) => {
-                      const info = getPaletteItemInfo(item);
-                      const isChecked = selectedPrintIds.includes(item.id);
-                      const myConfig = printConfigs[item.id] || {};
-                      
-                      const updateMyConfig = (key, val) => {
-                        setPrintConfigs(prev => ({
-                          ...prev,
-                          [item.id]: {
-                            ...prev[item.id],
-                            [key]: val
-                          }
-                        }));
-                      };
-
-                      return React.createElement(
-                        "div",
-                        {
-                          key: item.id,
-                          className: `flex flex-col rounded-md transition-colors ${isChecked ? "bg-white dark:bg-neutral-800/50 shadow-sm border border-slate-200 dark:border-neutral-700" : "hover:bg-slate-100 dark:hover:bg-neutral-800/80 cursor-pointer"}`,
-                        },
-                        React.createElement(
-                          "div",
-                          {
-                            className: "flex items-center gap-3 p-2 cursor-pointer",
-                            onClick: () => {
-                              setSelectedPrintIds((prev) =>
-                                prev.includes(item.id) ? prev.filter((pId) => pId !== item.id) : [...prev, item.id]
-                              );
-                            },
-                          },
-                          React.createElement("input", {
-                            type: "checkbox",
-                            checked: isChecked,
-                            readOnly: true,
-                            className: "rounded border-slate-300 text-sky-500 focus:ring-sky-500 h-3.5 w-3.5 pointer-events-none",
-                          }),
-                          React.createElement("div", {
-                            className: "w-6 h-6 rounded border border-slate-200/50 flex-shrink-0 shadow-sm",
-                            style: { backgroundColor: info.hex },
-                          }),
-                          React.createElement(
-                            "div",
-                            { className: "flex-1 overflow-hidden" },
-                            React.createElement(
-                              "div",
-                              { className: "text-xs font-bold truncate text-slate-800 dark:text-neutral-200" },
-                              info.displayName
-                            ),
-                            React.createElement(
-                              "div",
-                              { className: "text-[10px] font-mono text-slate-400 truncate" },
-                              `ERP: ${info.erpCode} \u2022 ${info.hex}`
-                            )
-                          )
-                        ),
-                        // Expanded settings panel
-                        isChecked && React.createElement(
-                          "div",
-                          { className: "px-2 pb-2 pt-1 border-t border-slate-100 dark:border-neutral-800 flex flex-col gap-2 bg-slate-50 dark:bg-neutral-900/50 rounded-b-md" },
-                          React.createElement(
-                            "div",
-                            { className: "flex items-center justify-between" },
-                            React.createElement("span", { className: "text-[10px] font-bold text-slate-500" }, "COPIES"),
-                            React.createElement("input", {
-                              type: "number",
-                              min: 1,
-                              value: myConfig.count ?? 1,
-                              onChange: (e) => updateMyConfig("count", parseInt(e.target.value) || 1),
-                              className: "w-16 h-6 px-1 text-xs text-right border border-slate-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-800 outline-none"
-                            })
-                          ),
-                          // Override Fields
-                          [
-                            { label: "Sheen", key: "sheen", global: printLabelSheen, options: ['-', 'SM (Super Matte)', 'MT (Matte)', 'ST (Satin)', 'HG (High Gloss)'] },
-                            { label: "Vis. Pattern", key: "visualTexture", global: printLabelVisualTexture, options: ['-', 'V1 (Solid)', 'V2 (Straight Grain)', 'V3 (Cathedral Grain)', 'V4 (Rustic/Heavy)', 'V5 (Abstract/Stipple)'] },
-                            { label: "Tac. Texture", key: "tactileTexture", global: printLabelTactileTexture, options: ['-', 'T1 (Smooth)', 'T2 (Stipple)', 'T3 (Linear Grain)', 'T4 (EIR/Natural)'] },
-                            { label: "Profile", key: "doorProfile", global: printLabelDoorProfile, options: ['-', 'SL (Slab)', 'CS (Shaker)', 'SS (Slim)', 'RD (Reeded)', 'CT (Countertop)', 'WG (Wood-Framed Glass)', 'MG (Metal-framed Glass)'] },
-                            { label: "Material", key: "material", global: printLabelMaterial, options: ['-', 'Solid Laminate', 'Textured Laminate', 'Lacquered MDF', 'Natural Oak', 'Natural Maple'] }
-                          ].map((field) => {
-                            const effectiveGlobal = info[field.key] || field.global;
-                            return React.createElement(
-                              "div",
-                              { key: field.key, className: "flex items-center justify-between gap-2" },
-                              React.createElement("span", { className: "text-[9px] uppercase font-bold text-slate-500 truncate" }, field.label),
-                              React.createElement("select", {
-                                value: myConfig[field.key] ?? "-",
-                                onChange: (e) => updateMyConfig(field.key, e.target.value === "-" ? null : e.target.value),
-                                className: "w-24 h-6 px-1.5 text-[9px] border border-slate-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-800 outline-none"
-                              },
-                                field.options.map(opt => React.createElement("option", { key: opt, value: opt }, opt === "-" ? `Default (${effectiveGlobal.split(" ")[0]})` : opt))
-                              )
-                            )
-                          })
-                        )
-                      );
-                    })
-                  )
-                ),
-                // Visual Sheet preview container
-                React.createElement(
-                  "div",
-                  { className: "w-full lg:w-[280px] flex flex-col gap-3 justify-center items-center" },
-                  React.createElement(
-                    "h4",
-                    { className: "font-semibold text-xs uppercase tracking-wider text-slate-400 text-center w-full animate-pulse-none" },
-                    "First Sheet Layout"
-                  ),
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "relative w-full aspect-[8.5/11] bg-slate-100 dark:bg-neutral-950/45 p-1.5 border border-slate-300 dark:border-neutral-800 rounded-lg shadow-inner max-w-[240px] flex flex-col gap-0.5 justify-between",
-                    },
-                    // Grid template for 14 slots
-                    React.createElement(
-                      "div",
-                      { className: "grid grid-cols-2 grid-rows-7 gap-1 h-full w-full" },
-                      Array.from({ length: 14 }).map((_, slotIdx) => {
-                        const printPages = generateAveryPages();
-                        const firstPageColors = printPages[0] || Array(14).fill(null);
-                        const maybeItem = firstPageColors[slotIdx];
-                        const isStart = printStartIndex === slotIdx + 1;
-                        let cellBg = "bg-white/80 dark:bg-neutral-800/10 text-slate-400";
-                        let innerText = "";
-                        let colorHex = null;
-                        
-                        if (maybeItem) {
-                          const info = getPaletteItemInfo(maybeItem);
-                          colorHex = info.hex;
-                          innerText = info.displayName;
-                        } else if (slotIdx + 1 < printStartIndex) {
-                          cellBg = "bg-slate-300/40 dark:bg-neutral-900/40 text-slate-400/50 line-through";
-                          innerText = "Skip";
-                        } else {
-                          innerText = "Empty";
-                        }
-                        
-                        return React.createElement(
-                          "div",
-                          {
-                            key: slotIdx,
-                            onClick: () => setPrintStartIndex(slotIdx + 1),
-                            className: `relative flex flex-col justify-center items-center p-0.5 text-[8px] font-bold rounded cursor-pointer transition-all border overflow-hidden select-none ${isStart ? "border-sky-500 ring-2 ring-sky-500/50 z-10" : "border-slate-200 dark:border-neutral-800/50 hover:border-slate-400 dark:hover:border-neutral-600"} ${cellBg}`,
-                            style: colorHex ? { backgroundColor: colorHex, color: new Color(colorHex).L > 0.65 ? "#000" : "#fff" } : {},
-                            title: `Slot ${slotIdx + 1}. Click to set as starting label.`,
-                          },
-                          React.createElement(
-                            "div",
-                            { className: "truncate max-w-full text-[7px]" },
-                            innerText
-                          ),
-                          isStart &&
-                            React.createElement(
-                              "div",
-                              { className: "absolute bottom-0 right-0 bg-sky-500 text-white rounded-tl px-0.5 text-[6px] text-center" },
-                              "Start"
-                            )
-                        );
-                      })
-                    )
-                  ),
-                  React.createElement(
-                    "p",
-                    { className: "text-[10px] text-slate-400 text-center italic leading-tight" },
-                    "Slots 1\u201314 on Sheet 1. Checked colors are filled sequentially starting at 'Start'. Click slots to reposition."
-                  )
-                )
-              )
-            ),
-            // Footer
-            React.createElement(
-              "div",
-              {
-                className:
-                  "p-4 border-t border-slate-200 dark:border-neutral-800 flex justify-between items-center bg-slate-50 dark:bg-neutral-800/50 rounded-b-2xl",
-              },
-              React.createElement(
-                "div",
-                { className: "text-xs text-slate-400 hidden sm:block" },
-                "Fits Avery 5159 standard (4\" \u00d7 1.5\" \u00d7 14 labels per page)"
-              ),
-              React.createElement(
-                "div",
-                { className: "flex gap-2 ml-auto" },
-                React.createElement(
-                  "button",
-                  {
-                    onClick: () => setShowAveryModal(false),
-                    className:
-                      "px-4 py-2 border border-slate-200 hover:bg-slate-100 dark:border-neutral-700 dark:hover:bg-neutral-800 text-slate-700 dark:text-neutral-300 rounded-lg text-xs font-bold transition-colors",
-                  },
-                  "Cancel"
-                ),
-                React.createElement(
-                  "button",
-                  {
-                    onClick: () => handlePrintAvery(),
-                    disabled: averySourceItems.filter((p) => selectedPrintIds.includes(p.id)).length === 0,
-                    className:
-                      "px-5 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-300 disabled:dark:bg-neutral-800 text-white rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm",
-                  },
-                  React.createElement(Icon, { name: "printer", className: "w-4 h-4" }),
-                  "Print Labels"
-                )
-              )
-            )
-          )
-        ),
-        document.body
-      ),
-    React.createElement(
-      "div",
-      { className: "hidden print:block print-avery-container font-sans bg-white" },
-      React.createElement("style", null, `
-        @media print {
-          body, html {
-            margin: 0 !important;
-            padding: 0 !important;
-            width: 8.5in !important;
-            height: 11in !important;
-            background: white !important;
-            -webkit-print-color-adjust: exact !important;
-            print-color-adjust: exact !important;
-          }
-          #root {
-            display: none !important;
-          }
-          .print-avery-container {
-            display: block !important;
-            background: white !important;
-          }
-          .avery-print-page {
-            display: grid !important;
-            grid-template-columns: 4in 4in !important;
-            grid-template-rows: repeat(7, 1.5in) !important;
-            column-gap: 0.188in !important;
-            row-gap: 0in !important;
-            width: 8.5in !important;
-            height: 11in !important;
-            padding-top: calc(0.25in + 1mm) !important;
-            padding-bottom: calc(0.25in - 1mm) !important;
-            padding-left: 0.156in !important;
-            padding-right: 0.156in !important;
-            box-sizing: border-box !important;
-            page-break-after: always !important;
-            page-break-inside: avoid !important;
-            align-content: start !important;
-            background: white !important;
-          }
-          .avery-label-cell {
-            width: 4in !important;
-            height: 1.5in !important;
-            box-sizing: border-box !important;
-            padding: 0 !important;
-            display: flex !important;
-            overflow: visible !important;
-            background: white !important;
-            border-radius: 0in !important;
-            font-family: 'Bicyclette', 'Byciclette', 'Inter', system-ui, sans-serif !important;
-          }
-          .avery-label-border {
-            outline: 1px dashed rgba(180, 169, 158, 0.4) !important;
-            outline-offset: -1px !important;
-          }
-          .avery-label-borderless {
-            outline: 1px solid transparent !important;
-            outline-offset: -1px !important;
-          }
-          .sami-sidebar {
-            width: 0.45in !important;
-            height: 100% !important;
-            box-sizing: border-box !important;
-            display: flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-            background-color: #2B4032 !important;
-            color: #F2E8DF !important;
-            border-radius: 0in !important;
-            -webkit-print-color-adjust: exact !important;
-            print-color-adjust: exact !important;
-          }
-          .sami-sidebar span {
-            transform: rotate(-90deg) !important;
-            font-weight: 800 !important;
-            font-size: 22pt !important;
-            letter-spacing: 0.12em !important;
-            color: #F2E8DF !important;
-            line-height: 1 !important;
-            display: inline-block !important;
-          }
-          .sami-content {
-            flex-grow: 1 !important;
-            padding: 0.08in 0.12in !important;
-            display: flex !important;
-            flex-direction: column !important;
-            justify-content: space-between !important;
-            height: 100% !important;
-            box-sizing: border-box !important;
-            position: relative !important;
-          }
-          .sami-row {
-            display: flex !important;
-            align-items: baseline !important;
-            font-size: 6.5pt !important;
-            line-height: 1.1 !important;
-            width: 100% !important;
-            position: relative !important;
-          }
-          .sami-label {
-            font-weight: 600 !important;
-            width: 1.05in !important;
-            flex-shrink: 0 !important;
-            color: #374151 !important;
-            font-size: 6.5pt !important;
-          }
-          .sami-label.right {
-            width: auto !important;
-            margin-left: auto !important;
-            padding-left: 0.1in !important;
-            padding-right: 0.05in !important;
-          }
-          .sami-value {
-            font-weight: 400 !important;
-            color: #374151 !important;
-            white-space: nowrap !important;
-            overflow: hidden !important;
-            text-overflow: ellipsis !important;
-          }
-          .sami-value.sami-lg {
-            font-size: 9.5pt !important;
-            font-weight: 600 !important;
-            text-transform: uppercase !important;
-          }
-          .sami-line {
-            flex-grow: 1 !important;
-            border-bottom: 0.5px solid #cbd5e1 !important;
-            min-width: 0.5in !important;
-            margin-bottom: 1pt !important;
-          }
-          .sami-id {
-            margin-left: auto !important;
-            font-size: 6pt !important;
-            font-style: italic !important;
-            font-weight: 400 !important;
-            color: #94a3b8 !important;
-          }
-        }
-      `),
-      generateAveryPages().map((pageColors, pIdx) =>
-        React.createElement(
-          "div",
-          { key: pIdx, className: "avery-print-page" },
-          pageColors.map((item, cIdx) => {
-            if (!item) {
-              return React.createElement("div", {
-                key: `empty-${cIdx}`,
-                className: `avery-label-cell ${printLabelBorders ? "avery-label-border" : "avery-label-borderless"}`,
-              });
-            }
-            const info = getPaletteItemInfo(item);
-            
-            const config = printConfigs[item.id] || {};
-            const itemSheen = config.sheen ?? (info.sheen || null) ?? printLabelSheen;
-            const itemMaterial = config.material ?? (info.material || null) ?? printLabelMaterial;
-            const itemVisualTexture = config.visualTexture ?? (info.visualTexture || null) ?? printLabelVisualTexture;
-            const itemTactileTexture = config.tactileTexture ?? (info.tactileTexture || null) ?? printLabelTactileTexture;
-            const itemDoorProfile = config.doorProfile ?? (info.doorProfile || null) ?? printLabelDoorProfile;
-            
-            // Build the ID string like [Color]-[Sheen]-[Visual Pattern]-[Tactile Texture]-[Profile]
-            const abbrSheen = itemSheen.split(' ')[0] || "XX";
-            const abbrVisual = itemVisualTexture.split(' ')[0] || "XX";
-            const abbrTactile = itemTactileTexture.split(' ')[0] || "XX";
-            const abbrProfile = itemDoorProfile.split(' ')[0] || "XX";
-            const labelColorCode = get7DigitOklch(info.L, info.C, info.H);
-            const generatedIdStr = `${labelColorCode}-${abbrSheen}-${abbrVisual}-${abbrTactile}-${abbrProfile}`;
-
-            return React.createElement(
-              "div",
-              {
-                // Must ensure unique keys for duplicates
-                key: `${item.id}-${cIdx}`,
-                className: `avery-label-cell ${printLabelBorders ? "avery-label-border" : "avery-label-borderless"}`,
-              },
-              React.createElement(
-                "div",
-                {
-                  className: "sami-sidebar",
-                  style: { backgroundColor: "#2B4032", color: "#F2E8DF" }
-                },
-                React.createElement("span", null, "SAMI")
-              ),
-              React.createElement(
-                "div",
-                { className: "sami-content" },
-                // Approval block in the right, vertically centered and enlarged
-                React.createElement(
-                  "div",
-                  { 
-                    style: { 
-                      position: "absolute", 
-                      top: "50%", 
-                      transform: "translateY(-50%)", 
-                      right: "0.06in", 
-                      width: "1.36in", 
-                      height: "0.88in", 
-                      display: "flex", 
-                      flexDirection: "column", 
-                      justifyContent: "space-between", 
-                      color: "#374151", 
-                      fontSize: "5pt", 
-                      zIndex: 10, 
-                      backgroundColor: "white",
-                      border: "0.6px solid #cbd5e1",
-                      borderRadius: "2px",
-                      padding: "3px 4px",
-                      boxSizing: "border-box"
-                    } 
-                  },
-                  React.createElement(
-                    "div",
-                    {
-                      style: {
-                        fontSize: "4.5pt",
-                        fontWeight: 700,
-                        color: "#4b5563",
-                        textTransform: "uppercase",
-                        letterSpacing: "0.02em",
-                        textAlign: "center",
-                        borderBottom: "0.5px solid #e2e8f0",
-                        paddingBottom: "2px",
-                        lineHeight: 1.1
-                      }
-                    },
-                    "For use by SAMI Design only"
-                  ),
-                  React.createElement(
-                    "div",
-                    { style: { display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "1px 2px" } },
-                    React.createElement(
-                      "div",
-                      { style: { display: "flex", alignItems: "center", gap: "3.5px" } },
-                      React.createElement("div", { style: { width: "7.5px", height: "7.5px", border: "0.6px solid #6b7280", boxSizing: "border-box", borderRadius: "1px" } }),
-                      React.createElement("span", { style: { fontWeight: 600, fontSize: "5pt", color: "#374151" } }, "Approved")
-                    ),
-                    React.createElement(
-                      "div",
-                      { style: { display: "flex", alignItems: "center", gap: "3.5px" } },
-                      React.createElement("div", { style: { width: "7.5px", height: "7.5px", border: "0.6px solid #6b7280", boxSizing: "border-box", borderRadius: "1px" } }),
-                      React.createElement("span", { style: { fontWeight: 600, fontSize: "5pt", color: "#374151" } }, "Rejected")
-                    )
-                  ),
-                  React.createElement(
-                    "div",
-                    { style: { display: "flex", alignItems: "flex-end", gap: "3px", width: "100%", padding: "1px 2px" } },
-                    React.createElement("span", { style: { fontWeight: 600, fontSize: "5pt", color: "#374151", minWidth: "22px" } }, "Date:"),
-                    React.createElement("div", { style: { flexGrow: 1, borderBottom: "0.6px solid #cbd5e1", height: "8px" } })
-                  ),
-                  React.createElement(
-                    "div",
-                    { style: { display: "flex", alignItems: "flex-end", gap: "3px", width: "100%", padding: "1px 2px" } },
-                    React.createElement("span", { style: { fontWeight: 600, fontSize: "5pt", color: "#374151", minWidth: "22px" } }, "Sign:"),
-                    React.createElement("div", { style: { flexGrow: 1, borderBottom: "0.6px solid #cbd5e1", height: "8px" } })
-                  )
-                ),
-                // Row 1: Name (Full width available)
-                React.createElement(
-                  "div",
-                  { className: "sami-row" },
-                  React.createElement("span", { className: "sami-label" }, "NAME:"),
-                  React.createElement("span", { className: "sami-value sami-lg uppercase", style: { maxWidth: "2.3in" } }, info.displayName)
-                ),
-                // Row 2: Color Code
-                React.createElement(
-                  "div",
-                  { className: "sami-row" },
-                  React.createElement("span", { className: "sami-label" }, "COLOR CODE:"),
-                  React.createElement("span", { className: "sami-value", style: { maxWidth: "1.05in" } }, labelColorCode)
-                ),
-                // Row 3: Sheen
-                React.createElement(
-                  "div",
-                  { className: "sami-row" },
-                  React.createElement("span", { className: "sami-label" }, "SHEEN:"),
-                  React.createElement("span", { className: "sami-value", style: { maxWidth: "1.05in" } }, itemSheen)
-                ),
-                // Row 4: Visual Pattern
-                React.createElement(
-                  "div",
-                  { className: "sami-row" },
-                  React.createElement("span", { className: "sami-label" }, "VISUAL PATTERN:"),
-                  React.createElement("span", { className: "sami-value", style: { maxWidth: "1.05in" } }, itemVisualTexture)
-                ),
-                // Row 5: Tactile Texture
-                React.createElement(
-                  "div",
-                  { className: "sami-row" },
-                  React.createElement("span", { className: "sami-label" }, "TACTILE TEXTURE:"),
-                  React.createElement("span", { className: "sami-value" }, itemTactileTexture)
-                ),
-                // Row 6: Door Profile
-                React.createElement(
-                  "div",
-                  { className: "sami-row" },
-                  React.createElement("span", { className: "sami-label" }, "DOOR PROFILE:"),
-                  React.createElement("span", { className: "sami-value" }, itemDoorProfile)
-                ),
-                // Row 7: Material + ID
-                React.createElement(
-                  "div",
-                  { className: "sami-row" },
-                  React.createElement("span", { className: "sami-label" }, "MATERIAL:"),
-                  React.createElement("span", { className: "sami-value" }, itemMaterial),
-                  React.createElement("span", { className: "sami-id" }, generatedIdStr)
-                )
-              )
-            );
-          })
-        )
-      )
-    ),
-  );
-};
-const rootItem = document.getElementById("root");
-if (rootItem) {
-  const root = ReactDOM.createRoot(rootItem);
-  root.render(React.createElement(App, null));
-}
+9�����圪7B[�A-����04�*�[[u��ٻNz]�V�T�b��Rc\��;�Nu7�ŉ�b�^��_B�;F��)�4/
+渊�"�����(C��.�aX<����&�3_�f�u��ll-�ܦ���ǵr�N�a	�)���E}��{Z���5Ц-�X�c%A3*�Vݯ����Y���o��`�+����J�U��y@��e��>������q�#Yv�do��;k���s��V�hJ�@ge�g�1R�z�=-c��z	M�Ns�4l��k�a���q�u6+���`��?�a�2���n�fp�<��B��+V�>_N��gzk#}�7���O��B��[66+��}��P}������f
+b���� �<0���0���_j_��i����R6���c059T�c>EN��r�x4M��B�j���׃)�rKGnt�����6BN�x�1����T	}.��5�%LQ%��`��1BC�!4Z����+�ۨג��F�2�AӜ�	��P����X��|�g	�'��R�"{�_*���Q�2��bP?�^2SoTJ��Қ�֘Z4n�����V�*c͌uz�i�R}�:����S���Jؠ^��Yy�"� ~��X�mm�ц�+X!�8���A�C0�*��6��׫��z�<���=�E�0�UUŪiMd�A��ˊ<�J5�WL� �B�y~F�Ѯ.�!}0M,��A�|"���L�µ�h䈶R%	���%::��:%��>.y�)N�#����9��:���kכ=����(�Y̼��t�Q���G����XM-[r"�"�^�93��/�m*���6�:w?��bi��g��Q|U+f6J�P�w1��c��l��[1PU�uSC�$
+�DĜZ"�	>���	)�����F�d���`����?��f<���9+��Ce!�WP����-�T��oB|���*rrHG�?��I��팎�	iwH�M�(�ٰ�7�eڽ"�Y���nK�յbύ|v�%N���ڰ�v��|�G�'F-O�^�����-�d���R{�5��oS�RN#��)�?���BeOkr2+�q�Do=�-����q%�Q���>�`F@Rl񬧯���"�kb��Y��	0��5���J��~Ԙ��Zҵ�!a�����&Yu[R�eN-����LX��~R]� Ssq�މ��K�%�̯�V�7����d�|�=���z�֊~�.��J�u��"YV;���m63���2z����F곸8��o��ܫ�̛�^�Fex�W�gƢ`�;4v�П��Y�)5�4cdd�@�DW�'g����Ue�@���R��*nbj�穗ͫ%%P�1d��k�)��#�1�)���#(�mhLB�S.�(���HM_���3��T/�������)�Y�gLgE�fio�m������ޕ�*lsT�~�����}�f�@A>c�@���8�������^�м�~��|<��Ԕ}���"��y|�|�6��C�=��T��a��O:��cj G�Ā.��3�b yIOX�����.�#v�c��J��{��錝��&[%��a��QC��*4�����,&hhGx�6B��9�!>��.�`��wrEÎ�+�1��J�J =��4���]	��Ļ�I�P\�3��>5X�����8[j	��AU�?!�43�ϧ͌�Rl П��f�����1�+9M%��U>����U	=�fą���"�Pir�Ma���3�`�hc�������v���R/fCvXx�v]w�md���Wߖ,��G;��M�U�'tf&x�Z���
+�g�L��>}[�Q�+��4�'e�����& ���}��&�|��2�ȯcP��M»�>rz�'��K�Ч7�Q=AQC�#ۈ��?`tV��%[��3�7>��-J�?��#��ȱ,���6�p�l�G~_4X���e��x�"e�C���.�hA���@����h�"�C���U��2T�.#�����vl(6p�&�,�:�@ߠ�;�ݑ����-��-@�q��-�h��l��8�r�g��aaLL���'�����Ⳕ;�g�Z����3 �W@t��=ms�Hiz�'i</��b緬��O��S�/>C�t[���(�W�p�fN'EeE%�,�������nu�ol��@s�[u}>,/�	R׊�J{��L�I΃|V�p�]�sD	�OS?��ZE	�Ǖ�Eks��;r�\��T�#Ѹ��[{8WP��q*�y�HHw%u}�9
+b-�	�z�ߛ�a��vw�
+�a%��+�ai&-m�g[��@��瀿�3(���;�#�\&�,˚�s���Wr�@���ë��=h�j�׼��$�/��P��ą��/��\Ӧa*R�&)��N�,Rʯ���=B��?�b��tJ��Zrh�>�N�����(gP�k�.yE\7�����٨����e�����ڊ�e�T�eɊ�;�I�ÊDT3*����m�vڸ���g~�=�.��W4�Z�X��HZ�_9˭J�����t��������?	ι�C �;��B�����ӈ�����"���._ I��88�<�BW�|TT$�T�ۤ�An����dH��qc���"���8����� ����-&'q�吪��^���ݟ{����8��[��/G�?��+�!�7�kr���)x��!d�V��4��<N߳Q����_�JOA��H�,'ϋ*�����O��U*��F��+�2=�`�����!x�<��1N���N��Ӝ<��Ը��J���1�i�{2P�_�(�U�}��*����6��u�V��ҝL!BM
+�B���Z�^��D�RK��ȶvԴ��+���`�րg֬����>�ɶ���9��g�P��U
+��E2<�L�nuq��*p\�^���Y���F�P���=��^�HwE��[�^����$dg�s�<��z��*H;I���)����'��r��qK�e����ߴHxp$o˻[������6���~�d�3�.v��|����0��c��{i���z��E �� �� ���c���x�#�|� ¥j9+V9�Հ�< �����a�6��<9���f��#պ^���kme�|\����S�Kg����e��s�y�=����bU� �RfMkmB�TH��~��C��ӷ�Q�S�7�2�eq!�*6���jgB�X,a3���i8aF�9)R���ɬ�I�YOe�X���-�N���4��y���\?�IG~שj���y�#ɀ��-=\󤯋�A�J�^�������B>����5Ь΀�Y�%�������z'A	PVOA�\�� {��k�=�;�6|���h�6Z�gv�v�D��Mo\�8�z����D>!赔 4p�(#����?�$4��`��_��( ��,JG;;�����F������+�I}4��=pIfh�U���͡ᐊD��̴ǐTѕ�d��Fo�6j���c��ޢ2Vy���=P&��,ta��t2�С��:�r����d�8 t����X&N�Cv��*�ȖSE@2k�w�erئ��VM?m��Ӫ遽i�#~E!�>T'7||Z�����a	t�u\|��H�.�<V>�C�>+�������o�����_}�[,��i�VPol�C+4C?�q�|����y�з��j����i���S��H�Pg�p�}ѻ�s�ʪ�Fn_��ԥ���:�����,Dh���_u�<��n��x��p������+�L�|�}	�����0`.�Hc��w���u��O�,��������<�k�Ϻ�Y�'0��W�Jy3�����,������fM�%�}���u�ǘhG|�iwħ����L󘽡���_o���T�L�Z����F�A�������}����R��D�ϝi����6ed>\[@Mbm=�9l�h�+u�6S���'��I�c��o
+�����H���7�f�g;Bq�jX���?�Ѹɖ%9��8��i�+���}�A�׊d�"�vv�d>�%�^�F�%]�7k��ނ��j{,���R�l�/'I�oÿ�@3�[�mo�=���D�?Q8hy�p�ԉ��D����r�ο堝������h��-�������+\���h�2��ŭ�����(�[��[���F�����|�b�ֿ�K�o9�:�����o9��o�~���[�����(�[��s��R��r��"���[n�[n�[n�[V��ֿ�ֿ�ֿ�ֿ��ߢ(�.ڨmc���Z�@
+qot�h��2��Fp���pYoT���eWm9�5���f\� � �*Z3 �;�X_�	Ӷ�vc� �B����~G{ cg���UP��^&7��tx�oq	08��);��ƍ0�"H����A�Fny����y ��	�o���8p������A�<j�׽�L�L�S1�"���:��rX� �1��{&� #��ee%�Q8f�=1�r�IMv��'A�-f�?�<�s�*�9a6���#���u�U�nd��O�^�˓0:^�/s�h��x����|�*��8�5��W��I;���oa=�?
+�K7B�r���A(QV ��Ε8h@}��=�~��T�z��W��k�1[&��2�d�8��~j�ٱ� ��?�o��w�,Ԏ�]+Y�gō�̛����?|n��-3l>+��rCr��8n8���߲�[v�|:vĹ~��Z)�K$��&y(f�t�RO�{a0Y����|O��	�i0�Ѓ�#�9]��A6��Ɍ:l�$�!��rT������fe%�<^,��_�J[O&��A$��֓��f��+DW��F��+��4Wf��Z��x�M��MIdT]�9�� Hef��;ì��DכrH�zq)�h�穗0[�ֲ���T, �I{m�s2��Q���O`�r�ɞ��|Y��+~�t��~��K��T�k~��Ab~Ъ�(�b���� �v'Z��&@�-�?�)zQ�2�a��0���LY����70�;|���Av%��QQ��1���ӥ���(3'�g�+�ÇcE:c�ŠIh�N��<$ad'��ʠ~�:/b�P�@�:������v),t�q�>�M�zQ�
+��J�aЃ!����8O䳧�d��ǋ�2�`E��eyܹ'0|v9��V<�ۃ�IѪx�_���Y0љ����'^5������y��<7�&�Gn,}br�����1��m'����Z�|�2�2��)<L���A��<�A��-x>ga<�BN�2D_P�R�r�3-h�z����y��� �Q]���V�$�&���2�L�'4� �|M���2��CR+����7h�d'q�g��Q|Y�	�%�|�j�c������i0�n����˔��GV�f4J
+W�C7)�.�F^��IŒ�W�L�#�a��t�2�5����%�O���=eơ�4��s���N�4V���z�>H�b��|�u�jq�Y��s0��䕾R���k��}O#�,�T�x�]�<*"�\d�3����c/�=z�R4�&�D��p:%��N�jC���Z�7�h]V*k��ZƦL0	��G�T;s/����.%N�jE�)G6��=D�"�m�k�^�,Eb�<!h@aS�Y_r��&I�)Pr��{,6f2���@��� z���c?�pцdi�1���<�z�=`�)�o�0�ZٷB���W�(�ɠ��7ٛ@�'޸I2���aY�N�F�ّ7�I� Mqu�T�G���W4�:�yVY��H�I�f���57�����^̐��C3�U�AC4J��	v��r��*��,�G0���2z���I�h������昞A�p��ZK� ���!�X��uU {z�X���fT�U,�B��:>uxQ����h4���Z�I��8��7�k��M�������La�٘��/�F���6�"z�H^[,����Qʤ$xI\�����r24?� ��ե�ꈪ�p�
+��d�1M�3��2�jm��ċT5�ټ�+%3��ҿ�X��+�8�w
+��ݏѵ�*n)+rAWAa�y!�Y�����ܚ��v�4���/�8��\J�İ�t(��A�7�~�_��%W�h���ʗ��t�l��y�%O��-�2ֶ�prA�h�As�@U���ڧk@8�<L�6�A°����v�D=����$��,�����q��@u �}V��to�J͓8����3�C*�����Iqrr({����
+��'هM��]�6K!�#L��/����e~ۨֆ*��P�C4�R�_L 2fahT�w��p�ފ��8���*أ��ue��2-�����Nl�+фZ�G]�ш�J��l�X���̠�n��efilՏ�Te�E�����'��Y�:��.�
+h�"� �Ǌ��
+P�Y���V�2�U��d�iBY�
+�6��%�ज%��\��� ��Py���*�7:xC����?�t2 T;`˞�s<��V��Biؙ�;o�A4	S?�V��F�Ӥ�0�)(�fCfWF�ڮ<4ò$?}��(K>��m�6�V�1��>Tm�c��U�ѡ�dUw�*yߙ�J{U���?WE�_�������ha� Cy�B���?_��N��TW�:b'�*v���F�V�v���
+�T.	�-n|Jkx� )�"O��v�5W;H�}�Jw�i�gHL���r��R�5���:��Ṽj�h�;���Z��i��:�e��%�b�$��z��Z�)J�&;�8�:r�59Y��6�.�u��<�.�dՙRVDɥ��DeH��;Q��c�;7���<��m士�9Z�s<���棳���~zir������p���{y\�����h1T.�ll�G��ZL��<I�詩7;b���]�����t���?E}4�A���h��?]I	2]G*�=��n<����Rki+��u4��Q_q�Q h�N�([U��<�܌"k/:��f�kRIS�B�jQI�a��o.NM��"��MY�\�u�b3FEע�ۥV!�uB�SL���ԁo�-Gm�P�sUad��/�7��[�k�
+]|�����H望-�YG�U����6,J����t�S�j��>�)έ�,'�Ǳ�f*VBo��DMN�6¦oe�߸��E��MR�e���L�~+��z�>�*�g����Z�5�҈�!�9aj{�¬�����u^�k��~K��s�)������	���0���S}\�V���䕏��s����!.�~�����Ͻ 4�w�/�����6Zg��l1�{Z3�jTKp�z�`�ݩX���ޕ1rX�-Ԝ����g��޿̺�'���=��ЦS�I�أ�Q��[B�v������X�x2\Y�-1���[Z^����bO)� �<� T"��v���%w�.���bely�}ܭ�&{V��q��a���{�4^�ŭB
+���c�JZ�,��ӎ��R�hk*Kz��-�-�> 3�5�Q�%�w�S(�����J����8ڋq��L��肋���(*S��И��*
+��T�r�����1�?-���������A�x�}�Zt�������v����k�k�a�[��h8�3�m9v0T�D����6-騘;�B�2���ˠY��%X�]}�s��tO��'A��c�H��x�'�mrin��`+������;�q��F��ݍ�a�[��TM�WwIv�K�{��T�ZNd�Ԍ��f�� �����ܻ���h�Y�'�����k/��7]�8��$�����Ҟ���6�����8�&����q�˂�(ʋbV�� �&?7�g@R^��	[�x	tz���^>�S�ЭW��� 5��ÒN�-�آ|Xn+4��|���b#Do3�
+=�w���;6{z��Q���3�&+]<����Y�Ue��yo8p}_%1�.��AKZ��f����"��H�����IF���5r�ƪ�ۥ$��W�ʤ �j��.��C�e�Y�� ��t�`�-�bpn�$	��vqw���Y��Rw�fP��7��(q��o.i��:���/
+��F�SoJ�-Ԝ�i��+��X�3(F�fuMZG�W�c����FS2^W�	=
+]��}�u$�b�:E�X���ΰ�Yӑ�:c�+�=�X˹����r��*$�k��RR�1��m������S�o�Lkɸ�-�`��{L!Vu	~D<�6!kt�a{'t�t�᥏�ϴ�];&�ả�Ϻrq5o�K��5�%��X���C3;(���`h�(~J��3��im	p�cl�>���T��=L���c`�U@
+`��, �?�X`�5G�>"���Ȣ����-G��q�Cf��e��Y;<�M��A_�9g��p�xx�o��Y�!>]ho��Z��ꇑ�SǴ�ؠ��|��r�g���|��|z�/��Dy;�i�S�5�Z��d��]��ϫ�ц���C������'�=��{i�ki�cT����Խs�,t��w�{d��Qx%��|���7T��l�#_���b�9�ΫJ�Y�DE#T/�H��\�ڈ0Kݕ��_��&n�N&�Eq,R�MƸ���ԅ��X�B����F��K��G��gCOM됩��n^�P��9������p�@I�  ���}�v�H��{E�eSsE��˜��ͶN�%K��u��@$�	 j)��̷̧͗LDd&��H�Z��>]�\####c�_�f^�{�&��aQ���h����{��*��tC�G��I._�o�W�q�Z�'5������04e��e��す?����b�8[��a�'8s0�N%��HAW2��0���Ys;���/
+����|�{�3U&���O2�z�Tb�[��O0=�����o[�j��������A��$��k��G�*�6��	��tb�(��c �x�ς�s�:�j*HQh�kˎ��d:ut�S-&.2�{�}�qp�G��aRT��&�0�o��\|��qEW�d#U'�T>��X����	��㮡�ȁY��Gw�J�ۢ%+�M-�/�/N�}�{B��G}��2�X�T�t����V���
+�0���ԉ0[y8%X.숫�9��}���0�	����1�䫣��?�,����ȸ��h6�Z��O��iwd����αA�Q�����	_���n1��C
+��{�.�U�Rd�|��o�v1nE��,��#����sq���:3���P-�-���+Z͚ú��tl��~�I�~K�iDܦ��8,��ay(DI���T ��jZ6ú��P�@��$�y B����8)�Qo�<�!K����k���+m�Kwb��M�i?�W�Sx����
+�L��o-�C����v���\Ӿ�T�uэ�D�\<����dPH�[9ǚ���1��x;�Vٙ$(ЇO���_�%�����;����Kr�^�zb�}�[m�']4��?�I�3oo���wS�k�=���J�f俳Ƴ����S�OΡ��W�*s��i��(�J(+�f[(t��+��^z{�i�)������z�^�ji4B��ج��Mqi�����0�ˣ	ޮ�z�b|�q��*�Yj_)W�D�`�Ο}��6r�˾®nΛ �q����Z=���b�I�)D��G��Y��A�L}� �J
+;0�S�xo�0�{�0�+��^E�qf ���k:�tża��?�Vxs�z��:��fM�Ev1am�]�i��+�B��Ċdἓ�I'[��G�W8[Ǻ�|���p�8�;,@�8��ז�Sۙ��F?tpXӫ�c[h�pU�`֢EQ �˒���wl`�=����(1�FcJ9�Ѵ���Ͷ�H)�]5��{#��6�n�*4���y�{CM�#�?z�@ z�]"ڂ>4����@����Z�q���� 0F/C����okM��!�˖��u�����a���'4���5����,}��Ĩ+_$��)A�
+(�C�"��=� �b;G��;ń͙�rU�.�C��zfA�K�\'4S��
+��M�!�����|�m�ސ,�#�`��1H���6����r]�'âe�j�.}�F{;��f0�� ݹ ���*D[+�ot�F�*D�됖�.\]6�U���v��d���n��[�ց���m�p��m�j�0V'8��1U6�%/�#����KQ,r���H=p'p+y�z��\�,�J_��g>� �O�V\pKvt�&��P�g�R���a%~�R���%/x@T����G�����_����s%B��h����h�48�
+����k��7�]��'�.;�^=}'`ެ)m�uz_��~�kh�o�a`�.�,�Y�r?^g<�n�u�����:9�x��Jۿ�Ä'\���yy��pC��[>5�8S+Hy@nn��p��D�zk����^�Nkz%�v�����K�m·��
+�r(2-��	��[nKyR��H��ԛr�k�d�'�&���2�����N~C���NbR��V�V�kT�.,~���t�y�.�`�\k2����mw�n����3�d�S[�d1��O��M�b��Y^i$�P`=_+�!�d����DA�[=�����0�D�s�Oa�n!��֗Zn����<s�W�\�=$�ڬ4��{��뽪��^	s��И�'�:�ř�?s���\?1�O����k�)\i�����\��뽥0�
+�T�W�.�%"x�4�ȟ~�YC:��s+	�S���sS�\�+����N���+̔�uq����
+YU@�
+�`l�<��U��S������H�U�k0��btR�������"���0Pm��m��=�M?�hZ���T-�e�k���Ҳ����n,���Uk�j��+P5�F���cG�d�8���L�­����v"yr{�7��nE�&-d���z{�d�g��ImՔ�P�kU!�T7��s����;��d�]ʾ���:�/�lYcUƋ�n���"��a���n�Y^ڔ���]>#�H�S´�k�tO�V�C1tf5�D�J�J����JVo�V�{�������Y���Ju�B�LJ�>U_�N�U�qw�P"�آ����s���@��τ�f+[��c
+�)�'��Ds7S��6	e�=H�Y��o>����3V� \��	\�$[TT]y��تx3w��#/�9y��{����IMő�"젅�|�H�du�-C�mԹڑ���lWSs��z+ G� �b:��Ê!1����ן!_H\��������U2�ɖ5����B'�Ч�h�
+��4�vՌ�O[�.��[]v��=��t{N�RO�.����tm]���]��t��N�T��vfuA�Q[��ѳ����ȅxrE�U��3F#��H��*�Hi���[��tr٭4^�0in�H��!I�rN�7�� }l+�m�pB�M:I~�8%�KRݪq<���{[��1
+��ԴHIJ�r�S��F(^a�P�I5�g]S�N��HAt[�n>���;v��8�;��O3/��T�k _���΋�������۴ʁ����K��v�v��݉5�X}��R�0'\�U���
+Sـ��:��ͣ�y�s�@Xl"4���a>��U���b20���Uvv.Wc(}��'�گ)�c��NX��ķ�Sʤy.N��Ӵ�4UN�Thh�H;ϒl���܋.O+u��/�V)�g,~�C@W�^��?��r��o�e����3�	VX���ʌ8�5SL1��Y��"�ڈ��1�˝T��1���:�u��W
+��|�\�*���΄`��e�����MC�е�'���b��7�
+�"]��ҖIq��1^҅��C��/�9� 4��s����5�@A�tl	0��� B g}]ܵ�.�������%9�"��X�҄ǜ
+U� �,_�@t���/���J�+����V����.���������
+�	u>X�P���Z��z{[�����㰬b[S�WV����+�Y#��sƱM*+����뽁��N���K�����XWX����~�Z}�������������>?�F�'�[�)��n��n~Xg�/c�k헯ɗ/�|�����������B����5e^HQ�d��V8�x�N���gFP�in�u��r���y�8���gw���Qn���xVo��B[P��?�zu�:��V��Vk��:k7[��;;;��>G�L�b�����uN���k�h��d1D�ЋD�f���DΪ!������tW���F�v������}��Ft=�
+��w���=�s���8,T�m���Ob�f����6��o����$3Ig#N�{��{
+����3��O���e�ʲ����C(}��_�.k���B<=?�=�������O�~����㵮�o����Q��n�T�Q��\�ĵ��|N���W�|q�4X=4cǈ���ل��
+�؎Y�1p��Yg�&�MJ
+��$ky	@rQ�HP�7��g0 ���y���D��1�k���c��#�Y!̭�(2A%�$�=p�̋���@n��fb�JN�;Ή��I��;�cǺp�~����X6��g(��~��fU5��%˟.M�X�G6r�S+a<Q=�C�fY�2MqU �n���`�s<~q��t�G��3�ɢ9�ie�MR�8�y��n�U�;�e8�r�|��Y!S�%`���F�q�/dO^}!�E�Nxcj�nQ�$ҵ�&��Q.� �܋3}���� ԕ����JÈ��H�t6����j���M~{���s[����C���;%��>�L{#TkS�l��H�tR���L�*�=+�q�b�*a����X���\�	��i�u~i;ϴ�|�Y�S{Z�fiZA�5�jl�ܬmА
+{�v�U��,Q�&g�6(�����6.D��:sf2��U��:H: �@ň��	�r�3�8��\�T��KZ2�o�	=X4��]I���8�=�R�Hjak��L"�m�wm����RJ�;s]/\q�(��UW�.gX�a�I����ꆄU�r����;e՛s��O��Gq�e$��՗��\#����*\h-�6�5%�)1w��V�ȁ�CK$�D�Xm\��D�P�>E
+����7cNU�>i�t6�e�t8wV;G	�j'�b�qk�d}��81�B( �ecJ}T���Ֆ��  ��ցU�҄���h!'}|�!;��=���=��6����/'Z!�i��~�g�?w��J��z����
+����k5�#9*���RV�Z�5�:��B���ye;s�>����ܦ:��o���P��Zm�ߢ�����ͬM抙>��I�.d�=H=��	.PuS�icgI��Y}�6�
+��_�0�B7=z�m���v|�bP�kD�;F_r�!/��^�x`�����r;K�ᒛ}YTA�R%!��<z�Mh�@��S�-]��?�i^�弒t�xf�6)(Qn���[���%=.e6��U��,��J��U�K'���}�4����ٚ�-��[�ȕ�ʪ EW��65����%��/�l�S�k��C۬[�7���1�b�)뮂(�f��~x����6�S?7�7L��fW^��&dY�"��1T3&[��ʮ)igDFM}L���O����Jk������4kh�J�%�Ȏ��u��=��WWu�3'���e��8urao�.)�V#N����'����&���J>}u�
+4#��HYL�EʚF���
+��N'��D�da�Z@������X�QԲ�"H]M���~�؇��)>�/���G�����T>K�K��=j���D%���+U���3���z$���p]�&}Kꆪs���.V����O]��1,I64�й<���$9\���,�ç��r!�wE�6/��90΅<VL-ә�TY�	r�2w�[!b�L�K��O���p
+���&�:�ƀ�.F	͈5�4�kx��9�\���
+��i��d2։�a��$iM�S��ʙ$����R�f�Oz���R)��O�l��iļ�԰���s��i�h]��F�zmE���2��0�HaWb{|�qc.R)��M�V�@+���Aώ���ȗ�zE�SxEe�x���\�+G��lV�]$�DV����R��:���ՙ�<K�9,��لm+N`�7�d*���f�����=����	7���'|^���d�\	�KΓ9m�U������\>�|�`5�z=K��BU6Ũ*i-�&��ʸ(e;�)�:
+v#\NX�b�>L�"�F9�p�y��W{��|y��M�>/=]DB���!���աf
+�]��M?Z�{�����Y����ǧ��|�pϣ�f�&s����˭;%�.ۭt��1]��D��}e!�71��R�ߊ,bmw:e�f�>g�I���IߙFy����r�,��U�w�D��9	�F�OB�UP��R��')�1/�(J��qi
+k���*�R�������KK�gSB��[���OUJ�7�گ#��r�)�4V��Q�f�9���@�]��i0D�!���,ϻf��K*�TȘ&�y�_���������@�?b���\/Bc�o��:�O��fckk'l���A�Y��,B@�G������n/(�0��Km>B.%��UNTn.�U��r0����|ە�T4z��&~d�� E[i]���kW����]fd���S�R�q�S�tk�cV�k��	C�zu
+e�rU�������eY����O�۬�����ji|nn	(}�G���
+��f��T��/&P��z�BR5�!-C�Y���t`4ٞӷf���^�Jz�tԓX��&Qly��u�<��2�
+� F�7��L�/8���3�*`�{ʟ��L���
+�e���G�?��HK�#"-����$�2��������P�9x��^G�A�"+dEBl�� &7��`�{ω � H���:��uzCm��5�{��d������µ��0�����6�4f;Sgb�P�	]B*3�=ј�Bc�?w9�y���g��)vD4f����'E�>���k�`V���Q��hG0��D��0!A��!nC�d@s^�����3�G���^];��!k�p�tmM^F�CC��yEo���I��@>I'�$��ɺp���=g���e�Z{����HGx�<��s*� �ߨL��0>>��� G��<��zk|�����E�G%��P����V��9[_�)r%��y>�n�]�8 ⡩�nݱZ�`M�B0L��j�!?��2���h`�n �$����
+��&��G2��hˇ��Ԛ ���9���65�������<P{؜�u4�]�:ZpI��i*Z���?��^�"���zn!u�|��e�n��9��`��X���oXWn��.B��`���x����Лq��í0��6�;�'����FE�>,I=%�2C_Ew�����'��g���u�|�Ȩ�y�dTБOБZ���������$�@Yݚ='C7m�ʾ��qVAGEc
+�d?��`�e�)?��1	 ��y"�O��A:ǖ~<�M�����?m��*W+|�xx���������fL,�ܦ� ËW�^������~6�k��]������0�ƪ(���H��|��s��A=m�[�2���`sE2�b�
+�@}�g�4/^��O(���wB��|��'��ѝ�^ٝ�G*�m�<��,�Y�y1����(��	��ʝXh�%&N�����)H�ENwp��ݟ��5!v�Y��w�,4�ߘ3�=�%��1��C��D$;}" �g�h����iȮ-D��ǯ�Y S��=����ߗp"7b�,��(d�]����q�ȥ/��Kj���/��3JbCn��@e�;8@M��8^d�õ'�R��N�
+��y")�g�$��c��:����29�ћ�� ���B������f�\�l4�L��6X�'6I}Ǜ0~f�	o��g� "!�*�~;����A
+�ă�Y�H�Y>g%��c��x�y��?�h��.;Q �wtb���=�$���LA�ٓ�A.<LB��f�L�ٻf�X�n-Ke����"w>G8�����='.�i�Ȓ��#��@�Ћi��
+�)�M�C�kb���"U0��=w�ձ�c�t:ѱ�=�{�������s��I�Pi�������a�(F�~�Cx���0�Q���aT��[���e�'_�H"e`ȍ� �]8�?���!rp�A �D���ؒ���Є�������{;`�����!����:D#�,R�$3�;�a�ĥH���ٽ�U��O�/��$� &�0%�j�́s���K�(�d�V�/#��t!�9�'�$���n�P$��DL��VLh� M��E؃��7)M
+��\�9��}�1"kl����'2`�V���l��D���*��1�IuB��J���/�D�s��>��+bV�-����{�"�H����@�
+^���_ʿ�tJ~]�"9"�V���u �;���_u���9;u"�<�\�J�fD;�-G�*v���yc�⥣ca>pK1I�V�V���}R�yY{oy��篻�uz�
+�Y�<N�W!}�;w��d���4�D?�<̐*���y��,s����n��]�ij��k�K+�9y8����Y(�I�$krM��&�j-�~����Dx^��B9%dД�\`x�s:��[s��JkH��u�\8p(�K���٪������ir�&����	ۚ��\�QP������iX�*�l�|��@ }(��a�i�s������|4��uQ��Pv2�F]�ބs�g]��H���
+ej��ۮ�>���ڻ�?X��P�{�8����9W�=*fST��ad��n<b2�2���(�,#���ʄ�f�D�(���Bf�SO�a�20��xK��q�	�����~:���h��b���p��ɯS�u��l���w��!�;�õ_t�OF�S;��R��8��G3�\��~i� }ϵi��t��E�y��q������q6y��&��+[�%�7/���-V�텸����ȝN=��T�P��9LS5WQ�<�|��l�p�cߏF4�3��!��� L'?5�3���ѧ�?Q��T|8�>��������f�i�;�!cFZ��)�Y_��#���1��t k�8@�yQ@�} ��S�O�կ������x����h����l9�1�|�0s@}'p�a�8k�M3��sz���@�dC���5�����>s�퇃��B�;���~�`�u���O���x6�*���\Y�2��?��zSl�+�8Z�B��tF+��8�Ԝ�cQ�@�`Ke�"����A�o�Z�����44V�6u�mj�LU'�ҕ�O�ȥ��j1�	���Fx#T+1L�;��X��욚?RsH�o�\o>{y����nm4W��]t��1��V&hR�)jĨ��r	�$,D�zJ�3�>��N�3�BCP���G`�N�w{�!���t儰�*�YMҢ�nĪAG8qA߄�ը�0���Υ��Sk�>�ʈ!����lL��|�qb4l$�!��V|�Z�P���h�Q��NATƖT�T�����e�m;��x�%��c=�f���ԟ}��׉gj}*���cn�aӝ�����i�kM~+�A�Ec��yeڑ.޺��M����r��!��ḠSO�0���pMqSϿ)��K���=B|�􅧔`!��О� ��-!��r��7Ld���ۤ�& r��������r�s%^-S�D��D��2�XH*+��ܼ�)T�Q�!B��Z^��u���z|�6ƆK���N�t=�YZ�$i/��������ANa�^ĪU?ƣ�~�a4@!�T���8�#)3��3�N�m�p�`�O^Pd�+�V�)Oؕ;�6:?&�a`D*�hf,���Ӎ��Gv�C{T~��ԣk�������'15R3cWܓn?]�Wy�p�bbU1{�<�S|�?Y��ɔ��_�'�Q6+�WÍ3á�ˣ��sE��dZ��L�����GK�_h�z`~Ym�Z?&=5�{nK��� `x��ŷ3\0�AӃ$�=Qx�XH�u�}�d9�-�����,1m0-�"�i�M�	Jd��r��:�sKKI��(͎Bg�VIWXY #�TA\�,���V� ]mq�@|�Ǽ��(OP��!R�ff����<߰di���̆���K4@���k����s��KdJ��JH�k��6Ww�����b�s4]�䱡���'�=&���q�	�lsC*�A�ӡ_p?/6v�E�:�hp�ۡ��B~S�D��0�ҭ�F�B�JK�To��%�����v'K�t�7�`�z<?%���q��8#��;�|��[7	���"��Y\�9I� ΅��a@�hJi�<�t�Iو�������`��M~�p'nC'�}l�^�t�Q9���Dl�tw�m������BS
+�+�,j���v�k��4�(��tP��;�J.�RX/�RG7�Q7�f˙�<�T��(ڊ˛�faZ�$������U��8�,��y��)L��E@c�khB�SY����g��6]�+Br}�S�G��s�,�٫Y���V�V\[�>��������:<ss3��\5����A��<X�H� ;�C�E9�9�d���<��u�gI��/%}��fL�1~\H7ʟ�R��z�x7��È쓉[;
+L�!���U��D���锣�1(����E8;�uADtM���>�z�	�k:�F�}C�� ]��#بf4�����w1z��UZ��`��O�Tʼ;F��|h�l7�z�5vj,n\�;�IZ�5�'~�� �T營>��� ��}�vn�?f�V�#_ߜ�Ac���f �˗��jjѦ���j�J?Y��~�|�W5�Z��0�r���Lq��TH=�\=`�J��nH�b�]����
+WaY�?�xtx�oz�v��G�d6�rX%)]�.+%��ݭ�G�c��My͂aT��V�QS0���k�=U��X�^��*RN�ӵ.jj41M�z�e7Frd�)��m�-}���g�f��OЕ��_C��Y�"e�� C�U�MG�f�M�'��/��ʁ�&h��5Q���o�\'�D��+�r�o	��j]&��H�&���B9~��G��-Q�t�k��z��(NY�(��"o	�4�N��\��<��;�������(%UH��/>}�wA*���(���&��T_)�y���ռ82�s%w���:�c��|@�Q
+�r^ �(Y&���5��,IY�Uv�O�A�l�����+pϬA�`�?�p�HA���X3/b�g�r{�	7Q�d��ϭ/7k�k�����髁W�:��鋲�JF��u	�M�_��߁�EpJ�"��\�X�K�1vD��4U�.�`Oi2vW�,�2bɨŤeЩ���GH���q�׈;����e5i�1&��ic�L�I;ͭ���������-6��l��r[�	�������A����Pk�LԯaW�C|��)� � ��M�XYc5VH����w�_��WB�?����p�Wo��;�Ψ��/�8�Dr� �m�SB�H��!�����1�$�o��h���&�zu<]K�[�=RC��.>���U�F�"k�!%a6�A'o5��`����CMo��C�J��n�M��-�.@�/)KJ��8vbO������`5����fL|vj�R�j*��F^(���6�NV��5��%N�qL����b���:�`���h�n82�ev��ӯ��PZ��4�Ls��itmjo~�Y�tKU/����9��VS'�%<|Z����c���0~`qF'+��,|�51�4N�\�i�Ү�dT���dݼI+�ai�$"�p���@Uc4�$��5r�޹z�@�n`x|'��	�:ØB�Q���u�W�M�!�ou�i�y����-���-a��`0�3��Vr׉�r.���p�F��$�KI +�7�s�g�D�%�<�3_f��b���Ybi�V�܍��ꅾ7`���#q�Gֶ���SI�⨠�ޓM���o<���r��SkCugF�sD�+�/\�p3$�*��Z��m��������D\�ڰ5�����@�T��Ϡ7�b~�;֊�Z�r[�\&��g*����1�.��|�����֝é|��u{��[%I��hX��n3])�����h�2�;�o����1k��W�~[��2�!��Н|-�E+Lȗ����G����gpeP�k��[%.P��tl�"
+��bT�=d�h;)!��('aG5e%���cfd���-BO�vE�{d�i-�����
+��BBp�[`˖��a�+g�|_R/ɁR�=}�Kުd�
+�6h�|�,�leWY���G��	yQ%���	M ���!�J�����N�c����K�K����P�,����i:��A�؈%�|aBX�X��"�j�^O��"���X�G#��pN�l���[��_Z�;w<���(��M-�!S�K�F)�Ns˝h�䦺��6J�X]�YW�q����Q���иa��t�s0�Oh�i����J9
+1\��\�FS��F9��^��y�|��&���g�K�5Bs6F��&,�a���P��E���j9w����{i ill�wvAӢ����W�F�C��S��jv�U�����)�z�旭ڨV�s�ck�� >���=����Ɨ�/�+C�C��"��a(��]Z�a�
+��1�����0n�]�v��iۂ��J�r�B��	�cL1��ܠ-���c\WJ�����1���� ��Yh�kt�����/���u���h��w�w�_�
+�)ac�p:6B'p�`̳k)�`��W�\c��g��;-�Bۯ�?[;�K6��OZ4���+����-4:�	C�C��"�ӜN��BXʉ����x��D$[�����К�]�|r�UW6��K2RR>�!�������蘎(*��s�s�v��~�,F��V-~ gV�Gp���[�3��" �O�b,x���L��#��m��G���8��.��ˑӝP�V�@�LI��vi�89�-d�p������g�x���പ�#JI���HH�(��B#Vu0x����Nq�9�VT����	�3���c���F(�,t2�13�w�{W���2�)G>_#w�ƫ���!��i��C(=
+���_��m,Y������,Έ[��nӰv�M!Q]７�5��s
+i�� 	����~�����4�:T���k����4��	��UF=$P��"��b�#����={��W�x113gڝ�e�9vC%_��Iһ�l��z^��*-g��im�vJ'+�J" +C��X�Y�:��g30��ˋ�Q��	����%:9%K2�$\
+4���CK��\�	���F��M#>w��������H[���ϾB��5E�E���"��MN{}�É�#�(����"���kUyMrJC7�:��� �+������Y�l��,}s���7��e�.2�fI?/����ku��u�f=��~�NcIǹ�Ꭓ��N9m%��<��N�/�=��2�������9�者Q@�?�W�}�������&]���D�F��E1A��$2ƈ)� ^�k���o5|����E���9�>_K�j�֯z3Dc����īw�F'_������:7���_S5%��>�h��ٷl�7@=ㅐ?8$�/�S���<Ϩ��dE@�3t�����f�w`B���d�n� �h�U�h�óo� �<�b���7Y����E�k��1�	�T-�D�	)GMaQ[��B:�qc��"��r$-&Qڌ ��N����P���utsZg���ZYq)��s8���J@P,��aI�2�lʯ�zlP�&�Rm����Hr-��ߨi�{������u���mw�/'.�vs�XN�1�AT���"�җï����%T��BD�/%T���J_/�@�l�|Jו�)��� +o�h�74��or�E���_�J*}�Zg�l�k����dϿ:��Z"�S��ި����������Y��&�����_�4vA��H������04������%�:\~*�ง;�)*vBi�p9%A����	a@-#qp:��@���Iqm�q	��D �)���:D2��L�WEVt�]߭gdrH^)�"��8�+����ɮE�B��������R�l2j�E��c�%�J���֓cG�P���ޫ�N�>+��z�Z��h� �7M1��bO���C0b5��8�&I��c�?-�,�'�_d��[�B�2�N�kgb'�Nk�d�0���W1�N<V;�����dՐ�����׋���QK�xG�����h}O��y��[x���ɿd�.��1��%_|�gX���rCpH��<���~�+����C����(WJ-`�wNVql]����p'A���J�˽>���"��|b�'�\
+�u��|V�9�7��o7y� ?}x��C;�����.�j+�9:�y��}�=;;�t�Ϩ>�Y��.��l���������~��Tj#������.CU���
+���?��@��)u�<�}�e���?���c�] G�ǫ ��2Zv)uN�8��x�&�:����4\(z�?��5��(%�#ŞuC'�޻>��5,��K��D��V'IP�f}p�AL��M����G3p0wX]����0���_�?   �� ;J��
