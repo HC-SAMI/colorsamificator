@@ -1,3 +1,11 @@
+
+const ViewNixSpectroErrorBoundaryFallback = ({ activeColor, colorData, onSelectColor }) => {
+  return React.createElement('div', { className: 'p-6 text-sm text-slate-500 font-mono bg-slate-900/50 rounded-lg border border-slate-800' },
+    React.createElement('p', { className: 'font-semibold text-slate-400 mb-2' }, 'Spectrophotometer view is initializing or standalone file is loading...'),
+    React.createElement('p', { className: 'text-xs text-slate-600' }, 'If this message persists, please ensure ViewNixSpectro.js is present in the application directory.')
+  );
+};
+
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
 const Icon = ({ name, className = "w-4 h-4" }) => {
   const ref = useRef(null);
@@ -1539,7 +1547,7 @@ const View3D = ({
       .filter((sc) => sc.type === "anchor" && filterPt(sc))
       .map((p) => {
         const displayName =
-          `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
+          `${p.adjOverride || adjectives[p.adjId] || ""} ${names[p.anchorId] || names[p.id] || p.nameOverride || ""}`.trim() ||
           p.id ||
           "Custom Anchor";
         return {
@@ -1562,7 +1570,7 @@ const View3D = ({
         });
       })
       .forEach((nc) => {
-        const ncName = `${nc.nameOverride || names[nc.id] || "Custom Noun"}`;
+        const ncName = `${names[nc.id] || nc.nameOverride || "Custom Noun"}`;
         traces.push({
           type: "scatter3d",
           mode: "lines",
@@ -2003,17 +2011,20 @@ const ViewVertical = ({
       .filter((sc) => sc.type === "anchor" && filterFn(sc))
       .map((p) => {
         const displayName =
-          `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
+          `${p.adjOverride || adjectives[p.adjId] || ""} ${names[p.anchorId] || names[p.id] || p.nameOverride || ""}`.trim() ||
           p.id ||
           "Custom Anchor";
         return { ...p, displayName };
       });
     const lockedNodes = [...gridLockedNodes, ...customLockedNodes];
     const pinNodes = filteredBurnt.map((p) => {
-      const displayName =
-        `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
-        "Unnamed Pin";
-      return { ...p, displayName };
+      const { displayAdj, displayName } = getInheritedPinNames(
+        p,
+        savedColors,
+        names,
+        adjectives,
+      );
+      return { ...p, displayName: `${displayAdj} ${displayName}`.trim() || "Unnamed Pin" };
     });
     traces.push({
       type: "scatter",
@@ -2605,17 +2616,20 @@ const ViewChromaRings = ({
       .filter((sc) => sc.type === "anchor" && filterFn(sc))
       .map((p) => {
         const displayName =
-          `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
+          `${p.adjOverride || adjectives[p.adjId] || ""} ${names[p.anchorId] || names[p.id] || p.nameOverride || ""}`.trim() ||
           p.id ||
           "Custom Anchor";
         return { ...p, displayName };
       });
     const lockedNodes = [...gridLockedNodes, ...customLockedNodes];
     const pinNodes = filteredBurnt.map((p) => {
-      const displayName =
-        `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
-        "Unnamed Pin";
-      return { ...p, displayName };
+      const { displayAdj, displayName } = getInheritedPinNames(
+        p,
+        savedColors,
+        names,
+        adjectives,
+      );
+      return { ...p, displayName: `${displayAdj} ${displayName}`.trim() || "Unnamed Pin" };
     });
     traces.push({
       type: "scatter",
@@ -2971,35 +2985,35 @@ function getInheritedPinNames(
   let source = sc.parentPinId ? "pin" : "anchor";
   let sourceId = sc.parentPinId || sc.anchorId || sc.nounId || sc.id || "";
 
-  // 1. Check user explicit overrides
+  const checkDict = (id) => {
+    if (!id || String(id).startsWith("commercial-")) return "";
+    const val = names[id];
+    if (val && typeof val === "string" && val.trim() && val.trim().toLowerCase() !== "unnamed" && val.trim().toLowerCase() !== "unnamed noun") {
+      return val.trim();
+    }
+    return "";
+  };
+
+  // 1. Check user explicit overrides on PIN objects only
   let inheritedAdj = sc.adjOverride ? sc.adjOverride.trim() : "";
-  let inheritedName = sc.nameOverride ? sc.nameOverride.trim() : "";
+  let inheritedName = (sc.type === "pin" && sc.nameOverride) ? sc.nameOverride.trim() : "";
 
   // 2. Check direct dictionary matches by IDs if name is not set
   if (!inheritedName) {
-    const checkDict = (id) => {
-      if (!id || String(id).startsWith("commercial-")) return "";
-      const val = names[id];
-      if (val && typeof val === "string" && val.trim() && val.trim().toLowerCase() !== "unnamed" && val.trim().toLowerCase() !== "unnamed noun") {
-        return val.trim();
-      }
-      return "";
-    };
-
     if (sc.anchorId && savedColors[sc.anchorId]) {
       const nc = savedColors[sc.anchorId];
-      inheritedName = nc.nameOverride || checkDict(nc.id) || checkDict(nc.anchorId);
+      inheritedName = checkDict(nc.id) || checkDict(nc.anchorId) || checkDict(sc.anchorId) || (nc.nameOverride ? nc.nameOverride.trim() : "");
       source = nc.type || "anchor";
       sourceId = nc.id || nc.anchorId;
     } else if (sc.nounId && savedColors[sc.nounId]) {
       const nc = savedColors[sc.nounId];
-      inheritedName = nc.nameOverride || checkDict(nc.id) || checkDict(nc.anchorId);
+      inheritedName = checkDict(nc.id) || checkDict(nc.anchorId) || checkDict(sc.nounId) || (nc.nameOverride ? nc.nameOverride.trim() : "");
       source = nc.type || "anchor";
       sourceId = nc.id || nc.anchorId;
     }
 
     if (!inheritedName) {
-      inheritedName = checkDict(sc.anchorId) || checkDict(sc.nounId) || checkDict(sc.id);
+      inheritedName = checkDict(sc.anchorId) || checkDict(sc.nounId) || checkDict(sc.id) || (sc.nameOverride ? sc.nameOverride.trim() : "");
     }
   }
 
@@ -3020,11 +3034,11 @@ function getInheritedPinNames(
       else prefix = "UD";
     }
     const prefNounId = `${prefix}-${baseNounId}`;
-    if (names[prefNounId] && names[prefNounId].trim() && names[prefNounId].trim().toLowerCase() !== "unnamed" && names[prefNounId].trim().toLowerCase() !== "unnamed noun") {
-      inheritedName = names[prefNounId].trim();
+    if (checkDict(prefNounId)) {
+      inheritedName = checkDict(prefNounId);
       sourceId = prefNounId;
-    } else if (names[baseNounId] && names[baseNounId].trim() && names[baseNounId].trim().toLowerCase() !== "unnamed" && names[baseNounId].trim().toLowerCase() !== "unnamed noun") {
-      inheritedName = names[baseNounId].trim();
+    } else if (checkDict(baseNounId)) {
+      inheritedName = checkDict(baseNounId);
       sourceId = baseNounId;
     }
   }
@@ -3046,7 +3060,7 @@ function getInheritedPinNames(
     // Check savedColors nounColumns and anchors
     Object.values(savedColors).forEach((other) => {
       if (other.type === "nounColumn" || other.type === "anchor") {
-        const oName = (other.nameOverride || names[other.id] || names[other.anchorId] || "").trim();
+        const oName = (checkDict(other.id) || checkDict(other.anchorId) || other.nameOverride || "").trim();
         if (!oName || oName.toLowerCase() === "unnamed" || oName.toLowerCase() === "unnamed noun") return;
         const oA = other.a !== undefined ? other.a : (other.C || 0) * Math.cos(((other.H || 0) * Math.PI) / 180);
         const oB = other.b !== undefined ? other.b : (other.C || 0) * Math.sin(((other.H || 0) * Math.PI) / 180);
@@ -4533,7 +4547,7 @@ const ViewTopDown = ({
       .filter((sc) => sc.type === "anchor" && filterFn(sc))
       .map((p) => {
         const displayName =
-          `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
+          `${p.adjOverride || adjectives[p.adjId] || ""} ${names[p.anchorId] || names[p.id] || p.nameOverride || ""}`.trim() ||
           p.id ||
           "Custom Anchor";
         return {
@@ -5172,7 +5186,24 @@ const ViewPalette = ({
         className: `w-full text-[11px] font-bold uppercase tracking-wider bg-transparent border-b border-slate-200 dark:border-neutral-700 text-center focus:outline-none placeholder:opacity-30 pb-0.5 disabled:opacity-50 ${dupNoun ? "!text-red-500 !border-red-500" : "text-slate-800 dark:text-neutral-200 focus:border-sky-500"}`,
         placeholder: "Unnamed Noun",
         value: names[item.id] || "",
-        onChange: (e) => setNames({ ...names, [item.id]: e.target.value }),
+        onChange: (e) => {
+          const val = e.target.value;
+          setNames((prev) => ({ ...prev, [item.id]: val }));
+          if (setSavedColors) {
+            setSavedColors((prev) => {
+              if (prev[item.id]) {
+                return {
+                  ...prev,
+                  [item.id]: {
+                    ...prev[item.id],
+                    nameOverride: val,
+                  },
+                };
+              }
+              return prev;
+            });
+          }
+        },
         disabled: lockedNouns[item.id],
         title: dupNoun ? `Conflict: ${dupNoun}` : "",
       }),
@@ -8890,6 +8921,7 @@ const App = () => {
   const [illuminant, setIlluminant] = useState(
     initialState?.illuminant || "D65",
   );
+  const initialDataLoadedRef = useRef(false);
   const [linkedFiles, setLinkedFiles] = useState(
     initialState?.linkedFiles || [],
   );
@@ -8974,6 +9006,7 @@ const App = () => {
         "finsa.csv",
         "munsell.csv",
         "ncs.csv",
+        "olon.csv",
         "pantone.csv",
         "pins.csv",
         "pionite.csv",
@@ -9064,8 +9097,11 @@ const App = () => {
     setSavedPalettes(currentSavedPalettes);
   }, [linkedFiles]);
   useEffect(() => {
-    loadInitialData();
-  }, [loadInitialData, linkedFiles.length]);
+    if (!initialDataLoadedRef.current) {
+      initialDataLoadedRef.current = true;
+      loadInitialData();
+    }
+  }, [loadInitialData]);
   const getComparable = (obj) => {
     if (!obj) return null;
     const { createdAt, createdBy, updatedAt, updatedBy, ...rest } = obj;
@@ -10799,7 +10835,8 @@ const App = () => {
         appCode = inlineScript.textContent;
       } else {
         try {
-          let r2 = await fetch("App.jsx");
+          let r2 = await fetch("App.js");
+          if (!r2.ok) r2 = await fetch("App.jsx");
           if (!r2.ok) r2 = await fetch("app.js");
           if (r2.ok) appCode = await r2.text();
           else throw new Error("Cannot locate app code");
@@ -10942,7 +10979,7 @@ const App = () => {
       Object.values(savedColors).forEach((sc) => {
         if (sc.type === "nounColumn") {
           exportedAnchorIds.add(sc.id);
-          const nounName = sc.nameOverride || names[sc.id] || "";
+          const nounName = names[sc.id] || sc.nameOverride || "";
           anchorsCsv.push({
             Type: "NOUN",
             ID: sc.id || "",
@@ -10962,7 +10999,7 @@ const App = () => {
           exportedAnchorIds.add(sc.id);
           if (sc.anchorId) exportedAnchorIds.add(sc.anchorId);
           const extra = getExtraColorValues(sc.L, sc.C, sc.H, sc.color || sc.hex);
-          const anchorNoun = sc.nameOverride || names[sc.anchorId] || names[sc.id] || "";
+          const anchorNoun = names[sc.anchorId] || names[sc.id] || sc.nameOverride || "";
           const anchorAdj = sc.adjOverride || adjectives[sc.adjId] || adjectives[sc.id] || "";
           anchorsCsv.push({
             Type: "ANCHOR",
@@ -11871,7 +11908,7 @@ const App = () => {
     if (sc.type === "anchor") {
       return {
         adj: adjectives[sc.adjId] || "",
-        name: names[sc.anchorId] || "",
+        name: names[sc.anchorId] || names[sc.id] || sc.nameOverride || "",
         notes: dictNotes[sc.anchorId] || "",
       };
     } else if (sc.type === "nounColumn") {
@@ -11880,7 +11917,7 @@ const App = () => {
           adjectives[crosshair?.nearestAdjId] ||
           adjectives[getLStr(crosshair?.rawL)] ||
           "",
-        name: names[sc.id] || sc.nameOverride,
+        name: names[sc.id] || sc.nameOverride || "",
         notes: dictNotes[sc.id] || sc.notes,
       };
     }
@@ -17854,7 +17891,7 @@ const AppUI = ({
                 },
               }),
             activeTab === "nix" &&
-              React.createElement(ViewNixSpectroErrorBoundary, {
+              React.createElement(window.ViewNixSpectroErrorBoundary || ViewNixSpectroErrorBoundaryFallback, {
                 handlePointClick,
                 savedColors,
                 setSavedColors,
@@ -17887,11 +17924,17 @@ const AppUI = ({
           .toString({ format: "hex" });
         const nA =
           compSlotA.type === "pin"
-            ? `${compSlotA.adjOverride || adjectives[compSlotA.adjId] || ""} ${compSlotA.nameOverride || names[compSlotA.nounId] || ""}`.trim()
+            ? (() => {
+                const info = getInheritedPinNames(compSlotA, savedColors, names, adjectives);
+                return `${info.displayAdj} ${info.displayName}`.trim();
+              })()
             : `${adjectives[compSlotA.adjId] || ""} ${names[compSlotA.nounId] || ""}`.trim();
         const nB =
           compSlotB.type === "pin"
-            ? `${compSlotB.adjOverride || adjectives[compSlotB.adjId] || ""} ${compSlotB.nameOverride || names[compSlotB.nounId] || ""}`.trim()
+            ? (() => {
+                const info = getInheritedPinNames(compSlotB, savedColors, names, adjectives);
+                return `${info.displayAdj} ${info.displayName}`.trim();
+              })()
             : `${adjectives[compSlotB.adjId] || ""} ${names[compSlotB.nounId] || ""}`.trim();
         const displayA =
           nA || (compSlotA.erpCode ? `#${compSlotA.erpCode}` : "\u2014");
