@@ -1,8 +1,8 @@
 Type,Noun,Adjective,Note,Tags,Locked,HEX,OKLCH_L,OKLCH_C,OKLCH_H,RGB_R,RGB_G,RGB_B,RGB,CMYK_C,CMYK_M,CMYK_Y,CMYK_K,CMYK,CIE_L,CIE_A,CIE_B,CIE_LAB,ERP_Code,Sheen,Profile,Visual_Pattern,Tactile_Texture,Material,Spectral,Illuminant,Observer,Measurement_Method,Measurement_Date,Measurement_Device,R400 nm,R410 nm,R420 nm,R430 nm,R440 nm,R450 nm,R460 nm,R470 nm,R480 nm,R490 nm,R500 nm,R510 nm,R520 nm,R530 nm,R540 nm,R550 nm,R560 nm,R570 nm,R580 nm,R590 nm,R600 nm,R610 nm,R620 nm,R630 nm,R640 nm,R650 nm,R660 nm,R670 nm,R680 nm,R690 nm,R700 nm
 NOUN,Pearl,,,,,,0.95-1,0,0,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
-NOUN,STEEL,,,,,,0.5-0.95,0,0,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
-NOUN,COAL,,,,,,0.2-0.5,0,0,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
-NOUN,TAR,,,,,,0-0.2,0,0,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+NOUN,Cinza,,,,,,0.5-0.95,0,0,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+NOUN,Doe,,,,,,0.2-0.5,0,0,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+NOUN,Nero,,,,,,0-0.2,0,0,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
 NOUN,Dove,,,,,,0.5-1,0.02,0,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
 NOUN,Shale,,,,,,0-0.5,0.02,0,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
 NOUN,Oat,,,,,,0.5-1,0.02,60,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
