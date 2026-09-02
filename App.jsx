@@ -2940,12 +2940,14 @@ const ViewChromaRings = ({
 };
 function getInheritedPinNames(
   sc,
-  savedColors,
-  names,
-  adjectives,
+  savedColors = {},
+  names = {},
+  adjectives = {},
   colorData = {},
 ) {
-  if (sc && sc.parentPinId && savedColors[sc.parentPinId]) {
+  if (!sc) return { displayAdj: "", displayName: "", source: "anchor", sourceId: "" };
+
+  if (sc.parentPinId && savedColors[sc.parentPinId]) {
     const parent = savedColors[sc.parentPinId];
     const parentRes = getInheritedPinNames(
       parent,
@@ -2954,131 +2956,196 @@ function getInheritedPinNames(
       adjectives,
       colorData,
     );
+    let finalAdj = (sc.adjOverride || parentRes.displayAdj || "").trim();
+    let finalName = (sc.nameOverride || parentRes.displayName || "").trim();
+    if (finalAdj.toLowerCase() === "unnamed" || finalAdj.toLowerCase() === "unnamed adj") finalAdj = "";
+    if (finalName.toLowerCase() === "unnamed" || finalName.toLowerCase() === "unnamed noun") finalName = "";
     return {
-      displayAdj: (sc.adjOverride || parentRes.displayAdj || "").trim().toUpperCase(),
-      displayName: (sc.nameOverride || parentRes.displayName || "").trim().toUpperCase(),
+      displayAdj: finalAdj.toUpperCase(),
+      displayName: finalName.toUpperCase(),
       source: "pin",
       sourceId: parent.id,
     };
   }
-  let baseAdj = sc.adjOverride || adjectives[sc.adjId];
-  let baseName = sc.nameOverride || names[sc.anchorId] || names[sc.nounId] || names[sc.id];
-  let source = "anchor";
-  let sourceId = sc.anchorId;
 
-  const isCommercial =
-    sc.brand !== undefined ||
-    (sc.anchorId && String(sc.anchorId).startsWith("commercial-"));
+  let source = sc.parentPinId ? "pin" : "anchor";
+  let sourceId = sc.parentPinId || sc.anchorId || sc.nounId || sc.id || "";
 
-  if (isCommercial) {
-    let item = null;
-    if (sc.anchorId && String(sc.anchorId).startsWith("commercial-")) {
-      const parts = sc.anchorId.split("-");
-      const brand = parts[1];
-      const index = parseInt(parts[2]);
-      item = colorData[brand]?.[index];
-    } else if (sc.brand !== undefined && sc.originalIndex !== undefined) {
-      item = colorData[sc.brand]?.[sc.originalIndex];
-    }
-    source = "commercial";
-    sourceId = sc.anchorId || `commercial-${sc.brand}-${sc.originalIndex}`;
-    baseName = sc.nameOverride || "";
-    baseAdj = sc.adjOverride || "";
-  } else if (!sc.nameOverride || !sc.adjOverride) {
-    const nc = savedColors[sc.anchorId] || savedColors[sc.nounId];
-    if (nc && nc.type === "nounColumn") {
-      source = "nounColumn";
-      sourceId = nc.id;
-      if (!sc.nameOverride) baseName = nc.nameOverride || names[nc.id] || baseName;
-      if (!sc.adjOverride) {
-        const lStr = getLStr(sc.L);
-        baseAdj =
-          adjectives[lStr] || `L ${nc.minL.toFixed(2)} - ${nc.maxL.toFixed(2)}`;
+  // 1. Check user explicit overrides
+  let inheritedAdj = sc.adjOverride ? sc.adjOverride.trim() : "";
+  let inheritedName = sc.nameOverride ? sc.nameOverride.trim() : "";
+
+  // 2. Check direct dictionary matches by IDs if name is not set
+  if (!inheritedName) {
+    const checkDict = (id) => {
+      if (!id || String(id).startsWith("commercial-")) return "";
+      const val = names[id];
+      if (val && typeof val === "string" && val.trim() && val.trim().toLowerCase() !== "unnamed" && val.trim().toLowerCase() !== "unnamed noun") {
+        return val.trim();
       }
-    } else if (nc && nc.type === "anchor") {
-      if (!sc.nameOverride) baseName = nc.nameOverride || names[nc.anchorId] || baseName;
-      if (!sc.adjOverride) baseAdj = nc.adjOverride || adjectives[nc.adjId] || baseAdj;
+      return "";
+    };
+
+    if (sc.anchorId && savedColors[sc.anchorId]) {
+      const nc = savedColors[sc.anchorId];
+      inheritedName = nc.nameOverride || checkDict(nc.id) || checkDict(nc.anchorId);
+      source = nc.type || "anchor";
+      sourceId = nc.id || nc.anchorId;
+    } else if (sc.nounId && savedColors[sc.nounId]) {
+      const nc = savedColors[sc.nounId];
+      inheritedName = nc.nameOverride || checkDict(nc.id) || checkDict(nc.anchorId);
+      source = nc.type || "anchor";
+      sourceId = nc.id || nc.anchorId;
+    }
+
+    if (!inheritedName) {
+      inheritedName = checkDict(sc.anchorId) || checkDict(sc.nounId) || checkDict(sc.id);
     }
   }
 
-  let inheritedAdj = baseAdj;
-  let inheritedName = baseName;
+  // 3. Parametric coordinate lookup from C and H
+  const scC = sc.C !== undefined ? sc.C : (sc.c !== undefined ? sc.c : null);
+  const scH = sc.H !== undefined ? sc.H : (sc.h !== undefined ? sc.h : null);
+  const scL = sc.L !== undefined ? sc.L : (sc.l !== undefined ? sc.l : null);
 
-  if (!inheritedName || !inheritedAdj) {
-    let minDist = Infinity;
-    let bestAnchor = null;
+  if (!inheritedName && scC !== null && scH !== null) {
+    const cStr = Math.round(scC * 100).toString().padStart(2, "0");
+    const hStr = Math.round(scH).toString().padStart(3, "0");
+    const baseNounId = `${cStr}-${hStr}`;
+    let prefix = "L";
+    if (scL !== null) {
+      if (scL >= 0.95) prefix = "UL";
+      else if (scL >= 0.5) prefix = "L";
+      else if (scL >= 0.2) prefix = "D";
+      else prefix = "UD";
+    }
+    const prefNounId = `${prefix}-${baseNounId}`;
+    if (names[prefNounId] && names[prefNounId].trim() && names[prefNounId].trim().toLowerCase() !== "unnamed" && names[prefNounId].trim().toLowerCase() !== "unnamed noun") {
+      inheritedName = names[prefNounId].trim();
+      sourceId = prefNounId;
+    } else if (names[baseNounId] && names[baseNounId].trim() && names[baseNounId].trim().toLowerCase() !== "unnamed" && names[baseNounId].trim().toLowerCase() !== "unnamed noun") {
+      inheritedName = names[baseNounId].trim();
+      sourceId = baseNounId;
+    }
+  }
+
+  // 4. Spatial nearest-neighbor search across savedColors (nounColumns/anchors) and names dictionary
+  if (!inheritedName && scC !== null && scH !== null) {
     let scA = sc.a;
     let scB = sc.b;
-    if ((scA === undefined || scB === undefined) && sc.C !== undefined && sc.H !== undefined) {
-      scA = sc.C * Math.cos((sc.H * Math.PI) / 180);
-      scB = sc.C * Math.sin((sc.H * Math.PI) / 180);
+    if (scA === undefined || scB === undefined) {
+      scA = scC * Math.cos((scH * Math.PI) / 180);
+      scB = scC * Math.sin((scH * Math.PI) / 180);
     }
+
+    let minDist = Infinity;
+    let bestNoun = "";
+    let bestSourceId = sourceId;
+    let bestSourceType = source;
+
+    // Check savedColors nounColumns and anchors
     Object.values(savedColors).forEach((other) => {
-      if (other.type === "anchor") {
-        const d =
-          Math.pow(sc.L - other.L, 2) +
-          Math.pow((scA ?? 0) - (other.a ?? 0), 2) +
-          Math.pow((scB ?? 0) - (other.b ?? 0), 2);
-        if (d < minDist) {
+      if (other.type === "nounColumn" || other.type === "anchor") {
+        const oName = (other.nameOverride || names[other.id] || names[other.anchorId] || "").trim();
+        if (!oName || oName.toLowerCase() === "unnamed" || oName.toLowerCase() === "unnamed noun") return;
+        const oA = other.a !== undefined ? other.a : (other.C || 0) * Math.cos(((other.H || 0) * Math.PI) / 180);
+        const oB = other.b !== undefined ? other.b : (other.C || 0) * Math.sin(((other.H || 0) * Math.PI) / 180);
+        const minL = other.minL !== undefined ? other.minL : (other.L !== undefined ? other.L - 0.05 : -0.01);
+        const maxL = other.maxL !== undefined ? other.maxL : (other.L !== undefined ? other.L + 0.05 : 1.01);
+        const midL = (minL + maxL) / 2;
+        const inL = scL === null || (scL >= minL - 0.01 && scL <= maxL + 0.01);
+        const dL = scL !== null ? (scL - midL) : 0;
+        const d = Math.pow(scA - oA, 2) + Math.pow(scB - oB, 2) + Math.pow(dL * 0.4, 2);
+        if (d < minDist && (inL || d < minDist * 0.5)) {
           minDist = d;
-          bestAnchor = other;
-        }
-      } else if (other.type === "nounColumn") {
-        const d = Math.pow((scA ?? 0) - (other.a ?? 0), 2) + Math.pow((scB ?? 0) - (other.b ?? 0), 2);
-        if (d < minDist && sc.L >= (other.minL ?? 0) && sc.L <= (other.maxL ?? 1)) {
-          minDist = d;
-          bestAnchor = other;
+          bestNoun = oName;
+          bestSourceId = other.id;
+          bestSourceType = other.type;
         }
       }
     });
-    if (bestAnchor) {
-      source = bestAnchor.type === "nounColumn" ? "nounColumn" : "anchor";
-      sourceId = bestAnchor.id;
-      if (bestAnchor.type === "nounColumn") {
-        if (!inheritedAdj) {
-          const lStr = getLStr(sc.L);
-          inheritedAdj =
-            adjectives[lStr] ||
-            `L ${bestAnchor.minL.toFixed(2)} - ${bestAnchor.maxL.toFixed(2)}`;
-        }
-        if (!inheritedName)
-          inheritedName = bestAnchor.nameOverride || names[bestAnchor.id];
+
+    // Check all entries in names dictionary
+    Object.entries(names).forEach(([k, val]) => {
+      if (!val || typeof val !== "string") return;
+      const cleanVal = val.trim();
+      if (!cleanVal || cleanVal.toLowerCase() === "unnamed" || cleanVal.toLowerCase() === "unnamed noun") return;
+      if (String(k).startsWith("commercial-")) return;
+
+      const parts = k.split("-");
+      let nC = 0, nH = 0, nMidL = 0.5;
+      if (parts.length === 2 && !isNaN(parseInt(parts[0], 10)) && !isNaN(parseInt(parts[1], 10))) {
+        nC = parseInt(parts[0], 10) / 100;
+        nH = parseInt(parts[1], 10);
+      } else if (parts.length === 3 && !isNaN(parseInt(parts[1], 10)) && !isNaN(parseInt(parts[2], 10))) {
+        const pref = parts[0];
+        nC = parseInt(parts[1], 10) / 100;
+        nH = parseInt(parts[2], 10);
+        if (pref === "UL") nMidL = 0.975;
+        else if (pref === "L") nMidL = 0.725;
+        else if (pref === "D") nMidL = 0.35;
+        else if (pref === "UD") nMidL = 0.1;
       } else {
-        if (!inheritedAdj)
-          inheritedAdj =
-            bestAnchor.adjOverride ||
-            adjectives[bestAnchor.id] ||
-            adjectives[bestAnchor.adjId];
-        if (!inheritedName)
-          inheritedName =
-            bestAnchor.nameOverride ||
-            names[bestAnchor.id] ||
-            names[bestAnchor.anchorId];
+        return;
+      }
+
+      const nA = nC * Math.cos((nH * Math.PI) / 180);
+      const nB = nC * Math.sin((nH * Math.PI) / 180);
+      const dL = scL !== null ? (scL - nMidL) : 0;
+      const d = Math.pow(scA - nA, 2) + Math.pow(scB - nB, 2) + Math.pow(dL * 0.4, 2);
+      if (d < minDist) {
+        minDist = d;
+        bestNoun = cleanVal;
+        bestSourceId = k;
+        bestSourceType = "anchor";
+      }
+    });
+
+    if (bestNoun) {
+      inheritedName = bestNoun;
+      sourceId = bestSourceId;
+      source = bestSourceType;
+    }
+  }
+
+  // 5. Resolve Adjective
+  if (!inheritedAdj) {
+    if (sc.adjId && adjectives[sc.adjId] && adjectives[sc.adjId].trim()) {
+      inheritedAdj = adjectives[sc.adjId].trim();
+    } else if (scL !== null) {
+      const lStr = getLStr(scL);
+      if (adjectives[lStr] && adjectives[lStr].trim()) {
+        inheritedAdj = adjectives[lStr].trim();
+      } else {
+        let closestLDist = Infinity;
+        let bestLAdj = "";
+        Object.entries(adjectives).forEach(([k, v]) => {
+          if (!v || typeof v !== "string" || !v.trim()) return;
+          const numL = parseFloat(k);
+          if (!isNaN(numL)) {
+            const diff = Math.abs(numL - scL);
+            if (diff < closestLDist) {
+              closestLDist = diff;
+              bestLAdj = v.trim();
+            }
+          }
+        });
+        if (bestLAdj) inheritedAdj = bestLAdj;
       }
     }
   }
 
-  if (!inheritedAdj && sc.L !== undefined) {
-    const lStr = getLStr(sc.L);
-    inheritedAdj = adjectives[sc.adjId] || adjectives[lStr] || "";
-  }
-  if (!inheritedName) {
-    inheritedName =
-      (sc.anchorId && names[sc.anchorId]) ||
-      (sc.nounId && names[sc.nounId]) ||
-      (sc.id && names[sc.id]) ||
-      sc.displayName ||
-      sc.name ||
-      "";
-  }
-
-  if (inheritedName === "Unnamed Noun" || inheritedName === "Unnamed") {
+  // Sanitize
+  if (inheritedName.toLowerCase() === "unnamed" || inheritedName.toLowerCase() === "unnamed noun") {
     inheritedName = "";
+  }
+  if (inheritedAdj.toLowerCase() === "unnamed" || inheritedAdj.toLowerCase() === "unnamed adj") {
+    inheritedAdj = "";
   }
 
   return {
-    displayAdj: (inheritedAdj || "").trim().toUpperCase(),
-    displayName: (inheritedName || "").trim().toUpperCase(),
+    displayAdj: inheritedAdj.toUpperCase(),
+    displayName: inheritedName.toUpperCase(),
     source,
     sourceId,
   };
@@ -4942,26 +5009,15 @@ const ViewPalette = ({
     setSavedColors((prev) => {
       const next = { ...prev };
       delete next[id];
-      let deletedAny = true;
-      while (deletedAny) {
-        deletedAny = false;
-        Object.values(next).forEach((sc) => {
-          if (sc.type === "anchor" && sc.anchorId === id && sc.isCustomAnchor) {
-            delete next[sc.id];
-            deletedAny = true;
-          } else if (sc.type === "pin" && sc.anchorId === id) {
-            delete next[sc.id];
-            deletedAny = true;
-          } else if (
-            sc.type === "pin" &&
-            sc.parentPinId &&
-            !next[sc.parentPinId]
-          ) {
-            delete next[sc.id];
-            deletedAny = true;
-          }
-        });
-      }
+      Object.values(next).forEach((sc) => {
+        if (sc.type === "anchor" && sc.anchorId === id && sc.isCustomAnchor) {
+          delete next[sc.id];
+        } else if (sc.type === "pin" && sc.anchorId === id) {
+          sc.anchorId = null;
+        } else if (sc.type === "pin" && sc.parentPinId === id) {
+          sc.parentPinId = null;
+        }
+      });
       return next;
     });
   };
@@ -8151,15 +8207,38 @@ const processCSVData = (
         colorsAdded++;
       }
     } else if (targetType === "PIN" && pL !== null) {
-      const pinId = row.ID || crypto.randomUUID();
+      const pinId =
+        row.ID || row.Id || row.Pin_ID || row.PinId || crypto.randomUUID();
       const a = pC * Math.sin((pH * Math.PI) / 180);
       const b = pC * Math.cos((pH * Math.PI) / 180);
       const cStr = Math.round(pC * 100)
         .toString()
         .padStart(2, "0");
       const hStr = Math.round(pH).toString().padStart(3, "0");
-      const anchorId = `${cStr}-${hStr}`;
-      const adjId = getLStr(pL);
+      const defaultAnchorId = `${cStr}-${hStr}`;
+      const explicitAnchorId =
+        row.Anchor_ID || row.AnchorId || row.anchorId || (row.Anchor ? String(row.Anchor) : null);
+      const anchorId = explicitAnchorId || defaultAnchorId;
+      const parentPinId =
+        row.Parent_Pin_ID ||
+        row.ParentPinId ||
+        row.parentPinId ||
+        row.Parent_ID ||
+        row.ParentId ||
+        row.Parent ||
+        null;
+      const adjId =
+        row.Adj_ID || row.AdjId || row.adjId || getLStr(pL);
+      const brand =
+        row.Brand || row.brand || row.Brand_Name || row.BrandName || undefined;
+      const originalIndex =
+        row.Original_Index !== undefined && row.Original_Index !== ""
+          ? parseInt(row.Original_Index, 10)
+          : row.originalIndex !== undefined && row.originalIndex !== ""
+            ? parseInt(row.originalIndex, 10)
+            : undefined;
+      const image = row.Image || row.image || undefined;
+
       newSavedColors[pinId] = {
         id: pinId,
         type: "pin",
@@ -8177,6 +8256,10 @@ const processCSVData = (
         material: (row.Material || row.material || "").trim(),
         adjId,
         anchorId,
+        parentPinId: parentPinId || null,
+        brand: brand || undefined,
+        originalIndex: isNaN(originalIndex) ? undefined : originalIndex,
+        image: image || undefined,
         color:
           row.HEX ||
           new Color("oklch", [pL, pC, pH])
@@ -8246,21 +8329,27 @@ const processCSVData = (
           .map((t) => t.trim())
           .filter(Boolean);
     } else if (
-      (targetType === "GRID" ||
-        targetType === "ANCHOR" ||
-        targetType === "NOUN_COLUMN") &&
-      row.ID
+      targetType === "GRID" ||
+      targetType === "ANCHOR" ||
+      targetType === "CUSTOM_ANCHOR" ||
+      targetType === "NOUN_COLUMN"
     ) {
       const C = pC !== null ? pC : 0;
       const H = pH !== null ? pH : 0;
+      const id =
+        row.ID ||
+        (pL !== null
+          ? `anchor-${Math.round(C * 100).toString().padStart(2, "0")}-${Math.round(H).toString().padStart(3, "0")}-${getLStr(pL)}`
+          : `noun-${crypto.randomUUID()}`);
       if (targetType === "NOUN_COLUMN") {
-        const id = row.ID;
         const parts = (row.OKLCH_L || "").split("-");
         let minL = 0,
           maxL = 1;
         if (parts.length === 2) {
-          minL = parseFloat(parts[0]);
-          maxL = parseFloat(parts[1]);
+          minL = parseFloat(parts[0]) || 0;
+          maxL = parseFloat(parts[1]) || 1;
+        } else if (pL !== null) {
+          minL = maxL = pL;
         }
         newSavedColors[id] = {
           id,
@@ -8281,10 +8370,10 @@ const processCSVData = (
             .map((t) => t.trim())
             .filter(Boolean);
       } else {
-        if (row.Noun !== void 0 && row.Noun !== "") newNames[row.ID] = row.Noun;
-        if (row.Note !== void 0 && row.Note !== "") newNotes[row.ID] = row.Note;
+        if (row.Noun !== void 0 && row.Noun !== "") newNames[id] = row.Noun;
+        if (row.Note !== void 0 && row.Note !== "") newNotes[id] = row.Note;
         if (row.Tags)
-          newTags[row.ID] = row.Tags.split(",")
+          newTags[id] = row.Tags.split(",")
             .map((t) => t.trim())
             .filter(Boolean);
         let lStr = null;
@@ -8296,18 +8385,12 @@ const processCSVData = (
           }
           if (lStr) newAdjs[lStr] = row.Adjective;
         }
-        if (
-          String(row.Locked).toUpperCase() === "TRUE" &&
-          pL !== null &&
-          pC !== null &&
-          pH !== null
-        ) {
-          const anchorId = row.ID;
+        if (pL !== null && pC !== null && pH !== null) {
           const adjId = lStr || getLStr(pL);
           const a = pC * Math.sin((pH * Math.PI) / 180);
           const b = pC * Math.cos((pH * Math.PI) / 180);
-          newSavedColors[anchorId] = {
-            id: anchorId,
+          newSavedColors[id] = {
+            id,
             type: "anchor",
             L: pL,
             C: pC,
@@ -8316,14 +8399,18 @@ const processCSVData = (
             b,
             erpCode: row.ERP_Code || getExactErpCode(pL, pC, pH),
             adjId,
-            anchorId,
-            nameOverride: "",
-            adjOverride: "",
-            notes: "",
-            color: new Color("oklch", [pL, pC, pH])
-              .clone()
-              .toGamut({ space: "srgb" })
-              .toString({ format: "hex" }),
+            anchorId: id,
+            isCustomAnchor: true,
+            locked: String(row.Locked).toUpperCase() !== "FALSE",
+            nameOverride: row.Noun || "",
+            adjOverride: row.Adjective || "",
+            notes: row.Note || "",
+            color:
+              row.HEX ||
+              new Color("oklch", [pL, pC, pH])
+                .clone()
+                .toGamut({ space: "srgb" })
+                .toString({ format: "hex" }),
           };
         }
       }
@@ -8432,6 +8519,19 @@ const App = () => {
         console.error("Failed to parse saved state:", e);
       }
     }
+    if (!parsed || Object.keys(parsed).length === 0) {
+      try {
+        const localRaw = localStorage.getItem("color-samificator-state");
+        if (localRaw) {
+          const localParsed = JSON.parse(localRaw);
+          if (localParsed && typeof localParsed === "object") {
+            parsed = localParsed;
+          }
+        }
+      } catch (e) {
+        console.warn("Could not load state from localStorage:", e);
+      }
+    }
     if (!parsed.savedColors) parsed.savedColors = {};
     if (!parsed.names) parsed.names = {};
     if (!parsed.dictNotes) parsed.dictNotes = {};
@@ -8497,39 +8597,17 @@ const App = () => {
   useEffect(() => {
     let needsCleanup = false;
     const next = { ...savedColors };
-    let deletedAny = true;
-    while (deletedAny) {
-      deletedAny = false;
-      Object.values(next).forEach((sc) => {
-        if (
-          sc.type === "anchor" &&
-          sc.anchorId &&
-          sc.anchorId.startsWith("custom-noun-") &&
-          !next[sc.anchorId]
-        ) {
-          delete next[sc.id];
-          deletedAny = true;
-          needsCleanup = true;
-        } else if (
-          sc.type === "pin" &&
-          sc.anchorId &&
-          sc.anchorId.startsWith("custom-noun-") &&
-          !next[sc.anchorId]
-        ) {
-          delete next[sc.id];
-          deletedAny = true;
-          needsCleanup = true;
-        } else if (
-          sc.type === "pin" &&
-          sc.parentPinId &&
-          !next[sc.parentPinId]
-        ) {
-          delete next[sc.id];
-          deletedAny = true;
-          needsCleanup = true;
-        }
-      });
-    }
+    Object.values(next).forEach((sc) => {
+      if (
+        sc.type === "anchor" &&
+        sc.anchorId &&
+        sc.anchorId.startsWith("custom-noun-") &&
+        !next[sc.anchorId]
+      ) {
+        delete next[sc.id];
+        needsCleanup = true;
+      }
+    });
     if (needsCleanup) {
       setSavedColors(next);
     }
@@ -8576,106 +8654,27 @@ const App = () => {
         );
       }
 
-      let adj = "";
-      let noun = "";
-      if (pin) {
-        const inherited = getInheritedPinNames(
-          pin,
-          savedColors,
-          names,
-          adjectives,
-          colorData,
-        );
-        adj = inherited.displayAdj;
-        noun = inherited.displayName;
-      } else {
-        adj = (
-          item.adjOverride ||
-          adjectives[item.adjId] ||
-          (item.L !== undefined && item.L !== null
-            ? adjectives[getLStr(item.L)]
-            : "") ||
-          ""
-        ).trim();
+      const targetObj = pin || item;
+      const inherited = getInheritedPinNames(
+        targetObj,
+        savedColors,
+        names,
+        adjectives,
+        colorData,
+      );
+      let adj = (inherited.displayAdj || "").trim();
+      let noun = (inherited.displayName || "").trim();
 
-        const nounFromDict = (id) => {
-          if (!id || String(id).startsWith("commercial-")) return null;
-          return names[id] || null;
-        };
-
-        noun = (
-          item.nameOverride ||
-          nounFromDict(item.nounId) ||
-          nounFromDict(item.anchorId) ||
-          nounFromDict(item.id) ||
-          ""
-        ).trim();
-
-        if (!noun && item.C !== undefined && item.H !== undefined) {
-          const cStr = Math.round(item.C * 100).toString().padStart(2, "0");
-          const hStr = Math.round(item.H).toString().padStart(3, "0");
-          const nId = `${cStr}-${hStr}`;
-          if (names[nId]) {
-            noun = names[nId].trim();
-          } else {
-            let itemA = item.a;
-            let itemB = item.b;
-            if (
-              (itemA === undefined || itemB === undefined) &&
-              item.C !== undefined &&
-              item.H !== undefined
-            ) {
-              itemA = item.C * Math.cos((item.H * Math.PI) / 180);
-              itemB = item.C * Math.sin((item.H * Math.PI) / 180);
-            }
-            let minDist = Infinity;
-            let bestNoun = "";
-            Object.values(savedColors).forEach((other) => {
-              if (other.type === "anchor" || other.type === "nounColumn") {
-                const oA =
-                  other.a !== undefined
-                    ? other.a
-                    : (other.C || 0) * Math.cos(((other.H || 0) * Math.PI) / 180);
-                const oB =
-                  other.b !== undefined
-                    ? other.b
-                    : (other.C || 0) * Math.sin(((other.H || 0) * Math.PI) / 180);
-                const d =
-                  Math.pow((itemA ?? 0) - oA, 2) + Math.pow((itemB ?? 0) - oB, 2);
-                const minL = other.minL !== undefined ? other.minL : -0.01;
-                const maxL = other.maxL !== undefined ? other.maxL : 1.01;
-                if (
-                  d < minDist &&
-                  (item.L === undefined ||
-                    (item.L >= minL - 0.001 && item.L <= maxL + 0.001))
-                ) {
-                  minDist = d;
-                  bestNoun =
-                    other.nameOverride ||
-                    names[other.id] ||
-                    names[other.anchorId] ||
-                    "";
-                }
-              }
-            });
-            if (bestNoun) {
-              noun = bestNoun.trim();
-            }
-          }
-        }
-      }
-
-      if (adj === "Unnamed" || adj === "Unnamed Adj") adj = "";
+      if (adj.toUpperCase() === "UNNAMED" || adj.toUpperCase() === "UNNAMED ADJ") adj = "";
       if (
-        noun === "Unnamed" ||
-        noun === "Unnamed Noun" ||
-        noun === "UNNAMED NOUN"
+        noun.toUpperCase() === "UNNAMED" ||
+        noun.toUpperCase() === "UNNAMED NOUN"
       ) {
         noun = "";
       }
 
       const derivedName = `${adj} ${noun}`.trim();
-      const displayName = (derivedName || "Unnamed").toUpperCase();
+      const displayName = (derivedName || noun || adj || (cleanErp ? `#${cleanErp}` : "\u2014")).toUpperCase();
 
       let image = item.image;
       let sheen = item.sheen;
@@ -9297,6 +9296,11 @@ const App = () => {
       return;
     }
     const timer = setTimeout(() => {
+      try {
+        localStorage.setItem("color-samificator-state", currentStateStr);
+      } catch (e) {
+        console.warn("Failed to persist state to localStorage:", e);
+      }
       setHistory((prev) => {
         const currentRecordStr = JSON.stringify(prev.list[prev.index]);
         if (currentRecordStr === currentStateStr) return prev;
@@ -9930,7 +9934,19 @@ const App = () => {
             bestAnchor.parentNounId || `${bestAnchor.cStr}-${bestAnchor.hStr}`;
         }
       } else {
-        nearestAnchorId = "";
+        const cStr = Math.round(effectiveC * 100).toString().padStart(2, "0");
+        const hStr = Math.round(effectiveH).toString().padStart(3, "0");
+        const baseId = `${cStr}-${hStr}`;
+        const prefix =
+          effectiveL >= 0.95
+            ? "UL"
+            : effectiveL >= 0.5
+            ? "L"
+            : effectiveL >= 0.2
+            ? "D"
+            : "UD";
+        const prefId = `${prefix}-${baseId}`;
+        nearestAnchorId = names[prefId] ? prefId : (names[baseId] ? baseId : prefId);
       }
     }
     const exactErpCode = getExactErpCode(scrubL, scrubC, scrubH);
@@ -10869,29 +10885,7 @@ const App = () => {
     try {
       const anchorsCsv = [];
       const pinsCsv = [];
-      Object.keys(names).forEach((id) => {
-        const name = names[id];
-        if (!name) return;
-        const nc = savedColors[id];
-        if (nc && nc.type === "nounColumn") {
-          anchorsCsv.push({
-            Type: "NOUN",
-            Noun: name,
-            Note: dictNotes[id] || "",
-            Tags: (dictTags[id] || []).join(","),
-            OKLCH_L: `${nc.minL}-${nc.maxL}`,
-            OKLCH_C: nc.C,
-            OKLCH_H: nc.H,
-          });
-        }
-      });
-      Object.keys(adjectives).forEach((adjId) => {
-        anchorsCsv.push({
-          Type: "ADJECTIVE",
-          Adjective: adjectives[adjId] || "",
-          OKLCH_L: adjId,
-        });
-      });
+
       const getExtraColorValues = (L, C, H, hex) => {
         try {
           let col;
@@ -10944,14 +10938,133 @@ const App = () => {
         }
       };
 
+      const exportedAnchorIds = new Set();
+      Object.values(savedColors).forEach((sc) => {
+        if (sc.type === "nounColumn") {
+          exportedAnchorIds.add(sc.id);
+          const nounName = sc.nameOverride || names[sc.id] || "";
+          anchorsCsv.push({
+            Type: "NOUN",
+            ID: sc.id || "",
+            Noun: nounName,
+            Note: sc.notes || dictNotes[sc.id] || "",
+            Tags: (dictTags[sc.id] || []).join(","),
+            OKLCH_L:
+              sc.minL !== undefined && sc.maxL !== undefined
+                ? `${sc.minL}-${sc.maxL}`
+                : sc.L !== undefined
+                  ? sc.L
+                  : "",
+            OKLCH_C: sc.C !== undefined ? sc.C : "",
+            OKLCH_H: sc.H !== undefined ? sc.H : "",
+          });
+        } else if (sc.type === "anchor") {
+          exportedAnchorIds.add(sc.id);
+          if (sc.anchorId) exportedAnchorIds.add(sc.anchorId);
+          const extra = getExtraColorValues(sc.L, sc.C, sc.H, sc.color || sc.hex);
+          const anchorNoun = sc.nameOverride || names[sc.anchorId] || names[sc.id] || "";
+          const anchorAdj = sc.adjOverride || adjectives[sc.adjId] || adjectives[sc.id] || "";
+          anchorsCsv.push({
+            Type: "ANCHOR",
+            ID: sc.id || sc.anchorId || "",
+            Noun: anchorNoun,
+            Adjective: anchorAdj,
+            Note: sc.notes || dictNotes[sc.id] || dictNotes[sc.anchorId] || "",
+            Tags: (dictTags[sc.id] || dictTags[sc.anchorId] || []).join(","),
+            OKLCH_L: sc.L !== undefined ? sc.L : "",
+            OKLCH_C: sc.C !== undefined ? sc.C : "",
+            OKLCH_H: sc.H !== undefined ? sc.H : "",
+            ...extra,
+            HEX:
+              sc.color ||
+              (sc.L !== undefined && sc.C !== undefined && sc.H !== undefined
+                ? new Color("oklch", [sc.L, sc.C, sc.H])
+                    .clone()
+                    .toGamut({ space: "srgb" })
+                    .toString({ format: "hex" })
+                : ""),
+            Locked: sc.locked !== false ? "TRUE" : "FALSE",
+            ERP_Code: sc.erpCode || "",
+          });
+        }
+      });
+
+      Object.keys(names).forEach((id) => {
+        if (exportedAnchorIds.has(id)) return;
+        const name = names[id];
+        if (!name) return;
+        const nc = savedColors[id];
+        if (nc && nc.type === "nounColumn") {
+          anchorsCsv.push({
+            Type: "NOUN",
+            ID: id,
+            Noun: name,
+            Note: dictNotes[id] || "",
+            Tags: (dictTags[id] || []).join(","),
+            OKLCH_L: `${nc.minL}-${nc.maxL}`,
+            OKLCH_C: nc.C,
+            OKLCH_H: nc.H,
+          });
+        } else {
+          const parts = id.split("-");
+          let cVal = "";
+          let hVal = "";
+          let lVal = "";
+          if (parts.length === 2) {
+            cVal = (parseInt(parts[0], 10) / 100).toString();
+            hVal = parseInt(parts[1], 10).toString();
+          } else if (parts.length === 3) {
+            if (parts[0] === "UL") lVal = "0.95-1";
+            else if (parts[0] === "L") lVal = "0.5-0.95";
+            else if (parts[0] === "D") lVal = "0.2-0.5";
+            else if (parts[0] === "UD") lVal = "0-0.2";
+            cVal = (parseInt(parts[1], 10) / 100).toString();
+            hVal = parseInt(parts[2], 10).toString();
+          }
+          anchorsCsv.push({
+            Type: "NOUN",
+            ID: id,
+            Noun: name,
+            Note: dictNotes[id] || "",
+            Tags: (dictTags[id] || []).join(","),
+            OKLCH_L: lVal,
+            OKLCH_C: cVal,
+            OKLCH_H: hVal,
+          });
+        }
+      });
+
+      Object.keys(adjectives).forEach((adjId) => {
+        anchorsCsv.push({
+          Type: "ADJECTIVE",
+          ID: adjId,
+          Adjective: adjectives[adjId] || "",
+          OKLCH_L: adjId,
+        });
+      });
+
       Object.values(savedColors)
         .filter((sc) => sc.type === "pin")
         .forEach((sc) => {
           const extra = getExtraColorValues(sc.L, sc.C, sc.H, sc.hex);
+          const pinNames = getInheritedPinNames(
+            sc,
+            savedColors,
+            names,
+            adjectives,
+            colorData,
+          );
           pinsCsv.push({
             Type: "PIN",
-            Noun: sc.nameOverride || "",
-            Adjective: sc.adjOverride || "",
+            ID: sc.id || "",
+            Parent_Pin_ID: sc.parentPinId || "",
+            Anchor_ID: sc.anchorId || pinNames.sourceId || "",
+            Adj_ID: sc.adjId || "",
+            Brand: sc.brand || "",
+            Original_Index: sc.originalIndex !== undefined ? sc.originalIndex : "",
+            Image: sc.image || "",
+            Noun: sc.nameOverride || pinNames.displayName || "",
+            Adjective: sc.adjOverride || pinNames.displayAdj || "",
             Note: sc.notes || "",
             Tags: (dictTags[sc.id] || []).join(","),
             OKLCH_L: sc.L,
@@ -11025,6 +11138,13 @@ const App = () => {
       const makeExportRow = (data) => {
         const base = {
           Type: "",
+          ID: "",
+          Parent_Pin_ID: "",
+          Anchor_ID: "",
+          Adj_ID: "",
+          Brand: "",
+          Original_Index: "",
+          Image: "",
           Noun: "",
           Adjective: "",
           Note: "",
@@ -11716,9 +11836,34 @@ const App = () => {
           inherited: inherited2,
         };
       }
+      let activeNoun = names[crosshair?.nearestAnchorId] || "";
+      let activeAdj = adjectives[crosshair?.nearestAdjId] || "";
+      if (!activeNoun || activeNoun === "Unnamed" || activeNoun === "Unnamed Noun" || !activeAdj) {
+        const derived = getInheritedPinNames(
+          {
+            L: crosshair?.rawL,
+            C: crosshair?.rawC,
+            H: crosshair?.rawH,
+            a: crosshair?.a,
+            b: crosshair?.b,
+            anchorId: crosshair?.nearestAnchorId,
+            adjId: crosshair?.nearestAdjId,
+          },
+          savedColors,
+          names,
+          adjectives,
+          colorData,
+        );
+        if (!activeNoun || activeNoun === "Unnamed" || activeNoun === "Unnamed Noun") {
+          activeNoun = derived.displayName;
+        }
+        if (!activeAdj) {
+          activeAdj = derived.displayAdj;
+        }
+      }
       return {
-        adj: adjectives[crosshair?.nearestAdjId] || "",
-        name: names[crosshair?.nearestAnchorId] || "",
+        adj: activeAdj,
+        name: activeNoun,
         notes: dictNotes[crosshair?.nearestAnchorId] || "",
       };
     }
@@ -12105,6 +12250,8 @@ const DatabaseManager = ({
         "div",
         { className: "flex-1 overflow-hidden" },
         React.createElement(ViewDatabase, {
+                setFilterSameAdjective,
+                setFilterSameNoun,
           colorData,
           fullColorData: colorData,
           updateColorData,
@@ -12195,6 +12342,8 @@ const CustomConfirmModal = ({ message, onConfirm, onCancel }) => {
 };
 
 const ViewDatabase = ({
+  setFilterSameAdjective,
+  setFilterSameNoun,
   colorData,
   fullColorData,
   updateColorData,
@@ -13164,6 +13313,64 @@ const ViewDatabase = ({
             }),
             " Brand",
           ),
+
+        React.createElement(
+          "button",
+          {
+            onClick: () => {
+              if (setFilterSameAdjective) setFilterSameAdjective(true);
+              if (setFilterSameNoun) setFilterSameNoun(true);
+              setUserEnableDeltaE(true);
+              setSortBy("deltae");
+              setSortAsc(true);
+            },
+            className:
+              "px-2.5 py-1 text-[9px] font-bold bg-indigo-500 hover:bg-indigo-600 text-white uppercase tracking-wider rounded flex items-center gap-1 shadow-sm transition-colors",
+            title: "Find closest color matches",
+          },
+          React.createElement(Icon, { name: "search", className: "w-3 h-3" }),
+          "Find Color Match"
+        ),
+        React.createElement(
+          "button",
+          {
+            onClick: () => {
+              if (setFilterSameAdjective) setFilterSameAdjective(true);
+              if (setFilterSameNoun) setFilterSameNoun(true);
+              setUserEnableDeltaE(true);
+              setSortBy("deltae");
+              setSortAsc(true);
+              let selectedItem = null;
+              if (selectedIds && selectedIds.length > 0) {
+                selectedItem = allDbItems.find(item => item.id === selectedIds[0]);
+              } else if (crosshair) {
+                selectedItem = allDbItems.find(item => 
+                    Math.abs(item.L - crosshair.rawL) < 1e-5 &&
+                    Math.abs(item.C - crosshair.rawC) < 1e-5 &&
+                    Math.abs(item.H - crosshair.rawH) < 1e-5
+                );
+              }
+              if (selectedItem) {
+                  setColumnFilters(prev => ({
+                    ...prev,
+                    sheen: { selectedValues: new Set([String(selectedItem.sheen || "(Blank)").trim()]) },
+                    doorProfile: { selectedValues: new Set([String(selectedItem.doorProfile || "(Blank)").trim()]) },
+                    visualTexture: { selectedValues: new Set([String(selectedItem.visualTexture || "(Blank)").trim()]) },
+                    tactileTexture: { selectedValues: new Set([String(selectedItem.tactileTexture || "(Blank)").trim()]) },
+                    material: { selectedValues: new Set([String(selectedItem.material || "(Blank)").trim()]) },
+                  }));
+                } else {
+                  alert("Please select an item first to match its material attributes.");
+                }
+            },
+            className:
+              "px-2.5 py-1 text-[9px] font-bold bg-violet-500 hover:bg-violet-600 text-white uppercase tracking-wider rounded flex items-center gap-1 shadow-sm transition-colors",
+            title: "Find closest material matches",
+          },
+          React.createElement(Icon, { name: "search-check", className: "w-3 h-3" }),
+          "Find Exact Material Match"
+        ),
+
         React.createElement(
           "button",
           {
@@ -15188,10 +15395,12 @@ const AppUI = ({
               }
               .sami-sidebar span {
                 transform: rotate(-90deg) !important;
-                font-weight: 700 !important;
-                font-size: 12pt !important;
-                letter-spacing: 0.08em !important;
+                font-weight: 800 !important;
+                font-size: 22pt !important;
+                letter-spacing: 0.12em !important;
                 color: #F2E8DF !important;
+                line-height: 1 !important;
+                display: inline-block !important;
               }
               .sami-content {
                 flex-grow: 1 !important;
@@ -17540,6 +17749,8 @@ const AppUI = ({
               ),
             activeTab === "db" &&
               React.createElement(ViewDatabase, {
+                setFilterSameAdjective,
+                setFilterSameNoun,
                 colorData: filteredColorData,
                 fullColorData: colorData,
                 updateColorData,
@@ -19460,10 +19671,12 @@ const AppUI = ({
           }
           .sami-sidebar span {
             transform: rotate(-90deg) !important;
-            font-weight: 700 !important;
-            font-size: 12pt !important;
-            letter-spacing: 0.08em !important;
+            font-weight: 800 !important;
+            font-size: 22pt !important;
+            letter-spacing: 0.12em !important;
             color: #F2E8DF !important;
+            line-height: 1 !important;
+            display: inline-block !important;
           }
           .sami-content {
             flex-grow: 1 !important;
@@ -19569,26 +19782,27 @@ const AppUI = ({
               React.createElement(
                 "div",
                 { className: "sami-content" },
-                // Approval block in the top right, aligned with row 2 (COLOR CODE)
+                // Approval block in the right, vertically centered and enlarged
                 React.createElement(
                   "div",
                   { 
                     style: { 
                       position: "absolute", 
-                      top: "0.23in", 
-                      right: "0.04in", 
-                      width: "1.32in", 
-                      height: "0.58in", 
+                      top: "50%", 
+                      transform: "translateY(-50%)", 
+                      right: "0.06in", 
+                      width: "1.36in", 
+                      height: "0.88in", 
                       display: "flex", 
                       flexDirection: "column", 
                       justifyContent: "space-between", 
-                      color: "#4b5563", 
-                      fontSize: "4.8pt", 
+                      color: "#374151", 
+                      fontSize: "5pt", 
                       zIndex: 10, 
                       backgroundColor: "white",
                       border: "0.6px solid #cbd5e1",
                       borderRadius: "2px",
-                      padding: "2px 3px",
+                      padding: "3px 4px",
                       boxSizing: "border-box"
                     } 
                   },
@@ -19596,46 +19810,46 @@ const AppUI = ({
                     "div",
                     {
                       style: {
-                        fontSize: "4pt",
+                        fontSize: "4.5pt",
                         fontWeight: 700,
-                        color: "#6b7280",
+                        color: "#4b5563",
                         textTransform: "uppercase",
                         letterSpacing: "0.02em",
                         textAlign: "center",
                         borderBottom: "0.5px solid #e2e8f0",
-                        paddingBottom: "1.5px",
-                        lineHeight: 1
+                        paddingBottom: "2px",
+                        lineHeight: 1.1
                       }
                     },
                     "For use by SAMI Design only"
                   ),
                   React.createElement(
                     "div",
-                    { style: { display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "0 1px" } },
+                    { style: { display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "1px 2px" } },
                     React.createElement(
                       "div",
-                      { style: { display: "flex", alignItems: "center", gap: "3px" } },
-                      React.createElement("div", { style: { width: "6.5px", height: "6.5px", border: "0.6px solid #9ca3af", boxSizing: "border-box", borderRadius: "1px" } }),
-                      React.createElement("span", { style: { fontWeight: 500, fontSize: "4.8pt", color: "#374151" } }, "Approved")
+                      { style: { display: "flex", alignItems: "center", gap: "3.5px" } },
+                      React.createElement("div", { style: { width: "7.5px", height: "7.5px", border: "0.6px solid #6b7280", boxSizing: "border-box", borderRadius: "1px" } }),
+                      React.createElement("span", { style: { fontWeight: 600, fontSize: "5pt", color: "#374151" } }, "Approved")
                     ),
                     React.createElement(
                       "div",
-                      { style: { display: "flex", alignItems: "center", gap: "3px" } },
-                      React.createElement("div", { style: { width: "6.5px", height: "6.5px", border: "0.6px solid #9ca3af", boxSizing: "border-box", borderRadius: "1px" } }),
-                      React.createElement("span", { style: { fontWeight: 500, fontSize: "4.8pt", color: "#374151" } }, "Rejected")
+                      { style: { display: "flex", alignItems: "center", gap: "3.5px" } },
+                      React.createElement("div", { style: { width: "7.5px", height: "7.5px", border: "0.6px solid #6b7280", boxSizing: "border-box", borderRadius: "1px" } }),
+                      React.createElement("span", { style: { fontWeight: 600, fontSize: "5pt", color: "#374151" } }, "Rejected")
                     )
                   ),
                   React.createElement(
                     "div",
-                    { style: { display: "flex", alignItems: "flex-end", gap: "3px", width: "100%", padding: "0 1px" } },
-                    React.createElement("span", { style: { fontWeight: 500, fontSize: "4.8pt", color: "#374151" } }, "Date:"),
-                    React.createElement("div", { style: { flexGrow: 1, borderBottom: "0.5px solid #cbd5e1", height: "6px" } })
+                    { style: { display: "flex", alignItems: "flex-end", gap: "3px", width: "100%", padding: "1px 2px" } },
+                    React.createElement("span", { style: { fontWeight: 600, fontSize: "5pt", color: "#374151", minWidth: "22px" } }, "Date:"),
+                    React.createElement("div", { style: { flexGrow: 1, borderBottom: "0.6px solid #cbd5e1", height: "8px" } })
                   ),
                   React.createElement(
                     "div",
-                    { style: { display: "flex", alignItems: "flex-end", gap: "3px", width: "100%", padding: "0 1px" } },
-                    React.createElement("span", { style: { fontWeight: 500, fontSize: "4.8pt", color: "#374151" } }, "Sign:"),
-                    React.createElement("div", { style: { flexGrow: 1, borderBottom: "0.5px solid #cbd5e1", height: "6px" } })
+                    { style: { display: "flex", alignItems: "flex-end", gap: "3px", width: "100%", padding: "1px 2px" } },
+                    React.createElement("span", { style: { fontWeight: 600, fontSize: "5pt", color: "#374151", minWidth: "22px" } }, "Sign:"),
+                    React.createElement("div", { style: { flexGrow: 1, borderBottom: "0.6px solid #cbd5e1", height: "8px" } })
                   )
                 ),
                 // Row 1: Name (Full width available)
