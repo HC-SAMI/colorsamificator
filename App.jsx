@@ -8444,7 +8444,7 @@ const processCSVData = (
 };
 const App = () => {
   const [theme, setTheme] = useState("light");
-  const [activeTab, setActiveTab] = useState("top");
+  const [activeTab, setActiveTab] = useState("db");
   const [colorData, setColorData] = useState(null);
   const [filterL, setFilterL] = useState(1);
   const [filterC, setFilterC] = useState(0.4);
@@ -12352,7 +12352,9 @@ const ViewDatabase = ({
   handlePointClick,
   crosshair,
   searchTerm,
+  setSearchTerm,
   tagFilter,
+  setTagFilter,
   filterPt,
   selectedIds,
   setSelectedIds,
@@ -13318,6 +13320,7 @@ const ViewDatabase = ({
           "button",
           {
             onClick: () => {
+              setSpectralFilter(true);
               if (setFilterSameAdjective) setFilterSameAdjective(true);
               if (setFilterSameNoun) setFilterSameNoun(true);
               setUserEnableDeltaE(true);
@@ -13335,6 +13338,7 @@ const ViewDatabase = ({
           "button",
           {
             onClick: () => {
+              setSpectralFilter(true);
               if (setFilterSameAdjective) setFilterSameAdjective(true);
               if (setFilterSameNoun) setFilterSameNoun(true);
               setUserEnableDeltaE(true);
@@ -13364,7 +13368,7 @@ const ViewDatabase = ({
                 }
             },
             className:
-              "px-2.5 py-1 text-[9px] font-bold bg-violet-500 hover:bg-violet-600 text-white uppercase tracking-wider rounded flex items-center gap-1 shadow-sm transition-colors",
+              "px-2.5 py-1 text-[9px] font-bold bg-[#2B4032] hover:bg-[#1e2e23] text-white uppercase tracking-wider rounded flex items-center gap-1 shadow-sm transition-colors",
             title: "Find closest material matches",
           },
           React.createElement(Icon, { name: "search-check", className: "w-3 h-3" }),
@@ -13432,6 +13436,27 @@ const ViewDatabase = ({
           },
           React.createElement(Icon, { name: "activity", className: "w-3 h-3" }),
           " Verified Colors Only",
+        ),
+        React.createElement(
+          "button",
+          {
+            onClick: () => {
+              setBrandFilter("");
+              setColumnFilters({});
+              setSpectralFilter(false);
+              setUserEnableDeltaE(false);
+              if (setFilterSameAdjective) setFilterSameAdjective(false);
+              if (setFilterSameNoun) setFilterSameNoun(false);
+              if (setSearchTerm) setSearchTerm("");
+              if (setTagFilter) setTagFilter("");
+              setFilterSearch("");
+            },
+            className:
+              "flex items-center gap-1.5 px-2 py-1 text-[9px] font-bold uppercase tracking-wider rounded border bg-rose-50 text-rose-600 border-rose-200 hover:bg-rose-100 dark:bg-rose-900/30 dark:text-rose-400 dark:border-rose-800 transition-colors",
+            title: "Clear all filters",
+          },
+          React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
+          " Clear Filters",
         ),
         React.createElement(
           "span",
@@ -17747,7 +17772,12 @@ const AppUI = ({
                     ),
                   ),
               ),
-            activeTab === "db" &&
+            React.createElement(
+              "div",
+              { 
+                style: { display: activeTab === "db" ? "block" : "none" },
+                className: "w-full h-full"
+              },
               React.createElement(ViewDatabase, {
                 setFilterSameAdjective,
                 setFilterSameNoun,
@@ -17759,7 +17789,9 @@ const AppUI = ({
                 handlePointClick,
                 crosshair,
                 searchTerm: viewportSearchQuery,
+                setSearchTerm: setViewportSearchQuery,
                 tagFilter: viewportTagFilter,
+                setTagFilter: setViewportTagFilter,
                 filterPt,
                 selectedIds,
                 setSelectedIds,
@@ -17772,7 +17804,8 @@ const AppUI = ({
                   setSelectedPrintIds(ids);
                   setShowAveryModal(true);
                 },
-              }),
+              })
+            ),
             activeTab === "3d" &&
               React.createElement(View3D, {
                 colorData: filteredColorData,
