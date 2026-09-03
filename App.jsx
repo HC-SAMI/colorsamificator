@@ -8639,7 +8639,7 @@ const App = () => {
         .toUpperCase();
       let cleanErp = extractCleanColorCode(item);
       if (!cleanErp && item.brand !== undefined && item.originalIndex !== undefined) {
-        const cItem = colorData[item.brand]?.[item.originalIndex];
+        const cItem = colorData?.[item.brand]?.[item.originalIndex];
         if (cItem) {
           cleanErp = extractCleanColorCode(cItem);
         }
@@ -8693,7 +8693,7 @@ const App = () => {
         if (!tactileTexture) tactileTexture = pin.tactileTexture;
         if (!doorProfile) doorProfile = pin.doorProfile;
         if (pin.brand !== undefined && pin.originalIndex !== undefined) {
-          const cItem = colorData[pin.brand]?.[pin.originalIndex];
+          const cItem = colorData?.[pin.brand]?.[pin.originalIndex];
           if (cItem) {
             if (!image) image = cItem.image || null;
             if (!sheen) sheen = cItem.sheen;
@@ -8706,7 +8706,7 @@ const App = () => {
       }
 
       if (item.brand !== undefined && item.originalIndex !== undefined) {
-        const cItem = colorData[item.brand]?.[item.originalIndex];
+        const cItem = colorData?.[item.brand]?.[item.originalIndex];
         if (cItem) {
           if (!image) image = cItem.image || null;
           if (!sheen) sheen = cItem.sheen;
@@ -10027,7 +10027,7 @@ const App = () => {
     if (tetheringPinId) {
       const targetCommercial = explicitCommercial;
       if (targetCommercial) {
-        const m = colorData[targetCommercial.brand]?.[targetCommercial.originalIndex];
+        const m = colorData?.[targetCommercial.brand]?.[targetCommercial.originalIndex];
         setSavedColors((prev) => ({
           ...prev,
           [tetheringPinId]: {
@@ -10622,7 +10622,7 @@ const App = () => {
       let pinTactileTexture = undefined;
       let pinVisualTexture = undefined;
       if (crosshair.activeCommercial) {
-        const m = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
+        const m = colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
         pinImage = m?.image || null;
         pinBrand = crosshair.activeCommercial.brand;
         pinOriginalIndex = crosshair.activeCommercial.originalIndex;
@@ -11337,7 +11337,7 @@ const App = () => {
     let brand = undefined;
     let originalIndex = undefined;
     if (crosshair.activeCommercial) {
-      const match = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
+      const match = colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
       imageSrc = match?.image || null;
       brand = crosshair.activeCommercial.brand;
       originalIndex = crosshair.activeCommercial.originalIndex;
@@ -11412,7 +11412,7 @@ const App = () => {
     let brand = undefined;
     let originalIndex = undefined;
     if (crosshair.activeCommercial) {
-      const match = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
+      const match = colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
       imageSrc = match?.image || null;
       brand = crosshair.activeCommercial.brand;
       originalIndex = crosshair.activeCommercial.originalIndex;
@@ -11913,7 +11913,7 @@ const App = () => {
       ? crosshair.activeSavedColor.id
       : crosshair?.nearestAnchorId;
   const activeTags = activeCommercial
-    ? colorData[activeCommercial.brand]?.[activeCommercial.originalIndex]
+    ? colorData?.[activeCommercial.brand]?.[activeCommercial.originalIndex]
         ?.tags || []
     : activeItemId
       ? dictTags[activeItemId] || []
@@ -15699,7 +15699,7 @@ const AppUI = ({
                 },
                 crosshair?.activeCommercial &&
                   (() => {
-                    const m = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
+                    const m = colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
                     return m?.image && React.createElement("div", {
                       className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                       style: {
@@ -16637,7 +16637,7 @@ const AppUI = ({
                               let loadedBrand = undefined;
                               let loadedIndex = undefined;
                               if (crosshair?.activeCommercial) {
-                                const m = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
+                                const m = colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
                                 loadedImage = m?.image || null;
                                 loadedBrand = crosshair.activeCommercial.brand;
                                 loadedIndex = crosshair.activeCommercial.originalIndex;
@@ -16799,7 +16799,7 @@ const AppUI = ({
                               let loadedBrand = undefined;
                               let loadedIndex = undefined;
                               if (crosshair?.activeCommercial) {
-                                const m = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
+                                const m = colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
                                 loadedImage = m?.image || null;
                                 loadedBrand = crosshair.activeCommercial.brand;
                                 loadedIndex = crosshair.activeCommercial.originalIndex;
@@ -18655,7 +18655,7 @@ const AppUI = ({
       (() => {
         let previewImage = null;
         if (crosshair?.activeCommercial) {
-          const m = colorData[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
+          const m = colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
           previewImage = m?.image || null;
         } else if (crosshair?.activeSavedColor?.type === "pin") {
           const pinObj = savedColors[crosshair.activeSavedColor.id];
