@@ -8208,7 +8208,22 @@ const processCSVData = (
       }
     } else if (targetType === "PIN" && pL !== null) {
       const pinId =
-        row.ID || row.Id || row.Pin_ID || row.PinId || crypto.randomUUID();
+        row.ID || row.Id || row.Pin_ID || row.PinId || `pin-${pL.toFixed(4)}-${pC.toFixed(4)}-${pH.toFixed(4)}`;
+
+      // Remove existing pin that matches these coordinates exactly
+      Object.keys(newSavedColors).forEach((k) => {
+        const sc = newSavedColors[k];
+        if (
+          sc.type === "pin" &&
+          Math.abs(sc.L - pL) < 0.0001 &&
+          Math.abs(sc.C - pC) < 0.0001 &&
+          Math.abs(sc.H - pH) < 0.0001 &&
+          k !== pinId
+        ) {
+          delete newSavedColors[k];
+        }
+      });
+
       const a = pC * Math.sin((pH * Math.PI) / 180);
       const b = pC * Math.cos((pH * Math.PI) / 180);
       const cStr = Math.round(pC * 100)
@@ -8900,9 +8915,23 @@ const App = () => {
     }
     if (loadedColorData) setColorData(loadedColorData);
     let currentColorData = loadedColorData || {};
-    let currentSavedColors = savedColors;
-    let currentNames = initialState?.names || {};
-    let currentAdjs = initialState?.adjectives || {};
+    let currentSavedColors = { ...savedColors };
+    const seenPinCoords = new Set();
+    Object.keys(currentSavedColors).forEach((k) => {
+      const sc = currentSavedColors[k];
+      if (sc.type === "nounColumn" && !k.startsWith("custom-noun-")) {
+        delete currentSavedColors[k];
+      } else if (sc.type === "pin") {
+        const coordKey = `${sc.L?.toFixed(4)}-${sc.C?.toFixed(4)}-${sc.H?.toFixed(4)}`;
+        if (seenPinCoords.has(coordKey)) {
+          delete currentSavedColors[k];
+        } else {
+          seenPinCoords.add(coordKey);
+        }
+      }
+    });
+    let currentNames = {};
+    let currentAdjs = {};
     let currentNotes = initialState?.dictNotes || {};
     let currentTags = initialState?.dictTags || {};
     let currentSavedPalettes = savedPalettes || [];
@@ -12379,6 +12408,7 @@ const ViewDatabase = ({
   const [columnFilters, setColumnFilters] = useState({});
   const [openFilterCol, setOpenFilterCol] = useState(null);
   const [filterSearch, setFilterSearch] = useState("");
+  const [showGuideModal, setShowGuideModal] = useState(false);
 
   const baseMatrixSize = 48;
   const baseListSize = 48;
@@ -13230,6 +13260,113 @@ const ViewDatabase = ({
       },
       onCancel: () => setConfirmState(null)
     }),
+    showGuideModal &&
+      React.createElement(
+        "div",
+        {
+          className:
+            "fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200",
+          onClick: () => setShowGuideModal(false),
+        },
+        React.createElement(
+          "div",
+          {
+            className:
+              "relative w-full max-w-5xl bg-[#F2E8DF] dark:bg-neutral-900 border border-[#B4A99E] dark:border-neutral-700 rounded-2xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden",
+            onClick: (e) => e.stopPropagation(),
+          },
+          React.createElement(
+            "div",
+            {
+              className:
+                "flex items-center justify-between px-5 py-3.5 border-b border-[#B4A99E]/40 dark:border-neutral-800 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-xs shrink-0",
+            },
+            React.createElement(
+              "div",
+              { className: "flex items-center gap-2.5" },
+              React.createElement(
+                "div",
+                { className: "p-1.5 rounded-lg bg-[#2B4032] text-white" },
+                React.createElement(Icon, { name: "help-circle", className: "w-4 h-4 text-[#F2E8DF]" })
+              ),
+              React.createElement(
+                "div",
+                null,
+                React.createElement(
+                  "h2",
+                  { className: "text-sm font-extrabold text-[#010D00] dark:text-neutral-100 flex items-center gap-2" },
+                  "Color & Material Matching Guide",
+                  React.createElement(
+                    "span",
+                    {
+                      className:
+                        "text-[9px] px-2 py-0.5 rounded-full bg-[#B1BC83]/30 text-[#2B4032] dark:text-[#B1BC83] font-bold uppercase tracking-wider",
+                    },
+                    "Infographic"
+                  )
+                ),
+                React.createElement(
+                  "p",
+                  { className: "text-[11px] text-slate-500 dark:text-neutral-400" },
+                  "3-step guide: Search bar, Commercial Matches panel, & Commercial DB options"
+                )
+              )
+            ),
+            React.createElement(
+              "div",
+              { className: "flex items-center gap-2" },
+              React.createElement(
+                "a",
+                {
+                  href: "matching-guide-infographic.svg",
+                  download: "matching-guide-infographic.svg",
+                  className:
+                    "px-2.5 py-1.5 text-xs font-bold bg-[#2B4032] hover:bg-[#1e2e23] text-white rounded-lg flex items-center gap-1.5 transition-colors shadow-2xs",
+                  title: "Download vector SVG infographic",
+                },
+                React.createElement(Icon, { name: "download", className: "w-3.5 h-3.5" }),
+                "Download SVG"
+              ),
+              React.createElement(
+                "a",
+                {
+                  href: "matching-guide-infographic.svg",
+                  target: "_blank",
+                  rel: "noopener noreferrer",
+                  className:
+                    "px-2.5 py-1.5 text-xs font-bold bg-white dark:bg-neutral-800 border border-slate-300 dark:border-neutral-700 text-slate-700 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-700 rounded-lg flex items-center gap-1.5 transition-colors shadow-2xs",
+                  title: "Open full-size image in new tab",
+                },
+                React.createElement(Icon, { name: "external-link", className: "w-3.5 h-3.5" }),
+                "Open Full"
+              ),
+              React.createElement(
+                "button",
+                {
+                  onClick: () => setShowGuideModal(false),
+                  className:
+                    "p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-neutral-800 transition-colors ml-1",
+                  title: "Close Guide",
+                },
+                React.createElement(Icon, { name: "x", className: "w-5 h-5" })
+              )
+            )
+          ),
+          React.createElement(
+            "div",
+            {
+              className:
+                "flex-1 overflow-auto p-4 flex items-center justify-center bg-[#EAE0D5]/40 dark:bg-black/40 custom-scrollbar",
+            },
+            React.createElement("img", {
+              src: "matching-guide-infographic.svg",
+              alt: "Matching Guide Infographic - Steps to get matches for a specific color or material",
+              className:
+                "w-full h-auto max-w-full rounded-xl shadow-md border border-[#B4A99E]/40 object-contain",
+            })
+          )
+        )
+      ),
     React.createElement(
       "div",
       {
@@ -13373,6 +13510,18 @@ const ViewDatabase = ({
           },
           React.createElement(Icon, { name: "search-check", className: "w-3 h-3" }),
           "Find Exact Material Match"
+        ),
+
+        React.createElement(
+          "button",
+          {
+            onClick: () => setShowGuideModal(true),
+            className:
+              "px-2.5 py-1 text-[9px] font-bold bg-[#B1BC83] hover:bg-[#9fa974] text-[#052212] uppercase tracking-wider rounded flex items-center gap-1 shadow-sm transition-colors",
+            title: "View visual infographic guide on how to get color and material matches",
+          },
+          React.createElement(Icon, { name: "help-circle", className: "w-3 h-3" }),
+          "Matching Guide"
         ),
 
         React.createElement(
