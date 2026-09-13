@@ -1,15 +1,44 @@
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
-const Icon = ({ name, className = "w-4 h-4" }) => {
-  const ref = useRef(null);
-  useEffect(() => {
-    if (ref.current && window.lucide) {
+// React 18 ships useDeferredValue; guard so an older UMD build still runs.
+const useDeferredValue = React.useDeferredValue || ((v) => v);
+// Resolving an icon used to mean building a throwaway div, running
+// lucide.createIcons over it and copying innerHTML back — inside an effect, so
+// every one of the ~200 icons cost a second paint. The markup only depends on
+// name + className, so it is resolved once and reused.
+const ICON_CACHE = new Map();
+const resolveIconMarkup = (name, className) => {
+  const key = `${name}|${className}`;
+  if (ICON_CACHE.has(key)) return ICON_CACHE.get(key);
+  let markup = "";
+  if (typeof window !== "undefined" && window.lucide) {
+    try {
       const temp = document.createElement("div");
       temp.innerHTML = `<i data-lucide="${name}" class="${className}"></i>`;
       window.lucide.createIcons({ root: temp });
-      ref.current.innerHTML = temp.innerHTML;
+      markup = temp.innerHTML;
+    } catch (e) {
+      markup = "";
     }
-  }, [name, className]);
-  return React.createElement("span", { ref, style: { display: "contents" } });
+  }
+  // Only cache a real result; lucide may not have loaded on the first paint.
+  if (markup && markup.indexOf("<svg") !== -1) ICON_CACHE.set(key, markup);
+  return markup;
+};
+const Icon = ({ name, className = "w-4 h-4" }) => {
+  const markup = resolveIconMarkup(name, className);
+  const ref = useRef(null);
+  useEffect(() => {
+    // Covers the case where lucide arrived after this icon first rendered.
+    if (!markup && ref.current) {
+      const late = resolveIconMarkup(name, className);
+      if (late) ref.current.innerHTML = late;
+    }
+  }, [markup, name, className]);
+  return React.createElement("span", {
+    ref,
+    style: { display: "contents" },
+    dangerouslySetInnerHTML: { __html: markup },
+  });
 };
 window.Icon = Icon;
 const get7DigitOklch = (L, C, H) => {
@@ -883,6 +912,111 @@ const ColorConverter = ({
     ),
   );
 };
+// Hoisted out of CommercialMatches: defined inline it got a fresh type on
+// every render, so React unmounted and remounted every match row whenever
+// the search box or the ΔE slider changed.
+const MatchRow = ({ label, match, onSelectColor, setFullscreenImage, fmt }) => {
+    if (!match) return null;
+    const isVerified = match.spectral && match.spectral.length > 0;
+    const handleRowClick = () => {
+      if (onSelectColor) {
+        onSelectColor(
+          [match.L, match.C, isNaN(match.H) ? 0 : match.H],
+          match.spectral,
+          { brand: match.brand, originalIndex: match.originalIndex },
+        );
+      }
+    };
+    return React.createElement(
+      "div",
+      {
+        className: `flex items-center gap-3 p-2 rounded border cursor-pointer hover:opacity-80 transition-opacity ${isVerified ? "bg-emerald-50/50 dark:bg-emerald-900/10 border-emerald-100 dark:border-emerald-800/30" : "bg-slate-50 dark:bg-neutral-800/50 border-slate-100 dark:border-neutral-800"}`,
+        onClick: handleRowClick,
+      },
+      match.image
+        ? React.createElement(
+            "div",
+            {
+              className:
+                "relative group w-8 h-8 rounded shadow-sm shrink-0 border border-slate-200 dark:border-neutral-700 overflow-hidden",
+              style: { backgroundColor: match.hex },
+            },
+            React.createElement("div", {
+              className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
+              style: {
+                backgroundImage: `url(${match.image})`,
+                WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+              },
+            }),
+            React.createElement(
+              "button",
+              {
+                className:
+                  "absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center rounded transition-opacity",
+                onClick: (e) => {
+                  e.stopPropagation();
+                  setFullscreenImage(match.image);
+                },
+              },
+              React.createElement(Icon, {
+                name: "maximize-2",
+                className: "w-4 h-4 text-white",
+              }),
+            ),
+          )
+        : React.createElement("div", {
+            className:
+              "w-8 h-8 rounded shadow-sm shrink-0 border border-slate-200 dark:border-neutral-700",
+            style: { backgroundColor: match.hex },
+          }),
+      React.createElement(
+        "div",
+        { className: "flex flex-col flex-1 min-w-0" },
+        React.createElement(
+          "div",
+          { className: "flex items-center gap-1.5" },
+          React.createElement(
+            "div",
+            {
+              className:
+                "text-[11px] font-medium text-slate-800 dark:text-neutral-200 truncate",
+            },
+            match.name,
+          ),
+          isVerified &&
+            React.createElement(Icon, {
+              name: "check-circle",
+              className: "w-3.5 h-3.5 text-emerald-500 shrink-0",
+              title: "Verified with Spectral Data",
+            }),
+        ),
+        React.createElement(
+          "div",
+          {
+            className:
+              "text-[9px] text-slate-500 dark:text-neutral-500 uppercase tracking-wider flex items-center gap-1.5",
+          },
+          label,
+          " \xB7 \u0394Eok ",
+          fmt(match.d, 2),
+          (match.url || match.erpCode) && String(match.url || match.erpCode).startsWith("http") &&
+            React.createElement(
+              "a",
+              {
+                href: match.url || match.erpCode,
+                target: "_blank",
+                rel: "noopener noreferrer",
+                className: "text-sky-500 hover:underline flex items-center gap-0.5 lowercase tracking-normal font-medium ml-auto",
+                onClick: (e) => e.stopPropagation(),
+              },
+              React.createElement(Icon, { name: "external-link", className: "w-2.5 h-2.5 shrink-0" }),
+              "link"
+            ),
+        ),
+      ),
+    );
+};
 const CommercialMatches = ({
   crosshair,
   colorData,
@@ -1028,108 +1162,6 @@ const CommercialMatches = ({
 
   if (!crosshair) return null;
 
-  const MatchRow = ({ label, match }) => {
-    if (!match) return null;
-    const isVerified = match.spectral && match.spectral.length > 0;
-    const handleRowClick = () => {
-      if (onSelectColor) {
-        onSelectColor(
-          [match.L, match.C, isNaN(match.H) ? 0 : match.H],
-          match.spectral,
-          { brand: match.brand, originalIndex: match.originalIndex },
-        );
-      }
-    };
-    return React.createElement(
-      "div",
-      {
-        className: `flex items-center gap-3 p-2 rounded border cursor-pointer hover:opacity-80 transition-opacity ${isVerified ? "bg-emerald-50/50 dark:bg-emerald-900/10 border-emerald-100 dark:border-emerald-800/30" : "bg-slate-50 dark:bg-neutral-800/50 border-slate-100 dark:border-neutral-800"}`,
-        onClick: handleRowClick,
-      },
-      match.image
-        ? React.createElement(
-            "div",
-            {
-              className:
-                "relative group w-8 h-8 rounded shadow-sm shrink-0 border border-slate-200 dark:border-neutral-700 overflow-hidden",
-              style: { backgroundColor: match.hex },
-            },
-            React.createElement("div", {
-              className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
-              style: {
-                backgroundImage: `url(${match.image})`,
-                WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-              },
-            }),
-            React.createElement(
-              "button",
-              {
-                className:
-                  "absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center rounded transition-opacity",
-                onClick: (e) => {
-                  e.stopPropagation();
-                  setFullscreenImage(match.image);
-                },
-              },
-              React.createElement(Icon, {
-                name: "maximize-2",
-                className: "w-4 h-4 text-white",
-              }),
-            ),
-          )
-        : React.createElement("div", {
-            className:
-              "w-8 h-8 rounded shadow-sm shrink-0 border border-slate-200 dark:border-neutral-700",
-            style: { backgroundColor: match.hex },
-          }),
-      React.createElement(
-        "div",
-        { className: "flex flex-col flex-1 min-w-0" },
-        React.createElement(
-          "div",
-          { className: "flex items-center gap-1.5" },
-          React.createElement(
-            "div",
-            {
-              className:
-                "text-[11px] font-medium text-slate-800 dark:text-neutral-200 truncate",
-            },
-            match.name,
-          ),
-          isVerified &&
-            React.createElement(Icon, {
-              name: "check-circle",
-              className: "w-3.5 h-3.5 text-emerald-500 shrink-0",
-              title: "Verified with Spectral Data",
-            }),
-        ),
-        React.createElement(
-          "div",
-          {
-            className:
-              "text-[9px] text-slate-500 dark:text-neutral-500 uppercase tracking-wider flex items-center gap-1.5",
-          },
-          label,
-          " \xB7 \u0394Eok ",
-          fmt(match.d, 2),
-          (match.url || match.erpCode) && String(match.url || match.erpCode).startsWith("http") &&
-            React.createElement(
-              "a",
-              {
-                href: match.url || match.erpCode,
-                target: "_blank",
-                rel: "noopener noreferrer",
-                className: "text-sky-500 hover:underline flex items-center gap-0.5 lowercase tracking-normal font-medium ml-auto",
-                onClick: (e) => e.stopPropagation(),
-              },
-              React.createElement(Icon, { name: "external-link", className: "w-2.5 h-2.5 shrink-0" }),
-              "link"
-            ),
-        ),
-      ),
-    );
-  };
   return React.createElement(
     "div",
     { className: "flex flex-col gap-2" },
@@ -1197,6 +1229,9 @@ const CommercialMatches = ({
               key: item.label + idx + item.match.name,
               label: item.label,
               match: item.match,
+              onSelectColor,
+              setFullscreenImage,
+              fmt,
             }),
           ),
           filteredMatches.length === 0 &&
@@ -5216,6 +5251,8 @@ const ViewPalette = ({
         ),
     );
   };
+  // Plain render helper, not a component: defining a component inside render
+  // gives it a new type each pass, so React remounted every header button.
   const SortButton = ({ field, label, icon }) =>
     React.createElement(
       "button",
@@ -5396,27 +5433,27 @@ const ViewPalette = ({
         }),
         " Sort By:",
       ),
-      React.createElement(SortButton, {
+      SortButton({
         field: "ring",
         label: "Chroma Rings",
         icon: "target",
       }),
-      React.createElement(SortButton, {
+      SortButton({
         field: "hue",
         label: "Hue Angle",
         icon: "palette",
       }),
-      React.createElement(SortButton, {
+      SortButton({
         field: "count",
         label: "Occurrences",
         icon: "bar-chart-2",
       }),
-      React.createElement(SortButton, {
+      SortButton({
         field: "name",
         label: "Name",
         icon: "type",
       }),
-      React.createElement(SortButton, {
+      SortButton({
         field: "tag",
         label: "Tags",
         icon: "tag",
@@ -5710,6 +5747,8 @@ const ViewAdjectives = ({
       return sortAsc ? (valA < valB ? -1 : 1) : valB < valA ? -1 : 1;
     });
   }, [points, adjectives, sortBy, sortAsc, searchTerm]);
+  // Plain render helper, not a component: defining a component inside render
+  // gives it a new type each pass, so React remounted every header button.
   const SortButton = ({ field, label, icon }) =>
     React.createElement(
       "button",
@@ -5782,17 +5821,17 @@ const ViewAdjectives = ({
           }),
           " Sort By:",
         ),
-        React.createElement(SortButton, {
+        SortButton({
           field: "lightness",
           label: "Lightness",
           icon: "sun",
         }),
-        React.createElement(SortButton, {
+        SortButton({
           field: "count",
           label: "Occurrences",
           icon: "bar-chart-2",
         }),
-        React.createElement(SortButton, {
+        SortButton({
           field: "adjective",
           label: "Adjective Name",
           icon: "type",
@@ -6120,6 +6159,8 @@ const ViewPins = ({
       return next;
     });
   };
+  // Plain render helper, not a component: defining a component inside render
+  // gives it a new type each pass, so React remounted every header button.
   const SortButton = ({ field, label, icon }) =>
     React.createElement(
       "button",
@@ -6243,22 +6284,22 @@ const ViewPins = ({
         }),
         " Sort By:",
       ),
-      React.createElement(SortButton, {
+      SortButton({
         field: "layer",
         label: "Light / Dark",
         icon: "layers",
       }),
-      React.createElement(SortButton, {
+      SortButton({
         field: "hue",
         label: "Hue Angle",
         icon: "palette",
       }),
-      React.createElement(SortButton, {
+      SortButton({
         field: "name",
         label: "Name",
         icon: "type",
       }),
-      React.createElement(SortButton, {
+      SortButton({
         field: "tag",
         label: "Tags",
         icon: "tag",
@@ -8378,6 +8419,21 @@ const processCSVData = (
 // this one repo with Contents: read and write, pasted by the user.
 const GITHUB_API = "https://api.github.com";
 
+// Modals previously had no keyboard dismiss at all.
+const useEscapeKey = (onClose) => {
+  useEffect(() => {
+    if (!onClose) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+};
+
 const toBase64Utf8 = (text) => {
   const bytes = new TextEncoder().encode(text);
   let binary = "";
@@ -8389,8 +8445,7 @@ const toBase64Utf8 = (text) => {
 };
 
 const fromBase64Utf8 = (b64) => {
-  const clean = String(b64 || "").replace(/\s/g, "");
-  const binary = atob(clean);
+  const binary = atob(String(b64 || "").replace(/\s/g, ""));
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return new TextDecoder().decode(bytes);
@@ -8429,59 +8484,214 @@ const ghVerify = async (cfg) => {
 // The Contents API needs the existing blob sha to update a file. Omitting it
 // creates; sending a stale one returns 409 instead of silently overwriting
 // whatever landed in the meantime.
-const ghGetFile = async (cfg, filePath, branch) => {
-  const res = await ghFetch(
-    cfg,
-    `/repos/${cfg.owner}/${cfg.repo}/contents/${encodeURI(filePath)}?ref=${encodeURIComponent(branch)}`,
-  );
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`Could not read ${filePath} (${res.status}).`);
-  const data = await res.json();
-  if (Array.isArray(data)) return null; // it's a directory
-  let text = null;
-  try {
-    text = data.content ? fromBase64Utf8(data.content) : null;
-  } catch (e) {
-    text = null;
-  }
-  return { sha: data.sha, text };
-};
-
-const ghPutFile = async (cfg, filePath, text, branch, message) => {
-  const existing = await ghGetFile(cfg, filePath, branch);
-  // Committing an identical file just adds noise to the history.
-  if (existing && existing.text === text) return "unchanged";
-
-  const body = { message, content: toBase64Utf8(text), branch };
-  if (existing) body.sha = existing.sha;
-
-  const res = await ghFetch(
-    cfg,
-    `/repos/${cfg.owner}/${cfg.repo}/contents/${encodeURI(filePath)}`,
-    { method: "PUT", body: JSON.stringify(body) },
-  );
-  if (res.status === 409) {
-    throw new Error(
-      `${filePath} changed on the remote since it was read — reload and sync again.`,
-    );
-  }
-  if (res.status === 403) {
-    throw new Error(
-      `Write refused for ${filePath} (403) — the token likely lacks Contents: write.`,
-    );
-  }
+// Git's own object model, rather than the Contents API one file at a time.
+// Blobs -> tree -> commit -> move the ref: either the whole sync lands as one
+// commit or nothing does, so a failure can't leave data/ half rewritten.
+const ghJson = async (cfg, path, options, what) => {
+  const res = await ghFetch(cfg, path, options);
   if (!res.ok) {
     let detail = "";
     try {
       detail = (await res.json()).message || "";
     } catch (e) {}
-    throw new Error(`${filePath}: ${res.status} ${detail}`);
+    if (res.status === 403) {
+      throw new Error(`${what} refused (403) — token likely lacks Contents: write.`);
+    }
+    throw new Error(`${what} failed: ${res.status} ${detail}`);
   }
-  return existing ? "updated" : "created";
+  return res.json();
 };
 
-const GitHubSyncModal = ({ config, setConfig, status, onSync, onClose }) => {
+// A git blob sha is sha1("blob <bytelength>\0" + bytes). Computing it locally
+// lets unchanged files be skipped without a request each.
+const gitBlobSha = async (text) => {
+  if (!(window.crypto && window.crypto.subtle)) return null;
+  try {
+    const body = new TextEncoder().encode(text);
+    const header = new TextEncoder().encode(`blob ${body.length}\0`);
+    const full = new Uint8Array(header.length + body.length);
+    full.set(header, 0);
+    full.set(body, header.length);
+    const digest = await window.crypto.subtle.digest("SHA-1", full);
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  } catch (e) {
+    return null;
+  }
+};
+
+const ghCommitFiles = async (cfg, branch, files, message, onProgress) => {
+  const repo = `/repos/${cfg.owner}/${cfg.repo}`;
+  const report = (m) => onProgress && onProgress(m);
+
+  report("Reading branch...");
+  const ref = await ghJson(
+    cfg,
+    `${repo}/git/ref/heads/${encodeURIComponent(branch)}`,
+    {},
+    "Reading branch",
+  );
+  const headSha = ref.object.sha;
+  const headCommit = await ghJson(
+    cfg,
+    `${repo}/git/commits/${headSha}`,
+    {},
+    "Reading commit",
+  );
+  const baseTreeSha = headCommit.tree.sha;
+
+  // One recursive read gives every existing path's blob sha.
+  let existing = {};
+  try {
+    const tree = await ghJson(
+      cfg,
+      `${repo}/git/trees/${baseTreeSha}?recursive=1`,
+      {},
+      "Reading tree",
+    );
+    (tree.tree || []).forEach((e) => {
+      if (e.type === "blob") existing[e.path] = e.sha;
+    });
+  } catch (e) {
+    existing = {};
+  }
+
+  const names = Object.keys(files);
+  const changed = [];
+  const skipped = [];
+  for (const path of names) {
+    const localSha = await gitBlobSha(files[path]);
+    if (localSha && existing[path] === localSha) {
+      skipped.push(path);
+    } else {
+      changed.push(path);
+    }
+  }
+
+  if (changed.length === 0) {
+    return { commit: null, changed: [], skipped, branch };
+  }
+
+  const treeEntries = [];
+  for (let i = 0; i < changed.length; i++) {
+    const path = changed[i];
+    report(`Uploading ${path.split("/").pop()} (${i + 1}/${changed.length})...`);
+    const blob = await ghJson(
+      cfg,
+      `${repo}/git/blobs`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          content: toBase64Utf8(files[path]),
+          encoding: "base64",
+        }),
+      },
+      "Uploading blob",
+    );
+    treeEntries.push({ path, mode: "100644", type: "blob", sha: blob.sha });
+  }
+
+  report("Building tree...");
+  const newTree = await ghJson(
+    cfg,
+    `${repo}/git/trees`,
+    {
+      method: "POST",
+      body: JSON.stringify({ base_tree: baseTreeSha, tree: treeEntries }),
+    },
+    "Creating tree",
+  );
+
+  // If blob-sha comparison was unavailable (no crypto.subtle outside a secure
+  // context) every file gets re-uploaded, and the resulting tree can be
+  // identical to the parent's. Committing that would add an empty commit.
+  if (newTree.sha === baseTreeSha) {
+    return { commit: null, changed: [], skipped: names, branch };
+  }
+
+  report("Committing...");
+  const commit = await ghJson(
+    cfg,
+    `${repo}/git/commits`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        message,
+        tree: newTree.sha,
+        parents: [headSha],
+      }),
+    },
+    "Creating commit",
+  );
+
+  report("Updating branch...");
+  // force:false, so if someone else pushed since we read the head this is
+  // rejected rather than silently discarding their commit.
+  const res = await ghFetch(cfg, `${repo}/git/refs/heads/${encodeURIComponent(branch)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ sha: commit.sha, force: false }),
+  });
+  if (!res.ok) {
+    if (res.status === 422) {
+      throw new Error(
+        `${branch} moved on the remote while syncing — nothing was changed. Reload and try again.`,
+      );
+    }
+    throw new Error(`Updating ${branch} failed: ${res.status}`);
+  }
+
+  return { commit: commit.sha, changed, skipped, branch };
+};
+
+// The plain ./data/ fetch only ever sees what the site was deployed with.
+// Reading through the API picks up commits made elsewhere since.
+const ghReadDataFiles = async (cfg, branch, dir, onProgress) => {
+  const repo = `/repos/${cfg.owner}/${cfg.repo}`;
+  const ref = await ghJson(
+    cfg,
+    `${repo}/git/ref/heads/${encodeURIComponent(branch)}`,
+    {},
+    "Reading branch",
+  );
+  const commit = await ghJson(
+    cfg,
+    `${repo}/git/commits/${ref.object.sha}`,
+    {},
+    "Reading commit",
+  );
+  const tree = await ghJson(
+    cfg,
+    `${repo}/git/trees/${commit.tree.sha}?recursive=1`,
+    {},
+    "Reading tree",
+  );
+  const prefix = dir ? `${dir}/` : "";
+  const wanted = (tree.tree || []).filter(
+    (e) =>
+      e.type === "blob" &&
+      e.path.indexOf(prefix) === 0 &&
+      e.path.toLowerCase().endsWith(".csv"),
+  );
+  const out = {};
+  for (let i = 0; i < wanted.length; i++) {
+    const entry = wanted[i];
+    const short = entry.path.slice(prefix.length);
+    if (onProgress) onProgress(`Reading ${short} (${i + 1}/${wanted.length})...`);
+    const blob = await ghJson(
+      cfg,
+      `${repo}/git/blobs/${entry.sha}`,
+      {},
+      `Reading ${short}`,
+    );
+    out[short] = fromBase64Utf8(blob.content);
+  }
+  return { files: out, commit: ref.object.sha };
+};
+
+const GitHubSyncModal = ({ config, setConfig, status, onSync, onPull, onClose }) => {
   const [draft, setDraft] = useState(config);
+  useEscapeKey(onClose);
   const busy = status && status.state === "running";
 
   const field = (label, key, placeholder, type = "text") =>
@@ -8605,9 +8815,23 @@ const GitHubSyncModal = ({ config, setConfig, status, onSync, onClose }) => {
               onClick: onClose,
               disabled: busy,
               className:
-                "px-4 py-2 rounded-xl text-xs uppercase tracking-widest text-slate-500 hover:text-slate-800 disabled:opacity-40",
+                "px-4 py-2 rounded-xl text-xs uppercase tracking-widest text-slate-500 hover:text-slate-800 disabled:opacity-40 mr-auto",
             },
             "Close",
+          ),
+          React.createElement(
+            "button",
+            {
+              disabled: busy || !draft.owner || !draft.repo || !draft.token,
+              onClick: () => {
+                setConfig(draft);
+                onPull(draft);
+              },
+              className:
+                "px-4 py-2 rounded-xl text-xs uppercase tracking-widest border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-40",
+              title: "Replace this session with what is in the repo",
+            },
+            "Pull",
           ),
           React.createElement(
             "button",
@@ -9492,18 +9716,35 @@ const App = () => {
     index: 0,
   });
   const isUndoing = useRef(false);
-  const currentStateStr = JSON.stringify({
-    names,
-    adjectives,
-    dictNotes,
-    dictTags,
-    savedColors,
-    groupSettings,
-    palette,
-    savedPalettes,
-    observer,
-    illuminant,
-  });
+  // ~60KB of JSON with a full anchor set. Unmemoized this ran on every render,
+  // including every frame of a slider drag.
+  const currentStateStr = useMemo(
+    () =>
+      JSON.stringify({
+        names,
+        adjectives,
+        dictNotes,
+        dictTags,
+        savedColors,
+        groupSettings,
+        palette,
+        savedPalettes,
+        observer,
+        illuminant,
+      }),
+    [
+      names,
+      adjectives,
+      dictNotes,
+      dictTags,
+      savedColors,
+      groupSettings,
+      palette,
+      savedPalettes,
+      observer,
+      illuminant,
+    ],
+  );
   useEffect(() => {
     if (isUndoing.current) {
       isUndoing.current = false;
@@ -10214,6 +10455,12 @@ const App = () => {
     scrubH,
     savedColors,
     temporarySpectral,
+    // Without these, selecting a different commercial colour that sits at the
+    // same L/C/H leaves activeCommercial pointing at the previous one, and an
+    // edit that moves a colour never revalidates.
+    scrubCommercial,
+    colorData,
+    names,
   ]);
   const filterPt = useCallback(
     (p) => {
@@ -10380,6 +10627,7 @@ const App = () => {
   const tabs = useMemo(
     () => [
       { id: "db", label: "Commercial DB" },
+      { id: "pins", label: "Catalog (pinned colors)" },
       { id: "top", label: "Light Layers" },
       { id: "chroma", label: "CHROMA RINGS" },
       { id: "slice", label: "HUE SLICES" },
@@ -10387,7 +10635,6 @@ const App = () => {
       { id: "groups", label: "Color Groups" },
       { id: "adjectives", label: "Adjectives" },
       { id: "palette", label: "Nouns" },
-      { id: "pins", label: "Pins" },
     ],
     [],
   );
@@ -11509,6 +11756,85 @@ const App = () => {
       alert("Failed downloading CSVs: " + e.message);
     }
   };
+  const handlePullFromGitHub = async (override) => {
+    const cfg = override || githubConfig;
+    if (!cfg.token || !cfg.owner || !cfg.repo) {
+      setShowGithubModal(true);
+      return;
+    }
+    if (
+      !window.confirm(
+        "Replace the colors, nouns, adjectives and palettes in this session with what is currently in the repo? Anything unsynced will be lost.",
+      )
+    ) {
+      return;
+    }
+    setSyncStatus({ state: "running", message: "Checking access...", log: [] });
+    try {
+      const info = await ghVerify(cfg);
+      const branch = (cfg.branch || "").trim() || info.defaultBranch;
+      const dir = String(cfg.path || "data").replace(/^\/+|\/+$/g, "");
+      const { files } = await ghReadDataFiles(cfg, branch, dir, (m) =>
+        setSyncStatus({ state: "running", message: m, log: [] }),
+      );
+      const names = Object.keys(files);
+      if (names.length === 0) {
+        throw new Error(`No CSV files found in ${dir || "the repo root"}.`);
+      }
+      let cColorData = {};
+      let cSaved = {};
+      let cNames = {};
+      let cAdjs = {};
+      let cNotes = {};
+      let cTags = {};
+      let cGroups = defaultGroupSettings;
+      let cPalettes = [];
+      const log = [];
+      names.forEach((name) => {
+        const parsed = parseCSV(files[name]);
+        if (!parsed.length) {
+          log.push(`${name} — empty, skipped`);
+          return;
+        }
+        const processed = processCSVData(
+          parsed,
+          cColorData,
+          cSaved,
+          cNames,
+          cAdjs,
+          cNotes,
+          cTags,
+          cGroups,
+          cPalettes,
+        );
+        cColorData = processed.newColorData;
+        cSaved = processed.newSavedColors;
+        cNames = processed.newNames;
+        cAdjs = processed.newAdjs;
+        cNotes = processed.newNotes;
+        cTags = processed.newTags;
+        cGroups = processed.newGroupSettings || cGroups;
+        cPalettes = processed.newSavedPalettes || cPalettes;
+        log.push(`${name} — ${parsed.length} rows`);
+      });
+      setColorData(Object.keys(cColorData).length > 0 ? cColorData : null);
+      setSavedColors(cSaved);
+      setNames(cNames);
+      setAdjectives(cAdjs);
+      setDictNotes(cNotes);
+      setDictTags(cTags);
+      setGroupSettings(cGroups);
+      setSavedPalettes(cPalettes);
+      setSyncStatus({
+        state: "done",
+        message: `Pulled ${names.length} file${names.length === 1 ? "" : "s"} from ${cfg.owner}/${cfg.repo}@${branch}.`,
+        log,
+      });
+    } catch (e) {
+      console.error(e);
+      setSyncStatus({ state: "error", message: e.message, log: [] });
+    }
+  };
   const handleSyncToCSV = async (override) => {
     const cfg = override || githubConfig;
     if (!cfg.token || !cfg.owner || !cfg.repo) {
@@ -11527,33 +11853,27 @@ const App = () => {
       }
       const branch = (cfg.branch || "").trim() || info.defaultBranch;
       const dir = String(cfg.path || "data").replace(/^\/+|\/+$/g, "");
-      const files = buildExportFiles();
-      const names = Object.keys(files);
-      const log = [];
-      // Sequential on purpose: parallel writes to one branch race on the sha.
-      for (let i = 0; i < names.length; i++) {
-        const name = names[i];
-        setSyncStatus({
-          state: "running",
-          message: `Writing ${name} (${i + 1}/${names.length})...`,
-          log: [...log],
-        });
-        const result = await ghPutFile(
-          cfg,
-          dir ? `${dir}/${name}` : name,
-          files[name],
-          branch,
-          `ColorSAMificator: update ${name}`,
-        );
-        log.push(`${name} — ${result}`);
-      }
-      const changed = log.filter((l) => !l.endsWith("unchanged")).length;
+      const built = buildExportFiles();
+      const files = {};
+      Object.keys(built).forEach((name) => {
+        files[dir ? `${dir}/${name}` : name] = built[name];
+      });
+      const result = await ghCommitFiles(
+        cfg,
+        branch,
+        files,
+        `ColorSAMificator: update ${Object.keys(files).length} data files`,
+        (m) => setSyncStatus({ state: "running", message: m, log: [] }),
+      );
       setSyncStatus({
         state: "done",
-        message: changed
-          ? `Committed ${changed} of ${names.length} files to ${cfg.owner}/${cfg.repo}@${branch}.`
-          : `Everything already matches ${cfg.owner}/${cfg.repo}@${branch}.`,
-        log,
+        message: result.commit
+          ? `Committed ${result.changed.length} file${result.changed.length === 1 ? "" : "s"} to ${cfg.owner}/${cfg.repo}@${result.branch} (${result.commit.slice(0, 7)}).`
+          : `Everything already matches ${cfg.owner}/${cfg.repo}@${result.branch}.`,
+        log: [
+          ...result.changed.map((p) => `${p} — committed`),
+          ...result.skipped.map((p) => `${p} — unchanged`),
+        ],
       });
     } catch (e) {
       console.error(e);
@@ -12439,6 +12759,7 @@ const App = () => {
     handleSystemExport,
     handleImportCSV: handleSystemImport,
     handleSyncToCSV,
+    handlePullFromGitHub,
     showGithubModal,
     setShowGithubModal,
     githubConfig,
@@ -12474,6 +12795,7 @@ const DatabaseManager = ({
   setFilterSameNoun,
   onClose,
 }) => {
+  useEscapeKey(onClose);
   return React.createElement(
     "div",
     {
@@ -12662,9 +12984,23 @@ const ViewDatabase = ({
 
   const allDbItems = useMemo(() => {
     if (!colorData) return [];
+    // `colorData` here can be a filtered view, but every write path (edit,
+    // delete, inline tag) indexes into the unfiltered data via originalIndex.
+    // Resolve each row's position in that full list rather than its position
+    // in the filtered one, or the two disagree as soon as a filter is on.
+    const source = dataForUpdates || colorData;
+    const fullIndex = {};
+    Object.keys(source).forEach((brand) => {
+      const map = new Map();
+      source[brand].forEach((c, i) => map.set(c, i));
+      fullIndex[brand] = map;
+    });
     let items = [];
     Object.keys(colorData).forEach((brand) => {
-      colorData[brand].forEach((c, idx) => {
+      colorData[brand].forEach((c, filteredIdx) => {
+        const idx = fullIndex[brand] && fullIndex[brand].has(c)
+          ? fullIndex[brand].get(c)
+          : filteredIdx;
         if (filterPt && !filterPt(c)) return;
         let L = c.L;
         let C = c.C;
@@ -12701,6 +13037,15 @@ const ViewDatabase = ({
           brand,
           originalIndex: idx,
           id: `${brand}-${idx}`,
+          // Depends only on L/C/H, so it is computed here once per item rather
+          // than rebuilt for the whole list on every keystroke or slider move.
+          _inGamut: (() => {
+            try {
+              return new Color("oklch", [L, C, H]).inGamut("srgb");
+            } catch (e) {
+              return true;
+            }
+          })(),
           L,
           C,
           H,
@@ -12716,7 +13061,7 @@ const ViewDatabase = ({
       });
     });
     return items;
-  }, [colorData, filterPt]);
+  }, [colorData, dataForUpdates, filterPt]);
   const allBrands = useMemo(
     () => Array.from(new Set(allDbItems.map((i) => i.brand))).sort(),
     [allDbItems],
@@ -13180,6 +13525,12 @@ const ViewDatabase = ({
 
   const sortedItems = useMemo(() => {
     let items = [...allDbItems];
+    // Track which stage took the list to zero, so the empty state can name it
+    // instead of leaving you to guess across seven stacked filters.
+    let emptyReason = allDbItems.length === 0 ? "there are no colors loaded" : null;
+    const stage = (name) => {
+      if (!emptyReason && items.length === 0) emptyReason = name;
+    };
     if (enableDeltaE && crosshair) {
       const cL = crosshair.rawL;
       const cC = crosshair.rawC;
@@ -13196,15 +13547,22 @@ const ViewDatabase = ({
           return false;
         }
       });
+      stage(`the \u0394E limit (\u2264 ${maxDeltaE})`);
     }
-    if (brandFilter) items = items.filter((item) => item.brand === brandFilter);
+    if (brandFilter) {
+      items = items.filter((item) => item.brand === brandFilter);
+      stage(`the brand filter (${brandFilter})`);
+    }
     if (tagFilter)
       items = items.filter((item) =>
         (item.tags || []).some(
           (t) => t.toLowerCase() === tagFilter.toLowerCase(),
         ),
       );
-    if (spectralFilter) items = items.filter((item) => item.hasSpectral);
+    if (spectralFilter) {
+      items = items.filter((item) => item.hasSpectral);
+      stage("the spectral-only filter");
+    }
     if (searchTerm.trim()) {
       const qWords = searchTerm
         .toLowerCase()
@@ -13225,6 +13583,7 @@ const ViewDatabase = ({
             (item.tags && item.tags.some((t) => t.toLowerCase().includes(w))),
         ),
       );
+      stage(`the search for "${searchTerm.trim()}"`);
     }
     if (Object.keys(columnFilters).length > 0) {
       items = items.filter((item) => {
@@ -13249,11 +13608,9 @@ const ViewDatabase = ({
         }
         return true;
       });
+      stage("the column filters");
     }
-    items = items.map((item) => ({
-      ...item,
-      _inGamut: new Color("oklch", [item.L, item.C, item.H]).inGamut("srgb"),
-    }));
+    items.emptyReason = emptyReason;
     return items.sort((a, b) => {
       let valA, valB;
       switch (sortBy) {
@@ -13462,6 +13819,7 @@ const ViewDatabase = ({
       }
     });
   };
+  // Plain render helper, not a component (see note on the other SortButtons).
   const SortButton = ({ field, label }) =>
     React.createElement(
       "button",
@@ -13623,17 +13981,17 @@ const ViewDatabase = ({
       React.createElement(
         "div",
         { className: "flex flex-wrap items-center gap-2" },
-        React.createElement(SortButton, { field: "brand", label: "Brand" }),
-        React.createElement(SortButton, { field: "sheen", label: "Sheen" }),
-        React.createElement(SortButton, { field: "doorProfile", label: "Profile" }),
-        React.createElement(SortButton, { field: "visualTexture", label: "Vis. Pat" }),
-        React.createElement(SortButton, { field: "tactileTexture", label: "Tac. Tex" }),
-        React.createElement(SortButton, { field: "material", label: "Material" }),
-        React.createElement(SortButton, { field: "name", label: "Name" }),
-        React.createElement(SortButton, { field: "lightness", label: "L" }),
-        React.createElement(SortButton, { field: "chroma", label: "C" }),
-        React.createElement(SortButton, { field: "hue", label: "H" }),
-        React.createElement(SortButton, { field: "deltae", label: "\u0394E" }),
+        SortButton({ field: "brand", label: "Brand" }),
+        SortButton({ field: "sheen", label: "Sheen" }),
+        SortButton({ field: "doorProfile", label: "Profile" }),
+        SortButton({ field: "visualTexture", label: "Vis. Pat" }),
+        SortButton({ field: "tactileTexture", label: "Tac. Tex" }),
+        SortButton({ field: "material", label: "Material" }),
+        SortButton({ field: "name", label: "Name" }),
+        SortButton({ field: "lightness", label: "L" }),
+        SortButton({ field: "chroma", label: "C" }),
+        SortButton({ field: "hue", label: "H" }),
+        SortButton({ field: "deltae", label: "\u0394E" }),
         React.createElement("div", {
           className: "h-4 w-px bg-slate-300 dark:bg-neutral-700 mx-1",
         }),
@@ -13925,7 +14283,9 @@ const ViewDatabase = ({
         React.createElement(
           "div",
           { className: "text-center text-slate-400 text-xs w-full p-8 italic" },
-          "No commercial colors found. Adjust filters or \u0394E.",
+          sortedItems.emptyReason
+            ? `No commercial colors left after ${sortedItems.emptyReason}.`
+            : "No commercial colors found. Adjust filters or \u0394E.",
         ),
       swatchLayout === "matrix" &&
         React.createElement(
@@ -15297,6 +15657,7 @@ const ViewDatabase = ({
   );
 };
 const FileManager = ({ linkedFiles, setLinkedFiles, onClose }) => {
+  useEscapeKey(onClose);
   const [newFileName, setNewFileName] = useState("");
   const handleAddFile = () => {
     const trimmed = newFileName.trim();
@@ -15614,6 +15975,7 @@ const AppUI = ({
   handleSystemExport,
   handleImportCSV,
   handleSyncToCSV,
+  handlePullFromGitHub,
   showGithubModal,
   setShowGithubModal,
   githubConfig,
@@ -15638,7 +16000,31 @@ const AppUI = ({
   setTetheringPinId,
 }) => {
   const isDark = theme === "dark";
+  // The input stays bound to the raw value so typing never lags; the heavy
+  // table/grid re-filter runs against this deferred copy instead.
+  const deferredSearch = useDeferredValue(viewportSearchQuery);
   const [showViewFilters, setShowViewFilters] = useState(false);
+  // Surface what the group filters actually resolved to. These read as
+  // geometry-free names, so a wrong match is visible instead of silent.
+  const sameGroupLabels = useMemo(() => {
+    if (!showViewFilters) return { noun: "", adj: "" };
+    const pretty = (k) =>
+      k && k.indexOf("name:") === 0 ? k.slice(5).toUpperCase() : "unnamed";
+    try {
+      const ctx = getSameGroupContext(
+        scrubL,
+        scrubC,
+        scrubH,
+        null,
+        savedColors,
+        names,
+        adjectives,
+      );
+      return { noun: pretty(ctx.nounKey), adj: pretty(ctx.adjectiveKey) };
+    } catch (e) {
+      return { noun: "", adj: "" };
+    }
+  }, [showViewFilters, scrubL, scrubC, scrubH, savedColors, names, adjectives]);
   const [draggedPaletteIndex, setDraggedPaletteIndex] = useState(null);
   const [dragOverPaletteIndex, setDragOverPaletteIndex] = useState(null);
 
@@ -18145,8 +18531,14 @@ const AppUI = ({
                         { className: "flex items-center justify-between" },
                         React.createElement(
                           "span",
-                          { className: "text-[10px] uppercase text-slate-400 font-mono" },
-                          "Same Adjective"
+                          { className: "text-[10px] uppercase text-slate-400 font-mono flex flex-col" },
+                          "Same Adjective",
+                          sameGroupLabels.adj &&
+                            React.createElement(
+                              "span",
+                              { className: "text-[9px] normal-case text-sky-500 truncate max-w-[120px]" },
+                              sameGroupLabels.adj
+                            )
                         ),
                         React.createElement("button", {
                           onClick: () => setFilterSameAdjective(!filterSameAdjective),
@@ -18167,8 +18559,14 @@ const AppUI = ({
                         { className: "flex items-center justify-between" },
                         React.createElement(
                           "span",
-                          { className: "text-[10px] uppercase text-slate-400 font-mono" },
-                          "Same Noun"
+                          { className: "text-[10px] uppercase text-slate-400 font-mono flex flex-col" },
+                          "Same Noun",
+                          sameGroupLabels.noun &&
+                            React.createElement(
+                              "span",
+                              { className: "text-[9px] normal-case text-sky-500 truncate max-w-[120px]" },
+                              sameGroupLabels.noun
+                            )
                         ),
                         React.createElement("button", {
                           onClick: () => setFilterSameNoun(!filterSameNoun),
@@ -18203,7 +18601,7 @@ const AppUI = ({
                 swatchZoom,
                 handlePointClick,
                 crosshair,
-                searchTerm: viewportSearchQuery,
+                searchTerm: deferredSearch,
                 setSearchTerm: setViewportSearchQuery,
                 tagFilter: viewportTagFilter,
                 setTagFilter: setViewportTagFilter,
@@ -18252,7 +18650,7 @@ const AppUI = ({
                 tetheringPinId,
                 swatchLayout,
                 swatchZoom,
-                viewportSearchQuery,
+                viewportSearchQuery: deferredSearch,
                 filterPt,
                 filterL,
                 filterC,
@@ -18275,7 +18673,7 @@ const AppUI = ({
                 tetheringPinId,
                 swatchLayout,
                 swatchZoom,
-                viewportSearchQuery,
+                viewportSearchQuery: deferredSearch,
                 filterPt,
                 filterL,
                 filterC,
@@ -18299,7 +18697,7 @@ const AppUI = ({
                 tetheringPinId,
                 swatchLayout,
                 swatchZoom,
-                viewportSearchQuery,
+                viewportSearchQuery: deferredSearch,
                 filterPt,
                 filterL,
                 filterC,
@@ -19595,6 +19993,7 @@ const AppUI = ({
         setConfig: setGithubConfig,
         status: syncStatus,
         onSync: handleSyncToCSV,
+        onPull: handlePullFromGitHub,
         onClose: () => setShowGithubModal(false),
       }),
     showDatabaseManager &&
@@ -20353,8 +20752,62 @@ const AppUI = ({
     ),
   );
 };
+// Without this, a single bad render unmounts the whole tree and leaves a blank
+// page with nothing but a console trace.
+class RootErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("ColorSAMificator crashed:", error, info);
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return React.createElement(
+      "div",
+      {
+        className:
+          "min-h-screen flex flex-col items-center justify-center gap-4 p-8 font-mono text-center",
+      },
+      React.createElement(
+        "div",
+        { className: "text-xs uppercase tracking-widest text-slate-400" },
+        "Something broke",
+      ),
+      React.createElement(
+        "pre",
+        {
+          className:
+            "text-[11px] text-red-600 max-w-xl whitespace-pre-wrap text-left bg-red-50 rounded-xl p-4 overflow-auto",
+        },
+        String(this.state.error && this.state.error.message),
+      ),
+      React.createElement(
+        "p",
+        { className: "text-[11px] text-slate-500 max-w-md" },
+        "Your work is still in this browser's saved state. Reloading usually recovers it.",
+      ),
+      React.createElement(
+        "button",
+        {
+          onClick: () => window.location.reload(),
+          className:
+            "px-4 py-2 rounded-xl text-xs uppercase tracking-widest bg-slate-800 text-white hover:bg-slate-900",
+        },
+        "Reload",
+      ),
+    );
+  }
+}
+
 const rootItem = document.getElementById("root");
 if (rootItem) {
   const root = ReactDOM.createRoot(rootItem);
-  root.render(React.createElement(App, null));
+  root.render(
+    React.createElement(RootErrorBoundary, null, React.createElement(App, null)),
+  );
 }
