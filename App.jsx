@@ -109,23 +109,6 @@ function getColorGroup(l, c, h, settings) {
   }
   return baseName;
 }
-function getNounPrefix(L, C) {
-  return "";
-}
-function getLayerName(prefix) {
-  switch (prefix) {
-    case "UL":
-      return "Ultra Light";
-    case "L":
-      return "Light";
-    case "D":
-      return "Dark";
-    case "UD":
-      return "Ultra Dark";
-    default:
-      return "Unknown";
-  }
-}
 function getLStr(L) {
   const lVal = Math.round(L * 50) * 2;
   return Math.min(100, Math.max(0, lVal)).toString().padStart(2, "0");
@@ -911,33 +894,33 @@ const CommercialMatches = ({
   onSelectColor,
   savedColors = {},
 }) => {
-  if (!crosshair) return null;
-  const c = new Color("oklch", [
-    crosshair.rawL,
-    crosshair.rawC,
-    crosshair.rawH,
-  ]);
-  const hex = c
-    .clone()
-    .toGamut({ space: "srgb" })
-    .toString({ format: "hex" })
-    .toUpperCase();
-  const fmt = (v, d = 3) => (isNaN(v) ? "0.000" : Number(v).toFixed(d));
+  // Hooks must run on every render, so they stay above any early return.
   const [fullscreenImage, setFullscreenImage] = useState(null);
   const [maxDeltaE, setMaxDeltaE] = useState(1.0);
   const [searchQuery, setSearchQuery] = useState("");
+  const c = useMemo(
+    () =>
+      new Color("oklch", [
+        crosshair?.rawL ?? 0,
+        crosshair?.rawC ?? 0,
+        crosshair?.rawH ?? 0,
+      ]),
+    [crosshair?.rawL, crosshair?.rawC, crosshair?.rawH],
+  );
+  const fmt = (v, d = 3) => (isNaN(v) ? "0.000" : Number(v).toFixed(d));
   const filteredMatches = useMemo(() => {
     if (!colorData || Object.keys(colorData).length === 0) return null;
 
-    let binBounds = null;
+    let sameGroup = null;
     if (filterSameAdjective || filterSameNoun) {
-      const unfilteredPts = getUnfilteredPoints(gridData, savedColors);
-      binBounds = getCursorBinBoundaries(
+      sameGroup = getSameGroupContext(
         crosshair.rawL,
         crosshair.rawC,
         crosshair.rawH,
+        gridData,
         savedColors,
-        unfilteredPts
+        names,
+        adjectives,
       );
     }
 
@@ -968,15 +951,15 @@ const CommercialMatches = ({
           }
           const d = c.deltaE(targetColor, "OK") * 100;
           if (d <= maxDeltaE) {
-            if ((filterSameAdjective || filterSameNoun) && binBounds) {
+            if ((filterSameAdjective || filterSameNoun) && sameGroup) {
               const itemL = targetColor.coords[0];
               const itemC = targetColor.coords[1];
               const itemH = isNaN(targetColor.coords[2]) ? 0 : targetColor.coords[2];
 
-              if (filterSameAdjective && !isPointInSameAdjective(itemL, binBounds)) {
+              if (filterSameAdjective && !matchesSameAdjective(sameGroup, itemL)) {
                 continue;
               }
-              if (filterSameNoun && !isPointInSameNoun(itemC, itemH, binBounds)) {
+              if (filterSameNoun && !matchesSameNoun(sameGroup, itemL, itemC, itemH)) {
                 continue;
               }
             }
@@ -1042,6 +1025,9 @@ const CommercialMatches = ({
     gridData,
     savedColors,
   ]);
+
+  if (!crosshair) return null;
+
   const MatchRow = ({ label, match }) => {
     if (!match) return null;
     const isVerified = match.spectral && match.spectral.length > 0;
@@ -3150,227 +3136,157 @@ function getInheritedPinNames(
     sourceId,
   };
 }
-const getUnfilteredPoints = (gridData, savedColors) => {
-  if (!gridData) return [];
-  const points = [...(gridData.allPoints || [])];
-  Object.values(savedColors).forEach((sc) => {
-    if (sc.type === "pin" || sc.type === "anchor") {
+
+// --- Same-noun / same-adjective resolution ---------------------------------
+// Both filters answer one question: does this colour carry the same assigned
+// name as the cursor? The assignment comes from anchors.csv — names[] for
+// nouns (keyed by column), adjectives[] for lightness levels. Comparing the
+// resolved *name* rather than the ID means one name spread across several
+// columns or several lightness levels groups together, and a colour sitting
+// between two anchors still falls under the nearest one.
+
+// Every entity that carries a noun becomes a column candidate. An anchor pins
+// a single sample, but the noun it holds belongs to the whole C/H column, so
+// it stays a candidate at every lightness. A nounColumn keeps its own L range.
+const getNounColumns = (gridData, savedColors) => {
+  const cols = [];
+  const push = (id, a, b, minL, maxL, nameOverride) => {
+    if (id === undefined || id === null) return;
+    if (!isFinite(a) || !isFinite(b)) return;
+    cols.push({ id, a, b, minL, maxL, nameOverride });
+  };
+
+  (gridData?.baseAnchors || []).forEach((ba) => {
+    const a = ba.a !== undefined ? ba.a : ba.C * Math.sin((ba.H * Math.PI) / 180);
+    const b = ba.b !== undefined ? ba.b : ba.C * Math.cos((ba.H * Math.PI) / 180);
+    const id = ba.parentNounId || `${ba.cStr}-${ba.hStr}`;
+    push(id, a, b, -Infinity, Infinity, ba.nameOverride);
+  });
+
+  Object.values(savedColors || {}).forEach((sc) => {
+    if (sc.type === "nounColumn") {
+      const a = sc.a !== undefined ? sc.a : sc.C * Math.sin((sc.H * Math.PI) / 180);
+      const b = sc.b !== undefined ? sc.b : sc.C * Math.cos((sc.H * Math.PI) / 180);
+      push(
+        sc.id,
+        a,
+        b,
+        sc.minL !== undefined && sc.minL !== null ? sc.minL : -Infinity,
+        sc.maxL !== undefined && sc.maxL !== null ? sc.maxL : Infinity,
+        sc.nameOverride,
+      );
+    } else if (sc.type === "anchor") {
+      const a = sc.a !== undefined ? sc.a : sc.C * Math.sin((sc.H * Math.PI) / 180);
+      const b = sc.b !== undefined ? sc.b : sc.C * Math.cos((sc.H * Math.PI) / 180);
       const adjId = sc.adjId || getLStr(sc.L);
-      const anchorId =
+      const id =
         sc.anchorId ||
-        `custom-${Math.round(sc.C * 100)
-          .toString()
-          .padStart(2, "0")}-${Math.round(sc.H).toString().padStart(3, "0")}-${adjId}`;
-      points.push({
-        L: sc.L,
-        C: sc.C,
-        H: sc.H,
-        a: sc.a || sc.C * Math.sin((sc.H * Math.PI) / 180),
-        b: sc.b || sc.C * Math.cos((sc.H * Math.PI) / 180),
-        lStr: adjId,
-        cStr: anchorId ? anchorId.split("-")[1] : "",
-        hStr: anchorId ? anchorId.split("-")[2] : "",
-        parentNounId: sc.id,
-        isPin: sc.type === "pin",
-        isCustomAnchor: sc.type === "anchor",
-      });
-    } else if (sc.type === "nounColumn") {
-      const dL = 0.02;
-      if (sc.minL === sc.maxL && sc.minL !== null) {
-        const L = sc.minL;
-        points.push({
-          L,
-          C: sc.C,
-          H: sc.H,
-          a: sc.a || sc.C * Math.sin((sc.H * Math.PI) / 180),
-          b: sc.b || sc.C * Math.cos((sc.H * Math.PI) / 180),
-          lStr: getLStr(L),
-          cStr: Math.round(sc.C * 100).toString().padStart(2, "0"),
-          hStr: Math.round(sc.H).toString().padStart(3, "0"),
-          parentNounId: sc.id,
-        });
-      } else {
-        for (let L = Math.ceil(sc.minL / dL) * dL; L <= sc.maxL; L += dL) {
-          points.push({
-            L,
-            C: sc.C,
-            H: sc.H,
-            a: sc.a || sc.C * Math.sin((sc.H * Math.PI) / 180),
-            b: sc.b || sc.C * Math.cos((sc.H * Math.PI) / 180),
-            lStr: getLStr(L),
-            cStr: Math.round(sc.C * 100).toString().padStart(2, "0"),
-            hStr: Math.round(sc.H).toString().padStart(3, "0"),
-            parentNounId: sc.id,
-          });
-        }
-      }
+        `custom-${Math.round(sc.C * 100).toString().padStart(2, "0")}-${Math.round(sc.H).toString().padStart(3, "0")}-${adjId}`;
+      push(id, a, b, -Infinity, Infinity, sc.nameOverride);
     }
   });
-  return points;
+
+  return cols;
 };
 
-const getCursorBinBoundaries = (L, C, H, savedColors, points = []) => {
+// Which noun column does this colour fall under? Nearest column in the a/b
+// plane, preferring columns whose lightness range actually contains it.
+const resolveNounKey = (L, C, H, columns, namesObj) => {
   const normH = isNaN(H) || H === undefined ? 0 : ((H % 360) + 360) % 360;
   const a = C * Math.sin((normH * Math.PI) / 180);
   const b = C * Math.cos((normH * Math.PI) / 180);
-  
-  let minDist = Infinity;
-  let closestPt = null;
 
-  points.forEach((p) => {
-    if (p.isPin) return; // skip pins, a bin boundary is defined by columns
-    const d =
-      Math.pow(L - p.L, 2) +
-      Math.pow(a - p.a, 2) +
-      Math.pow(b - p.b, 2);
-    if (d < minDist) {
-      minDist = d;
-      closestPt = p;
+  let best = null;
+  let bestDist = Infinity;
+  const consider = (requireRange) => {
+    columns.forEach((col) => {
+      if (requireRange && !(L >= col.minL - 0.001 && L <= col.maxL + 0.001)) return;
+      const d = Math.pow(a - col.a, 2) + Math.pow(b - col.b, 2);
+      if (d < bestDist) {
+        bestDist = d;
+        best = col;
+      }
+    });
+  };
+  consider(true);
+  if (!best) consider(false);
+
+  if (!best) {
+    const cStr = Math.round(C * 100).toString().padStart(2, "0");
+    const hStr = Math.round(normH).toString().padStart(3, "0");
+    return `id:${cStr}-${hStr}`;
+  }
+
+  const name = String(
+    (namesObj && namesObj[best.id]) || best.nameOverride || "",
+  ).trim();
+  return name ? `name:${name.toLowerCase()}` : `id:${best.id}`;
+};
+
+// Which adjective level does this colour fall under? The exact lightness
+// bucket if anchors.csv named it, otherwise the nearest named level.
+const resolveAdjectiveKey = (L, adjectivesObj) => {
+  const lStr = getLStr(L);
+  const exact = adjectivesObj && adjectivesObj[lStr];
+  if (exact && String(exact).trim()) {
+    return `name:${String(exact).trim().toLowerCase()}`;
+  }
+
+  let bestName = null;
+  let bestDist = Infinity;
+  Object.entries(adjectivesObj || {}).forEach(([key, value]) => {
+    const label = String(value || "").trim();
+    if (!label) return;
+    const levelL = Number(key) / 100;
+    if (!isFinite(levelL)) return;
+    const d = Math.abs(levelL - L);
+    if (d < bestDist) {
+      bestDist = d;
+      bestName = label;
     }
   });
 
-  if (!closestPt) {
-    return {
-      minL: L - 0.015,
-      maxL: L + 0.015,
-      minC: Math.max(0, C - 0.005),
-      maxC: C + 0.005,
-      midLow: normH - 10,
-      midHigh: normH + 10,
-      hasAnchors: false
-    };
-  }
+  return bestName ? `name:${bestName.toLowerCase()}` : `id:${lStr}`;
+};
 
-  // 1. Lightness (L) bounds (narrow bounds of exact same adjective level)
-  const minL = closestPt.L - 0.0101;
-  const maxL = closestPt.L + 0.0101;
-
-  // 2. Chroma (C) bounds
-  const allC = Array.from(new Set(points.map((p) => p.C))).sort((x, y) => x - y);
-  const idxC = allC.indexOf(closestPt.C);
-  let minC, maxC;
-  if (idxC !== -1) {
-    minC = idxC > 0 ? (allC[idxC - 1] + closestPt.C) / 2 : Math.max(0, closestPt.C - 0.01);
-    maxC = idxC < allC.length - 1 ? (allC[idxC + 1] + closestPt.C) / 2 : closestPt.C + 0.01;
-  } else {
-    minC = Math.max(0, closestPt.C - 0.01);
-    maxC = closestPt.C + 0.01;
-  }
-
-  // 3. Hue (H) bounds
-  const sameChromaPts = points.filter((p) => Math.abs(p.C - closestPt.C) < 0.005);
-  const colHVal = Array.from(new Set(sameChromaPts.map((p) => p.H))).sort((x, y) => x - y);
-  const idxH = colHVal.indexOf(closestPt.H);
-  let midLow, midHigh;
-  if (idxH !== -1 && colHVal.length > 1) {
-    const prevH = idxH > 0 ? colHVal[idxH - 1] : colHVal[colHVal.length - 1] - 360;
-    const nextH = idxH < colHVal.length - 1 ? colHVal[idxH + 1] : colHVal[0] + 360;
-    midLow = (prevH + closestPt.H) / 2;
-    midHigh = (closestPt.H + nextH) / 2;
-  } else {
-    midLow = closestPt.H - 15;
-    midHigh = closestPt.H + 15;
-  }
-
+// Bundles the cursor's keys with the column list so a filter pass resolves
+// the cursor once and then only does per-item work.
+const getSameGroupContext = (
+  L,
+  C,
+  H,
+  gridData,
+  savedColors,
+  namesObj,
+  adjectivesObj,
+) => {
+  const columns = getNounColumns(gridData, savedColors);
   return {
-    minL,
-    maxL,
-    minC,
-    maxC,
-    midLow,
-    midHigh,
-    hasAnchors: true,
-    anchor: closestPt,
-    allPoints: points
+    columns,
+    namesObj,
+    adjectivesObj,
+    nounKey: resolveNounKey(L, C, H, columns, namesObj),
+    adjectiveKey: resolveAdjectiveKey(L, adjectivesObj),
   };
 };
 
-const isPointInSameAdjective = (ptL, binBounds) => {
-  return !(ptL < binBounds.minL || ptL > binBounds.maxL);
-};
+const matchesSameAdjective = (ctx, L) =>
+  resolveAdjectiveKey(L, ctx.adjectivesObj) === ctx.adjectiveKey;
 
-const isPointInSameNoun = (ptC, ptH, binBounds) => {
-  if (binBounds.allPoints && binBounds.anchor) {
-    const targetA = ptC * Math.sin((ptH * Math.PI) / 180);
-    const targetB = ptC * Math.cos((ptH * Math.PI) / 180);
-    const cursorL = binBounds.anchor.L;
-    
-    let minDist = Infinity;
-    let closestPt = null;
-    binBounds.allPoints.forEach((p) => {
-      if (Math.abs(p.L - cursorL) > 0.001) return;
-      if (p.isPin) return;
-      const isSpecificAnchor =
-        (Math.abs(p.C - 0.04) < 0.001 && Math.abs(p.H - 90) < 0.1) ||
-        (Math.abs(p.C - 0.12) < 0.001 && Math.abs(p.H - 90) < 0.1);
-      
-      const cObj = new Color("oklch", [p.L, p.C, p.H]);
-      if (!cObj.inGamut("srgb") && p.C !== 0 && !isSpecificAnchor) return;
+const matchesSameNoun = (ctx, L, C, H) =>
+  resolveNounKey(L, C, H, ctx.columns, ctx.namesObj) === ctx.nounKey;
 
-      // Use existing a, b coordinates or compute them
-      const pa = p.a !== undefined ? p.a : p.C * Math.sin((p.H * Math.PI) / 180);
-      const pb = p.b !== undefined ? p.b : p.C * Math.cos((p.H * Math.PI) / 180);
-      const d = Math.pow(targetA - pa, 2) + Math.pow(targetB - pb, 2);
-      // We want strictly the closest column in 2D space.
-      if (d < minDist) {
-        minDist = d;
-        closestPt = { a: pa, b: pb };
-      }
-    });
-    
-    if (closestPt) {
-      const anchorA = binBounds.anchor.a !== undefined ? binBounds.anchor.a : binBounds.anchor.C * Math.sin((binBounds.anchor.H * Math.PI) / 180);
-      const anchorB = binBounds.anchor.b !== undefined ? binBounds.anchor.b : binBounds.anchor.C * Math.cos((binBounds.anchor.H * Math.PI) / 180);
-      return Math.abs(closestPt.a - anchorA) < 0.001 && Math.abs(closestPt.b - anchorB) < 0.001;
-    }
+// A nounColumn spans a lightness range, so it counts as sharing the cursor's
+// adjective if any part of that range lands on the same level.
+const nounColumnMatchesSameAdjective = (ctx, sc) => {
+  const minL = sc.minL !== undefined && sc.minL !== null ? sc.minL : sc.L;
+  const maxL = sc.maxL !== undefined && sc.maxL !== null ? sc.maxL : sc.L;
+  if (minL === undefined || maxL === undefined) return false;
+  if (Math.abs(maxL - minL) < 1e-9) return matchesSameAdjective(ctx, minL);
+  for (let L = minL; L <= maxL + 1e-9; L += 0.02) {
+    if (matchesSameAdjective(ctx, L)) return true;
   }
-
-  if (ptC < binBounds.minC || ptC > binBounds.maxC) return false;
-  
-  const h = isNaN(ptH) ? 0 : ptH;
-  let l = binBounds.midLow;
-  let r = binBounds.midHigh;
-  let range = r - l;
-  let shifted = (h - l) % 360;
-  if (shifted < 0) shifted += 360;
-  if (shifted > range) return false;
-  
-  return true;
-};
-const isNounColumnInSameAdjective = (sc, binBounds) => {
-  const minL = sc.minL !== undefined ? sc.minL : (sc.L !== undefined ? sc.L : 0);
-  const maxL = sc.maxL !== undefined ? sc.maxL : (sc.L !== undefined ? sc.L : 1);
-  return !(Math.max(minL, binBounds.minL) > Math.min(maxL, binBounds.maxL));
-};
-
-const isNounColumnInSameNoun = (sc, binBounds) => {
-  return isPointInSameNoun(sc.C, sc.H, binBounds);
-};
-
-const doesItemMatchBinNounName = (item, binBounds, namesObj) => {
-  if (!binBounds || !binBounds.anchor || !binBounds.anchor.parentNounId) return true;
-  const nounName = namesObj[binBounds.anchor.parentNounId];
-  if (!nounName) return true;
-  const itemName = item.name || item.displayName;
-  if (!itemName) return false;
-  
-  const itemStr = itemName.toLowerCase().replace(/[^a-z0-9]/g, " ");
-  
-  // Split nounName by slashes, commas, ampersands to get distinct alternative phrases
-  const phrases = nounName.toLowerCase().split(/[\/,&]+/).map(s => s.trim()).filter(Boolean);
-  if (phrases.length === 0) return true;
-
-  // It matches if it matches AT LEAST ONE phrase
-  return phrases.some(phrase => {
-    const phraseWords = phrase.replace(/[^a-z0-9]/g, " ").split(/\s+/).filter(Boolean);
-    if (phraseWords.length === 0) return true;
-    
-    // All words in this phrase must be present in item name
-    return phraseWords.every(w => {
-      const regex = new RegExp(`\\b${w}\\b`, "i");
-      return regex.test(itemName) || itemStr.includes(w);
-    });
-  });
+  return matchesSameAdjective(ctx, maxL);
 };
 const ViewportSwatches = ({
   items,
@@ -3391,8 +3307,6 @@ const ViewportSwatches = ({
   const [sortAsc, setSortAsc] = useState(true);
   const [fullscreenImage, setFullscreenImage] = useState(null);
   const baseMatrixSize = 48;
-  const baseListSize = 48;
-  const baseGallerySize = 72;
   const activeHex = useMemo(() => {
     if (!crosshair || items.length === 0) return null;
     let minDist = Infinity;
@@ -4320,7 +4234,6 @@ const ViewTopDown = ({
       setShowText(false);
     }
   };
-  const targetL = crosshair?.rawL || 0;
   const filterFn = useCallback(
     (p, isCommercial = false) => {
       if (filterPt && !filterPt(p)) return false;
@@ -6228,9 +6141,6 @@ const ViewPins = ({
           className: "w-3 h-3",
         }),
     );
-  const revertOverride = (id, field) => {
-    setSavedColors((prev) => ({ ...prev, [id]: { ...prev[id], [field]: "" } }));
-  };
   const handleSelectAll = () => {
     if (selectedIds.length === pinItems.length) {
       setSelectedIds([]);
@@ -8440,7 +8350,10 @@ const processCSVData = (
           (row.ERP_Code && row.ERP_Code.length >= 2
             ? row.ERP_Code.substring(0, 2)
             : null);
-        if (lStr) newAdjs[lStr.trim()] = row.Adjective;
+        // anchors.csv writes these IDs unpadded ("0", "2", "8"), but getLStr
+        // produces two-digit keys ("00", "02", "08"), so the darkest five
+        // levels never matched on lookup.
+        if (lStr) newAdjs[lStr.trim().padStart(2, "0")] = row.Adjective;
       }
     }
   });
@@ -9095,14 +9008,6 @@ const App = () => {
   useEffect(() => {
     loadInitialData();
   }, [loadInitialData, linkedFiles.length]);
-  const getComparable = (obj) => {
-    if (!obj) return null;
-    const { createdAt, createdBy, updatedAt, updatedBy, ...rest } = obj;
-    if (rest.spectral && Array.isArray(rest.spectral)) {
-      rest.spectral = [...rest.spectral];
-    }
-    return JSON.stringify(rest);
-  };
   useEffect(() => {
     setSelectedIds([]);
   }, [activeTab]);
@@ -9191,15 +9096,16 @@ const App = () => {
     if (!colorData) return null;
     const isDb = activeTab === "db";
 
-    let binBounds = null;
+    let sameGroup = null;
     if (filterSameAdjective || filterSameNoun) {
-      const unfilteredPts = getUnfilteredPoints(gridData, savedColors);
-      binBounds = getCursorBinBoundaries(
+      sameGroup = getSameGroupContext(
         scrubL,
         scrubC,
         scrubH,
+        gridData,
         savedColors,
-        unfilteredPts
+        names,
+        adjectives,
       );
     }
 
@@ -9208,7 +9114,7 @@ const App = () => {
       const isVisible = isDb ? viewportVisibility.brands[brand] !== false : viewportVisibility.brands[brand] === true;
       if (isVisible) {
         let list = colorData[brand];
-        if ((filterSameAdjective || filterSameNoun) && binBounds) {
+        if ((filterSameAdjective || filterSameNoun) && sameGroup) {
           list = list.filter((c) => {
             let itemL, itemC, itemH;
             if (c.L !== undefined && c.L !== null && !isNaN(c.L)) {
@@ -9235,10 +9141,10 @@ const App = () => {
                 return false;
               }
             }
-            if (filterSameAdjective && !isPointInSameAdjective(itemL, binBounds)) {
+            if (filterSameAdjective && !matchesSameAdjective(sameGroup, itemL)) {
               return false;
             }
-            if (filterSameNoun && !isPointInSameNoun(itemC, itemH, binBounds)) {
+            if (filterSameNoun && !matchesSameNoun(sameGroup, itemL, itemC, itemH)) {
               return false;
             }
             return true;
@@ -9259,6 +9165,7 @@ const App = () => {
     scrubC,
     scrubH,
     names,
+    adjectives,
     activeTab,
   ]);
   const [showVisibilityMenu, setShowVisibilityMenu] = useState(false);
@@ -9476,7 +9383,6 @@ const App = () => {
         });
       } else if (sc.type === "nounColumn") {
         const dL = 0.02;
-        let countAdded = 0;
         if (sc.minL === sc.maxL && sc.minL !== null) {
           const L = sc.minL;
           const cColor = new Color("oklch", [L, sc.C, sc.H]);
@@ -9492,7 +9398,6 @@ const App = () => {
               parentNounId: sc.id,
               isCustomNounGenerated: true,
             };
-            countAdded++;
           } else if (cColor.inGamut("srgb")) {
             points.push({
               L,
@@ -9522,7 +9427,6 @@ const App = () => {
               isCustomNounGenerated: true,
               parentNounId: sc.id,
             });
-            countAdded++;
           }
         } else {
           for (let L = Math.ceil(sc.minL / dL) * dL; L <= sc.maxL; L += dL) {
@@ -9539,7 +9443,6 @@ const App = () => {
                 parentNounId: sc.id,
                 isCustomNounGenerated: true,
               };
-              countAdded++;
             } else if (cColor.inGamut("srgb")) {
               const pt = {
                 L,
@@ -9570,7 +9473,6 @@ const App = () => {
                 parentNounId: sc.id,
               };
               points.push(pt);
-              countAdded++;
             }
           }
         }
@@ -9600,46 +9502,54 @@ const App = () => {
       }
     });
     if (filterSameAdjective || filterSameNoun) {
-      const binBounds = getCursorBinBoundaries(
+      const sameGroup = getSameGroupContext(
         scrubL,
         scrubC,
         scrubH,
+        gridData,
         savedColors,
-        points
+        names,
+        adjectives,
       );
 
-      if (binBounds && binBounds.hasAnchors) {
-        points = points.filter((p) => {
-          if (filterSameAdjective && !isPointInSameAdjective(p.L, binBounds)) return false;
-          if (filterSameNoun && !isPointInSameNoun(p.C, p.H, binBounds)) return false;
-          return true;
-        });
+      points = points.filter((p) => {
+        if (filterSameAdjective && !matchesSameAdjective(sameGroup, p.L)) return false;
+        if (filterSameNoun && !matchesSameNoun(sameGroup, p.L, p.C, p.H)) return false;
+        return true;
+      });
 
-        Object.keys(filteredSavedColors).forEach((k) => {
-          const sc = filteredSavedColors[k];
-          if (sc.type === "nounColumn") {
-            if (filterSameAdjective && !isNounColumnInSameAdjective(sc, binBounds)) {
-              delete filteredSavedColors[k];
-            } else if (filterSameNoun && !isNounColumnInSameNoun(sc, binBounds)) {
-              delete filteredSavedColors[k];
-            }
-          } else {
-            if (filterSameAdjective && !isPointInSameAdjective(sc.L, binBounds)) {
-              delete filteredSavedColors[k];
-            } else if (filterSameNoun && !isPointInSameNoun(sc.C, sc.H, binBounds)) {
-              delete filteredSavedColors[k];
-            }
+      Object.keys(filteredSavedColors).forEach((k) => {
+        const sc = filteredSavedColors[k];
+        if (sc.type === "nounColumn") {
+          if (filterSameAdjective && !nounColumnMatchesSameAdjective(sameGroup, sc)) {
+            delete filteredSavedColors[k];
+          } else if (
+            filterSameNoun &&
+            !matchesSameNoun(sameGroup, sc.minL !== undefined ? sc.minL : sc.L, sc.C, sc.H)
+          ) {
+            delete filteredSavedColors[k];
           }
-        });
+        } else {
+          if (filterSameAdjective && !matchesSameAdjective(sameGroup, sc.L)) {
+            delete filteredSavedColors[k];
+          } else if (filterSameNoun && !matchesSameNoun(sameGroup, sc.L, sc.C, sc.H)) {
+            delete filteredSavedColors[k];
+          }
+        }
+      });
 
-        baseAnchors = baseAnchors.filter((ba) => {
-          const minL = ba.minL !== undefined ? ba.minL : (ba.L !== undefined ? ba.L : 0);
-          const maxL = ba.maxL !== undefined ? ba.maxL : (ba.L !== undefined ? ba.L : 1);
-          if (filterSameAdjective && !isNounColumnInSameAdjective({ minL, maxL, C: ba.C, H: ba.H }, binBounds)) return false;
-          if (filterSameNoun && !isNounColumnInSameNoun({ minL, maxL, C: ba.C, H: ba.H }, binBounds)) return false;
-          return true;
-        });
-      }
+      baseAnchors = baseAnchors.filter((ba) => {
+        const minL = ba.minL !== undefined ? ba.minL : (ba.L !== undefined ? ba.L : 0);
+        const maxL = ba.maxL !== undefined ? ba.maxL : (ba.L !== undefined ? ba.L : 1);
+        if (
+          filterSameAdjective &&
+          !nounColumnMatchesSameAdjective(sameGroup, { minL, maxL, L: ba.L })
+        ) {
+          return false;
+        }
+        if (filterSameNoun && !matchesSameNoun(sameGroup, minL, ba.C, ba.H)) return false;
+        return true;
+      });
     }
     const filterTags = viewportTagFilter
       .toLowerCase()
@@ -9841,7 +9751,6 @@ const App = () => {
       });
     }
     const closestGridPt = gridTieBreakers[0];
-    const currentDelta = 0.02;
     const exactSavedColor =
       closestSaved && minSavedDist < 1e-4 ? closestSaved : null;
     let gravityL = scrubL,
@@ -10193,7 +10102,6 @@ const App = () => {
   const tabs = useMemo(
     () => [
       { id: "db", label: "Commercial DB" },
-      { id: "nix", label: "Nix Spectro" },
       { id: "top", label: "Light Layers" },
       { id: "chroma", label: "CHROMA RINGS" },
       { id: "slice", label: "HUE SLICES" },
@@ -10394,7 +10302,6 @@ const App = () => {
           if (isNaN(hVal)) hVal = 180;
         }
       }
-      let matchedCombo = false;
       for (const [adjId, adjName] of Object.entries(adjectives)) {
         if (results.length >= 200) break;
         const comboName = `${adjName} ${nName}`.trim().toLowerCase();
@@ -10403,7 +10310,6 @@ const App = () => {
           qWords2.length === 0 ||
           qWords2.every((w) => comboName.includes(w))
         ) {
-          matchedCombo = true;
           let lVal = baseL;
           if (adjId.includes("-"))
             lVal = parseFloat(adjId.split("-")[1]) || baseL;
@@ -11853,7 +11759,9 @@ const App = () => {
       sourceId: parent.id,
     };
   };
-  const activeData = useMemo(() => {
+  // Plain IIFE, not useMemo: this sits after an early return, so a hook
+  // here would break hook ordering.
+  const activeData = (() => {
     if (!crosshair?.activeSavedColor) {
       if (crosshair?.closestGridPt?.isPin) {
         const pinSc = savedColors[crosshair.closestGridPt.pinId];
@@ -11920,7 +11828,7 @@ const App = () => {
       notes: sc.notes || inherited.notes,
       inherited,
     };
-  }, [crosshair, savedColors, adjectives, names, dictNotes]);
+  })();
   const activeAdj = activeData.adj;
   const activeName = activeData.name;
   const activeNotes = activeData.notes;
@@ -12167,7 +12075,6 @@ const App = () => {
     handlePointClick,
     handleVisualize,
     crosshair,
-    crosshair,
     gridData,
     isLight,
     activeColorObj,
@@ -12222,6 +12129,8 @@ const DatabaseManager = ({
   swatchZoom,
   handlePointClick,
   crosshair,
+  setFilterSameAdjective,
+  setFilterSameNoun,
   onClose,
 }) => {
   return React.createElement(
@@ -12231,11 +12140,9 @@ const DatabaseManager = ({
         "fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-md transition-all",
     },
     React.createElement(
-      motion.div,
+      "div",
       {
-        initial: { opacity: 0, scale: 0.9, y: 20 },
-        animate: { opacity: 1, scale: 1, y: 0 },
-        exit: { opacity: 0, scale: 0.9, y: 20 },
+        // framer-motion isn't loaded by index.html, so `motion.div` threw here.
         className:
           "bg-white dark:bg-neutral-900 rounded-[2.5rem] shadow-2xl w-full max-w-6xl h-[85vh] flex flex-col overflow-hidden border border-slate-200 dark:border-neutral-800",
       },
@@ -12410,8 +12317,8 @@ const ViewDatabase = ({
   const [filterSearch, setFilterSearch] = useState("");
   const [showGuideModal, setShowGuideModal] = useState(false);
 
-  const baseMatrixSize = 48;
   const baseListSize = 48;
+
   const allDbItems = useMemo(() => {
     if (!colorData) return [];
     let items = [];
@@ -12727,7 +12634,6 @@ const ViewDatabase = ({
     }
 
     const distinctPairs = getDistinctColumnValues(colId);
-    const totalCount = distinctPairs.length;
     const filteredPairs = filterSearch.trim()
       ? distinctPairs.filter(([v]) => v.toLowerCase().includes(filterSearch.trim().toLowerCase()))
       : distinctPairs;
@@ -18099,20 +18005,6 @@ const AppUI = ({
                   setShowAveryModal(true);
                 },
               }),
-            activeTab === "nix" &&
-              React.createElement(ViewNixSpectroErrorBoundary, {
-                handlePointClick,
-                savedColors,
-                setSavedColors,
-                theme,
-                names,
-                adjectives,
-                dictNotes,
-                setDictNotes,
-                dictTags,
-                setDictTags,
-                getPaletteItemInfo,
-              }),
           ),
         ),
       ),
@@ -18779,7 +18671,6 @@ const AppUI = ({
                   .toGamut({ space: "srgb" })
                   .toString({ format: "hex" })
                   .toUpperCase();
-                const isLight2 = item.L > 0.65;
                 return React.createElement(
                   "div",
                   {
@@ -19346,6 +19237,8 @@ const AppUI = ({
         swatchZoom,
         handlePointClick,
         crosshair,
+        setFilterSameAdjective,
+        setFilterSameNoun,
         onClose: () => setShowDatabaseManager(false),
       }),
     showAveryModal &&
