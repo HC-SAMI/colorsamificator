@@ -8370,6 +8370,265 @@ const processCSVData = (
     newSavedPalettes,
   };
 };
+// --- GitHub sync -----------------------------------------------------------
+// This app is a static page with no backend, so there is nowhere to keep an
+// OAuth client secret and no server to run the code-for-token exchange.
+// GitHub's device flow doesn't send CORS headers either, so it can't be driven
+// from the browser. That leaves a fine-grained personal access token, scoped to
+// this one repo with Contents: read and write, pasted by the user.
+const GITHUB_API = "https://api.github.com";
+
+const toBase64Utf8 = (text) => {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  const CHUNK = 0x8000; // spreading the whole array overflows the stack
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+};
+
+const fromBase64Utf8 = (b64) => {
+  const clean = String(b64 || "").replace(/\s/g, "");
+  const binary = atob(clean);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+};
+
+const ghFetch = (cfg, path, options = {}) =>
+  fetch(`${GITHUB_API}${path}`, {
+    ...options,
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${cfg.token}`,
+      "X-GitHub-Api-Version": "2022-11-28",
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+  });
+
+const ghVerify = async (cfg) => {
+  const res = await ghFetch(cfg, `/repos/${cfg.owner}/${cfg.repo}`);
+  if (res.status === 401) {
+    throw new Error("Token rejected (401) — check the value and its expiry.");
+  }
+  if (res.status === 404) {
+    throw new Error(
+      `${cfg.owner}/${cfg.repo} not found, or this token has no access to it.`,
+    );
+  }
+  if (!res.ok) throw new Error(`GitHub returned ${res.status}.`);
+  const repo = await res.json();
+  return {
+    defaultBranch: repo.default_branch || "main",
+    permissions: repo.permissions || {},
+  };
+};
+
+// The Contents API needs the existing blob sha to update a file. Omitting it
+// creates; sending a stale one returns 409 instead of silently overwriting
+// whatever landed in the meantime.
+const ghGetFile = async (cfg, filePath, branch) => {
+  const res = await ghFetch(
+    cfg,
+    `/repos/${cfg.owner}/${cfg.repo}/contents/${encodeURI(filePath)}?ref=${encodeURIComponent(branch)}`,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Could not read ${filePath} (${res.status}).`);
+  const data = await res.json();
+  if (Array.isArray(data)) return null; // it's a directory
+  let text = null;
+  try {
+    text = data.content ? fromBase64Utf8(data.content) : null;
+  } catch (e) {
+    text = null;
+  }
+  return { sha: data.sha, text };
+};
+
+const ghPutFile = async (cfg, filePath, text, branch, message) => {
+  const existing = await ghGetFile(cfg, filePath, branch);
+  // Committing an identical file just adds noise to the history.
+  if (existing && existing.text === text) return "unchanged";
+
+  const body = { message, content: toBase64Utf8(text), branch };
+  if (existing) body.sha = existing.sha;
+
+  const res = await ghFetch(
+    cfg,
+    `/repos/${cfg.owner}/${cfg.repo}/contents/${encodeURI(filePath)}`,
+    { method: "PUT", body: JSON.stringify(body) },
+  );
+  if (res.status === 409) {
+    throw new Error(
+      `${filePath} changed on the remote since it was read — reload and sync again.`,
+    );
+  }
+  if (res.status === 403) {
+    throw new Error(
+      `Write refused for ${filePath} (403) — the token likely lacks Contents: write.`,
+    );
+  }
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = (await res.json()).message || "";
+    } catch (e) {}
+    throw new Error(`${filePath}: ${res.status} ${detail}`);
+  }
+  return existing ? "updated" : "created";
+};
+
+const GitHubSyncModal = ({ config, setConfig, status, onSync, onClose }) => {
+  const [draft, setDraft] = useState(config);
+  const busy = status && status.state === "running";
+
+  const field = (label, key, placeholder, type = "text") =>
+    React.createElement(
+      "div",
+      { className: "flex flex-col gap-1", key },
+      React.createElement(
+        "label",
+        {
+          className:
+            "text-[10px] uppercase tracking-widest text-slate-400 font-mono",
+        },
+        label,
+      ),
+      React.createElement("input", {
+        type,
+        value: draft[key] || "",
+        placeholder,
+        disabled: busy,
+        onChange: (e) => setDraft({ ...draft, [key]: e.target.value }),
+        className:
+          "px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-sm font-mono text-slate-700 focus:outline-none focus:border-sky-400",
+      }),
+    );
+
+  return ReactDOM.createPortal(
+    React.createElement(
+      "div",
+      {
+        className:
+          "fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/40 backdrop-blur-md",
+      },
+      React.createElement(
+        "div",
+        {
+          className:
+            "bg-white rounded-[2rem] shadow-2xl w-full max-w-lg flex flex-col overflow-hidden border border-slate-200",
+        },
+        React.createElement(
+          "div",
+          {
+            className:
+              "px-6 py-4 border-b border-slate-200 flex items-center justify-between",
+          },
+          React.createElement(
+            "h2",
+            { className: "text-sm font-bold uppercase tracking-widest" },
+            "Sync to GitHub",
+          ),
+          React.createElement(
+            "button",
+            { onClick: onClose, className: "text-slate-400 hover:text-slate-700" },
+            React.createElement(Icon, { name: "x", className: "w-5 h-5" }),
+          ),
+        ),
+        React.createElement(
+          "div",
+          { className: "px-6 py-5 flex flex-col gap-4 overflow-y-auto" },
+          React.createElement(
+            "p",
+            { className: "text-xs text-slate-500 leading-relaxed" },
+            "Writes every CSV in the export straight into the repo's data folder. Needs a fine-grained personal access token with Contents: read and write on this repository.",
+          ),
+          field("Owner", "owner", "HC-SAMI"),
+          field("Repository", "repo", "colorsamificator"),
+          field("Branch", "branch", "(default branch)"),
+          field("Folder", "path", "data"),
+          field("Token", "token", "github_pat_...", "password"),
+          React.createElement(
+            "label",
+            {
+              className:
+                "flex items-center gap-2 text-xs text-slate-600 cursor-pointer",
+            },
+            React.createElement("input", {
+              type: "checkbox",
+              checked: !!draft.remember,
+              disabled: busy,
+              onChange: (e) => setDraft({ ...draft, remember: e.target.checked }),
+            }),
+            "Keep the token for this browser session only",
+          ),
+          React.createElement(
+            "p",
+            { className: "text-[10px] text-slate-400 leading-relaxed" },
+            "The token stays in this browser and goes only to api.github.com. It is never written into an export or a saved state file. Revoke it from GitHub settings at any time.",
+          ),
+          status &&
+            React.createElement(
+              "div",
+              {
+                className: `text-xs rounded-xl px-3 py-2 font-mono ${
+                  status.state === "error"
+                    ? "bg-red-50 text-red-700"
+                    : status.state === "done"
+                      ? "bg-emerald-50 text-emerald-700"
+                      : "bg-slate-50 text-slate-600"
+                }`,
+              },
+              status.message,
+              status.log && status.log.length
+                ? React.createElement(
+                    "div",
+                    { className: "mt-2 flex flex-col gap-0.5 opacity-70" },
+                    status.log.map((line, i) =>
+                      React.createElement("div", { key: i }, line),
+                    ),
+                  )
+                : null,
+            ),
+        ),
+        React.createElement(
+          "div",
+          {
+            className:
+              "px-6 py-4 border-t border-slate-200 flex items-center justify-end gap-2",
+          },
+          React.createElement(
+            "button",
+            {
+              onClick: onClose,
+              disabled: busy,
+              className:
+                "px-4 py-2 rounded-xl text-xs uppercase tracking-widest text-slate-500 hover:text-slate-800 disabled:opacity-40",
+            },
+            "Close",
+          ),
+          React.createElement(
+            "button",
+            {
+              disabled: busy || !draft.owner || !draft.repo || !draft.token,
+              onClick: () => {
+                setConfig(draft);
+                onSync(draft);
+              },
+              className:
+                "px-4 py-2 rounded-xl text-xs uppercase tracking-widest bg-slate-800 text-white hover:bg-slate-900 disabled:opacity-40",
+            },
+            busy ? "Syncing..." : "Sync now",
+          ),
+        ),
+      ),
+    ),
+    document.body,
+  );
+};
+
 const App = () => {
   const [theme, setTheme] = useState("light");
   const [activeTab, setActiveTab] = useState("db");
@@ -8821,6 +9080,25 @@ const App = () => {
   const [linkedFiles, setLinkedFiles] = useState(
     initialState?.linkedFiles || [],
   );
+  const [showGithubModal, setShowGithubModal] = useState(false);
+  const [syncStatus, setSyncStatus] = useState(null);
+  const [githubConfig, setGithubConfig] = useState(() => {
+    // sessionStorage is unavailable in some sandboxes, so never let it throw.
+    try {
+      const raw = sessionStorage.getItem("csam-github");
+      if (raw) return JSON.parse(raw);
+    } catch (e) {}
+    return { token: "", owner: "", repo: "", branch: "", path: "data", remember: false };
+  });
+  useEffect(() => {
+    try {
+      if (githubConfig.remember) {
+        sessionStorage.setItem("csam-github", JSON.stringify(githubConfig));
+      } else {
+        sessionStorage.removeItem("csam-github");
+      }
+    } catch (e) {}
+  }, [githubConfig]);
   const loadInitialData = useCallback(async () => {
     let loadedColorData = null;
     if (window.__COLOR_DATA__) {
@@ -10812,12 +11090,10 @@ const App = () => {
       alert("Export failed: " + err.message);
     }
   };
-  const handleSystemExport = async () => {
-    if (!gridData) {
-      alert("Missing gridData!");
-      return;
-    }
-    try {
+  // Builds every CSV that lives in the repo's data/ folder, keyed by filename.
+  // Shared by the ZIP download and the GitHub sync so the two can't drift.
+  const buildExportFiles = () => {
+      const files = {};
       const anchorsCsv = [];
       const pinsCsv = [];
 
@@ -11122,10 +11398,9 @@ const App = () => {
         }
         return Object.assign(base, data);
       };
-      const zip = new JSZip();
-      zip.file("anchors.csv", Papa.unparse(anchorsCsv.map(makeExportRow)));
-      zip.file("pins.csv", Papa.unparse(pinsCsv.map(makeExportRow)));
-      zip.file("palettes.csv", Papa.unparse(palettesCsv.map(makeExportRow)));
+      files["anchors.csv"] = Papa.unparse(anchorsCsv.map(makeExportRow));
+      files["pins.csv"] = Papa.unparse(pinsCsv.map(makeExportRow));
+      files["palettes.csv"] = Papa.unparse(palettesCsv.map(makeExportRow));
 
       const templateExtra = getExtraColorValues(0.5, 0.1, 180, "#888888");
       const templateRows = [
@@ -11155,7 +11430,7 @@ const App = () => {
           Measurement_Device: "Spectrophotometer",
         }),
       ];
-      zip.file("template.csv", Papa.unparse(templateRows));
+      files["template.csv"] = Papa.unparse(templateRows);
       Object.keys(colorData || {}).forEach((brand) => {
         const brandData = colorData[brand].map((color, listIdx) => {
           const safeName = color.name || `unknown-${listIdx}`;
@@ -11202,8 +11477,19 @@ const App = () => {
           row.Spectral = color.spectral ? JSON.stringify(color.spectral) : "";
           return row;
         });
-        zip.file(`${brand}.csv`, Papa.unparse(brandData));
+        files[`${brand}.csv`] = Papa.unparse(brandData);
       });
+      return files;
+  };
+  const handleSystemExport = async () => {
+    if (!gridData) {
+      alert("Missing gridData!");
+      return;
+    }
+    try {
+      const files = buildExportFiles();
+      const zip = new JSZip();
+      Object.entries(files).forEach(([name, text]) => zip.file(name, text));
       const content = await zip.generateAsync({ type: "blob" });
       const url = URL.createObjectURL(content);
       const a = document.createElement("a");
@@ -11223,7 +11509,57 @@ const App = () => {
       alert("Failed downloading CSVs: " + e.message);
     }
   };
-  const handleSyncToCSV = async () => {};
+  const handleSyncToCSV = async (override) => {
+    const cfg = override || githubConfig;
+    if (!cfg.token || !cfg.owner || !cfg.repo) {
+      setShowGithubModal(true);
+      return;
+    }
+    if (!gridData) {
+      alert("Missing gridData!");
+      return;
+    }
+    setSyncStatus({ state: "running", message: "Checking access...", log: [] });
+    try {
+      const info = await ghVerify(cfg);
+      if (info.permissions && info.permissions.push === false) {
+        throw new Error("This token can read the repo but not write to it.");
+      }
+      const branch = (cfg.branch || "").trim() || info.defaultBranch;
+      const dir = String(cfg.path || "data").replace(/^\/+|\/+$/g, "");
+      const files = buildExportFiles();
+      const names = Object.keys(files);
+      const log = [];
+      // Sequential on purpose: parallel writes to one branch race on the sha.
+      for (let i = 0; i < names.length; i++) {
+        const name = names[i];
+        setSyncStatus({
+          state: "running",
+          message: `Writing ${name} (${i + 1}/${names.length})...`,
+          log: [...log],
+        });
+        const result = await ghPutFile(
+          cfg,
+          dir ? `${dir}/${name}` : name,
+          files[name],
+          branch,
+          `ColorSAMificator: update ${name}`,
+        );
+        log.push(`${name} — ${result}`);
+      }
+      const changed = log.filter((l) => !l.endsWith("unchanged")).length;
+      setSyncStatus({
+        state: "done",
+        message: changed
+          ? `Committed ${changed} of ${names.length} files to ${cfg.owner}/${cfg.repo}@${branch}.`
+          : `Everything already matches ${cfg.owner}/${cfg.repo}@${branch}.`,
+        log,
+      });
+    } catch (e) {
+      console.error(e);
+      setSyncStatus({ state: "error", message: e.message, log: [] });
+    }
+  };
   const handleSystemImport = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -12103,6 +12439,11 @@ const App = () => {
     handleSystemExport,
     handleImportCSV: handleSystemImport,
     handleSyncToCSV,
+    showGithubModal,
+    setShowGithubModal,
+    githubConfig,
+    setGithubConfig,
+    syncStatus,
     addToPalette,
     removeFromPalette,
     saveCurrentPalette,
@@ -15273,6 +15614,11 @@ const AppUI = ({
   handleSystemExport,
   handleImportCSV,
   handleSyncToCSV,
+  showGithubModal,
+  setShowGithubModal,
+  githubConfig,
+  setGithubConfig,
+  syncStatus,
   addToPalette,
   removeFromPalette,
   saveCurrentPalette,
@@ -17359,6 +17705,20 @@ const AppUI = ({
           React.createElement(
             "button",
             {
+              onClick: () => setShowGithubModal(true),
+              className:
+                "p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors",
+              title: "Sync CSVs to GitHub",
+            },
+            // lucide dropped brand icons in v1, so there is no "github" glyph.
+            React.createElement(Icon, {
+              name: "cloud-upload",
+              className: "w-4 h-4",
+            }),
+          ),
+          React.createElement(
+            "button",
+            {
               onClick: () => setTheme(theme === "dark" ? "light" : "dark"),
               className:
                 "p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors",
@@ -19228,6 +19588,14 @@ const AppUI = ({
         linkedFiles,
         setLinkedFiles,
         onClose: () => setShowFileManager(false),
+      }),
+    showGithubModal &&
+      React.createElement(GitHubSyncModal, {
+        config: githubConfig,
+        setConfig: setGithubConfig,
+        status: syncStatus,
+        onSync: handleSyncToCSV,
+        onClose: () => setShowGithubModal(false),
       }),
     showDatabaseManager &&
       React.createElement(DatabaseManager, {
