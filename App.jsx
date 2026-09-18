@@ -286,15 +286,30 @@ const SliderGroup = ({ label, value, min, max, step, onChange, icon }) =>
       className: "w-full",
     }),
   );
-const CollapsiblePanel = ({ title, icon, children, defaultOpen = false }) => {
-  const [isOpen, setIsOpen] = useState(defaultOpen);
+// Panel open/closed state used to reset to defaultOpen every time the sidebar
+// remounted, so anything you opened closed itself as soon as you moved around.
+const PANEL_OPEN_STATE = {};
+const CollapsiblePanel = ({
+  title,
+  icon,
+  children,
+  summary,
+  defaultOpen = false,
+}) => {
+  const [isOpen, setIsOpen] = useState(
+    PANEL_OPEN_STATE[title] !== undefined ? PANEL_OPEN_STATE[title] : defaultOpen,
+  );
+  const toggle = () => {
+    PANEL_OPEN_STATE[title] = !isOpen;
+    setIsOpen(!isOpen);
+  };
   return React.createElement(
     "div",
     { className: "border-b border-slate-200 dark:border-neutral-800" },
     React.createElement(
       "button",
       {
-        onClick: () => setIsOpen(!isOpen),
+        onClick: toggle,
         className:
           "w-full flex items-center justify-between p-4 hover:bg-slate-50 dark:hover:bg-neutral-800/50 transition-colors",
       },
@@ -311,10 +326,24 @@ const CollapsiblePanel = ({ title, icon, children, defaultOpen = false }) => {
         " ",
         title,
       ),
-      React.createElement(Icon, {
-        name: isOpen ? "chevron-up" : "chevron-down",
-        className: "w-4 h-4 text-slate-400",
-      }),
+      React.createElement(
+        "div",
+        { className: "flex items-center gap-2" },
+        !isOpen && summary
+          ? React.createElement(
+              "span",
+              {
+                className:
+                  "text-[10px] font-mono text-slate-400 dark:text-neutral-500 truncate max-w-[140px]",
+              },
+              summary,
+            )
+          : null,
+        React.createElement(Icon, {
+          name: isOpen ? "chevron-up" : "chevron-down",
+          className: "w-4 h-4 text-slate-400",
+        }),
+      ),
     ),
     isOpen && React.createElement("div", { className: "p-4 pt-0" }, children),
   );
@@ -1462,6 +1491,63 @@ const PlotlyChart = ({
       { capture: true },
     );
     window.addEventListener(upEv, handleLeftUp, { capture: true });
+
+    // Plotly pans cartesian subplots on touch but has no pinch-to-zoom for
+    // them — scrollZoom only covers the wheel. Two-finger zoom is done here by
+    // rescaling the axis ranges about the pinch midpoint.
+    let pinch = null;
+    const pxToData = (ax, px) => {
+      if (ax && typeof ax.p2d === "function") return ax.p2d(px);
+      if (!ax || !ax.range) return 0;
+      return (ax.range[0] + ax.range[1]) / 2;
+    };
+    const twoFinger = (e) => e.touches && e.touches.length === 2;
+    const spread = (e) =>
+      Math.hypot(
+        e.touches[1].clientX - e.touches[0].clientX,
+        e.touches[1].clientY - e.touches[0].clientY,
+      ) || 1;
+    const onTouchStart = (e) => {
+      if (is3D || !twoFinger(e)) {
+        pinch = null;
+        return;
+      }
+      const fl = gd._fullLayout;
+      if (!fl || !fl.xaxis || !fl.yaxis) return;
+      const rect = gd.getBoundingClientRect();
+      const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+      const my = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+      pinch = {
+        dist: spread(e),
+        xr: [...fl.xaxis.range],
+        yr: [...fl.yaxis.range],
+        cx: pxToData(fl.xaxis, mx - (fl.xaxis._offset || 0)),
+        cy: pxToData(fl.yaxis, my - (fl.yaxis._offset || 0)),
+      };
+      e.preventDefault();
+    };
+    const onTouchMove = (e) => {
+      if (!pinch || !twoFinger(e)) return;
+      const k = pinch.dist / spread(e);
+      Plotly.relayout(gd, {
+        "xaxis.range": [
+          pinch.cx + (pinch.xr[0] - pinch.cx) * k,
+          pinch.cx + (pinch.xr[1] - pinch.cx) * k,
+        ],
+        "yaxis.range": [
+          pinch.cy + (pinch.yr[0] - pinch.cy) * k,
+          pinch.cy + (pinch.yr[1] - pinch.cy) * k,
+        ],
+      });
+      e.preventDefault();
+    };
+    const onTouchEnd = () => {
+      pinch = null;
+    };
+    gd.addEventListener("touchstart", onTouchStart, { passive: false });
+    gd.addEventListener("touchmove", onTouchMove, { passive: false });
+    gd.addEventListener("touchend", onTouchEnd);
+    gd.addEventListener("touchcancel", onTouchEnd);
     return () => {
       gd.removeEventListener(
         !!window.PointerEvent ? "pointerdown" : "mousedown",
@@ -1480,11 +1566,17 @@ const PlotlyChart = ({
         { capture: true },
       );
       window.removeEventListener(upEv, handleLeftUp, { capture: true });
+      gd.removeEventListener("touchstart", onTouchStart);
+      gd.removeEventListener("touchmove", onTouchMove);
+      gd.removeEventListener("touchend", onTouchEnd);
+      gd.removeEventListener("touchcancel", onTouchEnd);
     };
   }, [data, layout, theme, configStr]);
   return React.createElement("div", {
     ref: chartRef,
-    className: "plotly-wrapper",
+    // touch-none hands pinch and drag to Plotly instead of letting the browser
+    // treat them as page scrolling.
+    className: "plotly-wrapper touch-none",
   });
 };
 const View3D = ({
@@ -3323,6 +3415,445 @@ const nounColumnMatchesSameAdjective = (ctx, sc) => {
   }
   return matchesSameAdjective(ctx, maxL);
 };
+// Every view grew its own row of sort buttons — eleven of them in the commercial
+// DB. One control, one shape: pick a field, flip the direction. Views differ
+// only in the fields they pass in.
+// --- Global filter model ---------------------------------------------------
+// Every filter is one row: a field, an operator, a value. Rows stack with AND.
+// The "same noun", "same adjective", "color match" and "exact material match"
+// behaviours are not separate mechanisms any more — they are presets that push
+// ordinary rows into this same stack, so they can be inspected and removed like
+// anything else.
+
+const FILTER_FIELDS = [
+  { id: "name", label: "Name", type: "text", get: (it) => it.displayName || it.name || "" },
+  { id: "brand", label: "Brand", type: "select", get: (it) => it.brand || "" },
+  { id: "material", label: "Material", type: "select", get: (it) => it.material || "" },
+  { id: "sheen", label: "Sheen", type: "select", get: (it) => it.sheen || "" },
+  { id: "doorProfile", label: "Profile", type: "select", get: (it) => it.doorProfile || "" },
+  { id: "visualTexture", label: "Visual pattern", type: "select", get: (it) => it.visualTexture || "" },
+  { id: "tactileTexture", label: "Tactile texture", type: "select", get: (it) => it.tactileTexture || "" },
+  { id: "tag", label: "Tag", type: "select", get: (it) => (it.tags || []).join(", ") },
+  { id: "noun", label: "Noun", type: "text", get: (it, ctx) => (ctx ? nounNameOf(it, ctx) : "") },
+  { id: "adjective", label: "Adjective", type: "text", get: (it, ctx) => (ctx ? adjNameOf(it, ctx) : "") },
+  { id: "L", label: "Lightness", type: "number", get: (it) => it.L },
+  { id: "C", label: "Chroma", type: "number", get: (it) => it.C },
+  { id: "H", label: "Hue", type: "number", get: (it) => it.H },
+  { id: "deltaE", label: "\u0394E to cursor", type: "number", get: (it) => it._d },
+  { id: "spectral", label: "Has spectral data", type: "boolean", get: (it) => !!it.hasSpectral },
+];
+
+const nounNameOf = (item, ctx) => {
+  const key = resolveNounKey(item.L, item.C, item.H, ctx.columns, ctx.namesObj);
+  return key.indexOf("name:") === 0 ? key.slice(5) : "";
+};
+const adjNameOf = (item, ctx) => {
+  const key = resolveAdjectiveKey(item.L, ctx.adjectivesObj);
+  return key.indexOf("name:") === 0 ? key.slice(5) : "";
+};
+
+const FILTER_OPS = {
+  text: [
+    { id: "contains", label: "contains" },
+    { id: "not_contains", label: "does not contain" },
+    { id: "is", label: "is" },
+    { id: "is_not", label: "is not" },
+    { id: "starts", label: "starts with" },
+  ],
+  select: [
+    { id: "is", label: "is" },
+    { id: "is_not", label: "is not" },
+    { id: "contains", label: "contains" },
+  ],
+  number: [
+    { id: "lte", label: "\u2264" },
+    { id: "gte", label: "\u2265" },
+    { id: "eq", label: "=" },
+    { id: "between", label: "between" },
+  ],
+  boolean: [
+    { id: "is_true", label: "is yes" },
+    { id: "is_false", label: "is no" },
+  ],
+};
+
+const defaultOpFor = (type) => FILTER_OPS[type][0].id;
+
+const evalFilterRow = (item, row, ctx) => {
+  const field = FILTER_FIELDS.find((f) => f.id === row.field);
+  if (!field) return true;
+
+  // A dynamic row tracks the cursor: the comparison target is whatever the
+  // cursor resolves to at this moment, not a value captured when it was added.
+  if (row.dynamic && (row.field === "noun" || row.field === "adjective")) {
+    if (!ctx) return true;
+    const target = row.field === "noun" ? ctx.nounKey : ctx.adjectiveKey;
+    const mine =
+      row.field === "noun"
+        ? resolveNounKey(item.L, item.C, item.H, ctx.columns, ctx.namesObj)
+        : resolveAdjectiveKey(item.L, ctx.adjectivesObj);
+    return row.op === "is_not" ? mine !== target : mine === target;
+  }
+
+  const raw = field.get(item, ctx);
+
+  if (field.type === "boolean") {
+    return row.op === "is_true" ? !!raw : !raw;
+  }
+  if (field.type === "number") {
+    const v = Number(raw);
+    if (!isFinite(v)) return false;
+    const a = Number(row.value);
+    if (row.op === "between") {
+      const b = Number(row.value2);
+      if (!isFinite(a) || !isFinite(b)) return true;
+      return v >= Math.min(a, b) && v <= Math.max(a, b);
+    }
+    if (!isFinite(a)) return true;
+    if (row.op === "lte") return v <= a;
+    if (row.op === "gte") return v >= a;
+    return Math.abs(v - a) < 1e-9;
+  }
+  const s = String(raw || "").toLowerCase();
+  const q = String(row.value || "").toLowerCase().trim();
+  if (!q) return true;
+  if (row.op === "is") return s === q;
+  if (row.op === "is_not") return s !== q;
+  if (row.op === "not_contains") return s.indexOf(q) === -1;
+  if (row.op === "starts") return s.indexOf(q) === 0;
+  return s.indexOf(q) !== -1;
+};
+
+// Rows combine either with AND (narrowing, one after another) or with OR (a
+// union — an item survives if any single row matches it). The conjunction is
+// one choice for the whole group rather than per row, so the result never
+// depends on an invisible precedence rule between them.
+const applyGlobalFilters = (items, rows, ctx, mode) => {
+  const active = rows || [];
+  if (active.length === 0) return { items, culprit: null };
+
+  if (mode === "or") {
+    const out = items.filter((it) =>
+      active.some((row) => evalFilterRow(it, row, ctx)),
+    );
+    return { items: out, culprit: out.length === 0 ? { any: true } : null };
+  }
+
+  let out = items;
+  let culprit = null;
+  active.forEach((row) => {
+    if (out.length === 0) return;
+    const next = out.filter((it) => evalFilterRow(it, row, ctx));
+    if (next.length === 0 && !culprit) culprit = row;
+    out = next;
+  });
+  return { items: out, culprit };
+};
+
+const cursorValueFor = (fieldId, ctx) => {
+  if (!ctx) return "cursor";
+  const key = fieldId === "noun" ? ctx.nounKey : ctx.adjectiveKey;
+  return key && key.indexOf("name:") === 0 ? key.slice(5) : "cursor";
+};
+
+const describeFilterRow = (row, ctx) => {
+  if (row && row.any) return "any of the active filters";
+  const field = FILTER_FIELDS.find((f) => f.id === row.field);
+  if (!field) return "filter";
+  if (row.dynamic) {
+    return `${field.label} follows cursor (${cursorValueFor(row.field, ctx)})`;
+  }
+  const op = (FILTER_OPS[field.type] || []).find((o) => o.id === row.op);
+  const opLabel = op ? op.label : "";
+  if (field.type === "boolean") return `${field.label} ${opLabel}`;
+  if (row.op === "between") {
+    return `${field.label} ${opLabel} ${row.value}\u2013${row.value2}`;
+  }
+  return `${field.label} ${opLabel} ${row.value}`;
+};
+
+let FILTER_ROW_SEQ = 0;
+const newFilterRow = (fieldId, op, value, value2, dynamic) => {
+  const field = FILTER_FIELDS.find((f) => f.id === fieldId) || FILTER_FIELDS[0];
+  return {
+    id: `f${++FILTER_ROW_SEQ}`,
+    field: field.id,
+    op: op || defaultOpFor(field.type),
+    value: value !== undefined ? value : "",
+    value2: value2 !== undefined ? value2 : "",
+    dynamic: !!dynamic,
+  };
+};
+
+const FilterBuilder = ({
+  rows,
+  setRows,
+  optionsFor,
+  presets,
+  mode,
+  setMode,
+  ctx,
+}) => {
+  const update = (id, patch) =>
+    setRows(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+
+  return React.createElement(
+    "div",
+    { className: "flex flex-col gap-2 min-w-[260px]" },
+    presets &&
+      presets.length > 0 &&
+      React.createElement(
+        "div",
+        { className: "flex flex-wrap gap-1 pb-2 border-b border-slate-200 dark:border-neutral-800" },
+        React.createElement(
+          "span",
+          {
+            className:
+              "w-full text-[9px] font-bold uppercase tracking-widest text-slate-400 pb-1",
+          },
+          "Presets",
+        ),
+        presets.map((p) =>
+          React.createElement(
+            "button",
+            {
+              key: p.id,
+              onClick: p.apply,
+              title: p.hint || "",
+              className:
+                "px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-slate-200 dark:border-neutral-700 text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800",
+            },
+            p.label,
+          ),
+        ),
+      ),
+    rows.length === 0 &&
+      React.createElement(
+        "div",
+        { className: "text-[11px] italic text-slate-400 py-1" },
+        "No filters. Everything is shown.",
+      ),
+    rows.map((row, idx) => {
+      const field = FILTER_FIELDS.find((f) => f.id === row.field) || FILTER_FIELDS[0];
+      const ops = FILTER_OPS[field.type] || [];
+      const options = field.type === "select" && optionsFor ? optionsFor(field.id) : null;
+      const selectCls =
+        "bg-transparent border border-slate-200 dark:border-neutral-700 rounded-md px-1.5 py-1 text-[10px] text-slate-600 dark:text-neutral-300 focus:outline-none";
+      return React.createElement(
+        "div",
+        { key: row.id, className: "flex items-center gap-1 flex-wrap" },
+        idx === 0
+          ? React.createElement(
+              "span",
+              {
+                className:
+                  "text-[9px] uppercase tracking-widest text-slate-400 w-12",
+              },
+              "Where",
+            )
+          : React.createElement(
+              "select",
+              {
+                value: mode === "or" ? "or" : "and",
+                onChange: (e) => setMode && setMode(e.target.value),
+                title: "Applies to every filter in this group",
+                className:
+                  "w-12 bg-transparent border border-slate-200 dark:border-neutral-700 rounded-md px-1 py-0.5 text-[9px] uppercase tracking-widest text-slate-500 focus:outline-none",
+              },
+              React.createElement("option", { value: "and" }, "And"),
+              React.createElement("option", { value: "or" }, "Or"),
+            ),
+        React.createElement(
+          "select",
+          {
+            value: row.field,
+            onChange: (e) => {
+              const nf = FILTER_FIELDS.find((f) => f.id === e.target.value);
+              update(row.id, {
+                field: e.target.value,
+                op: defaultOpFor(nf.type),
+                value: "",
+                value2: "",
+              });
+            },
+            className: selectCls,
+          },
+          FILTER_FIELDS.map((f) =>
+            React.createElement("option", { key: f.id, value: f.id }, f.label),
+          ),
+        ),
+        React.createElement(
+          "select",
+          {
+            value: row.op,
+            onChange: (e) => update(row.id, { op: e.target.value }),
+            className: selectCls,
+          },
+          ops.map((o) =>
+            React.createElement("option", { key: o.id, value: o.id }, o.label),
+          ),
+        ),
+        row.dynamic
+          ? React.createElement(
+              "button",
+              {
+                onClick: () =>
+                  update(row.id, {
+                    dynamic: false,
+                    value: cursorValueFor(row.field, ctx),
+                  }),
+                title: "Following the cursor \u2014 click to pin this value",
+                className:
+                  "px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30 max-w-[120px] truncate",
+              },
+              cursorValueFor(row.field, ctx),
+            )
+          : field.type !== "boolean" &&
+          (options
+            ? React.createElement(
+                "select",
+                {
+                  value: row.value,
+                  onChange: (e) => update(row.id, { value: e.target.value }),
+                  className: selectCls + " max-w-[110px]",
+                },
+                React.createElement("option", { value: "" }, "any"),
+                options.map((o) =>
+                  React.createElement("option", { key: o, value: o }, o),
+                ),
+              )
+            : React.createElement("input", {
+                type: field.type === "number" ? "number" : "text",
+                step: "any",
+                value: row.value,
+                placeholder: field.type === "number" ? "0" : "value",
+                onChange: (e) => update(row.id, { value: e.target.value }),
+                className: selectCls + " w-[74px]",
+              })),
+        row.op === "between" &&
+          React.createElement("input", {
+            type: "number",
+            step: "any",
+            value: row.value2,
+            placeholder: "and",
+            onChange: (e) => update(row.id, { value2: e.target.value }),
+            className: selectCls + " w-[64px]",
+          }),
+        React.createElement(
+          "button",
+          {
+            onClick: () => setRows(rows.filter((r) => r.id !== row.id)),
+            title: "Remove this filter",
+            className: "p-1 text-slate-400 hover:text-red-500",
+          },
+          React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
+        ),
+      );
+    }),
+    React.createElement(
+      "div",
+      { className: "flex items-center gap-2 pt-1" },
+      React.createElement(
+        "button",
+        {
+          onClick: () => setRows([...rows, newFilterRow("name")]),
+          className:
+            "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400",
+        },
+        React.createElement(Icon, { name: "plus", className: "w-3 h-3" }),
+        "Add filter",
+      ),
+      rows.length > 0 &&
+        React.createElement(
+          "button",
+          {
+            onClick: () => setRows([]),
+            className:
+              "ml-auto text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-slate-600",
+          },
+          "Clear all",
+        ),
+    ),
+  );
+};
+
+const SortControl = ({ fields, sortBy, setSortBy, sortAsc, setSortAsc, compact }) => {
+  const active = fields.find((f) => f.field === sortBy) || fields[0];
+  return React.createElement(
+    "div",
+    { className: "flex items-center gap-1 shrink-0" },
+    React.createElement(
+      "span",
+      {
+        className:
+          "text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-neutral-500",
+      },
+      "Sort",
+    ),
+    React.createElement(
+      "select",
+      {
+        value: active ? active.field : "",
+        onChange: (e) => setSortBy(e.target.value),
+        className: `appearance-none bg-transparent border border-slate-200 dark:border-neutral-700 rounded-md py-1 pl-2 pr-6 text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-neutral-300 cursor-pointer hover:bg-slate-50 dark:hover:bg-neutral-800 focus:outline-none ${
+          compact ? "max-w-[104px]" : ""
+        }`,
+      },
+      fields.map((f) =>
+        React.createElement("option", { key: f.field, value: f.field }, f.label),
+      ),
+    ),
+    React.createElement(
+      "button",
+      {
+        onClick: () => setSortAsc(!sortAsc),
+        title: sortAsc ? "Ascending" : "Descending",
+        "aria-label": sortAsc ? "Sort ascending" : "Sort descending",
+        className:
+          "p-1 rounded-md border border-slate-200 dark:border-neutral-700 text-slate-500 dark:text-neutral-400 hover:bg-slate-50 dark:hover:bg-neutral-800",
+      },
+      React.createElement(Icon, {
+        name: sortAsc ? "arrow-up-narrow-wide" : "arrow-down-wide-narrow",
+        className: "w-3.5 h-3.5",
+      }),
+    ),
+  );
+};
+
+// Applied filters, stated plainly and individually removable, so an unexpected
+// result set is explainable without opening every control.
+const FilterChips = ({ chips, onClearAll }) => {
+  if (!chips || chips.length === 0) return null;
+  return React.createElement(
+    "div",
+    { className: "flex items-center gap-1.5 flex-wrap" },
+    chips.map((c) =>
+      React.createElement(
+        "button",
+        {
+          key: c.key,
+          onClick: c.onClear,
+          title: `Remove ${c.label}`,
+          className:
+            "flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30",
+        },
+        c.label,
+        React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
+      ),
+    ),
+    chips.length > 1 &&
+      React.createElement(
+        "button",
+        {
+          onClick: onClearAll,
+          className:
+            "text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-slate-600 dark:hover:text-neutral-200 underline underline-offset-2",
+        },
+        "Clear all",
+      ),
+  );
+};
+
 const ViewportSwatches = ({
   items,
   layout,
@@ -3965,7 +4496,7 @@ ${item.erpCode}`,
       "div",
       {
         className:
-          "flex items-center gap-2 mb-6 sticky top-0 bg-slate-50/90 dark:bg-neutral-900/90 backdrop-blur z-10 p-2 rounded-lg border border-slate-200/50 dark:border-neutral-800/50 shadow-sm",
+          "flex flex-wrap items-center gap-2 mb-6 sticky top-0 bg-slate-50/90 dark:bg-neutral-900/90 backdrop-blur z-10 p-2 rounded-lg border border-slate-200/50 dark:border-neutral-800/50 shadow-sm",
       },
       React.createElement(
         "span",
@@ -5253,27 +5784,6 @@ const ViewPalette = ({
   };
   // Plain render helper, not a component: defining a component inside render
   // gives it a new type each pass, so React remounted every header button.
-  const SortButton = ({ field, label, icon }) =>
-    React.createElement(
-      "button",
-      {
-        onClick: () => {
-          if (sortBy === field) setSortAsc(!sortAsc);
-          else {
-            setSortBy(field);
-            setSortAsc(true);
-          }
-        },
-        className: `flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-colors ${sortBy === field ? "bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30" : "text-slate-500 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-800 border border-transparent"}`,
-      },
-      React.createElement(Icon, { name: icon, className: "w-3.5 h-3.5" }),
-      label,
-      sortBy === field &&
-        React.createElement(Icon, {
-          name: sortAsc ? "chevron-up" : "chevron-down",
-          className: "w-3 h-3",
-        }),
-    );
   let content;
   if (sortBy === "ring") {
     content = Object.keys(rings)
@@ -5433,30 +5943,18 @@ const ViewPalette = ({
         }),
         " Sort By:",
       ),
-      SortButton({
-        field: "ring",
-        label: "Chroma Rings",
-        icon: "target",
-      }),
-      SortButton({
-        field: "hue",
-        label: "Hue Angle",
-        icon: "palette",
-      }),
-      SortButton({
-        field: "count",
-        label: "Occurrences",
-        icon: "bar-chart-2",
-      }),
-      SortButton({
-        field: "name",
-        label: "Name",
-        icon: "type",
-      }),
-      SortButton({
-        field: "tag",
-        label: "Tags",
-        icon: "tag",
+      React.createElement(SortControl, {
+        fields: [
+          { field: "ring", label: "Chroma rings" },
+          { field: "hue", label: "Hue angle" },
+          { field: "count", label: "Occurrences" },
+          { field: "name", label: "Name" },
+          { field: "tag", label: "Tags" },
+        ],
+        sortBy,
+        setSortBy,
+        sortAsc,
+        setSortAsc,
       }),
       allTags.length > 0 &&
         React.createElement(
@@ -5749,27 +6247,6 @@ const ViewAdjectives = ({
   }, [points, adjectives, sortBy, sortAsc, searchTerm]);
   // Plain render helper, not a component: defining a component inside render
   // gives it a new type each pass, so React remounted every header button.
-  const SortButton = ({ field, label, icon }) =>
-    React.createElement(
-      "button",
-      {
-        onClick: () => {
-          if (sortBy === field) setSortAsc(!sortAsc);
-          else {
-            setSortBy(field);
-            setSortAsc(field !== "lightness");
-          }
-        },
-        className: `flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-colors ${sortBy === field ? "bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30" : "text-slate-500 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-800 border border-transparent"}`,
-      },
-      React.createElement(Icon, { name: icon, className: "w-3.5 h-3.5" }),
-      label,
-      sortBy === field &&
-        React.createElement(Icon, {
-          name: sortAsc ? "chevron-up" : "chevron-down",
-          className: "w-3 h-3",
-        }),
-    );
   return React.createElement(
     "div",
     { className: "h-full flex flex-col overflow-hidden pt-2" },
@@ -5821,20 +6298,16 @@ const ViewAdjectives = ({
           }),
           " Sort By:",
         ),
-        SortButton({
-          field: "lightness",
-          label: "Lightness",
-          icon: "sun",
-        }),
-        SortButton({
-          field: "count",
-          label: "Occurrences",
-          icon: "bar-chart-2",
-        }),
-        SortButton({
-          field: "adjective",
-          label: "Adjective Name",
-          icon: "type",
+        React.createElement(SortControl, {
+          fields: [
+            { field: "lightness", label: "Lightness" },
+            { field: "count", label: "Occurrences" },
+            { field: "adjective", label: "Adjective name" },
+          ],
+          sortBy,
+          setSortBy,
+          sortAsc,
+          setSortAsc,
         }),
       ),
       React.createElement(
@@ -6161,27 +6634,6 @@ const ViewPins = ({
   };
   // Plain render helper, not a component: defining a component inside render
   // gives it a new type each pass, so React remounted every header button.
-  const SortButton = ({ field, label, icon }) =>
-    React.createElement(
-      "button",
-      {
-        onClick: () => {
-          if (sortBy === field) setSortAsc(!sortAsc);
-          else {
-            setSortBy(field);
-            setSortAsc(true);
-          }
-        },
-        className: `flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-colors ${sortBy === field ? "bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30" : "text-slate-500 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-800 border border-transparent"}`,
-      },
-      React.createElement(Icon, { name: icon, className: "w-3.5 h-3.5" }),
-      label,
-      sortBy === field &&
-        React.createElement(Icon, {
-          name: sortAsc ? "chevron-up" : "chevron-down",
-          className: "w-3 h-3",
-        }),
-    );
   const handleSelectAll = () => {
     if (selectedIds.length === pinItems.length) {
       setSelectedIds([]);
@@ -6284,25 +6736,17 @@ const ViewPins = ({
         }),
         " Sort By:",
       ),
-      SortButton({
-        field: "layer",
-        label: "Light / Dark",
-        icon: "layers",
-      }),
-      SortButton({
-        field: "hue",
-        label: "Hue Angle",
-        icon: "palette",
-      }),
-      SortButton({
-        field: "name",
-        label: "Name",
-        icon: "type",
-      }),
-      SortButton({
-        field: "tag",
-        label: "Tags",
-        icon: "tag",
+      React.createElement(SortControl, {
+        fields: [
+          { field: "layer", label: "Light / dark" },
+          { field: "hue", label: "Hue angle" },
+          { field: "name", label: "Name" },
+          { field: "tag", label: "Tags" },
+        ],
+        sortBy,
+        setSortBy,
+        sortAsc,
+        setSortAsc,
       }),
       allTags.length > 0 &&
         React.createElement(
@@ -6525,7 +6969,7 @@ const ViewPins = ({
             "div",
             {
               key: item.id,
-              className: `flex items-center gap-5 bg-white dark:bg-neutral-900 p-3.5 rounded-xl border shadow-sm w-full relative group transition-colors ${selectedIds.includes(item.id) ? "border-sky-500 ring-1 ring-sky-500" : "border-slate-200 dark:border-neutral-800"}`,
+              className: `flex flex-wrap sm:flex-nowrap items-center gap-3 sm:gap-5 bg-white dark:bg-neutral-900 p-3.5 rounded-xl border shadow-sm w-full relative group transition-colors ${selectedIds.includes(item.id) ? "border-sky-500 ring-1 ring-sky-500" : "border-slate-200 dark:border-neutral-800"}`,
             },
             React.createElement(
               "div",
@@ -6583,7 +7027,7 @@ const ViewPins = ({
               "div",
               {
                 className:
-                  "flex flex-col w-40 flex-shrink-0 border-r border-slate-100 dark:border-neutral-800 pr-4",
+                  "flex flex-col w-full sm:w-40 sm:flex-shrink-0 border-t sm:border-t-0 sm:border-r border-slate-100 dark:border-neutral-800 pt-2 sm:pt-0 sm:pr-4",
               },
               React.createElement(
                 "div",
@@ -6630,7 +7074,7 @@ const ViewPins = ({
             ),
             React.createElement(
               "div",
-              { className: "flex-1 flex flex-col justify-center min-w-0 pr-4 py-1" },
+              { className: "flex-1 flex flex-col justify-center min-w-0 sm:pr-4 py-1" },
               React.createElement(
                 "div",
                 {
@@ -6650,7 +7094,7 @@ const ViewPins = ({
               ),
               React.createElement(
                 "div",
-                { className: "grid grid-cols-2 lg:grid-cols-5 gap-2 mt-auto" },
+                { className: "grid grid-cols-4 sm:grid-cols-2 lg:grid-cols-5 gap-2 mt-auto" },
                 [
                   { label: "Sheen", key: "sheen", options: LABEL_OPTIONS.sheen },
                   { label: "Profile", key: "doorProfile", options: LABEL_OPTIONS.doorProfile },
@@ -6682,7 +7126,7 @@ const ViewPins = ({
             ),
             React.createElement(
               "div",
-              { className: "flex flex-col items-end flex-shrink-0 w-24 pr-4" },
+              { className: "flex flex-row sm:flex-col gap-3 sm:gap-0 items-center sm:items-end w-full sm:w-24 sm:flex-shrink-0 sm:pr-4" },
               React.createElement(
                 "div",
                 {
@@ -8420,6 +8864,18 @@ const processCSVData = (
 const GITHUB_API = "https://api.github.com";
 
 // Modals previously had no keyboard dismiss at all.
+// Nine flat tabs hid the fact that four of them are the same activity rendered
+// differently. Grouping them into destinations changes only the selector —
+// activeTab stays the source of truth, so routing and saved state are untouched.
+const DESTINATIONS = [
+  { id: "explore", label: "Explore", tabs: ["top", "chroma", "slice", "3d"] },
+  { id: "match", label: "Match", tabs: ["db"] },
+  { id: "catalog", label: "Catalog", tabs: ["pins"] },
+  { id: "names", label: "Names", tabs: ["groups", "adjectives", "palette"] },
+];
+const destForTab = (tabId) =>
+  DESTINATIONS.find((d) => d.tabs.indexOf(tabId) !== -1) || DESTINATIONS[0];
+
 const useEscapeKey = (onClose) => {
   useEffect(() => {
     if (!onClose) return undefined;
@@ -8862,6 +9318,11 @@ const App = () => {
   const [filterH, setFilterH] = useState(180);
   const [filterSameAdjective, setFilterSameAdjective] = useState(false);
   const [filterSameNoun, setFilterSameNoun] = useState(false);
+  // One stack of filter rows for the whole app, not per tab.
+  const [globalFilters, setGlobalFilters] = useState([]);
+  const [globalFilterMode, setGlobalFilterMode] = useState("and");
+  const [globalSortBy, setGlobalSortBy] = useState("deltae");
+  const [globalSortAsc, setGlobalSortAsc] = useState(true);
   const [scrubL, setScrubL] = useState(0.65);
   const [scrubC, setScrubC] = useState(0.12);
   const [scrubH, setScrubH] = useState(0);
@@ -9594,6 +10055,23 @@ const App = () => {
     commercial: false,
     brands: {},
   });
+  // Noun/adjective rows in the global stack need the same resolution context
+  // the labels use; the viewport memos previously had no access to one.
+  const viewportGroupContext = useMemo(() => {
+    try {
+      return getSameGroupContext(
+        scrubL,
+        scrubC,
+        scrubH,
+        gridData,
+        savedColors,
+        names,
+        adjectives,
+      );
+    } catch (e) {
+      return null;
+    }
+  }, [scrubL, scrubC, scrubH, gridData, savedColors, names, adjectives]);
   const filteredColorData = useMemo(() => {
     if (!colorData) return null;
     const isDb = activeTab === "db";
@@ -9652,6 +10130,40 @@ const App = () => {
             return true;
           });
         }
+        if (globalFilters && globalFilters.length) {
+          // Commercial rows carry no \u0394E of their own; measure against the
+          // cursor first or a \u0394E row rejects every one of them.
+          let center = null;
+          try {
+            center = new Color("oklch", [scrubL, scrubC, scrubH]);
+          } catch (e) {
+            center = null;
+          }
+          const decorated = list.map((c) => {
+            const item = { ...c, brand, displayName: c.name || "" };
+            if (item._d === undefined && center) {
+              try {
+                item._d =
+                  center.deltaE(
+                    new Color("oklch", [c.L, c.C, isNaN(c.H) ? 0 : c.H]),
+                    "OK",
+                  ) * 100;
+              } catch (e) {}
+            }
+            return item;
+          });
+          // Filter the decorated copies, then map back to the originals so
+          // nothing downstream sees the temporary fields.
+          decorated.forEach((d, i) => {
+            d.__idx = i;
+          });
+          list = applyGlobalFilters(
+            decorated,
+            globalFilters,
+            viewportGroupContext,
+            globalFilterMode,
+          ).items.map((k) => list[k.__idx]);
+        }
         filtered[brand] = list;
       }
     }
@@ -9669,6 +10181,9 @@ const App = () => {
     names,
     adjectives,
     activeTab,
+    globalFilters,
+    globalFilterMode,
+    viewportGroupContext,
   ]);
   const [showVisibilityMenu, setShowVisibilityMenu] = useState(false);
   const visibilityMenuRef = useRef(null);
@@ -10183,6 +10698,65 @@ const App = () => {
         activeColumns.has(`${ba.cStr}-${ba.hStr}`),
       );
     }
+    if (globalFilters && globalFilters.length) {
+      // Grid points expose name/noun/adjective and L/C/H; \u0394E is measured
+      // against the cursor so the same rows work here as in the list.
+      let center = null;
+      try {
+        center = new Color("oklch", [scrubL, scrubC, scrubH]);
+      } catch (e) {
+        center = null;
+      }
+      const decorate = (p) => {
+        const name =
+          names[p.parentNounId || p.anchorId || p.id] ||
+          names[`${p.cStr}-${p.hStr}`] ||
+          p.nameOverride ||
+          p.name ||
+          "";
+        let d;
+        if (center) {
+          try {
+            d =
+              center.deltaE(
+                new Color("oklch", [p.L, p.C, isNaN(p.H) ? 0 : p.H]),
+                "OK",
+              ) * 100;
+          } catch (e) {
+            d = undefined;
+          }
+        }
+        return { ...p, displayName: name, _d: d };
+      };
+      const strip = (p) => {
+        const clean = { ...p };
+        delete clean.displayName;
+        delete clean._d;
+        return clean;
+      };
+      points = applyGlobalFilters(
+        points.map(decorate),
+        globalFilters,
+        viewportGroupContext,
+        globalFilterMode,
+      ).items.map(strip);
+
+      // Anchors, pins and saved entries are drawn from these two, not from
+      // `points` — filtering only points left everything else on screen.
+      const keep = (item) =>
+        applyGlobalFilters(
+          [decorate(item)],
+          globalFilters,
+          viewportGroupContext,
+          globalFilterMode,
+        ).items.length > 0;
+
+      baseAnchors = baseAnchors.filter(keep);
+      Object.keys(filteredSavedColors).forEach((k) => {
+        const sc = filteredSavedColors[k];
+        if (sc && sc.L !== undefined && !keep(sc)) delete filteredSavedColors[k];
+      });
+    }
     return { points, baseAnchors, savedColors: filteredSavedColors };
   }, [
     gridData,
@@ -10199,6 +10773,9 @@ const App = () => {
     scrubL,
     scrubC,
     scrubH,
+    globalFilters,
+    globalFilterMode,
+    viewportGroupContext,
   ]);
   useEffect(() => {
     if (theme === "dark") document.documentElement.classList.add("dark");
@@ -10628,11 +11205,11 @@ const App = () => {
     () => [
       { id: "db", label: "Commercial DB" },
       { id: "pins", label: "Catalog (pinned colors)" },
-      { id: "top", label: "Light Layers" },
-      { id: "chroma", label: "CHROMA RINGS" },
-      { id: "slice", label: "HUE SLICES" },
-      { id: "3d", label: "3D VIEW" },
-      { id: "groups", label: "Color Groups" },
+      { id: "top", label: "Light layers" },
+      { id: "chroma", label: "Chroma rings" },
+      { id: "slice", label: "Hue slices" },
+      { id: "3d", label: "3D view" },
+      { id: "groups", label: "Color groups" },
       { id: "adjectives", label: "Adjectives" },
       { id: "palette", label: "Nouns" },
     ],
@@ -12760,6 +13337,14 @@ const App = () => {
     handleImportCSV: handleSystemImport,
     handleSyncToCSV,
     handlePullFromGitHub,
+    globalFilters,
+    setGlobalFilters,
+    globalFilterMode,
+    setGlobalFilterMode,
+    globalSortBy,
+    setGlobalSortBy,
+    globalSortAsc,
+    setGlobalSortAsc,
     showGithubModal,
     setShowGithubModal,
     githubConfig,
@@ -12784,6 +13369,11 @@ const App = () => {
     setTetheringPinId,
   });
 };
+// The working palette already existed, buried inside the Palette Playground
+// panel. Surfacing it as a persistent shelf means colours can be collected from
+// any destination without leaving it, and the same set doubles as the slots for
+// a Delta E comparison.
+
 const DatabaseManager = ({
   colorData,
   updateColorData,
@@ -12793,6 +13383,14 @@ const DatabaseManager = ({
   crosshair,
   setFilterSameAdjective,
   setFilterSameNoun,
+  filterSameAdjective,
+  filterSameNoun,
+  globalFilters,
+  setGlobalFilters,
+  globalFilterMode,
+  globalSortBy,
+  globalSortAsc,
+  sameGroupContext,
   onClose,
 }) => {
   useEscapeKey(onClose);
@@ -12851,6 +13449,14 @@ const DatabaseManager = ({
         React.createElement(ViewDatabase, {
                 setFilterSameAdjective,
                 setFilterSameNoun,
+                filterSameAdjective,
+                filterSameNoun,
+                globalFilters,
+                setGlobalFilters,
+                globalFilterMode,
+                globalSortBy,
+                globalSortAsc,
+                sameGroupContext,
           colorData,
           fullColorData: colorData,
           updateColorData,
@@ -12940,9 +13546,31 @@ const CustomConfirmModal = ({ message, onConfirm, onCancel }) => {
   );
 };
 
+const DB_SORT_FIELDS = [
+  { field: "deltae", label: "\u0394E" },
+  { field: "name", label: "Name" },
+  { field: "brand", label: "Brand" },
+  { field: "material", label: "Material" },
+  { field: "sheen", label: "Sheen" },
+  { field: "doorProfile", label: "Profile" },
+  { field: "visualTexture", label: "Vis. pattern" },
+  { field: "tactileTexture", label: "Tac. texture" },
+  { field: "lightness", label: "Lightness" },
+  { field: "chroma", label: "Chroma" },
+  { field: "hue", label: "Hue" },
+];
+
 const ViewDatabase = ({
   setFilterSameAdjective,
   setFilterSameNoun,
+  filterSameAdjective,
+  filterSameNoun,
+  globalFilters,
+  setGlobalFilters,
+  globalFilterMode,
+  globalSortBy,
+  globalSortAsc,
+  sameGroupContext,
   colorData,
   fullColorData,
   updateColorData,
@@ -12963,14 +13591,16 @@ const ViewDatabase = ({
   onOpenAveryModal,
 }) => {
   const dataForUpdates = fullColorData || colorData;
-  const [sortBy, setSortBy] = useState("brand");
-  const [sortAsc, setSortAsc] = useState(true);
-  const [spectralFilter, setSpectralFilter] = useState(true);
+  // Sort now lives in the global bar; this stays as the fallback for the
+  // Database Manager modal, which renders outside that bar.
+  const [localSortBy, setLocalSortBy] = useState("brand");
+  const [localSortAsc, setLocalSortAsc] = useState(true);
+  const sortBy = globalSortBy !== undefined ? globalSortBy : localSortBy;
+  const sortAsc = globalSortAsc !== undefined ? globalSortAsc : localSortAsc;
+  const setSortBy = setLocalSortBy;
+  const setSortAsc = setLocalSortAsc;
   const [dbAxis, setDbAxis] = useState("HxL");
   const [brandFilter, setBrandFilter] = useState("");
-  const [userEnableDeltaE, setUserEnableDeltaE] = useState(false);
-  const [maxDeltaE, setMaxDeltaE] = useState(5);
-  const enableDeltaE = userEnableDeltaE;
   const [fullscreenImage, setFullscreenImage] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
   const [promptState, setPromptState] = useState(null);
@@ -12979,6 +13609,10 @@ const ViewDatabase = ({
   const [openFilterCol, setOpenFilterCol] = useState(null);
   const [filterSearch, setFilterSearch] = useState("");
   const [showGuideModal, setShowGuideModal] = useState(false);
+  // Sorting, brand, tags, the match buttons, print and \u0394E all live in one dense
+  // strip. On a phone that strip is taller than the results it filters, so it
+  // collapses behind a single control.
+  const [showDbControls, setShowDbControls] = useState(false);
 
   const baseListSize = 48;
 
@@ -13531,23 +14165,24 @@ const ViewDatabase = ({
     const stage = (name) => {
       if (!emptyReason && items.length === 0) emptyReason = name;
     };
-    if (enableDeltaE && crosshair) {
-      const cL = crosshair.rawL;
-      const cC = crosshair.rawC;
-      const cH = crosshair.rawH;
-      const center = new Color("oklch", [cL, cC, cH]);
-      items = items.filter((item) => {
+    // Measuring and filtering are separate concerns: \u0394E is the number being
+    // scanned for, so every row carries it whenever there is a cursor to measure
+    // against, even when the \u0394E limit itself is switched off.
+    if (crosshair) {
+      const center = new Color("oklch", [
+        crosshair.rawL,
+        crosshair.rawC,
+        crosshair.rawH,
+      ]);
+      items.forEach((item) => {
         try {
-          const d =
+          item._d =
             center.deltaE(new Color("oklch", [item.L, item.C, item.H]), "OK") *
             100;
-          item._d = d;
-          return d <= maxDeltaE;
         } catch (e) {
-          return false;
+          item._d = undefined;
         }
       });
-      stage(`the \u0394E limit (\u2264 ${maxDeltaE})`);
     }
     if (brandFilter) {
       items = items.filter((item) => item.brand === brandFilter);
@@ -13559,10 +14194,6 @@ const ViewDatabase = ({
           (t) => t.toLowerCase() === tagFilter.toLowerCase(),
         ),
       );
-    if (spectralFilter) {
-      items = items.filter((item) => item.hasSpectral);
-      stage("the spectral-only filter");
-    }
     if (searchTerm.trim()) {
       const qWords = searchTerm
         .toLowerCase()
@@ -13609,6 +14240,18 @@ const ViewDatabase = ({
         return true;
       });
       stage("the column filters");
+    }
+    if (globalFilters && globalFilters.length) {
+      const res = applyGlobalFilters(
+        items,
+        globalFilters,
+        sameGroupContext,
+        globalFilterMode,
+      );
+      items = res.items;
+      if (res.culprit && !emptyReason) {
+        emptyReason = describeFilterRow(res.culprit, sameGroupContext);
+      }
     }
     items.emptyReason = emptyReason;
     return items.sort((a, b) => {
@@ -13663,13 +14306,9 @@ const ViewDatabase = ({
           valB = b.H;
           break;
         default:
-          if (enableDeltaE) {
-            valA = a._d ?? 999;
-            valB = b._d ?? 999;
-          } else {
-            valA = a.brand.toLowerCase();
-            valB = b.brand.toLowerCase();
-          }
+          // \u0394E is always measured now, so it can always be the fallback.
+          valA = a._d ?? 999;
+          valB = b._d ?? 999;
           break;
       }
       if (valA === valB) return a.H - b.H;
@@ -13681,12 +14320,12 @@ const ViewDatabase = ({
     allDbItems,
     sortBy,
     sortAsc,
+    globalFilters,
+    globalFilterMode,
+    sameGroupContext,
     tagFilter,
     searchTerm,
     brandFilter,
-    spectralFilter,
-    enableDeltaE,
-    maxDeltaE,
     crosshair,
     columnFilters,
   ]);
@@ -13820,27 +14459,20 @@ const ViewDatabase = ({
     });
   };
   // Plain render helper, not a component (see note on the other SortButtons).
-  const SortButton = ({ field, label }) =>
-    React.createElement(
-      "button",
-      {
-        onClick: () => {
-          if (sortBy === field) setSortAsc(!sortAsc);
-          else {
-            setSortBy(field);
-            setSortAsc(true);
-          }
-        },
-        className: `flex items-center gap-1.5 px-3 py-1.5 text-[9px] font-bold uppercase tracking-wider rounded transition-colors ${sortBy === field || (!sortBy && field === "deltae" && enableDeltaE) ? "bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-500/30" : "text-slate-500 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-800 border border-transparent"}`,
-      },
-      label,
-      (sortBy === field || (!sortBy && field === "deltae" && enableDeltaE)) &&
-        React.createElement(Icon, {
-          name: sortAsc ? "chevron-up" : "chevron-down",
-          className: "w-3 h-3",
-        }),
-    );
   const renderItems = sortedItems.slice(0, 300);
+  // The table is unusable below ~640px — eight columns behind a horizontal
+  // scroll. The existing card list says the same thing in one column, so narrow
+  // viewports fall back to it rather than getting a second render path.
+  const [isNarrow, setIsNarrow] = useState(
+    typeof window !== "undefined" ? window.innerWidth < 640 : false,
+  );
+  useEffect(() => {
+    const onResize = () => setIsNarrow(window.innerWidth < 640);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  const effectiveLayout =
+    isNarrow && swatchLayout === "table" ? "list" : swatchLayout;
   return React.createElement(
     "div",
     {
@@ -13973,28 +14605,33 @@ const ViewDatabase = ({
         )
       ),
     React.createElement(
+      "button",
+      {
+        onClick: () => setShowDbControls(!showDbControls),
+        className:
+          "md:hidden w-full flex items-center gap-2 px-4 py-2 border-b border-slate-200 dark:border-neutral-800 text-[11px] font-bold uppercase tracking-widest text-slate-500",
+      },
+      React.createElement(Icon, {
+        name: "sliders-horizontal",
+        className: "w-4 h-4",
+      }),
+      showDbControls ? "Hide tools" : "Tools",
+      React.createElement(
+        "span",
+        { className: "ml-auto font-mono text-[10px] text-slate-400" },
+        sortedItems.length + " matching",
+      ),
+    ),
+    React.createElement(
       "div",
       {
         className:
-          "flex flex-col gap-2 px-4 pb-4 border-b border-slate-200 dark:border-neutral-800 flex-shrink-0",
+          (showDbControls ? "flex" : "hidden") +
+          " md:flex flex-col gap-2 px-4 pb-4 border-b border-slate-200 dark:border-neutral-800 flex-shrink-0",
       },
       React.createElement(
         "div",
         { className: "flex flex-wrap items-center gap-2" },
-        SortButton({ field: "brand", label: "Brand" }),
-        SortButton({ field: "sheen", label: "Sheen" }),
-        SortButton({ field: "doorProfile", label: "Profile" }),
-        SortButton({ field: "visualTexture", label: "Vis. Pat" }),
-        SortButton({ field: "tactileTexture", label: "Tac. Tex" }),
-        SortButton({ field: "material", label: "Material" }),
-        SortButton({ field: "name", label: "Name" }),
-        SortButton({ field: "lightness", label: "L" }),
-        SortButton({ field: "chroma", label: "C" }),
-        SortButton({ field: "hue", label: "H" }),
-        SortButton({ field: "deltae", label: "\u0394E" }),
-        React.createElement("div", {
-          className: "h-4 w-px bg-slate-300 dark:bg-neutral-700 mx-1",
-        }),
         React.createElement(
           "select",
           {
@@ -14058,64 +14695,6 @@ const ViewDatabase = ({
             " Brand",
           ),
 
-        React.createElement(
-          "button",
-          {
-            onClick: () => {
-              setSpectralFilter(true);
-              if (setFilterSameAdjective) setFilterSameAdjective(true);
-              if (setFilterSameNoun) setFilterSameNoun(true);
-              setUserEnableDeltaE(true);
-              setSortBy("deltae");
-              setSortAsc(true);
-            },
-            className:
-              "px-2.5 py-1 text-[9px] font-bold bg-indigo-500 hover:bg-indigo-600 text-white uppercase tracking-wider rounded flex items-center gap-1 shadow-sm transition-colors",
-            title: "Find closest color matches",
-          },
-          React.createElement(Icon, { name: "search", className: "w-3 h-3" }),
-          "Find Color Match"
-        ),
-        React.createElement(
-          "button",
-          {
-            onClick: () => {
-              setSpectralFilter(true);
-              if (setFilterSameAdjective) setFilterSameAdjective(true);
-              if (setFilterSameNoun) setFilterSameNoun(true);
-              setUserEnableDeltaE(true);
-              setSortBy("deltae");
-              setSortAsc(true);
-              let selectedItem = null;
-              if (selectedIds && selectedIds.length > 0) {
-                selectedItem = allDbItems.find(item => item.id === selectedIds[0]);
-              } else if (crosshair) {
-                selectedItem = allDbItems.find(item => 
-                    Math.abs(item.L - crosshair.rawL) < 1e-5 &&
-                    Math.abs(item.C - crosshair.rawC) < 1e-5 &&
-                    Math.abs(item.H - crosshair.rawH) < 1e-5
-                );
-              }
-              if (selectedItem) {
-                  setColumnFilters(prev => ({
-                    ...prev,
-                    sheen: { selectedValues: new Set([String(selectedItem.sheen || "(Blank)").trim()]) },
-                    doorProfile: { selectedValues: new Set([String(selectedItem.doorProfile || "(Blank)").trim()]) },
-                    visualTexture: { selectedValues: new Set([String(selectedItem.visualTexture || "(Blank)").trim()]) },
-                    tactileTexture: { selectedValues: new Set([String(selectedItem.tactileTexture || "(Blank)").trim()]) },
-                    material: { selectedValues: new Set([String(selectedItem.material || "(Blank)").trim()]) },
-                  }));
-                } else {
-                  alert("Please select an item first to match its material attributes.");
-                }
-            },
-            className:
-              "px-2.5 py-1 text-[9px] font-bold bg-[#2B4032] hover:bg-[#1e2e23] text-white uppercase tracking-wider rounded flex items-center gap-1 shadow-sm transition-colors",
-            title: "Find closest material matches",
-          },
-          React.createElement(Icon, { name: "search-check", className: "w-3 h-3" }),
-          "Find Exact Material Match"
-        ),
 
         React.createElement(
           "button",
@@ -14146,72 +14725,65 @@ const ViewDatabase = ({
       React.createElement(
         "div",
         { className: "flex flex-wrap items-center gap-3" },
-        React.createElement(
-          "label",
-          {
-            className:
-              "flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500",
-          },
-          React.createElement("input", {
-            type: "checkbox",
-            checked: enableDeltaE,
-            onChange: (e) => {
-              setUserEnableDeltaE(e.target.checked);
+        React.createElement(FilterChips, {
+          chips: [
+            brandFilter && {
+              key: "brand",
+              label: brandFilter,
+              onClear: () => setBrandFilter(""),
             },
-            className: "rounded text-sky-500",
-            title: "",
-          }),
-          "Filter by \u0394E to Crosshair",
-        ),
-        enableDeltaE &&
-          React.createElement(
-            "div",
-            { className: "flex items-center gap-2" },
-            React.createElement("input", {
-              type: "range",
-              min: "0",
-              max: "50",
-              step: "0.1",
-              value: maxDeltaE,
-              onChange: (e) => setMaxDeltaE(parseFloat(e.target.value)),
-              className: "w-32",
-            }),
-            React.createElement(
-              "span",
-              { className: "text-[10px] font-mono w-8" },
-              maxDeltaE.toFixed(2),
-            ),
-          ),
-        React.createElement(
-          "button",
-          {
-            onClick: () => setSpectralFilter(!spectralFilter),
-            className: `flex items-center gap-1.5 px-2 py-1 text-[9px] font-bold uppercase tracking-wider rounded border ${spectralFilter ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-white text-slate-500 border-slate-200 dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-400"}`,
-          },
-          React.createElement(Icon, { name: "activity", className: "w-3 h-3" }),
-          " Verified Colors Only",
-        ),
-        React.createElement(
-          "button",
-          {
-            onClick: () => {
-              setBrandFilter("");
-              setColumnFilters({});
-              setSpectralFilter(false);
-              setUserEnableDeltaE(false);
-              if (setFilterSameAdjective) setFilterSameAdjective(false);
-              if (setFilterSameNoun) setFilterSameNoun(false);
-              if (setSearchTerm) setSearchTerm("");
-              if (setTagFilter) setTagFilter("");
-              setFilterSearch("");
+            searchTerm && {
+              key: "search",
+              label: `"${searchTerm}"`,
+              onClear: () => setSearchTerm && setSearchTerm(""),
             },
-            className:
-              "flex items-center gap-1.5 px-2 py-1 text-[9px] font-bold uppercase tracking-wider rounded border bg-rose-50 text-rose-600 border-rose-200 hover:bg-rose-100 dark:bg-rose-900/30 dark:text-rose-400 dark:border-rose-800 transition-colors",
-            title: "Clear all filters",
+            tagFilter && {
+              key: "tag",
+              label: tagFilter,
+              onClear: () => setTagFilter && setTagFilter(""),
+            },
+            filterSameAdjective && {
+              key: "adj",
+              label: "Same adjective",
+              onClear: () =>
+                setFilterSameAdjective && setFilterSameAdjective(false),
+            },
+            filterSameNoun && {
+              key: "noun",
+              label: "Same noun",
+              onClear: () => setFilterSameNoun && setFilterSameNoun(false),
+            },
+            ...Object.keys(columnFilters || {}).map((col) => ({
+              key: `col-${col}`,
+              label: col,
+              onClear: () =>
+                setColumnFilters((prev) => {
+                  const next = { ...prev };
+                  delete next[col];
+                  return next;
+                }),
+            })),
+            // Rows from the global builder show here too, so everything
+            // narrowing the list is visible in one place.
+            ...(globalFilters || []).map((row) => ({
+              key: row.id,
+              label: describeFilterRow(row, sameGroupContext),
+              onClear: () =>
+                setGlobalFilters(
+                  (globalFilters || []).filter((r) => r.id !== row.id),
+                ),
+            })),
+          ].filter(Boolean),
+          onClearAll: () => {
+            setBrandFilter("");
+            setColumnFilters({});
+            if (setFilterSameAdjective) setFilterSameAdjective(false);
+            if (setFilterSameNoun) setFilterSameNoun(false);
+            if (setSearchTerm) setSearchTerm("");
+            if (setTagFilter) setTagFilter("");
+            if (setGlobalFilters) setGlobalFilters([]);
           },
-          React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
-          " Clear Filters",
-        ),
+        }),
         React.createElement(
           "span",
           {
@@ -14287,7 +14859,18 @@ const ViewDatabase = ({
             ? `No commercial colors left after ${sortedItems.emptyReason}.`
             : "No commercial colors found. Adjust filters or \u0394E.",
         ),
-      swatchLayout === "matrix" &&
+      // The list is capped at 300 rows. That used to just stop with no
+      // explanation, which reads as missing data rather than a cap.
+      sortedItems.length > renderItems.length &&
+        React.createElement(
+          "div",
+          {
+            className:
+              "text-center text-slate-400 text-[11px] w-full p-4 italic border-t border-slate-200 dark:border-neutral-800 mt-2",
+          },
+          `Showing the first ${renderItems.length} of ${sortedItems.length} by the current sort \u2014 narrow the filters to see the rest.`,
+        ),
+      effectiveLayout === "matrix" &&
         React.createElement(
           "div",
           { className: "flex flex-col gap-2 h-full" },
@@ -14351,7 +14934,7 @@ const ViewDatabase = ({
             }),
           ),
         ),
-      swatchLayout === "list" &&
+      effectiveLayout === "list" &&
         React.createElement(
           "div",
           { className: "flex flex-col gap-2" },
@@ -14543,8 +15126,7 @@ const ViewDatabase = ({
                   className:
                     "flex flex-col justify-center text-right text-[10px] font-mono text-slate-500 dark:text-neutral-400 flex-shrink-0 bg-slate-50 dark:bg-neutral-900 p-2 rounded",
                 },
-                enableDeltaE &&
-                  item._d !== void 0 &&
+                item._d !== void 0 &&
                   React.createElement(
                     "div",
                     {
@@ -14567,7 +15149,7 @@ const ViewDatabase = ({
             ),
           ),
         ),
-      swatchLayout === "table" &&
+      effectiveLayout === "table" &&
         React.createElement(
           "div",
           {
@@ -14623,7 +15205,7 @@ const ViewDatabase = ({
                 renderFilterHeader("tactileTexture", "Tac. Tex"),
                 renderFilterHeader("material", "Material"),
                 renderFilterHeader("erpCode", "Web Link", "w-40"),
-                enableDeltaE && renderFilterHeader("deltaE", "\u0394Eok", "w-20", true, true),
+                renderFilterHeader("deltaE", "\u0394Eok", "w-20", true, true),
                 renderFilterHeader("L", "L", "w-16", true, true),
                 renderFilterHeader("C", "C", "w-16", true, true),
                 renderFilterHeader("H", "H", "w-16", true, true),
@@ -14828,15 +15410,14 @@ const ViewDatabase = ({
                         )
                       : item.erpCode,
                   ),
-                  enableDeltaE &&
-                    React.createElement(
-                      "td",
-                      {
-                        className:
-                          "p-2 text-right text-emerald-600 font-bold font-mono",
-                      },
-                      item._d?.toFixed(2),
-                    ),
+                  React.createElement(
+                    "td",
+                    {
+                      className:
+                        "p-2 text-right text-emerald-600 font-bold font-mono",
+                    },
+                    item._d !== void 0 ? item._d.toFixed(2) : "\u2014",
+                  ),
                   React.createElement(
                     "td",
                     { className: "p-2 text-right font-mono text-slate-500" },
@@ -14881,7 +15462,7 @@ const ViewDatabase = ({
             ),
           ),
         ),
-      swatchLayout === "gallery" &&
+      effectiveLayout === "gallery" &&
         React.createElement(
           "div",
           {
@@ -15048,8 +15629,7 @@ const ViewDatabase = ({
                   className:
                     "flex flex-col items-center text-center px-0.5 pb-2 w-full",
                 },
-                enableDeltaE &&
-                  item._d !== void 0 &&
+                item._d !== void 0 &&
                   React.createElement(
                     "div",
                     {
@@ -15976,6 +16556,14 @@ const AppUI = ({
   handleImportCSV,
   handleSyncToCSV,
   handlePullFromGitHub,
+  globalFilters,
+  setGlobalFilters,
+  globalFilterMode,
+  setGlobalFilterMode,
+  globalSortBy,
+  setGlobalSortBy,
+  globalSortAsc,
+  setGlobalSortAsc,
   showGithubModal,
   setShowGithubModal,
   githubConfig,
@@ -15999,15 +16587,141 @@ const AppUI = ({
   tetheringPinId,
   setTetheringPinId,
 }) => {
-  const isDark = theme === "dark";
   // The input stays bound to the raw value so typing never lags; the heavy
   // table/grid re-filter runs against this deferred copy instead.
   const deferredSearch = useDeferredValue(viewportSearchQuery);
+  // On a phone the sidebar took a fixed 45vh whether or not you were using it,
+  // leaving the view you navigated to squeezed into what was left.
+  const [mobilePanelsOpen, setMobilePanelsOpen] = useState(false);
+  const [headerExpanded, setHeaderExpanded] = useState(false);
+  const [showFilterBuilder, setShowFilterBuilder] = useState(false);
+  // Resolved once here so the noun/adjective filter rows and the presets all
+  // agree with the labels shown beside the toggles.
+  const sameGroupContext = useMemo(() => {
+    try {
+      return getSameGroupContext(
+        scrubL,
+        scrubC,
+        scrubH,
+        null,
+        savedColors,
+        names,
+        adjectives,
+      );
+    } catch (e) {
+      return null;
+    }
+  }, [scrubL, scrubC, scrubH, savedColors, names, adjectives]);
+  // Values already present in the loaded data, so select-type rows offer real
+  // choices instead of asking you to type a brand exactly right.
+  const filterOptionsFor = useCallback(
+    (fieldId) => {
+      const field = FILTER_FIELDS.find((f) => f.id === fieldId);
+      if (!field || !colorData) return [];
+      const seen = new Set();
+      Object.keys(colorData).forEach((brand) => {
+        (colorData[brand] || []).forEach((c) => {
+          const v = field.get({ ...c, brand });
+          String(v || "")
+            .split(",")
+            .map((x) => x.trim())
+            .filter(Boolean)
+            .forEach((x) => seen.add(x));
+        });
+      });
+      return [...seen].sort().slice(0, 200);
+    },
+    [colorData],
+  );
+  const compactHex = useMemo(() => {
+    try {
+      return new Color("oklch", [scrubL, scrubC, scrubH])
+        .toGamut({ space: "srgb" })
+        .toString({ format: "hex" });
+    } catch (e) {
+      return "#cccccc";
+    }
+  }, [scrubL, scrubC, scrubH]);
+  const DEST_ICONS = {
+    explore: "grid-3x3",
+    match: "list",
+    catalog: "bookmark",
+    names: "type",
+  };
+  // Destinations render twice from one definition: a rail beside the content on
+  // desktop, a thumb-height bar at the bottom on phones.
+  const renderDestinations = (variant) => {
+    const current = destForTab(activeTab).id;
+    return DESTINATIONS.map((d) => {
+      const on = d.id === current;
+      const go = () => {
+        setMobilePanelsOpen(false);
+        if (!on) setActiveTab(d.tabs[0]);
+      };
+      const icon = React.createElement(Icon, {
+        name: DEST_ICONS[d.id],
+        className: "w-4 h-4",
+      });
+      if (variant === "top") {
+        return React.createElement(
+          "button",
+          {
+            key: d.id,
+            onClick: go,
+            "aria-current": on,
+            className: `flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider whitespace-nowrap transition-colors ${
+              on
+                ? "bg-slate-800 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                : "text-slate-500 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-800"
+            }`,
+          },
+          icon,
+          d.label,
+        );
+      }
+      if (variant === "bar") {
+        return React.createElement(
+          "button",
+          {
+            key: d.id,
+            onClick: go,
+            "aria-current": on && !mobilePanelsOpen,
+            className: `flex-1 flex flex-col items-center gap-0.5 py-2 text-[10px] font-bold uppercase tracking-wider transition-colors ${
+              on && !mobilePanelsOpen
+                ? "text-slate-900 dark:text-neutral-100"
+                : "text-slate-400 dark:text-neutral-500"
+            }`,
+          },
+          icon,
+          d.label,
+        );
+      }
+      return React.createElement(
+        "button",
+        {
+          key: d.id,
+          onClick: go,
+          "aria-current": on,
+          className: `w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[12px] font-bold uppercase tracking-wider transition-colors ${
+            on
+              ? "bg-slate-100 dark:bg-neutral-800 text-slate-900 dark:text-neutral-100"
+              : "text-slate-500 dark:text-neutral-400 hover:bg-slate-50 dark:hover:bg-neutral-800/50"
+          }`,
+        },
+        icon,
+        d.label,
+      );
+    });
+  };
   const [showViewFilters, setShowViewFilters] = useState(false);
+  useEscapeKey(showViewFilters ? () => setShowViewFilters(false) : null);
+  useEscapeKey(showFilterBuilder ? () => setShowFilterBuilder(false) : null);
   // Surface what the group filters actually resolved to. These read as
   // geometry-free names, so a wrong match is visible instead of silent.
   const sameGroupLabels = useMemo(() => {
-    if (!showViewFilters) return { noun: "", adj: "" };
+    // Previously gated on the popover being open; the rail shows these
+    // permanently, so they have to resolve whether or not it is.
+
     const pretty = (k) =>
       k && k.indexOf("name:") === 0 ? k.slice(5).toUpperCase() : "unnamed";
     try {
@@ -16024,7 +16738,72 @@ const AppUI = ({
     } catch (e) {
       return { noun: "", adj: "" };
     }
-  }, [showViewFilters, scrubL, scrubC, scrubH, savedColors, names, adjectives]);
+  }, [scrubL, scrubC, scrubH, savedColors, names, adjectives]);
+  const filterPresets = useMemo(
+    () => [
+      {
+        id: "same-noun",
+        label: "Same noun",
+        hint: "Colors carrying the cursor's noun",
+        apply: () =>
+          setGlobalFilters((rows) => [
+            ...rows,
+            newFilterRow("noun", "is", "", "", true),
+          ]),
+      },
+      {
+        id: "same-adj",
+        label: "Same adjective",
+        hint: "Colors at the cursor's adjective level",
+        apply: () =>
+          setGlobalFilters((rows) => [
+            ...rows,
+            newFilterRow("adjective", "is", "", "", true),
+          ]),
+      },
+      {
+        id: "color-match",
+        label: "Color match",
+        hint: "Within \u0394E 2 of the cursor",
+        apply: () =>
+          setGlobalFilters((rows) => [
+            ...rows,
+            newFilterRow("deltaE", "lte", "2"),
+          ]),
+      },
+      {
+        id: "exact-material",
+        label: "Exact material match",
+        hint: "Same material, sheen and profile as the selected color",
+        apply: () => {
+          const sel =
+            crosshair &&
+            crosshair.activeCommercial &&
+            colorData &&
+            colorData[crosshair.activeCommercial.brand]
+              ? colorData[crosshair.activeCommercial.brand][
+                  crosshair.activeCommercial.originalIndex
+                ]
+              : null;
+          if (!sel) {
+            alert(
+              "Select a commercial color first — this preset copies its material, sheen and profile.",
+            );
+            return;
+          }
+          setGlobalFilters((rows) => [
+            ...rows,
+            ...(sel.material ? [newFilterRow("material", "is", sel.material)] : []),
+            ...(sel.sheen ? [newFilterRow("sheen", "is", sel.sheen)] : []),
+            ...(sel.doorProfile
+              ? [newFilterRow("doorProfile", "is", sel.doorProfile)]
+              : []),
+          ]);
+        },
+      },
+    ],
+    [sameGroupLabels, crosshair, colorData, setGlobalFilters],
+  );
   const [draggedPaletteIndex, setDraggedPaletteIndex] = useState(null);
   const [dragOverPaletteIndex, setDragOverPaletteIndex] = useState(null);
 
@@ -16296,14 +17075,118 @@ const AppUI = ({
       window.print();
     }
   };
+  const filterPanel = React.createElement(
+    "div",
+    { className: "flex flex-col gap-4" },
+                      React.createElement(
+                        "div",
+                        { className: "flex flex-col gap-2" },
+                        React.createElement(
+                          "div",
+                          {
+                            className:
+                              "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono",
+                          },
+                          React.createElement("span", null, "Lightness"),
+                          React.createElement(
+                            "span",
+                            {
+                              className:
+                                "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded",
+                            },
+                            "\xB1 ",
+                            filterL.toFixed(2),
+                          ),
+                        ),
+                        React.createElement("input", {
+                          type: "range",
+                          min: "0",
+                          max: "1",
+                          step: "0.01",
+                          value: filterL,
+                          onChange: (e) => setFilterL(Number(e.target.value)),
+                          className: "w-full accent-sky-500",
+                        }),
+                      ),
+                      React.createElement(
+                        "div",
+                        { className: "flex flex-col gap-2" },
+                        React.createElement(
+                          "div",
+                          {
+                            className:
+                              "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono",
+                          },
+                          React.createElement("span", null, "Chroma"),
+                          React.createElement(
+                            "span",
+                            {
+                              className:
+                                "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded",
+                            },
+                            "\xB1 ",
+                            filterC.toFixed(2),
+                          ),
+                        ),
+                        React.createElement("input", {
+                          type: "range",
+                          min: "0",
+                          max: "0.4",
+                          step: "0.01",
+                          value: filterC,
+                          onChange: (e) => setFilterC(Number(e.target.value)),
+                          className: "w-full accent-sky-500",
+                        }),
+                      ),
+                      React.createElement(
+                        "div",
+                        { className: "flex flex-col gap-2" },
+                        React.createElement(
+                          "div",
+                          {
+                            className:
+                              "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono",
+                          },
+                          React.createElement("span", null, "Hue"),
+                          React.createElement(
+                            "span",
+                            {
+                              className:
+                                "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded",
+                            },
+                            "\xB1 ",
+                            filterH.toFixed(2),
+                            "\xB0",
+                          ),
+                        ),
+                        React.createElement("input", {
+                          type: "range",
+                          min: "0",
+                          max: "180",
+                          step: "0.01",
+                          value: filterH,
+                          onChange: (e) => setFilterH(Number(e.target.value)),
+                          className: "w-full accent-sky-500",
+                        }),
+                      ),
+  );
   return React.createElement(
     "div",
     { className: "flex flex-col md:flex-row h-screen overflow-hidden" },
     React.createElement(
-      "aside",
+      "div",
+      {
+        // Desktop gets the original single left pane again: colour card,
+        // sliders and the accordion in one column. `contents` keeps the
+        // stacked phone layout untouched.
+        className:
+          "contents md:flex md:flex-col md:w-[24rem] md:shrink-0 md:h-screen md:overflow-y-auto md:border-r md:border-slate-200 md:dark:border-neutral-800 custom-scrollbar",
+      },
+    React.createElement(
+      "header",
       {
         className:
-          "w-full md:w-96 flex flex-col bg-white dark:bg-neutral-900 border-b md:border-b-0 md:border-r border-slate-200 dark:border-neutral-800 z-10 h-[45vh] md:h-screen overflow-y-auto custom-scrollbar shrink-0",
+          "shrink-0 bg-white dark:bg-neutral-900 border-b border-slate-200 dark:border-neutral-800 z-30 md:border-b-0",
       },
       React.createElement(
         "div",
@@ -16358,6 +17241,105 @@ const AppUI = ({
               }),
             ),
           ),
+      React.createElement(
+        "div",
+        {
+          className:
+            "flex items-center gap-1 shrink-0 overflow-x-auto no-scrollbar",
+        },
+        React.createElement(
+          "button",
+          {
+            onClick: handleUndo,
+            disabled: !canUndo,
+            className: `p-2 rounded-md transition-colors ${canUndo ? "hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400" : "text-slate-300 dark:text-neutral-700 cursor-not-allowed"}`,
+            title: "Undo (Ctrl+Z)",
+          },
+          React.createElement(Icon, { name: "undo", className: "w-4 h-4" }),
+        ),
+        React.createElement(
+          "button",
+          {
+            onClick: handleRedo,
+            disabled: !canRedo,
+            className: `p-2 rounded-md transition-colors ${canRedo ? "hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400" : "text-slate-300 dark:text-neutral-700 cursor-not-allowed"}`,
+            title: "Redo (Ctrl+Y)",
+          },
+          React.createElement(Icon, { name: "redo", className: "w-4 h-4" }),
+        ),
+        React.createElement("div", {
+          className: "w-px h-4 bg-slate-300 dark:bg-neutral-700 mx-1",
+        }),
+        React.createElement(
+          "button",
+          {
+            onClick: handleSaveApp,
+            className:
+              "p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors",
+            title: "Save App State (.html)",
+          },
+          React.createElement(Icon, { name: "save", className: "w-4 h-4" }),
+        ),
+        React.createElement(
+          "label",
+          {
+            className:
+              "p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 cursor-pointer transition-colors",
+            title: "Import CSV",
+          },
+          React.createElement(Icon, { name: "upload", className: "w-4 h-4" }),
+          React.createElement("input", {
+            type: "file",
+            accept:
+              ".csv,text/csv,application/csv,text/comma-separated-values,application/vnd.ms-excel",
+            className: "hidden",
+            onChange: handleImportCSV,
+            onClick: (e) => {
+              e.target.value = null;
+            },
+          }),
+        ),
+        React.createElement(
+          "button",
+          {
+            onClick: handleSystemExport,
+            className:
+              "p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors",
+            title: "Export CSV",
+          },
+          React.createElement(Icon, {
+            name: "download",
+            className: "w-4 h-4",
+          }),
+        ),
+        React.createElement(
+          "button",
+          {
+            onClick: () => setShowGithubModal(true),
+            className:
+              "p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors",
+            title: "Sync CSVs to GitHub",
+          },
+          // lucide dropped brand icons in v1, so there is no "github" glyph.
+          React.createElement(Icon, {
+            name: "cloud-upload",
+            className: "w-4 h-4",
+          }),
+        ),
+        React.createElement(
+          "button",
+          {
+            onClick: () => setTheme(theme === "dark" ? "light" : "dark"),
+            className:
+              "p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors",
+            title: "Toggle Theme",
+          },
+          React.createElement(Icon, {
+            name: theme === "dark" ? "sun" : "moon",
+            className: "w-4 h-4",
+          }),
+        ),
+      ),
         ),
         React.createElement(
           "div",
@@ -16389,116 +17371,57 @@ const AppUI = ({
             ),
         ),
       ),
-      searchQuery
-        ? React.createElement(
-            "div",
-            { className: "flex-1 overflow-y-auto p-2 flex flex-col gap-1" },
-            searchResults.length === 0
-              ? React.createElement(
-                  "div",
-                  {
-                    className:
-                      "p-6 text-[10px] font-bold uppercase tracking-widest text-slate-400 text-center",
-                  },
-                  "No results found",
-                )
-              : searchResults.map((res) =>
-                  React.createElement(
-                    "button",
-                    {
-                      key: res.key,
-                      onClick: () => {
-                        handleUpdate(
-                          [res.L, res.C, res.H],
-                          res.spectral,
-                          res.commercial,
-                        );
-                        setSearchQuery("");
-                      },
-                      className:
-                        "flex items-center gap-4 p-3 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded-xl text-left transition-all border border-transparent hover:border-slate-200 dark:hover:border-neutral-700 group",
-                    },
-                    res.image
-                      ? React.createElement(
-                          "div",
-                          {
-                            className:
-                              "w-10 h-10 rounded-lg shadow-sm border border-slate-200 dark:border-neutral-700 shrink-0 group-hover:scale-105 transition-transform relative overflow-hidden",
-                            style: { backgroundColor: res.color },
-                          },
-                          React.createElement("div", {
-                            className: "absolute inset-0 bg-cover bg-center rounded-[inherit]",
-                            style: {
-                              backgroundImage: `url(${res.image})`,
-                              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                              maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                            },
-                          })
-                        )
-                      : React.createElement("div", {
-                          className:
-                            "w-10 h-10 rounded-lg shadow-sm border border-slate-200 dark:border-neutral-700 shrink-0 group-hover:scale-105 transition-transform",
-                          style: { backgroundColor: res.color },
-                        }),
-                    React.createElement(
-                      "div",
-                      { className: "min-w-0 flex-1" },
-                      React.createElement(
-                        "div",
-                        { className: "flex items-center gap-1.5" },
-                        React.createElement(
-                          "div",
-                          {
-                            className:
-                              "text-xs font-black uppercase tracking-widest text-slate-800 dark:text-neutral-200 truncate",
-                          },
-                          res.displayName,
-                        ),
-                        res.note === "Verified Spectral Data" &&
-                          React.createElement(Icon, {
-                            name: "check-circle",
-                            className: "w-3.5 h-3.5 text-emerald-500 shrink-0",
-                            title: "Verified with Spectral Data",
-                          }),
-                      ),
-                      React.createElement(
-                        "div",
-                        { className: "flex items-center gap-2 mt-1" },
-                        res.erpCode &&
-                          React.createElement(
-                            "span",
-                            {
-                              className:
-                                "text-[9px] font-mono text-sky-600 dark:text-sky-400 font-bold",
-                            },
-                            res.erpCode,
-                          ),
-                        React.createElement(
-                          "span",
-                          {
-                            className:
-                              "text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-neutral-500",
-                          },
-                          res.erpCode ? `\u2022 ${res.type}` : res.type,
-                        ),
-                      ),
-                      res.note &&
-                        res.note !== "Verified Spectral Data" &&
-                        React.createElement(
-                          "div",
-                          {
-                            className:
-                              "text-[10px] text-slate-500 dark:text-neutral-400 italic mt-1 truncate",
-                          },
-                          res.note,
-                        ),
-                    ),
-                  ),
-                ),
-          )
-        : React.createElement(
-            React.Fragment,
-            null,
+      React.createElement(
+        "button",
+        {
+          onClick: () => setHeaderExpanded(!headerExpanded),
+          "aria-expanded": headerExpanded,
+          title: headerExpanded ? "Collapse color panel" : "Expand color panel",
+          className:
+            "md:hidden w-full flex items-center gap-3 px-4 py-2 border-b border-slate-200 dark:border-neutral-800 text-left",
+        },
+        React.createElement("span", {
+          className:
+            "w-7 h-7 rounded-md border border-black/10 shrink-0",
+          style: { backgroundColor: compactHex },
+        }),
+        React.createElement(
+          "span",
+          { className: "flex-1 min-w-0" },
+          React.createElement(
+            "span",
+            {
+              className:
+                "block text-[10px] uppercase tracking-widest text-slate-400 truncate",
+            },
+            sameGroupLabels.adj || "\u2014",
+          ),
+          React.createElement(
+            "span",
+            {
+              className:
+                "block text-sm font-bold text-slate-800 dark:text-neutral-100 truncate leading-tight",
+            },
+            sameGroupLabels.noun || "\u2014",
+          ),
+        ),
+        React.createElement(
+          "span",
+          { className: "text-[11px] font-mono text-slate-400" },
+          crosshair?.activeErpCode || "",
+        ),
+        React.createElement(Icon, {
+          name: headerExpanded ? "chevron-up" : "chevron-down",
+          className: "w-4 h-4 text-slate-400",
+        }),
+      ),
+      React.createElement(
+        "div",
+        {
+          // On a phone the card and sliders are what push the content off
+          // screen, so they collapse to a one-line strip by default.
+          className: `${headerExpanded ? "block" : "hidden"} md:block`,
+        },
             React.createElement(
               "div",
               { className: "p-3 bg-white dark:bg-neutral-900" },
@@ -16928,34 +17851,24 @@ const AppUI = ({
                   ),
                 ),
             ),
-            React.createElement(
-              CollapsiblePanel,
-              { title: "Conversions", icon: "sliders", defaultOpen: false },
-              React.createElement(ColorConverter, {
-                crosshair: {
-                  rawL: scrubL,
-                  rawC: scrubC,
-                  rawH: scrubH,
-                  L: scrubL,
-                  C: scrubC,
-                  H: scrubH,
-                  activeSavedColor: crosshair.activeSavedColor,
-                  temporarySpectral: crosshair.temporarySpectral,
-                },
-                onEdit: handleUpdate,
-                observer,
-                setObserver,
-                illuminant,
-                setIlluminant,
-                colorData,
-              }),
-            ),
+      ),
+    ),
+      React.createElement(
+        "aside",
+        {
+          className: `w-full md:w-auto flex-col bg-white dark:bg-neutral-900 z-10 ${
+            mobilePanelsOpen ? "flex flex-1 min-h-0" : "hidden"
+          } md:flex md:flex-none md:h-auto overflow-y-visible custom-scrollbar`,
+        },
+      React.createElement(
+            React.Fragment,
+            null,
             React.createElement(
               CollapsiblePanel,
               {
                 title: "Commercial Matches",
                 icon: "palette",
-                defaultOpen: false,
+                defaultOpen: true,
               },
               React.createElement(CommercialMatches, {
                 crosshair: {
@@ -16970,6 +17883,12 @@ const AppUI = ({
                 colorData,
                 filterSameAdjective,
                 filterSameNoun,
+                globalFilters,
+                setGlobalFilters,
+                globalFilterMode,
+                globalSortBy,
+                globalSortAsc,
+                sameGroupContext,
                 names,
                 adjectives,
                 gridData,
@@ -17000,6 +17919,33 @@ const AppUI = ({
                   },
                 }),
               ),
+            React.createElement(
+              CollapsiblePanel,
+              {
+                title: "Conversions",
+                icon: "sliders",
+                defaultOpen: false,
+                summary: crosshair?.activeErpCode,
+              },
+              React.createElement(ColorConverter, {
+                crosshair: {
+                  rawL: scrubL,
+                  rawC: scrubC,
+                  rawH: scrubH,
+                  L: scrubL,
+                  C: scrubC,
+                  H: scrubH,
+                  activeSavedColor: crosshair.activeSavedColor,
+                  temporarySpectral: crosshair.temporarySpectral,
+                },
+                onEdit: handleUpdate,
+                observer,
+                setObserver,
+                illuminant,
+                setIlluminant,
+                colorData,
+              }),
+            ),
             React.createElement(
               CollapsiblePanel,
               { title: "Harmonies", icon: "aperture", defaultOpen: false },
@@ -17931,6 +18877,9 @@ const AppUI = ({
             React.createElement(
               CollapsiblePanel,
               {
+                summary: dictNotes?.[crosshair?.nearestAnchorId]
+                  ? "has note"
+                  : null,
                 title: "Anchor Notes",
                 icon: "sticky-note",
                 defaultOpen: false,
@@ -17965,156 +18914,192 @@ const AppUI = ({
               ),
             ),
           ),
+      ),
     ),
     React.createElement(
-      "main",
+      "div",
       {
         className:
-          "flex-1 flex flex-col overflow-hidden bg-slate-50 dark:bg-neutral-950 relative",
+          "contents md:flex md:flex-col md:flex-1 md:min-w-0 md:h-screen",
+      },
+    React.createElement(
+      "div",
+      {
+        className:
+          `${
+            mobilePanelsOpen ? "hidden md:flex" : "flex"
+          } shrink-0 items-center gap-2 px-4 py-1.5 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 relative z-20`,
       },
       React.createElement(
         "div",
         {
           className:
-            "flex items-center justify-between px-4 pt-4 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 z-10 flex-shrink-0",
+            "hidden md:flex items-center gap-1 flex-nowrap overflow-x-auto no-scrollbar",
         },
-        React.createElement(
-          "div",
-          { className: "flex-1 flex items-center min-w-0 mr-4 pb-1.5" },
+        renderDestinations("top"),
+      ),
+      React.createElement("div", { className: "ml-auto" }),
+      React.createElement(SortControl, {
+        fields: DB_SORT_FIELDS,
+        sortBy: globalSortBy,
+        setSortBy: setGlobalSortBy,
+        sortAsc: globalSortAsc,
+        setSortAsc: setGlobalSortAsc,
+        compact: true,
+      }),
+      React.createElement(
+        "button",
+        {
+          onClick: () => setShowFilterBuilder(!showFilterBuilder),
+          className: `flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-bold uppercase tracking-wider transition-colors ${
+            globalFilters.length
+              ? "border-sky-200 dark:border-sky-500/30 bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400"
+              : "border-slate-200 dark:border-neutral-700 text-slate-500 dark:text-neutral-400 hover:bg-slate-50 dark:hover:bg-neutral-800"
+          }`,
+        },
+        React.createElement(Icon, { name: "filter", className: "w-3.5 h-3.5" }),
+        globalFilters.length
+          ? `Filters \u00b7 ${globalFilters.length}`
+          : "Filters",
+      ),
+      showFilterBuilder &&
+        ReactDOM.createPortal(
           React.createElement(
             "div",
-            { className: "relative" },
+            {
+              // Portalled to body: as an absolutely positioned child of the bar
+              // it was painted under the panels below and clipped by their
+              // stacking contexts.
+              className:
+                "fixed inset-0 z-[95] flex flex-col justify-end md:block",
+            },
+            React.createElement("div", {
+              className: "absolute inset-0 bg-black/30",
+              onClick: () => setShowFilterBuilder(false),
+            }),
             React.createElement(
-              "select",
+              "div",
               {
-                value: activeTab,
-                onChange: (e) => setActiveTab(e.target.value),
                 className:
-                  "appearance-none pl-4 pr-10 py-2 text-[12px] font-black uppercase tracking-widest rounded-lg border-2 bg-white dark:bg-neutral-800 outline-none cursor-pointer transition-colors hover:bg-slate-50 dark:hover:bg-neutral-700 min-w-[220px]",
-                style: {
-                  textTransform: "uppercase",
-                  color: isDark ? "#F2E8DF" : "#010D00",
-                  borderColor: isDark ? "#F2E8DF" : "#010D00",
-                },
+                  "relative md:absolute md:right-3 md:top-28 bg-white dark:bg-neutral-900 border-t md:border border-slate-200 dark:border-neutral-800 rounded-t-2xl md:rounded-xl shadow-2xl max-h-[80vh] md:max-h-[70vh] flex flex-col md:w-[420px]",
               },
-              tabs.map((tab) =>
+              React.createElement("div", {
+                className:
+                  "md:hidden mx-auto mt-2 mb-1 h-1 w-10 rounded-full bg-slate-300 dark:bg-neutral-700",
+              }),
+              React.createElement(
+                "div",
+                {
+                  className:
+                    "flex items-center justify-between px-3 py-2 border-b border-slate-200 dark:border-neutral-800",
+                },
                 React.createElement(
-                  "option",
+                  "span",
                   {
-                    key: tab.id,
-                    value: tab.id,
-                    style: {
-                      color: isDark ? "#F2E8DF" : "#010D00",
-                      background: isDark ? "#052212" : "#F2E8DF",
-                    },
+                    className:
+                      "text-[11px] font-bold uppercase tracking-widest text-slate-500",
                   },
-                  tab.label,
+                  "Filters",
+                ),
+                React.createElement(
+                  "button",
+                  {
+                    onClick: () => setShowFilterBuilder(false),
+                    className: "text-slate-400 p-1",
+                    title: "Close filters",
+                  },
+                  React.createElement(Icon, { name: "x", className: "w-4 h-4" }),
+                ),
+              ),
+              React.createElement(
+                "div",
+                {
+                  className:
+                    "p-3 pb-8 overflow-y-auto custom-scrollbar flex flex-col gap-3",
+                },
+                React.createElement(FilterBuilder, {
+                  rows: globalFilters,
+                  setRows: setGlobalFilters,
+                  optionsFor: filterOptionsFor,
+                  presets: filterPresets,
+                  mode: globalFilterMode,
+                  setMode: setGlobalFilterMode,
+                  ctx: sameGroupContext,
+                }),
+                React.createElement(
+                  "div",
+                  {
+                    className:
+                      "pt-3 border-t border-slate-200 dark:border-neutral-800",
+                  },
+                  React.createElement(
+                    "span",
+                    {
+                      className:
+                        "block text-[9px] font-bold uppercase tracking-widest text-slate-400 pb-2",
+                    },
+                    "Viewport tolerance",
+                  ),
+                  filterPanel,
                 ),
               ),
             ),
-            React.createElement(Icon, {
-              name: "chevron-down",
-              className:
-                "w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none",
-              style: { color: isDark ? "#F2E8DF" : "#010D00" },
-            }),
           ),
+          document.body,
         ),
+    ),
+    React.createElement(
+      "div",
+      {
+        className:
+          "flex-1 flex flex-col md:flex-row overflow-hidden min-h-0 w-full",
+      },
+    React.createElement(
+      "main",
+      {
+        className:
+          `${
+            mobilePanelsOpen ? "hidden md:flex" : "flex"
+          } flex-1 flex-col overflow-hidden bg-slate-50 dark:bg-neutral-950 relative`,
+      },
+      React.createElement(
+        "div",
+        {
+          className:
+            "flex flex-col md:flex-row md:items-center md:justify-between gap-1 px-4 pt-3 md:pt-4 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 z-10 flex-shrink-0",
+        },
         React.createElement(
           "div",
-          { className: "flex items-center gap-1 shrink-0 pb-1.5" },
-          React.createElement(
-            "button",
-            {
-              onClick: handleUndo,
-              disabled: !canUndo,
-              className: `p-2 rounded-md transition-colors ${canUndo ? "hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400" : "text-slate-300 dark:text-neutral-700 cursor-not-allowed"}`,
-              title: "Undo (Ctrl+Z)",
-            },
-            React.createElement(Icon, { name: "undo", className: "w-4 h-4" }),
-          ),
-          React.createElement(
-            "button",
-            {
-              onClick: handleRedo,
-              disabled: !canRedo,
-              className: `p-2 rounded-md transition-colors ${canRedo ? "hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400" : "text-slate-300 dark:text-neutral-700 cursor-not-allowed"}`,
-              title: "Redo (Ctrl+Y)",
-            },
-            React.createElement(Icon, { name: "redo", className: "w-4 h-4" }),
-          ),
-          React.createElement("div", {
-            className: "w-px h-4 bg-slate-300 dark:bg-neutral-700 mx-1",
-          }),
-          React.createElement(
-            "button",
-            {
-              onClick: handleSaveApp,
-              className:
-                "p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors",
-              title: "Save App State (.html)",
-            },
-            React.createElement(Icon, { name: "save", className: "w-4 h-4" }),
-          ),
-          React.createElement(
-            "label",
-            {
-              className:
-                "p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 cursor-pointer transition-colors",
-              title: "Import CSV",
-            },
-            React.createElement(Icon, { name: "upload", className: "w-4 h-4" }),
-            React.createElement("input", {
-              type: "file",
-              accept:
-                ".csv,text/csv,application/csv,text/comma-separated-values,application/vnd.ms-excel",
-              className: "hidden",
-              onChange: handleImportCSV,
-              onClick: (e) => {
-                e.target.value = null;
+          { className: "flex-1 flex items-center min-w-0 md:mr-4 pb-1" },
+          (() => {
+            const dest = destForTab(activeTab);
+            if (dest.tabs.length < 2) return null;
+            return React.createElement(
+              "div",
+              {
+                className:
+                  "flex items-center gap-1 flex-nowrap overflow-x-auto no-scrollbar -mx-1 px-1",
               },
-            }),
-          ),
-          React.createElement(
-            "button",
-            {
-              onClick: handleSystemExport,
-              className:
-                "p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors",
-              title: "Export CSV",
-            },
-            React.createElement(Icon, {
-              name: "download",
-              className: "w-4 h-4",
-            }),
-          ),
-          React.createElement(
-            "button",
-            {
-              onClick: () => setShowGithubModal(true),
-              className:
-                "p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors",
-              title: "Sync CSVs to GitHub",
-            },
-            // lucide dropped brand icons in v1, so there is no "github" glyph.
-            React.createElement(Icon, {
-              name: "cloud-upload",
-              className: "w-4 h-4",
-            }),
-          ),
-          React.createElement(
-            "button",
-            {
-              onClick: () => setTheme(theme === "dark" ? "light" : "dark"),
-              className:
-                "p-2 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors",
-              title: "Toggle Theme",
-            },
-            React.createElement(Icon, {
-              name: theme === "dark" ? "sun" : "moon",
-              className: "w-4 h-4",
-            }),
-          ),
+              dest.tabs.map((tid) => {
+                const t = tabs.find((x) => x.id === tid);
+                if (!t) return null;
+                const on = tid === activeTab;
+                return React.createElement(
+                  "button",
+                  {
+                    key: tid,
+                    onClick: () => setActiveTab(tid),
+                    className: `px-3 py-1 text-[11px] font-bold uppercase tracking-wider rounded-full whitespace-nowrap transition-colors ${
+                      on
+                        ? "bg-slate-800 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                        : "text-slate-500 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-800"
+                    }`,
+                  },
+                  t.label,
+                );
+              }),
+            );
+          })(),
         ),
       ),
       React.createElement(
@@ -18380,211 +19365,6 @@ const AppUI = ({
           React.createElement(
             "div",
             { className: "flex-1 relative overflow-hidden" },
-            ["slice", "chroma", "top", "3d", "db"].includes(activeTab) &&
-              React.createElement(
-                "div",
-                { className: "absolute top-4 left-4 z-50" },
-                React.createElement(
-                  "button",
-                  {
-                    onClick: () => setShowViewFilters(!showViewFilters),
-                    className:
-                      "flex justify-center items-center w-8 h-8 bg-white/80 dark:bg-neutral-900/80 rounded-lg border border-slate-200 dark:border-neutral-800 backdrop-blur-md shadow-sm text-slate-500 hover:text-sky-600 dark:text-neutral-400 dark:hover:text-sky-400 transition-colors",
-                    title: "View Filters",
-                  },
-                  React.createElement(Icon, {
-                    name: "sliders-horizontal",
-                    className: "w-4 h-4",
-                  }),
-                ),
-                showViewFilters &&
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "mt-2 flex flex-col gap-4 bg-white/95 dark:bg-neutral-900/95 p-4 rounded-xl border border-slate-200 dark:border-neutral-800 backdrop-blur-md shadow-xl w-56 animate-in fade-in zoom-in-95 duration-200 origin-top-left",
-                    },
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "flex items-center justify-between border-b border-slate-100 dark:border-neutral-800 pb-2",
-                      },
-                      React.createElement(
-                        "label",
-                        {
-                          className:
-                            "text-xs font-semibold tracking-wider text-slate-500 dark:text-neutral-400",
-                        },
-                        "View Filters",
-                      ),
-                      React.createElement(
-                        "button",
-                        {
-                          onClick: () => setShowViewFilters(false),
-                          className:
-                            "text-slate-400 hover:text-slate-600 dark:hover:text-neutral-200",
-                          title: "Close Filters",
-                        },
-                        React.createElement(Icon, {
-                          name: "x",
-                          className: "w-3.5 h-3.5",
-                        }),
-                      ),
-                    ),
-                    React.createElement(
-                      "div",
-                      { className: "flex flex-col gap-2" },
-                      React.createElement(
-                        "div",
-                        {
-                          className:
-                            "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono",
-                        },
-                        React.createElement("span", null, "Lightness"),
-                        React.createElement(
-                          "span",
-                          {
-                            className:
-                              "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded",
-                          },
-                          "\xB1 ",
-                          filterL.toFixed(2),
-                        ),
-                      ),
-                      React.createElement("input", {
-                        type: "range",
-                        min: "0",
-                        max: "1",
-                        step: "0.01",
-                        value: filterL,
-                        onChange: (e) => setFilterL(Number(e.target.value)),
-                        className: "w-full accent-sky-500",
-                      }),
-                    ),
-                    React.createElement(
-                      "div",
-                      { className: "flex flex-col gap-2" },
-                      React.createElement(
-                        "div",
-                        {
-                          className:
-                            "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono",
-                        },
-                        React.createElement("span", null, "Chroma"),
-                        React.createElement(
-                          "span",
-                          {
-                            className:
-                              "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded",
-                          },
-                          "\xB1 ",
-                          filterC.toFixed(2),
-                        ),
-                      ),
-                      React.createElement("input", {
-                        type: "range",
-                        min: "0",
-                        max: "0.4",
-                        step: "0.01",
-                        value: filterC,
-                        onChange: (e) => setFilterC(Number(e.target.value)),
-                        className: "w-full accent-sky-500",
-                      }),
-                    ),
-                    React.createElement(
-                      "div",
-                      { className: "flex flex-col gap-2" },
-                      React.createElement(
-                        "div",
-                        {
-                          className:
-                            "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono",
-                        },
-                        React.createElement("span", null, "Hue"),
-                        React.createElement(
-                          "span",
-                          {
-                            className:
-                              "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded",
-                          },
-                          "\xB1 ",
-                          filterH.toFixed(2),
-                          "\xB0",
-                        ),
-                      ),
-                      React.createElement("input", {
-                        type: "range",
-                        min: "0",
-                        max: "180",
-                        step: "0.01",
-                        value: filterH,
-                        onChange: (e) => setFilterH(Number(e.target.value)),
-                        className: "w-full accent-sky-500",
-                      }),
-                    ),
-                    React.createElement(
-                      "div",
-                      { className: "flex flex-col gap-2 border-t border-slate-100 dark:border-neutral-800 pt-2 mt-1" },
-                      React.createElement(
-                        "div",
-                        { className: "flex items-center justify-between" },
-                        React.createElement(
-                          "span",
-                          { className: "text-[10px] uppercase text-slate-400 font-mono flex flex-col" },
-                          "Same Adjective",
-                          sameGroupLabels.adj &&
-                            React.createElement(
-                              "span",
-                              { className: "text-[9px] normal-case text-sky-500 truncate max-w-[120px]" },
-                              sameGroupLabels.adj
-                            )
-                        ),
-                        React.createElement("button", {
-                          onClick: () => setFilterSameAdjective(!filterSameAdjective),
-                          className: `w-9 h-5 flex items-center rounded-full p-1 transition-colors duration-200 focus:outline-none ${
-                            filterSameAdjective ? "bg-sky-500" : "bg-slate-200 dark:bg-neutral-800"
-                          }`,
-                          title: "Toggle Same Adjective"
-                        },
-                          React.createElement("div", {
-                            className: `bg-white w-3 h-3 rounded-full shadow-md transform transition-transform duration-200 ${
-                              filterSameAdjective ? "translate-x-4" : "translate-x-0"
-                            }`
-                          })
-                        )
-                      ),
-                      React.createElement(
-                        "div",
-                        { className: "flex items-center justify-between" },
-                        React.createElement(
-                          "span",
-                          { className: "text-[10px] uppercase text-slate-400 font-mono flex flex-col" },
-                          "Same Noun",
-                          sameGroupLabels.noun &&
-                            React.createElement(
-                              "span",
-                              { className: "text-[9px] normal-case text-sky-500 truncate max-w-[120px]" },
-                              sameGroupLabels.noun
-                            )
-                        ),
-                        React.createElement("button", {
-                          onClick: () => setFilterSameNoun(!filterSameNoun),
-                          className: `w-9 h-5 flex items-center rounded-full p-1 transition-colors duration-200 focus:outline-none ${
-                            filterSameNoun ? "bg-sky-500" : "bg-slate-200 dark:bg-neutral-800"
-                          }`,
-                          title: "Toggle Same Noun"
-                        },
-                          React.createElement("div", {
-                            className: `bg-white w-3 h-3 rounded-full shadow-md transform transition-transform duration-200 ${
-                              filterSameNoun ? "translate-x-4" : "translate-x-0"
-                            }`
-                          })
-                        )
-                      )
-                    ),
-                  ),
-              ),
             React.createElement(
               "div",
               { 
@@ -18594,6 +19374,14 @@ const AppUI = ({
               React.createElement(ViewDatabase, {
                 setFilterSameAdjective,
                 setFilterSameNoun,
+                filterSameAdjective,
+                filterSameNoun,
+                globalFilters,
+                setGlobalFilters,
+                globalFilterMode,
+                globalSortBy,
+                globalSortAsc,
+                sameGroupContext,
                 colorData: filteredColorData,
                 fullColorData: colorData,
                 updateColorData,
@@ -18766,6 +19554,8 @@ const AppUI = ({
           ),
         ),
       ),
+    ),
+    ),
     ),
     showCompareFullscreen &&
       compSlotA &&
@@ -19981,6 +20771,182 @@ const AppUI = ({
           ),
         ),
       ),
+    React.createElement(
+      "nav",
+      {
+        className:
+          "md:hidden flex shrink-0 border-t border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 order-last",
+      },
+      renderDestinations("bar"),
+      React.createElement(
+        "button",
+        {
+          onClick: () => setMobilePanelsOpen(!mobilePanelsOpen),
+          "aria-current": mobilePanelsOpen,
+          className: `flex-1 flex flex-col items-center gap-0.5 py-2 text-[10px] font-bold uppercase tracking-wider transition-colors ${
+            mobilePanelsOpen
+              ? "text-slate-900 dark:text-neutral-100"
+              : "text-slate-400 dark:text-neutral-500"
+          }`,
+        },
+        React.createElement(Icon, { name: "panel-right", className: "w-4 h-4" }),
+        "Tools",
+      ),
+    ),
+    searchQuery &&
+      ReactDOM.createPortal(
+        React.createElement(
+          "div",
+          {
+            // Results used to render inside the inspector, which is hidden on
+            // phones — so searching looked like it did nothing.
+            className:
+              "fixed inset-0 z-[97] flex flex-col",
+          },
+          React.createElement("div", {
+            className: "absolute inset-0 bg-black/30",
+            onClick: () => setSearchQuery(""),
+          }),
+          React.createElement(
+            "div",
+            {
+              className:
+                "relative mx-auto mt-[16vh] w-[92vw] md:w-[560px] max-h-[62vh] bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-2xl flex flex-col overflow-hidden",
+            },
+            React.createElement(
+              "div",
+              {
+                className:
+                  "flex items-center justify-between px-3 py-2 border-b border-slate-200 dark:border-neutral-800",
+              },
+              React.createElement(
+                "span",
+                {
+                  className:
+                    "text-[11px] font-bold uppercase tracking-widest text-slate-500",
+                },
+                `Results for "${searchQuery}"`,
+              ),
+              React.createElement(
+                "button",
+                {
+                  onClick: () => setSearchQuery(""),
+                  className: "text-slate-400 p-1",
+                  title: "Close search",
+                },
+                React.createElement(Icon, { name: "x", className: "w-4 h-4" }),
+              ),
+            ),
+              React.createElement(
+                  "div",
+                  { className: "flex-1 overflow-y-auto p-2 flex flex-col gap-1" },
+                  searchResults.length === 0
+                    ? React.createElement(
+                        "div",
+                        {
+                          className:
+                            "p-6 text-[10px] font-bold uppercase tracking-widest text-slate-400 text-center",
+                        },
+                        "No results found",
+                      )
+                    : searchResults.map((res) =>
+                        React.createElement(
+                          "button",
+                          {
+                            key: res.key,
+                            onClick: () => {
+                              handleUpdate(
+                                [res.L, res.C, res.H],
+                                res.spectral,
+                                res.commercial,
+                              );
+                              setSearchQuery("");
+                            },
+                            className:
+                              "flex items-center gap-4 p-3 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded-xl text-left transition-all border border-transparent hover:border-slate-200 dark:hover:border-neutral-700 group",
+                          },
+                          res.image
+                            ? React.createElement(
+                                "div",
+                                {
+                                  className:
+                                    "w-10 h-10 rounded-lg shadow-sm border border-slate-200 dark:border-neutral-700 shrink-0 group-hover:scale-105 transition-transform relative overflow-hidden",
+                                  style: { backgroundColor: res.color },
+                                },
+                                React.createElement("div", {
+                                  className: "absolute inset-0 bg-cover bg-center rounded-[inherit]",
+                                  style: {
+                                    backgroundImage: `url(${res.image})`,
+                                    WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                                    maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
+                                  },
+                                })
+                              )
+                            : React.createElement("div", {
+                                className:
+                                  "w-10 h-10 rounded-lg shadow-sm border border-slate-200 dark:border-neutral-700 shrink-0 group-hover:scale-105 transition-transform",
+                                style: { backgroundColor: res.color },
+                              }),
+                          React.createElement(
+                            "div",
+                            { className: "min-w-0 flex-1" },
+                            React.createElement(
+                              "div",
+                              { className: "flex items-center gap-1.5" },
+                              React.createElement(
+                                "div",
+                                {
+                                  className:
+                                    "text-xs font-black uppercase tracking-widest text-slate-800 dark:text-neutral-200 truncate",
+                                },
+                                res.displayName,
+                              ),
+                              res.note === "Verified Spectral Data" &&
+                                React.createElement(Icon, {
+                                  name: "check-circle",
+                                  className: "w-3.5 h-3.5 text-emerald-500 shrink-0",
+                                  title: "Verified with Spectral Data",
+                                }),
+                            ),
+                            React.createElement(
+                              "div",
+                              { className: "flex items-center gap-2 mt-1" },
+                              res.erpCode &&
+                                React.createElement(
+                                  "span",
+                                  {
+                                    className:
+                                      "text-[9px] font-mono text-sky-600 dark:text-sky-400 font-bold",
+                                  },
+                                  res.erpCode,
+                                ),
+                              React.createElement(
+                                "span",
+                                {
+                                  className:
+                                    "text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-neutral-500",
+                                },
+                                res.erpCode ? `\u2022 ${res.type}` : res.type,
+                              ),
+                            ),
+                            res.note &&
+                              res.note !== "Verified Spectral Data" &&
+                              React.createElement(
+                                "div",
+                                {
+                                  className:
+                                    "text-[10px] text-slate-500 dark:text-neutral-400 italic mt-1 truncate",
+                                },
+                                res.note,
+                              ),
+                          ),
+                        ),
+                      ),
+                )
+          ),
+        ),
+        document.body,
+      ),
     showFileManager &&
       React.createElement(FileManager, {
         linkedFiles,
@@ -20006,6 +20972,14 @@ const AppUI = ({
         crosshair,
         setFilterSameAdjective,
         setFilterSameNoun,
+        filterSameAdjective,
+        filterSameNoun,
+        globalFilters,
+        setGlobalFilters,
+        globalFilterMode,
+        globalSortBy,
+        globalSortAsc,
+        sameGroupContext,
         onClose: () => setShowDatabaseManager(false),
       }),
     showAveryModal &&
