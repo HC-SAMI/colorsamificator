@@ -16811,7 +16811,7 @@ const AppUI = ({
       {
         id: "exact-material",
         label: "Exact material match",
-        hint: "Same material, sheen and profile as the selected color, plus its noun and adjective",
+        hint: "Same material, sheen, profile, visual pattern and tactile texture as the selected color, plus its noun and adjective",
         apply: () => {
           const sel =
             crosshair &&
@@ -16836,6 +16836,12 @@ const AppUI = ({
               ...(sel.sheen ? [newFilterRow("sheen", "is", sel.sheen)] : []),
               ...(sel.doorProfile
                 ? [newFilterRow("doorProfile", "is", sel.doorProfile)]
+                : []),
+              ...(sel.visualTexture
+                ? [newFilterRow("visualTexture", "is", sel.visualTexture)]
+                : []),
+              ...(sel.tactileTexture
+                ? [newFilterRow("tactileTexture", "is", sel.tactileTexture)]
                 : []),
               newFilterRow("noun", "is", "", "", true),
               newFilterRow("adjective", "is", "", "", true),
