@@ -142,7 +142,12 @@ input[type=range]::-webkit-slider-thumb{height:16px;width:16px;border-radius:50%
 input::placeholder,textarea::placeholder{color:var(--text-muted);opacity:0.55}
 
 /* Plotly */
-.plotly-wrapper{width:100%;height:100%}
+.plotly-wrapper{width:100%;height:100%;touch-action:none}
+/* Plotly's own drag layers must not let the page scroll under the gesture. */
+.plotly-wrapper .plot-container,
+.plotly-wrapper .js-plotly-plot,
+.plotly-wrapper .nsewdrag,
+.plotly-wrapper .gl-container canvas{touch-action:none}
 .js-plotly-plot,.plot-container,.gl-container,canvas{touch-action:none!important;border-radius:.75rem}
 
 /* Misc */
@@ -160,3 +165,8 @@ div#root:nth-of-type(1) > div:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-
 div#root:nth-of-type(1) > div:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > select:nth-of-type(1) {
   background-color: #f2e8df;
 }
+
+/* Horizontal rails (destination nav, toolbar) scroll sideways on narrow
+   screens rather than wrapping; hide the scrollbar without losing the scroll. */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }

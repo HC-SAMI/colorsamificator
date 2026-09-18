@@ -3440,7 +3440,18 @@ const FILTER_FIELDS = [
   { id: "C", label: "Chroma", type: "number", get: (it) => it.C },
   { id: "H", label: "Hue", type: "number", get: (it) => it.H },
   { id: "deltaE", label: "\u0394E to cursor", type: "number", get: (it) => it._d },
-  { id: "spectral", label: "Has spectral data", type: "boolean", get: (it) => !!it.hasSpectral },
+  {
+    id: "spectral",
+    label: "Has spectral data",
+    type: "boolean",
+    // DB rows carry a precomputed hasSpectral; raw colour records and grid
+    // points only have the spectral array itself.
+    get: (it) =>
+      !!(
+        it.hasSpectral ||
+        (Array.isArray(it.spectral) && it.spectral.length > 0)
+      ),
+  },
 ];
 
 const nounNameOf = (item, ctx) => {
@@ -3571,6 +3582,18 @@ const describeFilterRow = (row, ctx) => {
   }
   return `${field.label} ${opLabel} ${row.value}`;
 };
+
+// Presets stack on top of whatever is already there, but adding a row that is
+// already present would just duplicate it, so equivalents are skipped.
+const sameRow = (a, b) =>
+  a.field === b.field &&
+  a.op === b.op &&
+  !!a.dynamic === !!b.dynamic &&
+  String(a.value) === String(b.value);
+const mergeFilterRows = (rows, additions) => [
+  ...rows,
+  ...additions.filter((n) => !rows.some((r) => sameRow(r, n))),
+];
 
 let FILTER_ROW_SEQ = 0;
 const newFilterRow = (fieldId, op, value, value2, dynamic) => {
@@ -9319,7 +9342,11 @@ const App = () => {
   const [filterSameAdjective, setFilterSameAdjective] = useState(false);
   const [filterSameNoun, setFilterSameNoun] = useState(false);
   // One stack of filter rows for the whole app, not per tab.
-  const [globalFilters, setGlobalFilters] = useState([]);
+  // Verified colours only on load — the old default, now expressed as an
+  // ordinary filter row so it shows in the stack and can be removed.
+  const [globalFilters, setGlobalFilters] = useState(() => [
+    newFilterRow("spectral", "is_true"),
+  ]);
   const [globalFilterMode, setGlobalFilterMode] = useState("and");
   const [globalSortBy, setGlobalSortBy] = useState("deltae");
   const [globalSortAsc, setGlobalSortAsc] = useState(true);
@@ -16746,35 +16773,45 @@ const AppUI = ({
         label: "Same noun",
         hint: "Colors carrying the cursor's noun",
         apply: () =>
-          setGlobalFilters((rows) => [
-            ...rows,
-            newFilterRow("noun", "is", "", "", true),
-          ]),
+          setGlobalFilters((rows) =>
+            mergeFilterRows(rows, [newFilterRow("noun", "is", "", "", true)]),
+          ),
       },
       {
         id: "same-adj",
         label: "Same adjective",
         hint: "Colors at the cursor's adjective level",
         apply: () =>
-          setGlobalFilters((rows) => [
-            ...rows,
-            newFilterRow("adjective", "is", "", "", true),
-          ]),
+          setGlobalFilters((rows) =>
+            mergeFilterRows(rows, [newFilterRow("adjective", "is", "", "", true)]),
+          ),
+      },
+      {
+        id: "verified",
+        label: "Verified only",
+        hint: "Colours with measured spectral data",
+        apply: () =>
+          setGlobalFilters((rows) =>
+            mergeFilterRows(rows, [newFilterRow("spectral", "is_true")]),
+          ),
       },
       {
         id: "color-match",
         label: "Color match",
-        hint: "Within \u0394E 2 of the cursor",
+        hint: "Within \u0394E 2 of the cursor, sharing its noun and adjective",
         apply: () =>
-          setGlobalFilters((rows) => [
-            ...rows,
-            newFilterRow("deltaE", "lte", "2"),
-          ]),
+          setGlobalFilters((rows) =>
+            mergeFilterRows(rows, [
+              newFilterRow("deltaE", "lte", "2"),
+              newFilterRow("noun", "is", "", "", true),
+              newFilterRow("adjective", "is", "", "", true),
+            ]),
+          ),
       },
       {
         id: "exact-material",
         label: "Exact material match",
-        hint: "Same material, sheen and profile as the selected color",
+        hint: "Same material, sheen and profile as the selected color, plus its noun and adjective",
         apply: () => {
           const sel =
             crosshair &&
@@ -16791,14 +16828,19 @@ const AppUI = ({
             );
             return;
           }
-          setGlobalFilters((rows) => [
-            ...rows,
-            ...(sel.material ? [newFilterRow("material", "is", sel.material)] : []),
-            ...(sel.sheen ? [newFilterRow("sheen", "is", sel.sheen)] : []),
-            ...(sel.doorProfile
-              ? [newFilterRow("doorProfile", "is", sel.doorProfile)]
-              : []),
-          ]);
+          setGlobalFilters((rows) =>
+            mergeFilterRows(rows, [
+              ...(sel.material
+                ? [newFilterRow("material", "is", sel.material)]
+                : []),
+              ...(sel.sheen ? [newFilterRow("sheen", "is", sel.sheen)] : []),
+              ...(sel.doorProfile
+                ? [newFilterRow("doorProfile", "is", sel.doorProfile)]
+                : []),
+              newFilterRow("noun", "is", "", "", true),
+              newFilterRow("adjective", "is", "", "", true),
+            ]),
+          );
         },
       },
     ],
