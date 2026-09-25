@@ -3877,6 +3877,220 @@ const FilterChips = ({ chips, onClearAll }) => {
   );
 };
 
+// --- Swatch treatment ------------------------------------------------------
+// Material and profile at a glance: a woodgrain hatch for grained visuals and
+// an inset frame for Shaker profiles, drawn as an SVG overlay so it stays crisp
+// at any size. Traits come from a full SKU (LLCCHHH-GG-Vn-Tn-PP) when one
+// exists, otherwise from the row's own Visual_Pattern / Profile columns.
+
+const SWATCH_HATCH_VISUALS = ["V2", "V3", "V4"]; // grained; V1 and V5 stay plain
+// A grained *feel* earns the hatch too: T3 linear grain, T4 embossed-in-register.
+const SWATCH_HATCH_TACTILES = ["T3", "T4"];
+
+const parseSwatchTraits = (code, item) => {
+  let anchor = null, vis = null, prof = null, tac = null;
+
+  if (typeof code === "string" && code.trim()) {
+    const parts = code.trim().split("-");
+    if (/^\d{7}$/.test(parts[0])) anchor = parts[0];
+    parts.slice(1).forEach((p) => {
+      const t = p.trim().toUpperCase();
+      if (/^V\d$/.test(t)) vis = t;
+      else if (/^T\d$/.test(t)) tac = t;
+      else if (/^(SL|CS|SS|RD|WG)$/.test(t)) prof = t;
+    });
+  }
+
+  if (item) {
+    if (!vis) {
+      // Items carry these as camelCase (visualTexture / doorProfile); the CSV
+      // headers are Visual_Pattern / Profile. Accept both.
+      const m = String(
+        item.visualTexture || item.Visual_Pattern || item.visualPattern || "",
+      ).match(/V\d/i);
+      if (m) vis = m[0].toUpperCase();
+    }
+    if (!tac) {
+      const m = String(
+        item.tactileTexture || item.Tactile_Texture || "",
+      ).match(/T\d/i);
+      if (m) tac = m[0].toUpperCase();
+    }
+    if (!prof) {
+      const raw = String(
+        item.doorProfile || item.Profile || item.profile || "",
+      ).toUpperCase();
+      const m = raw.match(/\b(SL|CS|SS|RD|WG)\b/);
+      if (m) prof = m[1];
+      else if (raw.includes("SLIM")) prof = "SS";
+      else if (raw.includes("SHAKER")) prof = "CS";
+      else if (raw.includes("SLAB") || raw.includes("FLAT")) prof = "SL";
+    }
+    if (!anchor) {
+      const e = String(item.erpCode || item.ERP_Code || "");
+      const m = e.match(/^(\d{7})/);
+      if (m) anchor = m[1];
+    }
+  }
+
+  // Lightness drives whether the treatment reads dark-on-light or light-on-dark.
+  let LL = null;
+  if (anchor) LL = parseInt(anchor.slice(0, 2), 10);
+  else if (item && typeof item.L === "number") LL = Math.round(item.L * 100);
+
+  // TODO: RD (raised panel) and WG (glass) have no treatment yet — slab for now.
+  if (prof === "RD" || prof === "WG") prof = "SL";
+
+  return {
+    hatch:
+      (!!vis && SWATCH_HATCH_VISUALS.indexOf(vis) !== -1) ||
+      (!!tac && SWATCH_HATCH_TACTILES.indexOf(tac) !== -1),
+    profile: prof || "SL",
+    light: LL === null ? true : LL >= 52, // >= 52 means a light colour -> dark ink
+    visual: vis,
+    tactile: tac,
+  };
+};
+
+const swatchTraitLabel = (t) =>
+  [
+    t.hatch ? "wood or textured laminate" : null,
+    t.profile === "CS" ? "Classic Shaker" : t.profile === "SS" ? "Slim Shaker" : "slab",
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+// Wavy vertical strokes: 2–3 soft S-curves with small offsets so it reads as
+// grain rather than stripes. Deterministic per index so it doesn't shimmer on
+// re-render.
+const swatchGrainPath = (x, seed) => {
+  const wobble = (n) => ((Math.sin(seed * 12.9898 + n * 78.233) * 43758.5453) % 1) * 6 - 3;
+  const x0 = x + wobble(1) * 0.3;
+  return (
+    `M ${x0} 0 ` +
+    `C ${x0 + wobble(2)} 20, ${x0 + wobble(3)} 30, ${x0 + wobble(4) * 0.6} 50 ` +
+    `C ${x0 + wobble(5)} 68, ${x0 + wobble(6)} 78, ${x0 + wobble(7) * 0.4} 100`
+  );
+};
+
+const SwatchTreatment = ({ code, item, size = 48, faded = 1 }) => {
+  const t = parseSwatchTraits(code, item);
+  if (!t.hatch && t.profile === "SL") return null;
+
+  const px = Math.max(8, size);
+  const kids = [];
+
+  if (t.hatch) {
+    // ~9 strokes on a large swatch, never fewer than 2, spacing roughly constant
+    const n = Math.max(2, Math.min(9, Math.round(px / 14)));
+    const step = 100 / (n + 1);
+    const stroke = t.light ? "#000000" : "#FFFFFF";
+    const op = (t.light ? 0.2 : 0.22) * faded;
+    for (let i = 1; i <= n; i++) {
+      kids.push(
+        React.createElement("path", {
+          key: `g${i}`,
+          d: swatchGrainPath(step * i, i),
+          fill: "none",
+          stroke,
+          strokeOpacity: op,
+          strokeWidth: 0.67,
+          vectorEffect: "non-scaling-stroke",
+          strokeLinecap: "round",
+        }),
+      );
+    }
+  }
+
+  if (t.profile === "CS" || t.profile === "SS") {
+    // Inset mirrors real stile/rail widths: ~50–60 mm vs ~13–25 mm.
+    const pct = t.profile === "CS" ? 20 : 6;
+    const minPx = t.profile === "CS" ? 5 : 2;
+    const inset = Math.max(pct, (minPx / px) * 100);
+    kids.push(
+      React.createElement("rect", {
+        key: "frame",
+        x: inset,
+        y: inset,
+        width: Math.max(0, 100 - inset * 2),
+        height: Math.max(0, 100 - inset * 2),
+        fill: "none",
+        stroke: t.light ? "#000000" : "#FFFFFF",
+        strokeOpacity: (t.light ? 0.45 : 0.55) * faded,
+        strokeWidth: 1.33,
+        vectorEffect: "non-scaling-stroke",
+      }),
+    );
+  }
+
+  return React.createElement(
+    "svg",
+    {
+      className: "absolute inset-0 w-full h-full pointer-events-none",
+      viewBox: "0 0 100 100",
+      preserveAspectRatio: "none",
+      "aria-hidden": "true",
+      focusable: "false",
+    },
+    kids,
+  );
+};
+
+// A complete swatch: colour fill, treatment overlay, rounded corners, border.
+// Always square and always the same size regardless of profile.
+const ColorSwatch = ({
+  code, item, hex, size = 48, faded = 1, label,
+  className = "", style = {}, onClick, title, children,
+}) => {
+  const t = parseSwatchTraits(code, item);
+  const aria = label
+    ? `${label}, ${swatchTraitLabel(t)}`
+    : swatchTraitLabel(t);
+  return React.createElement(
+    "div",
+    {
+      className: `relative overflow-hidden rounded border border-black/10 dark:border-white/10 ${className}`,
+      style: { width: `${size}px`, height: `${size}px`, backgroundColor: hex, ...style },
+      onClick,
+      title: title || aria,
+      role: "img",
+      "aria-label": aria,
+    },
+    React.createElement(SwatchTreatment, { code, item, size, faded }),
+    children,
+  );
+};
+
+// Legend for any view showing swatches in bulk; each entry is a mini swatch
+// carrying its own treatment.
+const SwatchLegend = ({ className = "" }) => {
+  const entries = [
+    { code: "5304059-ST-V3-T4-CS", label: "Shaker" },
+    { code: "5304059-ST-V3-T4-SS", label: "Slim" },
+    { code: "5304059-ST-V3-T4-SL", label: "Slab" },
+    { code: "5604065-MT-V2-T3-SL", label: "Wood / textured" },
+  ];
+  return React.createElement(
+    "div",
+    {
+      className: `flex items-center gap-3 flex-wrap text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-neutral-500 ${className}`,
+    },
+    entries.map((e) =>
+      React.createElement(
+        "span",
+        { key: e.label, className: "flex items-center gap-1.5" },
+        React.createElement(ColorSwatch, {
+          code: e.code,
+          hex: "#b9a88f",
+          size: 18,
+          label: e.label,
+        }),
+        e.label,
+      ),
+    ),
+  );
+};
+
 const ViewportSwatches = ({
   items,
   layout,
@@ -3891,6 +4105,7 @@ const ViewportSwatches = ({
   crosshair,
   selectedIds,
   setSelectedIds,
+  showSpecs,
 }) => {
   const [sortBy, setSortBy] = useState(dim1);
   const [sortAsc, setSortAsc] = useState(true);
@@ -4081,6 +4296,10 @@ const ViewportSwatches = ({
                           title: `${item.displayName}
 ${item.erpCode}`,
                         },
+                        React.createElement(SwatchTreatment, {
+                          item,
+                          size: baseMatrixSize * swatchZoom,
+                        }),
                         (item.image || item.note?.startsWith("http")) &&
                           React.createElement("div", {
                             className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
@@ -4368,11 +4587,12 @@ ${item.erpCode}`,
                   React.createElement(
                     "div",
                     {
-                      className: "w-8 h-8 rounded relative shadow-sm",
+                      className: "w-8 h-8 rounded relative shadow-sm overflow-hidden",
                       style: {
                         backgroundColor: item.hex,
                       },
                     },
+                    React.createElement(SwatchTreatment, { item, size: 32 }),
                     (item.image || item.note?.startsWith("http")) &&
                       React.createElement("div", {
                         className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
@@ -4577,8 +4797,12 @@ ${item.erpCode}`,
                 brand: item.brand,
                 originalIndex: item.originalIndex,
               }),
-            className: `flex flex-col gap-2 group cursor-pointer transition-all items-center`,
-            style: { width: `${72 * swatchZoom}px` },
+            className: `flex flex-col gap-2 group cursor-pointer transition-all items-center ${
+              showSpecs
+                ? "border border-slate-300 dark:border-neutral-700 rounded-lg bg-white dark:bg-neutral-900 p-2"
+                : ""
+            }`,
+            style: { width: `${(showSpecs ? 82 : 72) * swatchZoom}px` },
           },
           React.createElement(
             "div",
@@ -4589,6 +4813,7 @@ ${item.erpCode}`,
                 width: "100%",
               },
             },
+            React.createElement(SwatchTreatment, { item, size: 96 }),
             (item.image || item.note?.startsWith("http")) &&
               React.createElement("div", {
                 className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
@@ -4727,6 +4952,38 @@ ${item.erpCode}`,
                   )
                 : item.erpCode,
             ),
+            // Catalog reads like the printed Avery labels: the spec line under
+            // each swatch, in the same order as the label.
+            showSpecs &&
+              React.createElement(
+                "div",
+                {
+                  className:
+                    "w-full flex flex-col items-center text-slate-500 dark:text-neutral-400 leading-tight",
+                  style: {
+                    fontSize: `${Math.max(4.5, 5.5 * swatchZoom)}px`,
+                    marginTop: `${Math.max(1, 2 * swatchZoom)}px`,
+                  },
+                },
+                [
+                  ["Material", item.material],
+                  ["Sheen", item.sheen],
+                  ["Vis. Pattern", item.visualTexture],
+                  ["Tac. Texture", item.tactileTexture],
+                  ["Profile", item.doorProfile],
+                ]
+                  .filter((p) => String(p[1] || "").trim())
+                  .map((p, i) =>
+                    React.createElement(
+                      "span",
+                      {
+                        key: i,
+                        className: "truncate w-full text-center italic",
+                      },
+                      `${p[0]}: ${String(p[1]).trim()}`,
+                    ),
+                  ),
+              ),
             item.tags &&
               item.tags.length > 0 &&
               React.createElement(
@@ -5692,6 +5949,7 @@ const ViewPalette = ({
             backgroundColor: item.color,
           },
         },
+        React.createElement(SwatchTreatment, { item, size: 56 }),
         (item.image || item.note?.startsWith("http")) &&
           React.createElement("div", {
             className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
@@ -6475,6 +6733,8 @@ const ViewAdjectives = ({
 };
 const ViewPins = ({
   handlePointClick,
+  swatchZoom = 1,
+  setSwatchZoom,
   names,
   adjectives,
   dictNotes,
@@ -6497,6 +6757,8 @@ const ViewPins = ({
   const [tagFilter, setTagFilter] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [isAdding, setIsAdding] = useState(false);
+  // Catalog now offers the same three presentations as the other views.
+  const [catalogView, setCatalogView] = useState("table");
   const [editForm, setEditForm] = useState({
     id: "",
     noun: "",
@@ -6837,6 +7099,56 @@ const ViewPins = ({
           "Total: ",
           sortedItems.length,
         ),
+        React.createElement(SwatchLegend, { className: "ml-3" }),
+        catalogView !== "table" &&
+          setSwatchZoom &&
+          React.createElement(
+            "div",
+            { className: "flex items-center gap-2 ml-3" },
+            React.createElement(Icon, {
+              name: "zoom-in",
+              className: "w-3.5 h-3.5 text-slate-400",
+            }),
+            React.createElement("input", {
+              type: "range",
+              min: "0.1",
+              max: "5",
+              step: "0.1",
+              value: swatchZoom,
+              onChange: (e) => setSwatchZoom(parseFloat(e.target.value)),
+              className:
+                "w-24 accent-sky-500 opacity-60 hover:opacity-100 transition-opacity",
+            }),
+            React.createElement(
+              "span",
+              {
+                className:
+                  "text-[10px] font-mono text-slate-400 min-w-[30px]",
+              },
+              Math.round(swatchZoom * 100),
+              "%",
+            ),
+          ),
+        React.createElement(
+          "div",
+          { className: "flex items-center gap-1 ml-2" },
+          ["table", "matrix", "swatches"].map((m) =>
+            React.createElement(
+              "button",
+              {
+                key: m,
+                onClick: () => setCatalogView(m),
+                "aria-pressed": catalogView === m,
+                className: `px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                  catalogView === m
+                    ? "bg-slate-800 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                    : "text-slate-500 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-800"
+                }`,
+              },
+              m,
+            ),
+          ),
+        ),
       ),
     ),
     React.createElement(
@@ -6987,6 +7299,49 @@ const ViewPins = ({
               "Save Custom Pin",
             ),
           ),
+        catalogView !== "table"
+          ? React.createElement(
+              "div",
+              {
+                // ViewportSwatches roots every layout at `absolute inset-0`.
+                // Without its own positioned box it escapes to the panel and
+                // paints over the catalog's toolbar.
+                className: "relative w-full flex-1 min-h-[420px]",
+              },
+              React.createElement(ViewportSwatches, {
+              // Same component the other views use, fed the catalog's own
+              // already-filtered and sorted pins.
+              items: sortedItems.map((item) => ({
+                ...item,
+                type: "pin",
+                displayName: `${item.displayAdj} ${item.displayName}`.trim() || item.id,
+                hex: (() => {
+                  try {
+                    return new Color("oklch", [item.L, item.C, item.H])
+                      .toGamut({ space: "srgb" })
+                      .toString({ format: "hex" });
+                  } catch (e) {
+                    return "#cccccc";
+                  }
+                })(),
+              })),
+              layout: catalogView === "matrix" ? "matrix" : "gallery",
+              swatchZoom,
+              showSpecs: catalogView === "swatches",
+              dim1: "L",
+              dim2: "C",
+              dim1Labels: (v) => `L: ${Number(v).toFixed(3)}`,
+              dim2Labels: (v) => `C: ${Number(v).toFixed(2)}`,
+              handlePointClick,
+              viewportSearchQuery: "",
+              viewportTagFilter: "",
+              crosshair: null,
+              selectedIds,
+              setSelectedIds,
+              }),
+            )
+          : null,
+        catalogView === "table" &&
         sortedItems.map((item) =>
           React.createElement(
             "div",
@@ -7025,6 +7380,7 @@ const ViewPins = ({
                   "relative w-14 h-14 rounded-lg shadow-sm cursor-pointer border border-slate-200 dark:border-neutral-700 hover:ring-2 hover:ring-sky-500 transition-all flex-shrink-0 overflow-hidden ml-6",
                 style: { backgroundColor: item.color },
               },
+              React.createElement(SwatchTreatment, { item, size: 56 }),
               !new Color("oklch", [item.L, item.C, item.H]).inGamut("srgb") &&
                 React.createElement("div", {
                   className: "absolute inset-0 pointer-events-none",
@@ -14823,6 +15179,7 @@ const ViewDatabase = ({
           " ",
           "matching",
         ),
+        React.createElement(SwatchLegend, { className: "ml-3" }),
       ),
     ),
     openFilterCol &&
@@ -15009,6 +15366,10 @@ const ViewDatabase = ({
                     height: `${baseListSize * swatchZoom}px`,
                   },
                 },
+                React.createElement(SwatchTreatment, {
+                  item,
+                  size: baseListSize * swatchZoom,
+                }),
                 (item.image || item.note?.startsWith("http")) &&
                   React.createElement("div", {
                     className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
@@ -15290,11 +15651,12 @@ const ViewDatabase = ({
                     React.createElement(
                       "div",
                       {
-                        className: "w-8 h-8 rounded relative shadow-sm",
+                        className: "w-8 h-8 rounded relative shadow-sm overflow-hidden",
                         style: {
                           backgroundColor: item.hex,
                         },
                       },
+                      React.createElement(SwatchTreatment, { item, size: 32 }),
                       (item.image || item.note?.startsWith("http")) &&
                         React.createElement("div", {
                           className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
@@ -15521,6 +15883,7 @@ const ViewDatabase = ({
                     width: "100%",
                   },
                 },
+                React.createElement(SwatchTreatment, { item, size: 96 }),
                 (item.image || item.note?.startsWith("http")) &&
                   React.createElement("div", {
                     className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
@@ -19577,6 +19940,8 @@ const AppUI = ({
             activeTab === "pins" &&
               React.createElement(ViewPins, {
                 handlePointClick,
+                swatchZoom,
+                setSwatchZoom,
                 names,
                 adjectives,
                 dictNotes,
