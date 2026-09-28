@@ -1579,10 +1579,216 @@ const PlotlyChart = ({
     className: "plotly-wrapper touch-none",
   });
 };
+
+// sRGB -> OKLab, returned in the app's axis convention (a = C sinH, b = C cosH,
+// i.e. the standard OKLab a/b swapped) so the solid registers with the points.
+const srgbToAppOklab = (r, g, b) => {
+  const lin = (v) =>
+    v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  const R = lin(r), G = lin(g), B = lin(b);
+  const l = 0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B;
+  const m = 0.2119034982 * R + 0.6806995451 * G + 0.1073969566 * B;
+  const s = 0.0883024619 * R + 0.2817188376 * G + 0.6299787005 * B;
+  const l_ = Math.cbrt(l), m_ = Math.cbrt(m), s_ = Math.cbrt(s);
+  const L = 0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_;
+  const aStd = 1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_;
+  const bStd = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_;
+  return { L, a: bStd, b: aStd };
+};
+
+// The sRGB gamut as a closed solid in OKLCH space: sample the six faces of the
+// RGB cube, map each to OKLab, and stitch them into one mesh. Every vertex
+// carries its own colour, so the solid is the gamut rather than a tinted blob.
+const buildGamutSolid = (M = 14) => {
+  const xs = [], ys = [], zs = [], vc = [];
+  const ti = [], tj = [], tk = [];
+  const faces = [
+    (u, v) => [0, u, v], (u, v) => [1, u, v],
+    (u, v) => [u, 0, v], (u, v) => [u, 1, v],
+    (u, v) => [u, v, 0], (u, v) => [u, v, 1],
+  ];
+  faces.forEach((f) => {
+    const base = xs.length;
+    for (let iv = 0; iv < M; iv++) {
+      for (let iu = 0; iu < M; iu++) {
+        const rgb = f(iu / (M - 1), iv / (M - 1));
+        const p = srgbToAppOklab(rgb[0], rgb[1], rgb[2]);
+        xs.push(p.a); ys.push(p.b); zs.push(p.L);
+        vc.push(
+          `rgb(${Math.round(rgb[0] * 255)},${Math.round(rgb[1] * 255)},${Math.round(rgb[2] * 255)})`,
+        );
+      }
+    }
+    for (let iv = 0; iv < M - 1; iv++) {
+      for (let iu = 0; iu < M - 1; iu++) {
+        const p = base + iv * M + iu;
+        ti.push(p, p + 1);
+        tj.push(p + 1, p + M + 1);
+        tk.push(p + M, p + M);
+      }
+    }
+  });
+  return { x: xs, y: ys, z: zs, i: ti, j: tj, k: tk, vertexcolor: vc };
+};
+let GAMUT_SOLID = null;
+
+// The gamut solid is built once; the view filters then carve it down to the
+// window around the cursor, so it responds like the points do.
+const clipSolidToFilter = (solid, filterPt) => {
+  if (!filterPt) return solid;
+  const keep = new Array(solid.x.length);
+  for (let v = 0; v < solid.x.length; v++) {
+    const a = solid.x[v], b = solid.y[v], L = solid.z[v];
+    const C = Math.hypot(a, b);
+    const H = ((Math.atan2(a, b) * 180) / Math.PI + 360) % 360;
+    keep[v] = filterPt({ L, C, H });
+  }
+  const i = [], j = [], k = [];
+  for (let t = 0; t < solid.i.length; t++) {
+    if (keep[solid.i[t]] && keep[solid.j[t]] && keep[solid.k[t]]) {
+      i.push(solid.i[t]); j.push(solid.j[t]); k.push(solid.k[t]);
+    }
+  }
+  return { ...solid, i, j, k };
+};
+
+
+// Bins in 3D: each noun column's Voronoi cell in the a/b plane, extruded over
+// the lightness range the column actually spans. One merged mesh for the
+// inactive bins, a second opaque one plus an outline for the bin under the
+// cursor.
+const buildBinPrisms = (points, crosshair) => {
+  const cols = new Map();
+  points.forEach((p) => {
+    if (p.isPin || p.a === undefined || p.b === undefined) return;
+    const key = `${p.a.toFixed(4)}|${p.b.toFixed(4)}`;
+    let c = cols.get(key);
+    if (!c) {
+      c = { a: p.a, b: p.b, levels: [], hex: p.hex || p.color };
+      cols.set(key, c);
+    }
+    // Each adjective level in the column is its own chunk, so the highlight
+    // can be one lightness band rather than the whole column.
+    c.levels.push({ L: p.L, hex: p.hex || p.color });
+    if (!c.hex) c.hex = p.hex || p.color;
+  });
+  cols.forEach((c) => {
+    c.levels.sort((x, y) => x.L - y.L);
+    const seen = new Set();
+    c.levels = c.levels.filter((lv) => {
+      const k = lv.L.toFixed(4);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    c.minL = c.levels[0].L;
+    c.maxL = c.levels[c.levels.length - 1].L;
+  });
+  const list = [...cols.values()].filter((c) => isFinite(c.a) && isFinite(c.b));
+  if (list.length < 3 || !window.d3 || !window.d3.Delaunay) return null;
+
+  let vor;
+  try {
+    vor = window.d3.Delaunay.from(list.map((c) => [c.a, c.b])).voronoi([
+      -0.45, -0.45, 0.45, 0.45,
+    ]);
+  } catch (e) {
+    return null;
+  }
+
+  // which bin is the cursor in
+  let active = -1, best = Infinity;
+  if (crosshair) {
+    const ca = crosshair.rawC * Math.sin((crosshair.rawH * Math.PI) / 180);
+    const cb = crosshair.rawC * Math.cos((crosshair.rawH * Math.PI) / 180);
+    list.forEach((c, i) => {
+      const d = (c.a - ca) ** 2 + (c.b - cb) ** 2;
+      if (d < best) { best = d; active = i; }
+    });
+  }
+
+  const mk = () => ({ x: [], y: [], z: [], i: [], j: [], k: [], vertexcolor: [] });
+  const dim = mk(), hot = mk();
+  const outline = { x: [], y: [], z: [] };
+
+  list.forEach((c, idx) => {
+    let poly;
+    try { poly = vor.cellPolygon(idx); } catch (e) { poly = null; }
+    if (!poly || poly.length < 4) return;
+    // Hull cells run out to the clip box, which produced huge wedges. Clamp
+    // each vertex to a radius around its seed, then shrink slightly so
+    // neighbouring prisms leave a gap instead of z-fighting.
+    const MAX_R = 0.075, SHRINK = 0.88;
+    const ring = poly.slice(0, -1).map((pt) => {
+      let dx = pt[0] - c.a, dy = pt[1] - c.b;
+      const d = Math.hypot(dx, dy);
+      if (d > MAX_R) { dx = (dx / d) * MAX_R; dy = (dy / d) * MAX_R; }
+      return [c.a + dx * SHRINK, c.b + dy * SHRINK];
+    });
+    const n = ring.length;
+    const isActiveCol = idx === active;
+
+    // Split the column into one chunk per adjective level.
+    const lv = c.levels;
+    const chunks = [];
+    for (let s = 0; s < lv.length; s++) {
+      const prev = s > 0 ? lv[s - 1].L : lv[s].L - 0.02;
+      const next = s < lv.length - 1 ? lv[s + 1].L : lv[s].L + 0.02;
+      chunks.push({
+        lo: Math.max(0, (prev + lv[s].L) / 2),
+        hi: Math.min(1, (lv[s].L + next) / 2),
+        hex: lv[s].hex || c.hex || "#888888",
+        L: lv[s].L,
+      });
+    }
+
+    // Only the chunk containing the cursor's lightness is highlighted.
+    let hotChunk = -1;
+    if (isActiveCol && crosshair) {
+      let bestD = Infinity;
+      chunks.forEach((ck, ci) => {
+        const d = Math.abs(ck.L - crosshair.rawL);
+        if (d < bestD) { bestD = d; hotChunk = ci; }
+      });
+    }
+
+    chunks.forEach((ck, ci) => {
+      const m = ci === hotChunk ? hot : dim;
+      const base = m.x.length;
+      for (const z of [ck.lo, ck.hi]) {
+        ring.forEach((pt) => {
+          m.x.push(pt[0]); m.y.push(pt[1]); m.z.push(z); m.vertexcolor.push(ck.hex);
+        });
+      }
+      for (let v = 0; v < n; v++) {            // sides
+        const v2 = (v + 1) % n;
+        m.i.push(base + v, base + v2);
+        m.j.push(base + v2, base + n + v2);
+        m.k.push(base + n + v, base + n + v);
+      }
+      for (let v = 1; v < n - 1; v++) {        // caps
+        m.i.push(base, base + n);
+        m.j.push(base + v, base + n + v);
+        m.k.push(base + v + 1, base + n + v + 1);
+      }
+      if (ci === hotChunk) {                   // outline just that chunk
+        [ck.lo, ck.hi].forEach((z) => {
+          ring.forEach((pt) => { outline.x.push(pt[0]); outline.y.push(pt[1]); outline.z.push(z); });
+          outline.x.push(ring[0][0]); outline.y.push(ring[0][1]); outline.z.push(z);
+          outline.x.push(null); outline.y.push(null); outline.z.push(null);
+        });
+      }
+    });
+  });
+
+  return { dim, hot, outline };
+};
+
 const View3D = ({
   colorData,
   points,
   crosshair,
+  viewMode,
   handlePointClick,
   theme,
   names,
@@ -1800,8 +2006,69 @@ const View3D = ({
         },
       });
     }
+    if (viewMode === "bins") {
+      const bins = buildBinPrisms(points.filter(filterPt), crosshair);
+      if (bins) {
+        if (bins.dim.x.length) {
+          traces.push({
+            type: "mesh3d",
+            ...bins.dim,
+            opacity: 0.22,
+            hoverinfo: "skip",
+            showscale: false,
+            flatshading: true,
+            lighting: { ambient: 1, diffuse: 0, specular: 0 },
+          });
+        }
+        if (bins.hot.x.length) {
+          traces.push({
+            type: "mesh3d",
+            ...bins.hot,
+            opacity: 0.85,
+            hoverinfo: "skip",
+            showscale: false,
+            flatshading: true,
+            lighting: { ambient: 1, diffuse: 0, specular: 0 },
+          });
+        }
+        if (bins.outline.x.length) {
+          traces.push({
+            type: "scatter3d",
+            mode: "lines",
+            x: bins.outline.x, y: bins.outline.y, z: bins.outline.z,
+            line: { color: isDark ? "#F2E8DF" : "#010D00", width: 4 },
+            hoverinfo: "skip",
+            showlegend: false,
+          });
+        }
+      }
+    }
+
+    // The sRGB gamut as one smooth, semi-transparent solid behind the points.
+    // Built once and reused; it does not depend on where the cursor is.
+    if (viewMode === "dots") {
+      if (!GAMUT_SOLID) GAMUT_SOLID = buildGamutSolid(16);
+      const solid = clipSolidToFilter(GAMUT_SOLID, filterPt);
+      if (solid.i.length) traces.push({
+        type: "mesh3d",
+        ...solid,
+        opacity: 0.25,
+        // Fallback fill if a Plotly build ignores vertexcolor, so the solid
+        // still reads as a solid rather than a wireframe.
+        color: "#9aa0a6",
+        hoverinfo: "skip",
+        showscale: false,
+        flatshading: false,
+        lighting: { ambient: 1, diffuse: 0, specular: 0, roughness: 1 },
+      });
+    }
+
     return traces;
   }, [
+    viewMode,
+    crosshair,
+    crosshair?.rawL,
+    filterPt,
     points,
     isDark,
     names,
@@ -1857,7 +2124,7 @@ const View3D = ({
       margin: { l: 0, r: 0, b: 0, t: 0 },
       scene: {
         xaxis: {
-          title: "a",
+          title: { text: "a" },
           range: [-0.4, 0.4],
           backgroundcolor: isDark ? "#052212" : "#F2E8DF",
           gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
@@ -1869,7 +2136,7 @@ const View3D = ({
           tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
         },
         yaxis: {
-          title: "b",
+          title: { text: "b" },
           range: [-0.4, 0.4],
           backgroundcolor: isDark ? "#052212" : "#F2E8DF",
           gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
@@ -1881,7 +2148,7 @@ const View3D = ({
           tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
         },
         zaxis: {
-          title: "L",
+          title: { text: "L" },
           range: [0, 1],
           backgroundcolor: isDark ? "#052212" : "#F2E8DF",
           gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
@@ -1892,6 +2159,10 @@ const View3D = ({
           titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
           tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
         },
+        // Lightness spans 0..1 while a and b span 0.8, so on the default cube
+        // the solid looks stretched upward. Half-height flattens it out.
+        aspectmode: "manual",
+        aspectratio: { x: 1, y: 1, z: 0.5 },
         camera: { eye: { x: 1.5, y: 1.5, z: 0.5 } },
       },
       showlegend: false,
@@ -2481,8 +2752,29 @@ const ViewVertical = ({
       margin: { l: 50, r: 20, b: 50, t: 20 },
       shapes,
       showlegend: false,
+      // Dots mode gets the matching OKLCH plane behind the points.
+      images:
+        viewMode === "dots"
+          ? [
+              {
+                source: oklchPlaneDataUri("cl", crosshair?.rawH !== undefined ? crosshair.rawH : 0, {
+                  xMax: 0.4,
+                  yMax: 1.05,
+                }),
+                xref: "x",
+                yref: "y",
+                x: 0,
+                y: 1.05,
+                sizex: 0.4,
+                sizey: 1.05,
+                sizing: "stretch",
+                layer: "below",
+                opacity: 0.25,
+              },
+            ].filter((im) => !!im.source)
+          : [],
     };
-  }, [isDark, viewMode, voronoiContent, filterPt, groupSettings]);
+  }, [isDark, viewMode, voronoiContent, filterPt, groupSettings, crosshair?.rawH]);
   const handleBgClick = (cValue, lValue) => {
     handlePointClick([
       Math.max(0, Math.min(1, lValue)),
@@ -3018,8 +3310,29 @@ const ViewChromaRings = ({
       margin: { l: 50, r: 20, b: 50, t: 20 },
       shapes,
       showlegend: false,
+      // Dots mode gets the matching OKLCH plane behind the points.
+      images:
+        viewMode === "dots"
+          ? [
+              {
+                source: oklchPlaneDataUri("hl", crosshair?.rawC !== undefined ? crosshair.rawC : 0.12, {
+                  xMax: 360,
+                  yMax: 1.05,
+                }),
+                xref: "x",
+                yref: "y",
+                x: 0,
+                y: 1.05,
+                sizex: 360,
+                sizey: 1.05,
+                sizing: "stretch",
+                layer: "below",
+                opacity: 0.25,
+              },
+            ].filter((im) => !!im.source)
+          : [],
     };
-  }, [isDark, viewMode, voronoiContent, filterPt, groupSettings]);
+  }, [isDark, viewMode, voronoiContent, filterPt, groupSettings, crosshair?.rawC]);
   const handleBgClick = (hValue, lValue) => {
     handlePointClick([
       Math.max(0, Math.min(1, lValue)),
@@ -3539,8 +3852,11 @@ const evalFilterRow = (item, row, ctx) => {
 // union — an item survives if any single row matches it). The conjunction is
 // one choice for the whole group rather than per row, so the result never
 // depends on an invisible precedence rule between them.
-const applyGlobalFilters = (items, rows, ctx, mode) => {
-  const active = rows || [];
+const applyGlobalFilters = (items, rows, ctx, mode, scope) => {
+  // A row may be scoped to one surface (the DB list) rather than everywhere.
+  const active = (rows || []).filter(
+    (r) => !r.scope || !scope || r.scope === scope,
+  );
   if (active.length === 0) return { items, culprit: null };
 
   if (mode === "or") {
@@ -3571,12 +3887,13 @@ const describeFilterRow = (row, ctx) => {
   if (row && row.any) return "any of the active filters";
   const field = FILTER_FIELDS.find((f) => f.id === row.field);
   if (!field) return "filter";
+  const tag = row.scope === "db" ? " (DB)" : "";
   if (row.dynamic) {
-    return `${field.label} follows cursor (${cursorValueFor(row.field, ctx)})`;
+    return `${field.label} follows cursor (${cursorValueFor(row.field, ctx)})${tag}`;
   }
   const op = (FILTER_OPS[field.type] || []).find((o) => o.id === row.op);
   const opLabel = op ? op.label : "";
-  if (field.type === "boolean") return `${field.label} ${opLabel}`;
+  if (field.type === "boolean") return `${field.label} ${opLabel}${tag}`;
   if (row.op === "between") {
     return `${field.label} ${opLabel} ${row.value}\u2013${row.value2}`;
   }
@@ -3596,7 +3913,7 @@ const mergeFilterRows = (rows, additions) => [
 ];
 
 let FILTER_ROW_SEQ = 0;
-const newFilterRow = (fieldId, op, value, value2, dynamic) => {
+const newFilterRow = (fieldId, op, value, value2, dynamic, scope) => {
   const field = FILTER_FIELDS.find((f) => f.id === fieldId) || FILTER_FIELDS[0];
   return {
     id: `f${++FILTER_ROW_SEQ}`,
@@ -3605,6 +3922,7 @@ const newFilterRow = (fieldId, op, value, value2, dynamic) => {
     value: value !== undefined ? value : "",
     value2: value2 !== undefined ? value2 : "",
     dynamic: !!dynamic,
+    scope: scope || null,
   };
 };
 
@@ -4091,6 +4409,147 @@ const SwatchLegend = ({ className = "" }) => {
   );
 };
 
+// --- OKLCH colour wheel background ----------------------------------------
+// A continuous a/b slice at a given lightness, drawn once to a canvas and
+// cached per lightness. Out-of-gamut pixels fade out so the disc ends softly
+// rather than at a hard clipped edge.
+const OKLCH_WHEEL_CACHE = new Map();
+
+// Shared converter: OKLCH coords -> linear sRGB plus how far out of gamut.
+const oklchToLinearRGB = (L, a, b) => {
+  const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+  const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+  const s_ = L - 0.0894841775 * a - 1.291485548 * b;
+  const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
+  return [
+    4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3,
+    -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3,
+    -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3,
+  ];
+};
+const srgbByte = (v) => {
+  v = Math.min(1, Math.max(0, v));
+  return Math.round((v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055) * 255);
+};
+const gamutOvershoot = (lin) => {
+  let over = 0;
+  for (let k = 0; k < 3; k++) {
+    if (lin[k] < 0) over = Math.max(over, -lin[k]);
+    else if (lin[k] > 1) over = Math.max(over, lin[k] - 1);
+  }
+  return over;
+};
+
+// Renders whichever plane a view actually plots:
+//   "ab" — the wheel, at a fixed lightness
+//   "cl" — chroma x lightness, at a fixed hue
+//   "hl" — hue angle x lightness, at a fixed chroma
+const oklchPlaneDataUri = (plane, fixed, opts = {}) => {
+  const size = opts.size || 256;
+  const xMax = opts.xMax !== undefined ? opts.xMax : 0.4;
+  const yMax = opts.yMax !== undefined ? opts.yMax : 1.05;
+  const extent = opts.extent !== undefined ? opts.extent : 0.3;
+  const key = `${plane}|${Math.round(fixed * 100)}|${size}|${xMax}|${yMax}|${extent}`;
+  if (OKLCH_WHEEL_CACHE.has(key)) return OKLCH_WHEEL_CACHE.get(key);
+  let uri = null;
+  try {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = size;
+    const ctx = cv.getContext("2d");
+    const img = ctx.createImageData(size, size);
+    const d = img.data;
+    for (let py = 0; py < size; py++) {
+      for (let px = 0; px < size; px++) {
+        const i = (py * size + px) * 4;
+        // The app's axes are a = C*sin(H), b = C*cos(H) — the standard OKLab
+        // a/b swapped. oklchToLinearRGB takes standard a/b, so the pair is
+        // swapped on the way in or the wheel comes out mirrored (green where
+        // purple belongs).
+        let L, aApp, bApp;
+        if (plane === "ab") {
+          L = fixed;
+          aApp = -extent + (px / (size - 1)) * extent * 2;
+          bApp = extent - (py / (size - 1)) * extent * 2;
+        } else if (plane === "cl") {
+          const C = (px / (size - 1)) * xMax;
+          const rad = (fixed * Math.PI) / 180;
+          L = yMax - (py / (size - 1)) * yMax;
+          aApp = C * Math.sin(rad);
+          bApp = C * Math.cos(rad);
+        } else {
+          const Hdeg = (px / (size - 1)) * 360;
+          const rad = (Hdeg * Math.PI) / 180;
+          L = yMax - (py / (size - 1)) * yMax;
+          aApp = fixed * Math.sin(rad);
+          bApp = fixed * Math.cos(rad);
+        }
+        const lin = oklchToLinearRGB(L, bApp, aApp);
+        const over = gamutOvershoot(lin);
+        d[i] = srgbByte(lin[0]);
+        d[i + 1] = srgbByte(lin[1]);
+        d[i + 2] = srgbByte(lin[2]);
+        d[i + 3] = over <= 0 ? 255 : Math.max(0, 255 * (1 - over * 14));
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    uri = cv.toDataURL("image/png");
+  } catch (e) {
+    uri = null;
+  }
+  OKLCH_WHEEL_CACHE.set(key, uri);
+  return uri;
+};
+
+const oklchWheelDataUri = (L, extent = 0.3, size = 256) => {
+  const key = `${Math.round(L * 100)}|${extent}|${size}`;
+  if (OKLCH_WHEEL_CACHE.has(key)) return OKLCH_WHEEL_CACHE.get(key);
+  let uri = null;
+  try {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = size;
+    const ctx = cv.getContext("2d");
+    const img = ctx.createImageData(size, size);
+    const d = img.data;
+    for (let py = 0; py < size; py++) {
+      // canvas y grows downward; the b axis grows upward
+      const b = extent - (py / (size - 1)) * extent * 2;
+      for (let px = 0; px < size; px++) {
+        const a = -extent + (px / (size - 1)) * extent * 2;
+        const i = (py * size + px) * 4;
+        // same axis swap as above
+        const l_ = L + 0.3963377774 * b + 0.2158037573 * a;
+        const m_ = L - 0.1055613458 * b - 0.0638541728 * a;
+        const s_ = L - 0.0894841775 * b - 1.291485548 * a;
+        const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
+        const lin = [
+          4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3,
+          -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3,
+          -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3,
+        ];
+        // How far outside sRGB this pixel sits, used to feather the edge.
+        let over = 0;
+        for (let k = 0; k < 3; k++) {
+          if (lin[k] < 0) over = Math.max(over, -lin[k]);
+          else if (lin[k] > 1) over = Math.max(over, lin[k] - 1);
+        }
+        const alpha = over <= 0 ? 255 : Math.max(0, 255 * (1 - over * 14));
+        for (let k = 0; k < 3; k++) {
+          let v = Math.min(1, Math.max(0, lin[k]));
+          v = v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+          d[i + k] = Math.round(v * 255);
+        }
+        d[i + 3] = alpha;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    uri = cv.toDataURL("image/png");
+  } catch (e) {
+    uri = null;
+  }
+  OKLCH_WHEEL_CACHE.set(key, uri);
+  return uri;
+};
+
 const ViewportSwatches = ({
   items,
   layout,
@@ -4106,6 +4565,9 @@ const ViewportSwatches = ({
   selectedIds,
   setSelectedIds,
   showSpecs,
+  // Catalog sorts upstream with the global control; without this the swatches
+  // re-sort themselves and the global control looks broken.
+  externalSort,
 }) => {
   const [sortBy, setSortBy] = useState(dim1);
   const [sortAsc, setSortAsc] = useState(true);
@@ -4176,6 +4638,8 @@ const ViewportSwatches = ({
         (x) => x.tags && x.tags.some((t) => t.toLowerCase().includes(q)),
       );
     }
+    // A caller that has already ordered the list keeps that order.
+    if (externalSort) return filtered;
     return filtered
       .sort((a, b) => {
         let valA = a[sortBy];
@@ -4191,7 +4655,14 @@ const ViewportSwatches = ({
             ? item.inSrgb
             : new Color("oklch", [item.L, item.C, item.H]).inGamut("srgb"),
       }));
-  }, [items, sortBy, sortAsc, viewportSearchQuery, viewportTagFilter]);
+  }, [
+    items,
+    sortBy,
+    sortAsc,
+    viewportSearchQuery,
+    viewportTagFilter,
+    externalSort,
+  ]);
   if (layout === "matrix") {
     const quantize = (v) => Math.round(v * 1e3) / 1e3;
     const d1ValsUniq = new Set();
@@ -4735,7 +5206,8 @@ ${item.erpCode}`,
       className:
         "absolute inset-0 overflow-y-auto custom-scrollbar p-6 bg-slate-50/50 dark:bg-neutral-900/50 col-span-full",
     },
-    React.createElement(
+    !externalSort &&
+      React.createElement(
       "div",
       {
         className:
@@ -5655,6 +6127,28 @@ const ViewTopDown = ({
       margin: { l: 50, r: 50, b: 50, t: 50 },
       showlegend: false,
       shapes,
+      // Dots mode gets the colour wheel behind the points, at the lightness
+      // currently under the cursor.
+      images:
+        viewMode === "dots"
+          ? [
+              {
+                source: oklchWheelDataUri(
+                  crosshair?.rawL !== undefined ? crosshair.rawL : 0.65,
+                  0.3,
+                ),
+                xref: "x",
+                yref: "y",
+                x: -0.3,
+                y: 0.3,
+                sizex: 0.6,
+                sizey: 0.6,
+                sizing: "stretch",
+                layer: "below",
+                opacity: 0.25,
+              },
+            ].filter((im) => !!im.source)
+          : [],
     };
   }, [isDark, viewMode, validAnchors, crosshair?.rawL, filterPt, groupSettings]);
   const handleBgClick = (a, b) => {
@@ -6735,6 +7229,8 @@ const ViewPins = ({
   handlePointClick,
   swatchZoom = 1,
   setSwatchZoom,
+  globalSortBy,
+  globalSortAsc,
   names,
   adjectives,
   dictNotes,
@@ -6752,8 +7248,10 @@ const ViewPins = ({
   setAveryPrintSourceType,
   onOpenAveryModal,
 }) => {
-  const [sortBy, setSortBy] = useState("layer");
-  const [sortAsc, setSortAsc] = useState(true);
+  // Sorting is driven by the global bar; these remain only as a fallback for
+  // any caller that does not supply it.
+  const sortBy = globalSortBy !== undefined ? globalSortBy : "layer";
+  const sortAsc = globalSortAsc !== undefined ? globalSortAsc : true;
   const [tagFilter, setTagFilter] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [isAdding, setIsAdding] = useState(false);
@@ -6901,6 +7399,33 @@ const ViewPins = ({
           if (valA === valB) return a.H - b.H;
           return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
         case "hue":
+          valA = a.H;
+          valB = b.H;
+          break;
+        // Fields coming from the global sort control
+        case "lightness":
+          valA = a.L;
+          valB = b.L;
+          break;
+        case "chroma":
+          valA = a.C;
+          valB = b.C;
+          break;
+        case "deltae":
+          valA = a._d ?? 999;
+          valB = b._d ?? 999;
+          break;
+        case "brand":
+        case "material":
+        case "sheen":
+        case "doorProfile":
+        case "visualTexture":
+        case "tactileTexture": {
+          const sa = String(a[sortBy] || "").toLowerCase();
+          const sb = String(b[sortBy] || "").toLowerCase();
+          if (sa === sb) return a.H - b.H;
+          return sortAsc ? sa.localeCompare(sb) : sb.localeCompare(sa);
+        }
         default:
           valA = a.H;
           valB = b.H;
@@ -7021,18 +7546,6 @@ const ViewPins = ({
         }),
         " Sort By:",
       ),
-      React.createElement(SortControl, {
-        fields: [
-          { field: "layer", label: "Light / dark" },
-          { field: "hue", label: "Hue angle" },
-          { field: "name", label: "Name" },
-          { field: "tag", label: "Tags" },
-        ],
-        sortBy,
-        setSortBy,
-        sortAsc,
-        setSortAsc,
-      }),
       allTags.length > 0 &&
         React.createElement(
           "div",
@@ -7327,6 +7840,7 @@ const ViewPins = ({
               })),
               layout: catalogView === "matrix" ? "matrix" : "gallery",
               swatchZoom,
+              externalSort: true,
               showSpecs: catalogView === "swatches",
               dim1: "L",
               dim2: "C",
@@ -9701,7 +10215,8 @@ const App = () => {
   // Verified colours only on load — the old default, now expressed as an
   // ordinary filter row so it shows in the stack and can be removed.
   const [globalFilters, setGlobalFilters] = useState(() => [
-    newFilterRow("spectral", "is_true"),
+    // Scoped to the DB list: the Explore viewports show everything by default.
+    newFilterRow("spectral", "is_true", "", "", false, "db"),
   ]);
   const [globalFilterMode, setGlobalFilterMode] = useState("and");
   const [globalSortBy, setGlobalSortBy] = useState("deltae");
@@ -10545,6 +11060,7 @@ const App = () => {
             globalFilters,
             viewportGroupContext,
             globalFilterMode,
+            "viewport",
           ).items.map((k) => list[k.__idx]);
         }
         filtered[brand] = list;
@@ -11122,6 +11638,7 @@ const App = () => {
         globalFilters,
         viewportGroupContext,
         globalFilterMode,
+        "viewport",
       ).items.map(strip);
 
       // Anchors, pins and saved entries are drawn from these two, not from
@@ -11132,6 +11649,7 @@ const App = () => {
           globalFilters,
           viewportGroupContext,
           globalFilterMode,
+          "viewport",
         ).items.length > 0;
 
       baseAnchors = baseAnchors.filter(keep);
@@ -14630,6 +15148,7 @@ const ViewDatabase = ({
         globalFilters,
         sameGroupContext,
         globalFilterMode,
+        "db",
       );
       items = res.items;
       if (res.culprit && !emptyReason) {
@@ -19823,6 +20342,7 @@ const AppUI = ({
                 colorData: filteredColorData,
                 points: filteredViewData.points,
                 crosshair,
+                viewMode,
                 handlePointClick,
                 theme,
                 names,
@@ -19942,6 +20462,8 @@ const AppUI = ({
                 handlePointClick,
                 swatchZoom,
                 setSwatchZoom,
+                globalSortBy,
+                globalSortAsc,
                 names,
                 adjectives,
                 dictNotes,
