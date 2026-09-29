@@ -9516,10 +9516,45 @@ const processCSVData = (
         colorsAdded++;
       }
     } else if (targetType === "PIN" && pL !== null) {
-      const pinId =
-        row.ID || row.Id || row.Pin_ID || row.PinId || `pin-${pL.toFixed(4)}-${pC.toFixed(4)}-${pH.toFixed(4)}`;
+      // Two pins can share a colour and differ only by profile (the same door
+      // in Shaker and Slim), so the fallback id must include the traits or
+      // they collide and one overwrites the other.
+      const traitKey = [
+        row.Profile || row.doorProfile || "",
+        row.Sheen || row.sheen || "",
+        row.Visual_Pattern || row.visualTexture || "",
+        row.Tactile_Texture || row.tactileTexture || "",
+        row.Material || row.material || "",
+      ]
+        .map((v) => String(v).trim())
+        .join("|");
+      const traitSlug = traitKey.replace(/[^A-Za-z0-9]+/g, "").slice(0, 24);
+      const explicitId = row.ID || row.Id || row.Pin_ID || row.PinId;
+      let pinId =
+        explicitId ||
+        `pin-${pL.toFixed(4)}-${pC.toFixed(4)}-${pH.toFixed(4)}${
+          traitSlug ? "-" + traitSlug : ""
+        }`;
+      if (!explicitId) {
+        // still colliding (identical colour and traits) — keep both
+        let n = 2;
+        const root = pinId;
+        while (newSavedColors[pinId]) pinId = `${root}-${n++}`;
+      }
 
-      // Remove existing pin that matches these coordinates exactly
+      // Drop an existing pin only when it is the same colour AND the same
+      // door: matching on coordinates alone deleted the Shaker when its Slim
+      // twin was imported.
+      const sameTraits = (sc) =>
+        [
+          [sc.doorProfile, row.Profile || row.doorProfile],
+          [sc.sheen, row.Sheen || row.sheen],
+          [sc.visualTexture, row.Visual_Pattern || row.visualTexture],
+          [sc.tactileTexture, row.Tactile_Texture || row.tactileTexture],
+          [sc.material, row.Material || row.material],
+        ].every(
+          ([a, b]) => String(a || "").trim() === String(b || "").trim(),
+        );
       Object.keys(newSavedColors).forEach((k) => {
         const sc = newSavedColors[k];
         if (
@@ -9527,7 +9562,8 @@ const processCSVData = (
           Math.abs(sc.L - pL) < 0.0001 &&
           Math.abs(sc.C - pC) < 0.0001 &&
           Math.abs(sc.H - pH) < 0.0001 &&
-          k !== pinId
+          k !== pinId &&
+          sameTraits(sc)
         ) {
           delete newSavedColors[k];
         }
