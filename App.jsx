@@ -4638,8 +4638,17 @@ const ViewportSwatches = ({
         (x) => x.tags && x.tags.some((t) => t.toLowerCase().includes(q)),
       );
     }
-    // A caller that has already ordered the list keeps that order.
-    if (externalSort) return filtered;
+    // A caller that has already ordered the list keeps that order — but still
+    // needs the gamut flag, which is computed in the map after the sort below.
+    const withGamut = (list) =>
+      list.map((item) => ({
+        ...item,
+        _inGamut:
+          item.inSrgb !== void 0
+            ? item.inSrgb
+            : new Color("oklch", [item.L, item.C, item.H]).inGamut("srgb"),
+      }));
+    if (externalSort) return withGamut(filtered);
     return filtered
       .sort((a, b) => {
         let valA = a[sortBy];
@@ -7666,10 +7675,22 @@ const ViewPins = ({
     ),
     React.createElement(
       "div",
-      { className: "flex-1 overflow-y-auto custom-scrollbar px-4 pb-10" },
+      {
+        // In swatch modes ViewportSwatches owns the scrolling, so this
+        // container must not scroll too or the grid gets clipped.
+        className: `flex-1 custom-scrollbar px-4 pb-10 ${
+          catalogView === "table"
+            ? "overflow-y-auto"
+            : "overflow-hidden flex flex-col min-h-0"
+        }`,
+      },
       React.createElement(
         "div",
-        { className: "flex flex-col gap-3" },
+        {
+          className: `flex flex-col gap-3 ${
+            catalogView === "table" ? "" : "flex-1 min-h-0"
+          }`,
+        },
         isAdding &&
           React.createElement(
             "div",
@@ -7819,7 +7840,7 @@ const ViewPins = ({
                 // ViewportSwatches roots every layout at `absolute inset-0`.
                 // Without its own positioned box it escapes to the panel and
                 // paints over the catalog's toolbar.
-                className: "relative w-full flex-1 min-h-[420px]",
+                className: "relative w-full flex-1 min-h-[420px] md:min-h-0",
               },
               React.createElement(ViewportSwatches, {
               // Same component the other views use, fed the catalog's own
