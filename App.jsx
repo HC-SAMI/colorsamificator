@@ -4550,6 +4550,270 @@ const oklchWheelDataUri = (L, extent = 0.3, size = 256) => {
   return uri;
 };
 
+// --- Cross-reference between two suppliers ---------------------------------
+// "Which of my Tafisa colours could I get from Uniboard instead?" For every
+// colour in the source brand, find its nearest colour in the target brand and
+// report the distance, so overlaps and gaps are both visible.
+
+const crossRefDeltaE = (p, q) => {
+  // deltaE OK is euclidean distance in OKLab; the app reports it x100.
+  const dL = p.L - q.L, da = p.a - q.a, db = p.b - q.b;
+  return Math.sqrt(dL * dL + da * da + db * db) * 100;
+};
+
+// The same five traits the "Exact material match" preset copies, so the two
+// features agree on what "same material" means.
+const CROSSREF_SPEC_FIELDS = [
+  "material",
+  "sheen",
+  "doorProfile",
+  "visualTexture",
+  "tactileTexture",
+];
+const crossRefSameSpec = (p, q) =>
+  CROSSREF_SPEC_FIELDS.every(
+    (f) => String(p[f] || "").trim() === String(q[f] || "").trim(),
+  );
+
+const crossRefPrep = (list) =>
+  (list || [])
+    .filter((c) => isFinite(c.L) && isFinite(c.C) && isFinite(c.H))
+    .map((c) => {
+      const rad = (c.H * Math.PI) / 180;
+      return {
+        ...c,
+        a: c.C * Math.sin(rad),
+        b: c.C * Math.cos(rad),
+      };
+    });
+
+const CrossReference = ({ colorData, onSelectColor }) => {
+  const brands = useMemo(
+    () => Object.keys(colorData || {}).sort(),
+    [colorData],
+  );
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [maxDE, setMaxDE] = useState(2);
+  const [mode, setMode] = useState("matched");
+  const [matchMaterial, setMatchMaterial] = useState(false);
+
+  useEffect(() => {
+    if (!from && brands.length) setFrom(brands[0]);
+    if (!to && brands.length > 1) setTo(brands[1]);
+  }, [brands, from, to]);
+
+  const rows = useMemo(() => {
+    if (!from || !to || from === to || !colorData) return [];
+    const src = crossRefPrep(colorData[from]);
+    const dst = crossRefPrep(colorData[to]);
+    if (!src.length || !dst.length) return [];
+    return src
+      .map((s) => {
+        let best = null, bestD = Infinity;
+        for (const d of dst) {
+          if (matchMaterial && !crossRefSameSpec(s, d)) continue;
+          const dE = crossRefDeltaE(s, d);
+          if (dE < bestD) { bestD = dE; best = d; }
+        }
+        return { source: s, match: best, dE: best ? bestD : Infinity };
+      })
+      .filter((r) => (mode === "matched" ? r.dE <= maxDE : r.dE > maxDE))
+      .sort((x, y) => x.dE - y.dE);
+  }, [colorData, from, to, maxDE, mode, matchMaterial]);
+
+  const total = (colorData && colorData[from] && colorData[from].length) || 0;
+
+  const swatch = (c, size) =>
+    c
+      ? React.createElement(ColorSwatch, {
+          item: c,
+          hex: c.hex ||
+            (() => {
+              try {
+                return new Color("oklch", [c.L, c.C, c.H])
+                  .toGamut({ space: "srgb" })
+                  .toString({ format: "hex" });
+              } catch (e) {
+                return "#cccccc";
+              }
+            })(),
+          size,
+          label: c.name,
+        })
+      : null;
+
+  const select = (c) => {
+    if (c && onSelectColor) onSelectColor([c.L, c.C, c.H], c.spectral || null);
+  };
+
+  const sel = (value, onChange, opts, key) =>
+    React.createElement(
+      "select",
+      {
+        value,
+        onChange: (e) => onChange(e.target.value),
+        className:
+          "flex-1 min-w-0 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1 text-[11px]",
+        key,
+      },
+      opts.map((b) =>
+        React.createElement("option", { key: b, value: b }, b),
+      ),
+    );
+
+  return React.createElement(
+    "div",
+    { className: "flex flex-col gap-3" },
+    React.createElement(
+      "div",
+      { className: "flex items-center gap-2" },
+      sel(from, setFrom, brands, "from"),
+      React.createElement(
+        "span",
+        { className: "text-[10px] font-bold text-slate-400 shrink-0" },
+        "\u2192",
+      ),
+      sel(to, setTo, brands, "to"),
+    ),
+    React.createElement(
+      "div",
+      { className: "flex items-center gap-2" },
+      React.createElement(
+        "span",
+        { className: "text-[10px] font-bold uppercase tracking-wider text-slate-400" },
+        "\u0394E \u2264",
+      ),
+      React.createElement("input", {
+        type: "range",
+        min: "0.5",
+        max: "10",
+        step: "0.5",
+        value: maxDE,
+        onChange: (e) => setMaxDE(parseFloat(e.target.value)),
+        className: "flex-1 accent-sky-500",
+      }),
+      React.createElement(
+        "span",
+        { className: "text-[10px] font-mono w-7 text-right" },
+        maxDE.toFixed(1),
+      ),
+    ),
+    React.createElement(
+      "div",
+      { className: "flex items-center gap-1" },
+      ["matched", "gaps"].map((m) =>
+        React.createElement(
+          "button",
+          {
+            key: m,
+            onClick: () => setMode(m),
+            "aria-pressed": mode === m,
+            className: `px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${
+              mode === m
+                ? "bg-slate-800 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                : "text-slate-500 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-800"
+            }`,
+          },
+          m === "matched" ? "Has equivalent" : "No equivalent",
+        ),
+      ),
+      React.createElement(
+        "label",
+        {
+          className:
+            "ml-auto flex items-center gap-1 text-[10px] text-slate-500 dark:text-neutral-400 cursor-pointer",
+          title:
+            "Match material, sheen, profile, visual pattern and tactile texture",
+        },
+        React.createElement("input", {
+          type: "checkbox",
+          checked: matchMaterial,
+          onChange: (e) => setMatchMaterial(e.target.checked),
+          className: "accent-sky-500",
+        }),
+        "Same spec",
+      ),
+    ),
+    React.createElement(
+      "div",
+      { className: "text-[10px] text-slate-400 dark:text-neutral-500" },
+      from === to
+        ? "Pick two different brands."
+        : `${rows.length} of ${total} ${from} colors ${
+            mode === "matched" ? "have" : "have no"
+          } a ${to} equivalent within \u0394E ${maxDE.toFixed(1)}`,
+    ),
+    React.createElement(
+      "div",
+      { className: "flex flex-col gap-1 max-h-72 overflow-y-auto custom-scrollbar" },
+      rows.slice(0, 200).map((r, i) =>
+        React.createElement(
+          "div",
+          {
+            key: r.source.name + i,
+            className:
+              "flex items-center gap-2 p-1.5 rounded hover:bg-slate-50 dark:hover:bg-neutral-800/50",
+          },
+          React.createElement(
+            "button",
+            {
+              onClick: () => select(r.source),
+              className: "shrink-0",
+              title: r.source.name,
+            },
+            swatch(r.source, 26),
+          ),
+          React.createElement(
+            "div",
+            { className: "flex-1 min-w-0" },
+            React.createElement(
+              "div",
+              { className: "text-[10px] font-bold truncate" },
+              r.source.name,
+            ),
+            React.createElement(
+              "div",
+              { className: "text-[9px] text-slate-400 truncate" },
+              r.match ? r.match.name : "no candidate",
+            ),
+          ),
+          r.match &&
+            React.createElement(
+              "span",
+              {
+                className: `text-[9px] font-mono shrink-0 ${
+                  r.dE <= 1
+                    ? "text-emerald-600"
+                    : r.dE <= 2
+                      ? "text-sky-600"
+                      : "text-slate-400"
+                }`,
+              },
+              r.dE === Infinity ? "\u2014" : r.dE.toFixed(2),
+            ),
+          r.match &&
+            React.createElement(
+              "button",
+              {
+                onClick: () => select(r.match),
+                className: "shrink-0",
+                title: r.match.name,
+              },
+              swatch(r.match, 26),
+            ),
+        ),
+      ),
+      rows.length > 200 &&
+        React.createElement(
+          "div",
+          { className: "text-[9px] text-slate-400 p-1" },
+          `Showing the closest 200 of ${rows.length}.`,
+        ),
+    ),
+  );
+};
+
 const ViewportSwatches = ({
   items,
   layout,
@@ -18906,6 +19170,14 @@ const AppUI = ({
                   },
                 }),
               ),
+            React.createElement(
+              CollapsiblePanel,
+              { title: "Cross-Reference", icon: "shuffle", defaultOpen: false },
+              React.createElement(CrossReference, {
+                colorData,
+                onSelectColor: handlePointClick,
+              }),
+            ),
             React.createElement(
               CollapsiblePanel,
               {
