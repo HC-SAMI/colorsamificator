@@ -3460,8 +3460,11 @@ function getInheritedPinNames(
     let scA = sc.a;
     let scB = sc.b;
     if (scA === undefined || scB === undefined) {
-      scA = scC * Math.cos((scH * Math.PI) / 180);
-      scB = scC * Math.sin((scH * Math.PI) / 180);
+      // App convention: a = C*sin(H), b = C*cos(H). Using the standard
+      // formulas here put the pin in the wrong quadrant relative to the
+      // anchors it is being compared against.
+      scA = scC * Math.sin((scH * Math.PI) / 180);
+      scB = scC * Math.cos((scH * Math.PI) / 180);
     }
 
     let minDist = Infinity;
@@ -3474,8 +3477,8 @@ function getInheritedPinNames(
       if (other.type === "nounColumn" || other.type === "anchor") {
         const oName = (other.nameOverride || names[other.id] || names[other.anchorId] || "").trim();
         if (!oName || oName.toLowerCase() === "unnamed" || oName.toLowerCase() === "unnamed noun") return;
-        const oA = other.a !== undefined ? other.a : (other.C || 0) * Math.cos(((other.H || 0) * Math.PI) / 180);
-        const oB = other.b !== undefined ? other.b : (other.C || 0) * Math.sin(((other.H || 0) * Math.PI) / 180);
+        const oA = other.a !== undefined ? other.a : (other.C || 0) * Math.sin(((other.H || 0) * Math.PI) / 180);
+        const oB = other.b !== undefined ? other.b : (other.C || 0) * Math.cos(((other.H || 0) * Math.PI) / 180);
         const minL = other.minL !== undefined ? other.minL : (other.L !== undefined ? other.L - 0.05 : -0.01);
         const maxL = other.maxL !== undefined ? other.maxL : (other.L !== undefined ? other.L + 0.05 : 1.01);
         const midL = (minL + maxL) / 2;
@@ -3746,7 +3749,7 @@ const FILTER_FIELDS = [
   { id: "doorProfile", label: "Profile", type: "select", get: (it) => it.doorProfile || "" },
   { id: "visualTexture", label: "Visual pattern", type: "select", get: (it) => it.visualTexture || "" },
   { id: "tactileTexture", label: "Tactile texture", type: "select", get: (it) => it.tactileTexture || "" },
-  { id: "tag", label: "Tag", type: "select", get: (it) => (it.tags || []).join(", ") },
+  { id: "tag", label: "Tag", type: "select", multi: true, get: (it) => (it.tags || []).join(", ") },
   { id: "noun", label: "Noun", type: "text", get: (it, ctx) => (ctx ? nounNameOf(it, ctx) : "") },
   { id: "adjective", label: "Adjective", type: "text", get: (it, ctx) => (ctx ? adjNameOf(it, ctx) : "") },
   { id: "L", label: "Lightness", type: "number", get: (it) => it.L },
@@ -3841,6 +3844,14 @@ const evalFilterRow = (item, row, ctx) => {
   const s = String(raw || "").toLowerCase();
   const q = String(row.value || "").toLowerCase().trim();
   if (!q) return true;
+  // Multi-value fields (tags) arrive comma-joined; "is" should match any one
+  // of them rather than the whole joined string.
+  const field2 = FILTER_FIELDS.find((f) => f.id === row.field);
+  if (field2 && field2.multi) {
+    const parts = s.split(",").map((x) => x.trim()).filter(Boolean);
+    if (row.op === "is") return parts.indexOf(q) !== -1;
+    if (row.op === "is_not") return parts.indexOf(q) === -1;
+  }
   if (row.op === "is") return s === q;
   if (row.op === "is_not") return s !== q;
   if (row.op === "not_contains") return s.indexOf(q) === -1;
@@ -4832,6 +4843,11 @@ const ViewportSwatches = ({
   // Catalog sorts upstream with the global control; without this the swatches
   // re-sort themselves and the global control looks broken.
   externalSort,
+  // Optional per-tile actions, so the swatch view can offer the same
+  // duplicate/remove controls the table rows have.
+  onDuplicateItem,
+  onRemoveItem,
+  onEditItem,
 }) => {
   const [sortBy, setSortBy] = useState(dim1);
   const [sortAsc, setSortAsc] = useState(true);
@@ -5559,6 +5575,42 @@ ${item.erpCode}`,
               },
             },
             React.createElement(SwatchTreatment, { item, size: 96 }),
+            (onDuplicateItem || onRemoveItem) &&
+              React.createElement(
+                "div",
+                {
+                  className:
+                    "absolute top-1 right-1 flex gap-1 z-20 opacity-0 group-hover:opacity-100 transition-opacity",
+                },
+                onDuplicateItem &&
+                  React.createElement(
+                    "button",
+                    {
+                      onClick: (e) => {
+                        e.stopPropagation();
+                        onDuplicateItem(item);
+                      },
+                      title: "Duplicate pin",
+                      className:
+                        "bg-sky-500 text-white p-1 rounded-full shadow hover:bg-sky-600",
+                    },
+                    React.createElement(Icon, { name: "copy", className: "w-3 h-3" }),
+                  ),
+                onRemoveItem &&
+                  React.createElement(
+                    "button",
+                    {
+                      onClick: (e) => {
+                        e.stopPropagation();
+                        onRemoveItem(item);
+                      },
+                      title: "Remove pin",
+                      className:
+                        "bg-slate-800 text-white p-1 rounded-full shadow hover:bg-slate-900",
+                    },
+                    React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
+                  ),
+              ),
             (item.image || item.note?.startsWith("http")) &&
               React.createElement("div", {
                 className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
@@ -5711,23 +5763,40 @@ ${item.erpCode}`,
                   },
                 },
                 [
-                  ["Material", item.material],
-                  ["Sheen", item.sheen],
-                  ["Vis. Pattern", item.visualTexture],
-                  ["Tac. Texture", item.tactileTexture],
-                  ["Profile", item.doorProfile],
-                ]
-                  .filter((p) => String(p[1] || "").trim())
-                  .map((p, i) =>
-                    React.createElement(
-                      "span",
-                      {
-                        key: i,
-                        className: "truncate w-full text-center italic",
-                      },
-                      `${p[0]}: ${String(p[1]).trim()}`,
-                    ),
-                  ),
+                  { label: "Material", key: "material", options: LABEL_OPTIONS.material },
+                  { label: "Sheen", key: "sheen", options: LABEL_OPTIONS.sheen },
+                  { label: "Vis. Pattern", key: "visualTexture", options: LABEL_OPTIONS.visualPattern },
+                  { label: "Tac. Texture", key: "tactileTexture", options: LABEL_OPTIONS.tactileTexture },
+                  { label: "Profile", key: "doorProfile", options: LABEL_OPTIONS.doorProfile },
+                ].map((f) =>
+                  // Editable here too, so the swatch view is not a read-only
+                  // copy of the table.
+                  onEditItem
+                    ? React.createElement(
+                        "select",
+                        {
+                          key: f.key,
+                          value: item[f.key] || "-",
+                          title: f.label,
+                          onClick: (e) => e.stopPropagation(),
+                          onChange: (e) => {
+                            e.stopPropagation();
+                            onEditItem(item, f.key, e.target.value === "-" ? "" : e.target.value);
+                          },
+                          className:
+                            "w-full bg-transparent border border-slate-200 dark:border-neutral-700 rounded px-0.5 text-center cursor-pointer hover:border-slate-400",
+                          style: { fontSize: "inherit" },
+                        },
+                        f.options.map((opt) =>
+                          React.createElement("option", { key: opt, value: opt }, opt),
+                        ),
+                      )
+                    : React.createElement(
+                        "span",
+                        { key: f.key, className: "truncate w-full text-center italic" },
+                        `${f.label}: ${String(item[f.key] || "-").trim()}`,
+                      ),
+                ),
               ),
             item.tags &&
               item.tags.length > 0 &&
@@ -7533,6 +7602,7 @@ const ViewPins = ({
   const [isAdding, setIsAdding] = useState(false);
   // Catalog now offers the same three presentations as the other views.
   const [catalogView, setCatalogView] = useState("table");
+  const [showSpecs, setShowSpecs] = useState(true);
   const [editForm, setEditForm] = useState({
     id: "",
     noun: "",
@@ -7660,8 +7730,14 @@ const ViewPins = ({
   );
   const sortedItems = useMemo(() => {
     let items = [...filteredPinItems];
-    if (tagFilter)
-      items = items.filter((item) => item.tags.includes(tagFilter));
+    if (tagFilter) {
+      // Tags are compared case-insensitively everywhere else; an exact
+      // includes() here missed "Core" against a stored "core".
+      const tf = String(tagFilter).toLowerCase().trim();
+      items = items.filter((item) =>
+        (item.tags || []).some((t) => String(t).toLowerCase().trim() === tf),
+      );
+    }
     if (searchTerm.trim()) {
       const qWords = searchTerm
         .toLowerCase()
@@ -7939,6 +8015,21 @@ const ViewPins = ({
               "%",
             ),
           ),
+        catalogView === "swatches" &&
+          React.createElement(
+            "button",
+            {
+              onClick: () => setShowSpecs(!showSpecs),
+              "aria-pressed": showSpecs,
+              title: "Show material properties under each swatch",
+              className: `ml-2 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                showSpecs
+                  ? "bg-slate-800 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                  : "text-slate-500 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-800"
+              }`,
+            },
+            "Specs",
+          ),
         React.createElement(
           "div",
           { className: "flex items-center gap-1 ml-2" },
@@ -8150,7 +8241,14 @@ const ViewPins = ({
               layout: catalogView === "matrix" ? "matrix" : "gallery",
               swatchZoom,
               externalSort: true,
-              showSpecs: catalogView === "swatches",
+              showSpecs: catalogView === "swatches" && showSpecs,
+              onDuplicateItem: (it) => handleDuplicatePin(it.id),
+              onRemoveItem: (it) => handleUnlock(it.id),
+              onEditItem: (it, key, value) =>
+                setSavedColors((prev) => ({
+                  ...prev,
+                  [it.id]: { ...prev[it.id], [key]: value },
+                })),
               dim1: "L",
               dim2: "C",
               dim1Labels: (v) => `L: ${Number(v).toFixed(3)}`,
@@ -9893,8 +9991,13 @@ const processCSVData = (
         L: pL,
         C: pC,
         H: pH,
-        nameOverride: row.Noun || "",
-        adjOverride: row.Adjective || "",
+        // A pin stores only its position; its name comes from whichever anchor
+        // currently covers that position. Only an explicit override column
+        // pins the name down, so re-importing never freezes stale names.
+        nameOverride:
+          row.Noun_Override || row.NounOverride || row.nameOverride || "",
+        adjOverride:
+          row.Adjective_Override || row.AdjOverride || row.adjOverride || "",
         notes: row.Note || "",
         erpCode: row.ERP_Code || getExactErpCode(pL, pC, pC === 0 ? 0 : pH),
         sheen: (row.Sheen || row.sheen || "").trim(),
@@ -13344,8 +13447,12 @@ const App = () => {
             Brand: sc.brand || "",
             Original_Index: sc.originalIndex !== undefined ? sc.originalIndex : "",
             Image: sc.image || "",
+            // Noun/Adjective are the resolved names, for reading only — they
+            // are not re-imported. Overrides round-trip in their own columns.
             Noun: sc.nameOverride || pinNames.displayName || "",
             Adjective: sc.adjOverride || pinNames.displayAdj || "",
+            Noun_Override: sc.nameOverride || "",
+            Adjective_Override: sc.adjOverride || "",
             Note: sc.notes || "",
             Tags: (dictTags[sc.id] || []).join(","),
             OKLCH_L: sc.L,
@@ -17871,21 +17978,28 @@ const AppUI = ({
   const filterOptionsFor = useCallback(
     (fieldId) => {
       const field = FILTER_FIELDS.find((f) => f.id === fieldId);
-      if (!field || !colorData) return [];
+      // Only the field is required: pins and their tags exist even when no
+      // commercial data is loaded, and bailing here hid them entirely.
+      if (!field) return [];
       const seen = new Set();
-      Object.keys(colorData).forEach((brand) => {
-        (colorData[brand] || []).forEach((c) => {
-          const v = field.get({ ...c, brand });
-          String(v || "")
-            .split(",")
-            .map((x) => x.trim())
-            .filter(Boolean)
-            .forEach((x) => seen.add(x));
-        });
+      const collect = (v) =>
+        String(v || "")
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean)
+          .forEach((x) => seen.add(x));
+      Object.keys(colorData || {}).forEach((brand) => {
+        (colorData[brand] || []).forEach((c) => collect(field.get({ ...c, brand })));
       });
+      // Pins and their tags live outside colorData, so the Catalog's own
+      // values would never appear in the dropdown without this.
+      Object.values(savedColors || {}).forEach((sc) => {
+        collect(field.get({ ...sc, tags: (dictTags || {})[sc.id] || [] }));
+      });
+      if (fieldId === "tag") (globalTags || []).forEach((t) => seen.add(t));
       return [...seen].sort().slice(0, 200);
     },
-    [colorData],
+    [colorData, savedColors, dictTags, globalTags],
   );
   const compactHex = useMemo(() => {
     try {
