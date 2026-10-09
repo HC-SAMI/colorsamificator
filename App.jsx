@@ -7504,6 +7504,9 @@ const ViewPins = ({
   setSwatchZoom,
   globalSortBy,
   globalSortAsc,
+  globalFilters,
+  globalFilterMode,
+  sameGroupContext,
   names,
   adjectives,
   dictNotes,
@@ -7630,12 +7633,33 @@ const ViewPins = ({
         };
       });
   }, [savedColors, names, adjectives, dictNotes, dictTags]);
+
+  // The global filter bar has to reach the catalog too; pins were previously
+  // the only surface it never touched. Pins are not DB rows, so this runs in
+  // viewport scope (the DB-scoped spectral row must not hide them).
+  const filteredPinItems = useMemo(() => {
+    if (!globalFilters || !globalFilters.length) return pinItems;
+    const decorated = pinItems.map((p, i) => ({
+      ...p,
+      __idx: i,
+      displayName: p.displayName,
+      name: p.displayName,
+    }));
+    return applyGlobalFilters(
+      decorated,
+      globalFilters,
+      sameGroupContext,
+      globalFilterMode,
+      "viewport",
+    ).items.map((k) => pinItems[k.__idx]);
+  }, [pinItems, globalFilters, globalFilterMode, sameGroupContext]);
+
   const allTags = useMemo(
     () => Array.from(new Set(pinItems.flatMap((item) => item.tags))).sort(),
     [pinItems],
   );
   const sortedItems = useMemo(() => {
-    let items = [...pinItems];
+    let items = [...filteredPinItems];
     if (tagFilter)
       items = items.filter((item) => item.tags.includes(tagFilter));
     if (searchTerm.trim()) {
@@ -7707,7 +7731,7 @@ const ViewPins = ({
       if (valA === valB) return a.C - b.C;
       return sortAsc ? (valA < valB ? -1 : 1) : valB < valA ? -1 : 1;
     });
-  }, [pinItems, sortBy, sortAsc, tagFilter, searchTerm]);
+  }, [filteredPinItems, sortBy, sortAsc, tagFilter, searchTerm]);
   const handleUnlock = (id) => {
     setSavedColors((prev) => {
       const next = { ...prev };
@@ -7718,10 +7742,10 @@ const ViewPins = ({
   // Plain render helper, not a component: defining a component inside render
   // gives it a new type each pass, so React remounted every header button.
   const handleSelectAll = () => {
-    if (selectedIds.length === pinItems.length) {
+    if (selectedIds.length === filteredPinItems.length) {
       setSelectedIds([]);
     } else {
-      setSelectedIds(pinItems.map((i) => i.id));
+      setSelectedIds(filteredPinItems.map((i) => i.id));
     }
   };
   if (pinItems.length === 0 && !isAdding)
@@ -20793,6 +20817,9 @@ const AppUI = ({
                 setSwatchZoom,
                 globalSortBy,
                 globalSortAsc,
+                globalFilters,
+                globalFilterMode,
+                sameGroupContext,
                 names,
                 adjectives,
                 dictNotes,
