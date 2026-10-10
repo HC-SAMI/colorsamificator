@@ -231,10 +231,17 @@ function getGlobalDuplicate(
   if (!value || !isOverride) return null;
   const normalizedVal = value.trim().toLowerCase();
   if (!normalizedVal) return null;
+  // A deleted column can leave its entry behind in the names dictionary.
+  // Those orphans are not real conflicts, so skip any column key with no
+  // surviving saved colour.
+  const hasColumns = savedColors && Object.keys(savedColors).length > 0;
+  const isOrphan = (key) =>
+    hasColumns && String(key).startsWith("col-") && !savedColors[key];
   for (const [key, val] of Object.entries(names)) {
     if (
       key !== currentKey &&
       key !== ignoreAnchorId &&
+      !isOrphan(key) &&
       val &&
       val.trim().toLowerCase() === normalizedVal
     ) {
@@ -7712,6 +7719,11 @@ const ViewPins = ({
       [newId]: {
         ...sourcePin,
         id: newId,
+        // A duplicate is a new pin at the same position: it should take the
+        // current anchor's name like any other pin, not inherit the source's
+        // frozen name. Only a deliberate override is kept.
+        nameOverride: "",
+        adjOverride: "",
       },
     }));
     setDictTags((prev) => {
@@ -9760,10 +9772,16 @@ const processCSVData = (
         newGroupSettings.hues = [];
         hasHues = true;
       }
+      // Files written before the switch stored an upper bound in the same
+      // column. Without the marker, read it as a bound and let hueCenterOf
+      // derive the midpoint, so existing repos keep their regions.
+      const isMidpoint =
+        String(row.Note || "").trim().toLowerCase() === "midpoint";
+      const angle = parseFloat(row.OKLCH_H) || 0;
       newGroupSettings.hues.push({
         id: row.ID || crypto.randomUUID(),
         name: row.Noun || "",
-        maxH: parseFloat(row.OKLCH_H) || 0,
+        ...(isMidpoint ? { centerH: angle } : { maxH: angle }),
       });
       return;
     }
@@ -13545,7 +13563,10 @@ const App = () => {
             Type: "HUE_REGION",
             Adjective: h.id,
             Noun: h.name,
-            OKLCH_H: h.maxH,
+            // Regions are stored by midpoint now; OKLCH_H carries that angle
+            // and Note marks the format so older files are read correctly.
+            OKLCH_H: hueCenterOf(h, groupSettings.hues),
+            Note: "midpoint",
           }),
         );
         (groupSettings.overrides || []).forEach((o) =>
