@@ -71,20 +71,53 @@ const defaultGroupSettings = {
     { id: "n1", name: "Dark Neutral", maxL: 0.5 },
     { id: "n2", name: "Light Neutral", maxL: 1 },
   ],
+  // Regions are defined by their midpoint angle; a colour belongs to whichever
+  // midpoint is nearest going round the circle. Boundaries fall halfway
+  // between neighbours, so there is no wrap-around special case.
   hues: [
-    { id: "h1", name: "Red", maxH: 35 },
-    { id: "h2", name: "Orange", maxH: 70 },
-    { id: "h3", name: "Yellow", maxH: 115 },
-    { id: "h4", name: "Green", maxH: 165 },
-    { id: "h5", name: "Cyan", maxH: 225 },
-    { id: "h6", name: "Blue", maxH: 285 },
-    { id: "h7", name: "Magenta", maxH: 345 },
+    { id: "h1", name: "Red", centerH: 10 },
+    { id: "h2", name: "Orange", centerH: 52 },
+    { id: "h3", name: "Yellow", centerH: 92 },
+    { id: "h4", name: "Green", centerH: 140 },
+    { id: "h5", name: "Cyan", centerH: 195 },
+    { id: "h6", name: "Blue", centerH: 255 },
+    { id: "h7", name: "Magenta", centerH: 315 },
   ],
   overrides: [
     { id: "o1", condition: "Light Muted Yellow", name: "Beige" },
     { id: "o2", condition: "Dark Vivid Blue", name: "Navy" },
   ],
 };
+// Older saved settings stored an upper bound per region. Derive a midpoint
+// from those so existing files keep working without a migration step.
+const hueCenterOf = (hue, all) => {
+  if (hue && isFinite(hue.centerH)) return ((hue.centerH % 360) + 360) % 360;
+  if (!hue || !isFinite(hue.maxH)) return 0;
+  const sorted = [...(all || [])]
+    .filter((x) => isFinite(x.maxH))
+    .sort((a, b) => a.maxH - b.maxH);
+  const i = sorted.findIndex((x) => x.id === hue.id);
+  const prev = i > 0 ? sorted[i - 1].maxH : (sorted[sorted.length - 1]?.maxH ?? 0) - 360;
+  const mid = (prev + hue.maxH) / 2;
+  return ((mid % 360) + 360) % 360;
+};
+// The visible edge between two regions is halfway between their midpoints.
+const hueBoundaries = (hues) => {
+  const list = (hues || [])
+    .map((x) => hueCenterOf(x, hues))
+    .sort((a, b) => a - b);
+  if (list.length < 2) return [];
+  return list.map((c, i) => {
+    const next = list[(i + 1) % list.length];
+    const span = (((next - c) % 360) + 360) % 360;
+    return ((c + span / 2) % 360 + 360) % 360;
+  });
+};
+const hueArcDistance = (a, b) => {
+  const d = Math.abs((((a - b) % 360) + 360) % 360);
+  return Math.min(d, 360 - d);
+};
+
 function getColorGroup(l, c, h, settings) {
   const {
     neutralC = 0.02,
@@ -114,18 +147,16 @@ function getColorGroup(l, c, h, settings) {
     baseName = neutralName;
   } else {
     let hueName = "Unknown";
-    const sortedHues = [...hues].sort((a, b) => a.maxH - b.maxH);
-    let found = false;
-    for (let i = 0; i < sortedHues.length; i++) {
-      if (h < sortedHues[i].maxH) {
-        hueName = sortedHues[i].name;
-        found = true;
-        break;
+    // Nearest midpoint wins; ties go to the lower angle for stability.
+    let best = null, bestD = Infinity;
+    (hues || []).forEach((hu) => {
+      const centre = hueCenterOf(hu, hues);
+      const d = hueArcDistance(h, centre);
+      if (d < bestD - 1e-9 || (Math.abs(d - bestD) < 1e-9 && best && centre < hueCenterOf(best, hues))) {
+        bestD = d; best = hu;
       }
-    }
-    if (!found && sortedHues.length > 0) {
-      hueName = sortedHues[0].name;
-    }
+    });
+    if (best) hueName = best.name;
     const lMod = l >= lightL ? "Light" : "Dark";
     const cMod = c >= vividC ? "Vivid" : "Muted";
     baseName = `${lMod} ${cMod} ${hueName}`;
@@ -3245,11 +3276,11 @@ const ViewChromaRings = ({
         line: { color: gC, width: 1, dash: "dot" },
       });
       if (groupSettings.hues) {
-        groupSettings.hues.forEach(h => {
+        hueBoundaries(groupSettings.hues).forEach((edge) => {
           shapes.push({
             type: "line",
-            x0: h.maxH,
-            x1: h.maxH,
+            x0: edge,
+            x1: edge,
             y0: 0,
             y1: 1.05,
             line: { color: gC, width: 1, dash: "dot" },
@@ -4212,6 +4243,12 @@ const FilterChips = ({ chips, onClearAll }) => {
 // at any size. Traits come from a full SKU (LLCCHHH-GG-Vn-Tn-PP) when one
 // exists, otherwise from the row's own Visual_Pattern / Profile columns.
 
+// A product photo is reference texture, not the colour itself. At full
+// strength it replaced the swatch — wood decors photograph much darker than
+// their anchor colour, so the tile read wrong. Keep it faint enough that the
+// swatch still shows its true colour.
+const SWATCH_PHOTO_OPACITY = 0.38;
+
 const SWATCH_HATCH_VISUALS = ["V2", "V3", "V4"]; // grained; V1 and V5 stay plain
 // A grained *feel* earns the hatch too: T3 linear grain, T4 embossed-in-register.
 const SWATCH_HATCH_TACTILES = ["T3", "T4"];
@@ -5065,6 +5102,7 @@ ${item.erpCode}`,
                             className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                             style: {
                               backgroundImage: `url(${item.image || item.note})`,
+                              opacity: SWATCH_PHOTO_OPACITY,
                               WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                               maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                             },
@@ -5358,6 +5396,7 @@ ${item.erpCode}`,
                         className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                         style: {
                           backgroundImage: `url(${item.image || item.note})`,
+                          opacity: SWATCH_PHOTO_OPACITY,
                           WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                           maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                         },
@@ -5616,6 +5655,7 @@ ${item.erpCode}`,
                 className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                 style: {
                   backgroundImage: `url(${item.image || item.note})`,
+                  opacity: SWATCH_PHOTO_OPACITY,
                   WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                   maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                 },
@@ -6428,8 +6468,8 @@ const ViewTopDown = ({
         });
       }
       if (groupSettings.hues && groupSettings.neutralC) {
-        groupSettings.hues.forEach(h => {
-          const rad = (h.maxH * Math.PI) / 180;
+        hueBoundaries(groupSettings.hues).forEach((edge) => {
+          const rad = (edge * Math.PI) / 180;
           shapes.push({
              type: "line",
              x0: groupSettings.neutralC * Math.sin(rad),
@@ -6791,6 +6831,7 @@ const ViewPalette = ({
             className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
             style: {
               backgroundImage: `url(${item.image || item.note})`,
+              opacity: SWATCH_PHOTO_OPACITY,
               WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
               maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
             },
@@ -8622,13 +8663,15 @@ const ViewGroups = ({ settings, setSettings }) => {
     setSettings({ ...settings, hues: newHues });
   };
   const onBlurSort = () => {
-    const newHues = [...settings.hues].sort((a, b) => a.maxH - b.maxH);
+    const newHues = [...settings.hues].sort(
+      (a, b) => hueCenterOf(a, settings.hues) - hueCenterOf(b, settings.hues),
+    );
     setSettings({ ...settings, hues: newHues });
   };
   const addHue = () => {
     const newHues = [
       ...settings.hues,
-      { id: crypto.randomUUID(), name: "New Color", maxH: 360 },
+      { id: crypto.randomUUID(), name: "New Color", centerH: 0 },
     ];
     setSettings({ ...settings, hues: newHues });
   };
@@ -8898,7 +8941,7 @@ const ViewGroups = ({ settings, setSettings }) => {
                 backgroundColor: new Color("oklch", [
                   settings.lightL + 0.15,
                   settings.vividC + 0.05,
-                  hue.maxH - 15,
+                  hueCenterOf(hue, settings.hues),
                 ])
                   .toGamut({ space: "srgb" })
                   .toString({ format: "hex" }),
@@ -8932,15 +8975,15 @@ const ViewGroups = ({ settings, setSettings }) => {
                   className:
                     "text-[9px] font-bold uppercase tracking-wider text-slate-400 block mb-1",
                 },
-                "Upper Bound (H\xB0)",
+                "Midpoint (H\u00b0)",
               ),
               React.createElement("input", {
                 type: "number",
                 min: 0,
                 max: 360,
-                value: hue.maxH,
+                value: hueCenterOf(hue, settings.hues),
                 onChange: (e) =>
-                  updateHue(i, "maxH", parseFloat(e.target.value) || 0),
+                  updateHue(i, "centerH", parseFloat(e.target.value) || 0),
                 onBlur: onBlurSort,
                 className:
                   "w-full bg-transparent border-b border-slate-300 dark:border-neutral-600 focus:border-sky-500 outline-none text-xs font-mono text-slate-800 dark:text-neutral-200 py-1 transition-colors",
@@ -16346,6 +16389,7 @@ const ViewDatabase = ({
                     className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                     style: {
                       backgroundImage: `url(${item.image || item.note})`,
+                      opacity: SWATCH_PHOTO_OPACITY,
                       WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                       maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                     },
@@ -16633,6 +16677,7 @@ const ViewDatabase = ({
                           className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                           style: {
                             backgroundImage: `url(${item.image || item.note})`,
+                            opacity: SWATCH_PHOTO_OPACITY,
                             WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                             maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                           },
@@ -16860,6 +16905,7 @@ const ViewDatabase = ({
                     className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                     style: {
                       backgroundImage: `url(${item.image || item.note})`,
+                      opacity: SWATCH_PHOTO_OPACITY,
                       WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                       maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                     },
