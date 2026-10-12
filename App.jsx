@@ -2395,7 +2395,7 @@ function createSpaceEngine(opts) {
   // ── Orbit camera ─────────────────────────────────────────────────────────
   // The pivot (t) follows the cursor; a right-drag pan adds an offset (o) that
   // clears as soon as the cursor moves, so the cursor is always back in view.
-  const orb = { theta: 0.75, phi: 1.12, r: 14, tx: 0, ty: 0, tz: 0, ox: 0, oy: 0, oz: 0 };
+  const orb = { theta: 0.75, phi: 1.12, r: 14, tx: 0, ty: 0, tz: 0, ox: 0, oy: 0, oz: 0, rGoal: null };
   const goal = new THREE.Vector3();
   let camSnap = true, lastFrame = 0;
   const setGoal = () => {
@@ -2425,9 +2425,16 @@ function createSpaceEngine(opts) {
     const dx = goal.x - orb.tx, dy = goal.y - orb.ty, dz = goal.z - orb.tz;
     const now = performance.now(), dt = Math.min(200, now - (lastFrame || now));
     lastFrame = now;
-    const far = dx * dx + dy * dy + dz * dz > 1e-8;
+    let far = dx * dx + dy * dy + dz * dz > 1e-8;
     const k = camSnap ? 1 : 1 - Math.exp(-dt / 80);   // time-based, so slow machines settle as fast
     orb.tx += dx * k; orb.ty += dy * k; orb.tz += dz * k;
+    // a focus zoom glides the camera in or out (in ratio, so it feels even)
+    if (orb.rGoal !== null) {
+      const lr = Math.log(orb.r), lg = Math.log(orb.rGoal), kz = 1 - Math.exp(-dt / 110);
+      if (Math.abs(lg - lr) < 0.004) { orb.r = orb.rGoal; orb.rGoal = null; }
+      else { orb.r = Math.exp(lr + (lg - lr) * kz); far = true; }
+      marker.scale.setScalar(orb.r / 14);
+    }
     camSnap = false;
     placeCamera();
     renderer.clear();
@@ -2885,6 +2892,7 @@ function createSpaceEngine(opts) {
       ptrs.set(e.pointerId, [e.clientX, e.clientY]);
       if (mode === "pinch" && ptrs.size === 2) {
         const [a, b] = [...ptrs.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]), m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        orb.rGoal = null;
         orb.r = Math.max(0.6, Math.min(40, orb.r * (pinch.d / d)));
         pan(m[0] - pinch.m[0], m[1] - pinch.m[1]);
         pinch = { d, m }; placeMarker(); applyOrbit(); return;
@@ -2909,6 +2917,7 @@ function createSpaceEngine(opts) {
     handlers["3d"]["pointerleave"] = (() => onHover(null));
     handlers["3d"]["wheel"] = ((e) => {
       e.preventDefault();
+      orb.rGoal = null;
       orb.r = Math.max(0.6, Math.min(40, orb.r * Math.exp(e.deltaY * 0.0012)));   // close enough to read names
       placeMarker(); applyOrbit();
     });
@@ -2981,6 +2990,15 @@ function createSpaceEngine(opts) {
     let moving = false;
     ["l", "c", "h"].forEach((k) => {
       const v = SV[k];
+      if (v.zoomTo && v.dom && k !== dragView) {
+        const d = v.dom, span = d.x1 - d.x0, [cu, cw] = cursorInView(k);
+        const kz = 1 - Math.exp(-dt / 110);
+        let ns = Math.exp(Math.log(span) + (Math.log(v.zoomTo) - Math.log(span)) * kz);
+        if (Math.abs(Math.log(v.zoomTo / span)) < 0.004) { ns = v.zoomTo; v.zoomTo = 0; } else moving = true;
+        const f = ns / span;
+        d.x0 = cu + (d.x0 - cu) * f; d.x1 = cu + (d.x1 - cu) * f; d.y0 = cw + (d.y0 - cw) * f; d.y1 = cw + (d.y1 - cw) * f;
+        v.user = true;
+      }
       if (!v.glide || !v.dom || k === dragView) return;
       const d = v.dom, [ox, oy] = offCentre(k);
       const pxOff = Math.hypot((ox / (d.x1 - d.x0)) * v.cv.width, (oy / (d.y1 - d.y0)) * v.cv.height);
@@ -3254,12 +3272,13 @@ function createSpaceEngine(opts) {
         const cw = CARD_W * ppw, x0 = sx - cw / 2, x1 = sx + cw / 2, y0 = sy - cw / 2, y1 = sy + cw * 0.8, st = sy + cw / 2;
         const hidden = hit(x0, st, x1, y1, (o) => o[0] < x1 && o[2] > x0 && o[1] < y1 && o[3] > st);
         add([x0, y0, x1, y1]);
-        if (!hidden && cw >= CARD_NAME_PX * dpr) cardsOut.push([i, sx, sy, cw]);
+        if ((!hidden || i === selIdx) && cw >= CARD_NAME_PX * dpr) cardsOut.push([i, sx, sy, cw]);
       } else {
         const r = inflR(i, meanR[i]) * ppw;
         const hidden = hit(sx, sy, sx, sy, (o) => (o[4] - sx) ** 2 + (o[5] - sy) ** 2 < (o[6] * 0.85) ** 2);
         add([sx - r, sy - r, sx + r, sy + r, sx, sy, r]);
-        if (!hidden && ppw >= NAME_ZOOM_3D * dpr && nnW[i] * ppw >= NAME_PX * dpr)
+        // the cursor's own cell is drawn over everything, so its name is too
+        if ((!hidden || i === selIdx) && ppw >= NAME_ZOOM_3D * dpr && nnW[i] * ppw >= NAME_PX * dpr)
           cands.push([sx, S.fill < 0.001 ? sy + Math.min(r, 14 * dpr) + 13 * dpr : sy + 4 * dpr, i, 11 * dpr]);
       }
     }
@@ -3483,6 +3502,7 @@ function createSpaceEngine(opts) {
     // cursor so it stays centred; once panned away, about the pointer.
     const zoom = (x, y, f, atPointer) => {
       const d = v.dom;
+      v.zoomTo = 0;
       let u, w;
       if (!atPointer && (v.centred || v.glide)) { const [cu, cw] = cursorInView(k); u = cu; w = cw; }
       else { u = px2u(v, x); w = py2v(v, y); v.centred = false; v.glide = false; }
@@ -3598,6 +3618,34 @@ function createSpaceEngine(opts) {
       if (three) { rebuild(); rebuildActive(); updateDotVisibility(); syncGamutRange(); }
       if (flat) scheduleSections();
     },
+    // After a jump to a colour: zoom every view so the names of the colour at
+    // the cursor and of its nearest neighbours are readable. A view already in
+    // that range is left alone; one zoomed far past it backs out so the
+    // neighbours are in sight again.
+    focus() {
+      if (!ready || !N || selIdx < 0) return;
+      const i = selIdx;
+      let w = nnW[i];
+      grid.within(px[i], py[i], pz[i], Math.max(0.5, nnW[i] * 2.5), i).slice(0, 6).forEach(([, j]) => (w = Math.min(w, nnW[j])));
+      w = Math.max(w, nnW[i] * 0.5, 1e-3);   // don't chase one much tighter neighbour too far
+      ["l", "c", "h"].forEach((k) => {
+        const v = SV[k];
+        if (!v.dom || !v.cv.width) return;
+        const need = Math.max(NAME_ZOOM_2D, NAME_PX / w) * 1.15;   // px per world unit
+        const ppw = v.cv.width / (v.dom.x1 - v.dom.x0) / CW;
+        if (ppw >= need && ppw <= need * 3) return;
+        v.zoomTo = v.cv.width / (need * CW);   // the x-span that gives `need`
+        v.glide = true;
+      });
+      scheduleSections();
+      const cv = slot["3d"];
+      if (cv && cv.height) {
+        const dpr = DPR(), fy = camera.projectionMatrix.elements[5], hh = cv.height / 2;
+        const need = Math.max(NAME_ZOOM_3D, NAME_PX / w) * dpr * 1.15;
+        const rNeed = Math.max(0.6, Math.min(40, (fy * hh) / need));
+        if (orb.r > rNeed * 1.02 || orb.r < rNeed / 3) { orb.rGoal = rNeed; requestRender(); }
+      }
+    },
     // What names the cursor ({ L, C, H, kind } or null): the tether's far end.
     setTether(t) {
       const n = t && isFinite(t.L) && isFinite(t.C) ? { L: +t.L, C: +t.C, H: +t.H || 0, kind: t.kind } : null, o = S.tether;
@@ -3663,8 +3711,8 @@ function createSpaceEngine(opts) {
       slotCanvases.forEach((el) => (el.style.cursor = viewOf(el) === "3d" ? "grab" : "crosshair"));
       resize(); scheduleSections(); requestRender();
     },
-    resetView(k) { const v = SV[k]; fitContain(v); followCursor(k, true); },
-    resetCamera() { Object.assign(orb, { theta: 0.75, phi: 1.12, r: 14, ox: 0, oy: 0, oz: 0 }); placeMarker(); applyOrbit(); },
+    resetView(k) { const v = SV[k]; v.zoomTo = 0; fitContain(v); followCursor(k, true); },
+    resetCamera() { Object.assign(orb, { theta: 0.75, phi: 1.12, r: 14, ox: 0, oy: 0, oz: 0, rGoal: null }); placeMarker(); applyOrbit(); },
     resize,
     dispose() {
       disposed = true; buildToken++;
@@ -3969,6 +4017,9 @@ const ViewSpaceInner = ({
   scrubC,
   scrubH,
   tether = null,
+  focusTick = 0,
+  presetCmd = null,
+  onPresetSummary,
   onCursor,
   handlePointClick,
 }) => {
@@ -4094,6 +4145,14 @@ const ViewSpaceInner = ({
       onSync: (on) => setSync(k, on),
       onReset: withReset ? () => reset(k) : null,
     });
+  useEffect(() => {
+    if (presetCmd && presetCmd.id) SPACE_VIEWS.forEach((k) => setPreset(k, presetCmd.id));
+  }, [presetCmd]);
+  useEffect(() => {
+    if (!onPresetSummary) return;
+    const ps = SPACE_VIEWS.map(presetOf);
+    onPresetSummary(ps.every((p) => p && p === ps[0]) ? ps[0] : null);
+  }, [look]);
   const maximize = (k) => setSlots((s) => { const i = s.indexOf(k), n = s.slice(); [n[0], n[i]] = [n[i], n[0]]; return n; });
   const isDark = theme === "dark";
   const planeCol = SPACE_PLANE_COLORS[isDark ? "dark" : "light"];
@@ -4175,6 +4234,14 @@ const ViewSpaceInner = ({
   useEffect(() => { ready && eng && eng.setMarkers(markers); }, [ready, markers, active]);
   useEffect(() => { ready && eng && eng.setTether(tether); }, [ready, tether, active]);
   useEffect(() => { ready && eng && eng.setCursor(scrubL, scrubC, ((scrubH % 360) + 360) % 360); }, [ready, scrubL, scrubC, scrubH, active]);
+  // A jump to a colour elsewhere in the app: zoom so names are readable. One
+  // made while Explore was hidden is applied when it next shows.
+  const focusedRef = useRef(0);
+  useEffect(() => {
+    if (!ready || !eng || !focusTick || focusedRef.current === focusTick) return;
+    focusedRef.current = focusTick;
+    eng.focus();
+  }, [ready, focusTick, active]);
   useEffect(() => {
     if (!ready || !eng) return;
     // The range sliders are half-widths; at their maximum (or when they reach
@@ -4584,13 +4651,303 @@ const AnchorRow = React.memo(({ r, isHere, checked, confirming, autoFocus, deCur
   ),
 );
 
+// ─── One toolbar for every tab ──────────────────────────────────────────────
+// Explore, Match, Catalog and Anchors all show the same controls in the same
+// places: View · Layout · Visibility · Search · Zoom · Sort · Filters. A control
+// that doesn't apply to the current tab stays where it is, greyed out, with a
+// tooltip saying why, so nothing jumps around when switching tabs.
+const TB_BTN =
+  "flex items-center gap-1.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors whitespace-nowrap";
+const TB_LABEL = "text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-neutral-500 hidden xl:inline";
+// A group of controls; when it doesn't apply it is dimmed and inert, and the
+// outer box still carries the tooltip (an inert box can't show one itself).
+const TbGroup = ({ label, enabled = true, why, children, grow }) =>
+  React.createElement(
+    "div",
+    {
+      className: `flex items-center gap-1.5 ${grow ? "flex-1 min-w-[120px] max-w-xs" : "shrink-0"}`,
+      title: enabled ? undefined : why,
+      "aria-disabled": enabled ? undefined : true,
+    },
+    React.createElement(
+      "div",
+      { className: `flex items-center gap-1.5 w-full ${enabled ? "" : "opacity-35 pointer-events-none select-none grayscale"}` },
+      label && React.createElement("span", { className: TB_LABEL }, label),
+      children,
+    ),
+  );
+const TbSeg = ({ options, value, onChange }) =>
+  React.createElement(
+    "div",
+    { className: "flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-neutral-800" },
+    options.map((o) =>
+      React.createElement(
+        "button",
+        {
+          key: o.id,
+          onClick: () => onChange(o.id),
+          title: o.label,
+          "aria-pressed": value === o.id,
+          className: `${TB_BTN} px-1.5 2xl:px-2 ${
+            value === o.id
+              ? "bg-white dark:bg-neutral-950 text-slate-900 dark:text-white shadow-sm"
+              : "text-slate-500 dark:text-neutral-400 hover:text-slate-800 dark:hover:text-neutral-200"
+          }`,
+        },
+        React.createElement(Icon, { name: o.icon, className: "w-3.5 h-3.5" }),
+        React.createElement("span", { className: "hidden 2xl:inline" }, o.label),
+      ),
+    ),
+  );
+const TB_VIEWS = [
+  { id: "dots", icon: "circle-dot", label: "Dots" },
+  { id: "bins", icon: "hexagon", label: "Bins" },
+  { id: "swatches", icon: "rectangle-vertical", label: "Swatches" },
+];
+const TB_LAYOUTS = [
+  { id: "table", icon: "table", label: "Table" },
+  { id: "gallery", icon: "layout-grid", label: "Gallery" },
+  { id: "matrix", icon: "grid-3x3", label: "Matrix" },
+];
+
+// Visibility: pins, anchors and every commercial brand. The brand list flows
+// into as many columns as the window allows and the panel never runs past
+// the window's edge (it scrolls inside instead).
+const VisibilityMenu = ({ vis, setVis, brands, brandOn, setBrand, brandLabel }) => {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef(null), panelRef = useRef(null);
+  const [pos, setPos] = useState(null);
+  React.useLayoutEffect(() => {
+    if (!open) return undefined;
+    const place = () => {
+      const r = btnRef.current && btnRef.current.getBoundingClientRect();
+      if (!r) return;
+      const W = window.innerWidth, H = window.innerHeight, w = Math.min(600, W - 16);
+      const left = Math.max(8, Math.min(r.left, W - w - 8));
+      let top = r.bottom + 6;
+      if (H - top < 260) top = Math.max(8, H - 8 - Math.min(H - 16, 520));
+      setPos({ left, top, width: w, maxHeight: H - top - 8 });
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [open]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const down = (e) => {
+      if (panelRef.current && panelRef.current.contains(e.target)) return;
+      if (btnRef.current && btnRef.current.contains(e.target)) return;
+      setOpen(false);
+    };
+    const key = (e) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("pointerdown", down, true);
+    document.addEventListener("keydown", key);
+    return () => { document.removeEventListener("pointerdown", down, true); document.removeEventListener("keydown", key); };
+  }, [open]);
+  const check = (checked, onChange, label, key, small) =>
+    React.createElement(
+      "label",
+      {
+        key,
+        className: `flex items-center gap-2 px-2 ${small ? "py-1" : "py-1.5"} rounded cursor-pointer hover:bg-slate-50 dark:hover:bg-neutral-800 text-slate-700 dark:text-neutral-300 break-inside-avoid`,
+      },
+      React.createElement("input", { type: "checkbox", checked, onChange: (e) => onChange(e.target.checked), className: "rounded border-slate-300 text-sky-500 focus:ring-sky-500 w-3.5 h-3.5 shrink-0" }),
+      React.createElement("span", { className: "truncate" }, label),
+    );
+  const onCount = brands.filter((b) => brandOn(b)).length;
+  return React.createElement(
+    React.Fragment,
+    null,
+    React.createElement(
+      "button",
+      {
+        ref: btnRef,
+        onClick: () => setOpen(!open),
+        "aria-expanded": open,
+        "aria-label": "Visibility",
+        title: "Visibility",
+        className: `${TB_BTN} px-2 border border-slate-200 dark:border-neutral-700 text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800 ${open ? "bg-slate-100 dark:bg-neutral-800" : ""}`,
+      },
+      React.createElement(Icon, { name: "eye", className: "w-3.5 h-3.5" }),
+      React.createElement("span", { className: "hidden xl:inline" }, "Visibility"),
+      React.createElement(Icon, { name: "chevron-down", className: "w-3 h-3" }),
+    ),
+    open &&
+      ReactDOM.createPortal(
+        React.createElement(
+          "div",
+          {
+            ref: panelRef,
+            "data-visibility-menu": "",
+            style: pos ? { position: "fixed", ...pos } : { position: "fixed", left: -9999, top: 0 },
+            className: "z-[200] flex flex-col bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-xl text-xs overflow-hidden",
+          },
+          React.createElement(
+            "div",
+            { className: "flex flex-wrap items-center gap-x-4 px-2 pt-2 pb-1" },
+            check(vis.pins, (v) => setVis((p) => ({ ...p, pins: v })), "Pins", "pins"),
+            check(vis.anchors, (v) => setVis((p) => ({ ...p, anchors: v })), "Anchors", "anchors"),
+          ),
+          React.createElement(
+            "div",
+            { className: "flex items-center gap-2 px-4 py-2 border-t border-slate-100 dark:border-neutral-800" },
+            React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-widest text-slate-500" }, "Commercial colours"),
+            React.createElement("span", { className: "text-[10px] font-mono text-slate-400" }, `${onCount}/${brands.length}`),
+            React.createElement(
+              "span",
+              { className: "ml-auto flex items-center gap-1" },
+              React.createElement("button", { onClick: () => brands.forEach((b) => setBrand(b, true)), className: "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-slate-500 hover:bg-slate-100 dark:hover:bg-neutral-800" }, "All"),
+              React.createElement("button", { onClick: () => brands.forEach((b) => setBrand(b, false)), className: "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-slate-500 hover:bg-slate-100 dark:hover:bg-neutral-800" }, "None"),
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "px-2 pb-2 overflow-y-auto custom-scrollbar min-h-0", style: { columnWidth: "150px", columnGap: "4px" } },
+            brands.map((b) => check(brandOn(b), (v) => setBrand(b, v), brandLabel(b), b, true)),
+          ),
+        ),
+        document.body,
+      ),
+  );
+};
+
+const TabToolbar = ({ view, layout, visibility, search, zoom, sort, filters }) =>
+  React.createElement(
+    "div",
+    {
+      "data-tab-toolbar": "",
+      className:
+        // phones: wrap onto a second row (same order) rather than hide Sort and
+        // Filters off the edge; wider screens: one row
+        "px-3 md:px-4 py-2 border-b border-slate-100 dark:border-neutral-800 bg-slate-50/30 dark:bg-neutral-900/30 flex flex-wrap md:flex-nowrap items-center gap-2 md:gap-3 md:overflow-x-auto no-scrollbar shrink-0 z-20",
+    },
+    React.createElement(TbGroup, { label: "View", enabled: view.enabled, why: "Dots, bins and swatches are Explore's views" },
+      React.createElement(TbSeg, { options: TB_VIEWS, value: view.value, onChange: view.onChange })),
+    React.createElement(TbGroup, { label: "Layout", enabled: layout.enabled, why: "Explore lays colours out in colour space" },
+      React.createElement(TbSeg, { options: TB_LAYOUTS, value: layout.value, onChange: layout.onChange })),
+    React.createElement(TbGroup, { enabled: visibility.enabled, why: "This tab shows one kind of colour only" },
+      React.createElement(VisibilityMenu, visibility)),
+    React.createElement(TbGroup, { enabled: search.enabled, why: "Nothing to search here", grow: true },
+      React.createElement(
+        "div",
+        { className: "relative w-full" },
+        React.createElement(Icon, { name: "search", className: "absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" }),
+        React.createElement("input", {
+          type: "text",
+          value: search.value,
+          onChange: (e) => search.onChange(e.target.value),
+          placeholder: search.placeholder || "Search…",
+          "aria-label": "Search",
+          className: "w-full bg-slate-200/40 dark:bg-neutral-800/50 border border-transparent rounded-lg pl-7 pr-6 py-1.5 text-[10px] font-bold uppercase tracking-widest focus:ring-1 focus:ring-sky-500 outline-none text-slate-900 dark:text-white placeholder:text-slate-400",
+        }),
+        search.value &&
+          React.createElement(
+            "button",
+            { onClick: () => search.onChange(""), title: "Clear search", className: "absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-neutral-200" },
+            React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
+          ),
+      )),
+    React.createElement("div", { className: "flex-1 hidden md:block" }),
+    React.createElement(TbGroup, { enabled: zoom.enabled, why: "Zoom sizes the gallery and matrix swatches" },
+      React.createElement(Icon, { name: "zoom-in", className: "w-3.5 h-3.5 text-slate-400" }),
+      React.createElement("input", {
+        type: "range", min: "0.1", max: "5", step: "0.1", value: zoom.value,
+        "aria-label": "Swatch size",
+        onChange: (e) => zoom.onChange(parseFloat(e.target.value)),
+        className: "w-16 xl:w-20 accent-sky-500 cursor-pointer",
+      }),
+      React.createElement("span", { className: "text-[10px] font-mono text-slate-400 min-w-[34px] hidden 2xl:inline" }, `${Math.round(zoom.value * 100)}%`),
+    ),
+    React.createElement(TbGroup, { enabled: sort.enabled, why: "Explore places colours by their coordinates, not in a sorted list" },
+      React.createElement(SortControl, { fields: sort.fields, sortBy: sort.by, setSortBy: sort.setBy, sortAsc: sort.asc, setSortAsc: sort.setAsc, compact: true })),
+    React.createElement(TbGroup, { enabled: filters.enabled, why: "Filters narrow colour lists; anchors are listed in full" },
+      React.createElement(
+        "button",
+        {
+          onClick: filters.onClick,
+          className: `${TB_BTN} px-2.5 border ${
+            filters.count
+              ? "border-sky-200 dark:border-sky-500/30 bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400"
+              : "border-slate-200 dark:border-neutral-700 text-slate-500 dark:text-neutral-400 hover:bg-slate-50 dark:hover:bg-neutral-800"
+          }`,
+        },
+        React.createElement(Icon, { name: "filter", className: "w-3.5 h-3.5" }),
+        filters.count ? `Filters · ${filters.count}` : "Filters",
+      )),
+  );
+
+// Match's brand management (it used to hang off a brand filter dropdown,
+// which duplicated the Filters builder's Brand field).
+const BrandMenu = ({ brands, brandLabel, onAddBrand, onAddColor, onDeleteBrand }) => {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const down = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("pointerdown", down, true);
+    return () => document.removeEventListener("pointerdown", down, true);
+  }, [open]);
+  return React.createElement(
+    "div",
+    { ref, className: "relative" },
+    React.createElement(
+      "button",
+      {
+        onClick: () => setOpen(!open),
+        className: "px-2 py-1 text-[9px] font-bold bg-white dark:bg-neutral-800 hover:bg-slate-100 border border-slate-200 dark:border-neutral-700 uppercase tracking-wider rounded flex items-center gap-1",
+      },
+      React.createElement(Icon, { name: "building-2", className: "w-3 h-3" }),
+      "Brands",
+      React.createElement(Icon, { name: "chevron-down", className: "w-3 h-3" }),
+    ),
+    open &&
+      React.createElement(
+        "div",
+        { className: "absolute left-0 top-full mt-1 z-50 w-64 max-h-[60vh] overflow-y-auto custom-scrollbar bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-lg shadow-xl p-1 text-xs" },
+        React.createElement(
+          "button",
+          { onClick: () => { setOpen(false); onAddBrand(); }, className: "w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-50 dark:hover:bg-neutral-800 font-bold text-sky-600" },
+          React.createElement(Icon, { name: "plus", className: "w-3.5 h-3.5" }),
+          "New brand",
+        ),
+        React.createElement("div", { className: "h-px bg-slate-100 dark:bg-neutral-800 my-1" }),
+        brands.map((b) =>
+          React.createElement(
+            "div",
+            { key: b, className: "flex items-center gap-1 px-2 py-1 rounded hover:bg-slate-50 dark:hover:bg-neutral-800" },
+            React.createElement("span", { className: "flex-1 truncate text-slate-700 dark:text-neutral-300" }, brandLabel(b)),
+            React.createElement("button", { onClick: () => { setOpen(false); onAddColor(b); }, title: `Add a colour to ${brandLabel(b)}`, className: "p-1 rounded text-slate-400 hover:text-sky-600" }, React.createElement(Icon, { name: "plus", className: "w-3.5 h-3.5" })),
+            React.createElement("button", { onClick: () => { setOpen(false); onDeleteBrand(b); }, title: `Delete ${brandLabel(b)}`, className: "p-1 rounded text-slate-400 hover:text-rose-600" }, React.createElement(Icon, { name: "trash-2", className: "w-3.5 h-3.5" })),
+          ),
+        ),
+      ),
+  );
+};
+
+// The shared Sort control's fields for anchors, and how they map onto the
+// table's own column keys.
+const ANCHOR_SORT_FIELDS = [
+  { field: "deltae", label: "\u0394E" },
+  { field: "name", label: "Name" },
+  { field: "lightness", label: "Lightness" },
+  { field: "chroma", label: "Chroma" },
+  { field: "hue", label: "Hue" },
+  { field: "nn", label: "Nearest anchor" },
+];
+const ANCHOR_SORT_IN = { deltae: "cursor", name: "name", lightness: "L", chroma: "C", hue: "H", nn: "nn" };
+const ANCHOR_SORT_OUT = { cursor: "deltae", name: "name", L: "lightness", C: "chroma", H: "hue", nn: "nn" };
 const ViewAnchors = ({
   savedColors, setSavedColors, names, setNames,
   scrubL, scrubC, scrubH, handleUpdate, setActiveTab,
+  query: extQuery, setQuery: setExtQuery, sort: extSort, setSort, layout = "table", swatchZoom = 1,
 }) => {
-  const [query, setQuery] = useState("");
-  const [sortBy, setSortBy] = useState("name");
-  const [sortAsc, setSortAsc] = useState(true);
+  // Search, sort and layout come from the shared toolbar.
+  const query = extQuery || "";
+  const setQuery = (q) => setExtQuery && setExtQuery(q);
+  const sortBy = ANCHOR_SORT_IN[extSort && extSort.by] || "name";
+  const sortAsc = !extSort || extSort.asc !== false;
+  const setSortBy = (k) => setSort && setSort((p) => ({ ...p, by: ANCHOR_SORT_OUT[k] || k }));
+  const setSortAsc = (v) => setSort && setSort((p) => ({ ...p, asc: v }));
   const [selected, setSelected] = useState({});
   const [confirm, setConfirm] = useState(null); // id or "bulk" awaiting a second click
   const [focusId, setFocusId] = useState(null);
@@ -4730,7 +5087,7 @@ const ViewAnchors = ({
     ro.observe(el);
     read();
     return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); cancelAnimationFrame(raf); };
-  }, [rows.length === 0]);
+  }, [rows.length === 0, layout]);
   const first = Math.max(0, Math.floor(view.top / ANCHOR_ROW_H) - ANCHOR_OVERSCAN);
   const last = Math.min(shown.length, Math.ceil((view.top + view.h) / ANCHOR_ROW_H) + ANCHOR_OVERSCAN);
 
@@ -4811,15 +5168,6 @@ const ViewAnchors = ({
           "Add at cursor",
         ),
       ),
-      React.createElement(
-        "div",
-        { className: "relative ml-auto" },
-        React.createElement(Icon, { name: "search", className: "absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" }),
-        React.createElement("input", {
-          type: "text", value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Find anchor…", id: "anchor-search",
-          className: "w-44 bg-slate-200/40 dark:bg-neutral-800/50 border border-transparent rounded-lg pl-7 pr-2 py-1.5 text-[10px] font-bold uppercase tracking-widest focus:ring-1 focus:ring-sky-500 outline-none text-slate-900 dark:text-white placeholder:text-slate-400",
-        }),
-      ),
     ),
     // ── selection bar ──
     (selectedIds.length > 0 || notice) &&
@@ -4840,7 +5188,36 @@ const ViewAnchors = ({
           React.createElement("button", { onClick: () => setSelected({}), className: "px-2 py-1 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800" }, "Clear"),
         notice && React.createElement("span", { className: "ml-auto normal-case tracking-normal font-medium text-slate-500 dark:text-neutral-400" }, notice),
       ),
+    // ── gallery / matrix: the same swatch grid the other tabs use ──
+    layout !== "table" && rows.length > 0 &&
+      React.createElement(
+        "div",
+        { className: "relative flex-1 min-h-0" },
+        React.createElement(ViewportSwatches, {
+          items: shown.map((r) => ({
+            id: r.id, type: "anchor", L: r.L, C: r.C, H: r.H, hex: r.hex,
+            displayName: r.name || "Unnamed", tags: [], note: "", erpCode: "", inSrgb: true,
+          })),
+          layout: layout === "matrix" ? "matrix" : "gallery",
+          swatchZoom,
+          externalSort: true,
+          dim1: "L",
+          dim2: "H",
+          dim1Labels: (v) => `L: ${Number(v).toFixed(2)}`,
+          dim2Labels: (v) => `H: ${Number(v).toFixed(0)}\u00b0`,
+          handlePointClick: (pt) => handleUpdate(Array.isArray(pt) ? pt.slice(0, 3) : [pt.L, pt.C, pt.H]),
+          viewportSearchQuery: "",
+          viewportTagFilter: "",
+          crosshair: null,
+          selectedIds,
+          setSelectedIds: (next) => {
+            const ids = typeof next === "function" ? next(selectedIds) : next;
+            setSelected(Object.fromEntries((ids || []).map((id) => [id, true])));
+          },
+        }),
+      ),
     // ── table ──
+    (layout === "table" || rows.length === 0) &&
     React.createElement(
       "div",
       { ref: scrollRef, className: "flex-1 min-h-0 overflow-auto custom-scrollbar" },
@@ -7094,16 +7471,18 @@ const ViewPinsInner = ({
   setSelectedPrintIds,
   setAveryPrintSourceType,
   onOpenAveryModal,
+  searchTerm: extSearch = "",
+  layout: extLayout = "table",
 }) => {
-  // Sorting is driven by the global bar; these remain only as a fallback for
-  // any caller that does not supply it.
+  // Sort, search and layout come from the shared toolbar. Tags are filtered
+  // with the Filters builder's Tag field, like every other tab.
   const sortBy = globalSortBy !== undefined ? globalSortBy : "layer";
   const sortAsc = globalSortAsc !== undefined ? globalSortAsc : true;
-  const [tagFilter, setTagFilter] = useState("");
-  const [searchTerm, setSearchTerm] = useState("");
+  const tagFilter = "";
+  const searchTerm = extSearch || "";
   const [isAdding, setIsAdding] = useState(false);
-  // Catalog now offers the same three presentations as the other views.
-  const [catalogView, setCatalogView] = useState("table");
+  // "swatches" is the gallery here (the internal name it always had).
+  const catalogView = extLayout === "gallery" ? "swatches" : extLayout === "matrix" ? "matrix" : "table";
   const [tableLimit, setTableLimit] = useState(60);
   const [showSpecs, setShowSpecs] = useState(true);
   const [editForm, setEditForm] = useState({
@@ -7216,10 +7595,6 @@ const ViewPinsInner = ({
     ).items.map((k) => pinItems[k.__idx]);
   }, [pinItems, globalFilters, globalFilterMode, sameGroupContext]);
 
-  const allTags = useMemo(
-    () => Array.from(new Set(pinItems.flatMap((item) => item.tags))).sort(),
-    [pinItems],
-  );
   const sortedItems = useMemo(() => {
     let items = [...filteredPinItems];
     if (tagFilter) {
@@ -7373,67 +7748,6 @@ const ViewPinsInner = ({
       ),
       React.createElement(
         "div",
-        { className: "relative flex-1 min-w-[200px] max-w-xs" },
-        React.createElement(Icon, {
-          name: "search",
-          className:
-            "absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400",
-        }),
-        React.createElement("input", {
-          type: "text",
-          placeholder: "Search names, notes, codes...",
-          value: searchTerm,
-          onChange: (e) => setSearchTerm(e.target.value),
-          className:
-            "w-full bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-300 text-[10px] font-bold uppercase tracking-wider rounded-lg pl-9 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-sky-500/50 transition-all",
-        }),
-        searchTerm &&
-          React.createElement(
-            "button",
-            {
-              onClick: () => setSearchTerm(""),
-              className:
-                "absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-neutral-200",
-            },
-            React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
-          ),
-      ),
-      React.createElement(
-        "span",
-        {
-          className:
-            "text-[10px] font-bold text-slate-400 dark:text-neutral-500 uppercase mr-2 flex items-center gap-1.5",
-        },
-        React.createElement(Icon, {
-          name: "arrow-down-up",
-          className: "w-3.5 h-3.5",
-        }),
-        " Sort By:",
-      ),
-      allTags.length > 0 &&
-        React.createElement(
-          "div",
-          { className: "ml-4 flex items-center gap-2" },
-          React.createElement(Icon, {
-            name: "filter",
-            className: "w-3.5 h-3.5 text-slate-400",
-          }),
-          React.createElement(
-            "select",
-            {
-              value: tagFilter,
-              onChange: (e) => setTagFilter(e.target.value),
-              className:
-                "bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-300 text-[9px] font-bold uppercase tracking-wider rounded px-2 py-1 outline-none cursor-pointer",
-            },
-            React.createElement("option", { value: "" }, "All Tags"),
-            allTags.map((t) =>
-              React.createElement("option", { key: t, value: t }, t),
-            ),
-          ),
-        ),
-      React.createElement(
-        "div",
         { className: "ml-auto flex items-center gap-2" },
         React.createElement(
           "button",
@@ -7477,35 +7791,6 @@ const ViewPinsInner = ({
           sortedItems.length,
         ),
         React.createElement(SwatchLegend, { className: "ml-3" }),
-        catalogView !== "table" &&
-          setSwatchZoom &&
-          React.createElement(
-            "div",
-            { className: "flex items-center gap-2 ml-3" },
-            React.createElement(Icon, {
-              name: "zoom-in",
-              className: "w-3.5 h-3.5 text-slate-400",
-            }),
-            React.createElement("input", {
-              type: "range",
-              min: "0.1",
-              max: "5",
-              step: "0.1",
-              value: swatchZoom,
-              onChange: (e) => setSwatchZoom(parseFloat(e.target.value)),
-              className:
-                "w-24 accent-sky-500 opacity-60 hover:opacity-100 transition-opacity",
-            }),
-            React.createElement(
-              "span",
-              {
-                className:
-                  "text-[10px] font-mono text-slate-400 min-w-[30px]",
-              },
-              Math.round(swatchZoom * 100),
-              "%",
-            ),
-          ),
         catalogView === "swatches" &&
           React.createElement(
             "button",
@@ -7521,26 +7806,6 @@ const ViewPinsInner = ({
             },
             "Specs",
           ),
-        React.createElement(
-          "div",
-          { className: "flex items-center gap-1 ml-2" },
-          ["table", "matrix", "swatches"].map((m) =>
-            React.createElement(
-              "button",
-              {
-                key: m,
-                onClick: () => setCatalogView(m),
-                "aria-pressed": catalogView === m,
-                className: `px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors ${
-                  catalogView === m
-                    ? "bg-slate-800 text-white dark:bg-neutral-100 dark:text-neutral-900"
-                    : "text-slate-500 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-800"
-                }`,
-              },
-              m,
-            ),
-          ),
-        ),
       ),
     ),
     React.createElement(
@@ -10120,6 +10385,7 @@ const App = () => {
   const [scrubC, setScrubC] = useState(0.12);
   const [scrubH, setScrubH] = useState(0);
   const [scrubCommercial, setScrubCommercial] = useState(null);
+  const [focusTick, setFocusTick] = useState(0);
   const [temporarySpectral, setTemporarySpectral] = useState(null);
   const [compSlotA, setCompSlotA] = useState(null);
   const [compSlotB, setCompSlotB] = useState(null);
@@ -11440,6 +11706,7 @@ const App = () => {
     setScrubH(H);
     setTemporarySpectral(spectralData);
     setScrubCommercial(commercialData);
+    setFocusTick((t) => t + 1);
   };
   const crosshair = useMemo(() => {
     const a = scrubC * Math.sin((scrubH * Math.PI) / 180);
@@ -13281,6 +13548,7 @@ const App = () => {
     showVisibilityMenu,
     setShowVisibilityMenu,
     visibilityMenuRef,
+    focusTick,
     viewportSearchQuery,
     setViewportSearchQuery,
     viewMode,
@@ -13653,7 +13921,10 @@ const ViewDatabase = ({
   const setSortBy = setLocalSortBy;
   const setSortAsc = setLocalSortAsc;
   const [dbAxis, setDbAxis] = useState("HxL");
-  const [brandFilter, setBrandFilter] = useState("");
+  // Brands are filtered with the Filters builder's Brand field; this stays
+  // empty and only keeps the old code paths valid.
+  const brandFilter = "";
+  const [listLimit, setListLimit] = useState(150);
   const [fullscreenImage, setFullscreenImage] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
   const [promptState, setPromptState] = useState(null);
@@ -14466,22 +14737,19 @@ const ViewDatabase = ({
       title: "New Brand Name:",
       value: "",
       onSubmit: (b) => {
-        if (b && !dataForUpdates[b]) {
-          updateColorData({ ...dataForUpdates, [b]: [] });
-          setBrandFilter(b);
-        }
+        if (b && !dataForUpdates[b]) updateColorData({ ...dataForUpdates, [b]: [] });
       }
     });
   };
-  const handleAddColor = () => {
-    if (!brandFilter) return setConfirmState({ message: "Select a brand first", onConfirm: () => {} });
+  const handleAddColor = (brand) => {
+    if (!brand) return;
     setPromptState({
-      title: "Color Name:",
+      title: `New ${getBrandDisplayName(brand)} colour name:`,
       value: "",
       onSubmit: (n) => {
         if (n) {
           const updated = { ...dataForUpdates };
-          updated[brandFilter] = [{
+          updated[brand] = [{
             name: n,
             hex: "#888888",
             L: 0.5,
@@ -14490,14 +14758,16 @@ const ViewDatabase = ({
             tags: [],
             url: "",
             image: "",
-          }, ...(updated[brandFilter] || [])];
+          }, ...(updated[brand] || [])];
           updateColorData(updated);
         }
       }
     });
   };
   // Plain render helper, not a component (see note on the other SortButtons).
-  const renderItems = sortedItems.slice(0, 300);
+  // Rows arrive in pages as you scroll (it used to stop at 300).
+  useEffect(() => setListLimit(150), [sortedItems]);
+  const renderItems = sortedItems.slice(0, listLimit);
   // The table is unusable below ~640px — eight columns behind a horizontal
   // scroll. The existing card list says the same thing in one column, so narrow
   // viewports fall back to it rather than getting a second render path.
@@ -14670,70 +14940,21 @@ const ViewDatabase = ({
       React.createElement(
         "div",
         { className: "flex flex-wrap items-center gap-2" },
-        React.createElement(
-          "select",
-          {
-            value: brandFilter,
-            onChange: (e) => setBrandFilter(e.target.value),
-            className:
-              "bg-white dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 text-[9px] font-bold uppercase tracking-wider rounded px-2 py-1 outline-none",
-          },
-          React.createElement("option", { value: "" }, "All Brands"),
-          allBrands.map((b) =>
-            React.createElement(
-              "option",
-              { key: b, value: b },
-              getBrandDisplayName(b),
-            ),
-          ),
-        ),
-        React.createElement(
-          "button",
-          {
-            onClick: handleAddBrand,
-            className:
-              "px-2 py-1 text-[9px] font-bold bg-white dark:bg-neutral-800 hover:bg-slate-100 border border-slate-200 dark:border-neutral-700 uppercase tracking-wider rounded flex items-center gap-1",
-          },
-          React.createElement(Icon, { name: "plus", className: "w-3 h-3" }),
-          " Brand",
-        ),
-        brandFilter &&
-          React.createElement(
-            "button",
-            {
-              onClick: handleAddColor,
-              className:
-                "px-2 py-1 text-[9px] font-bold bg-sky-500 hover:bg-sky-600 text-white border border-sky-600 uppercase tracking-wider rounded flex items-center gap-1",
-            },
-            React.createElement(Icon, { name: "plus", className: "w-3 h-3" }),
-            " Color",
-          ),
-        brandFilter &&
-          React.createElement(
-            "button",
-            {
-              onClick: () => {
-                setConfirmState({
-                  message: `Delete entire brand '${brandFilter}'?`,
-                  onConfirm: () => {
-                    const c = { ...dataForUpdates };
-                    delete c[brandFilter];
-                    updateColorData(c);
-                    setBrandFilter("");
-                  }
-                });
+        React.createElement(BrandMenu, {
+          brands: allBrands,
+          brandLabel: getBrandDisplayName,
+          onAddBrand: handleAddBrand,
+          onAddColor: handleAddColor,
+          onDeleteBrand: (b) =>
+            setConfirmState({
+              message: `Delete entire brand '${getBrandDisplayName(b)}'?`,
+              onConfirm: () => {
+                const c = { ...dataForUpdates };
+                delete c[b];
+                updateColorData(c);
               },
-              className:
-                "px-2 py-1 text-[9px] font-bold bg-rose-50 text-rose-600 border border-rose-200 hover:bg-rose-100 uppercase tracking-wider rounded flex items-center gap-1",
-            },
-            React.createElement(Icon, {
-              name: "trash-2",
-              className: "w-3 h-3",
             }),
-            " Brand",
-          ),
-
-
+        }),
         React.createElement(
           "button",
           {
@@ -14765,11 +14986,6 @@ const ViewDatabase = ({
         { className: "flex flex-wrap items-center gap-3" },
         React.createElement(FilterChips, {
           chips: [
-            brandFilter && {
-              key: "brand",
-              label: brandFilter,
-              onClear: () => setBrandFilter(""),
-            },
             searchTerm && {
               key: "search",
               label: `"${searchTerm}"`,
@@ -14807,7 +15023,6 @@ const ViewDatabase = ({
             })),
           ].filter(Boolean),
           onClearAll: () => {
-            setBrandFilter("");
             setColumnFilters({});
             if (setFilterSameNoun) setFilterSameNoun(false);
             if (setSearchTerm) setSearchTerm("");
@@ -14821,9 +15036,7 @@ const ViewDatabase = ({
             className:
               "ml-auto text-[10px] font-black uppercase text-slate-400",
           },
-          sortedItems.length > 300
-            ? "300 of " + sortedItems.length
-            : sortedItems.length,
+          sortedItems.length,
           " ",
           "matching",
         ),
@@ -14893,15 +15106,7 @@ const ViewDatabase = ({
         ),
       // The list is capped at 300 rows. That used to just stop with no
       // explanation, which reads as missing data rather than a cap.
-      sortedItems.length > renderItems.length &&
-        React.createElement(
-          "div",
-          {
-            className:
-              "text-center text-slate-400 text-[11px] w-full p-4 italic border-t border-slate-200 dark:border-neutral-800 mt-2",
-          },
-          `Showing the first ${renderItems.length} of ${sortedItems.length} by the current sort \u2014 narrow the filters to see the rest.`,
-        ),
+
       effectiveLayout === "matrix" &&
         React.createElement(
           "div",
@@ -15726,6 +15931,11 @@ const ViewDatabase = ({
             ),
           ),
         ),
+      sortedItems.length > renderItems.length &&
+        React.createElement(LoadMoreSentinel, {
+          left: sortedItems.length - renderItems.length,
+          onMore: () => setListLimit((n) => n + 300),
+        }),
     ),
     selectedIds &&
       selectedIds.length > 0 &&
@@ -16460,6 +16670,7 @@ const AppUI = ({
   showVisibilityMenu,
   setShowVisibilityMenu,
   visibilityMenuRef,
+  focusTick,
   viewportSearchQuery,
   setViewportSearchQuery,
   viewMode,
@@ -16608,6 +16819,25 @@ const AppUI = ({
   setTetheringPinId,
 }) => {
   const spaceSeenRef = useRef(false);
+  // Per-tab list state driven by the shared toolbar (Explore and Match keep
+  // sharing the viewport search and Match keeps the app's sort, as before).
+  const TABS_KEY = "color-samificator-tabs";
+  const tabsSaved = useMemo(() => {
+    try { return JSON.parse(localStorage.getItem(TABS_KEY) || "{}"); } catch (e) { return {}; }
+  }, []);
+  const [pinsSearch, setPinsSearch] = useState("");
+  const [anchorsSearch, setAnchorsSearch] = useState("");
+  const [pinsLayout, setPinsLayout] = useState(tabsSaved.pinsLayout || "table");
+  const [anchorsLayout, setAnchorsLayout] = useState(tabsSaved.anchorsLayout || "table");
+  const [pinsSort, setPinsSort] = useState(tabsSaved.pinsSort || { by: "deltae", asc: true });
+  const [anchorsSort, setAnchorsSort] = useState(tabsSaved.anchorsSort || { by: "name", asc: true });
+  useEffect(() => {
+    try { localStorage.setItem(TABS_KEY, JSON.stringify({ pinsLayout, anchorsLayout, pinsSort, anchorsSort })); } catch (e) {}
+  }, [pinsLayout, anchorsLayout, pinsSort, anchorsSort]);
+  // Explore's View control sets every view's look at once; the toolbar shows
+  // the look they share (none when they differ).
+  const [explorePresetCmd, setExplorePresetCmd] = useState(null);
+  const [explorePreset, setExplorePreset] = useState(null);
   if (["top", "chroma", "slice", "3d"].includes(activeTab)) spaceSeenRef.current = true;
   // The input stays bound to the raw value so typing never lags; the heavy
   // table/grid re-filter runs against this deferred copy instead.
@@ -18793,9 +19023,7 @@ const AppUI = ({
       "div",
       {
         className:
-          `${
-            mobilePanelsOpen ? "hidden md:flex" : "flex"
-          } shrink-0 items-center gap-2 px-4 py-1.5 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 relative z-20`,
+          "hidden md:flex shrink-0 items-center gap-2 px-4 py-1.5 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 relative z-20",
       },
       React.createElement(
         "div",
@@ -18806,29 +19034,6 @@ const AppUI = ({
         renderDestinations("top"),
       ),
       React.createElement("div", { className: "ml-auto" }),
-      React.createElement(SortControl, {
-        fields: DB_SORT_FIELDS,
-        sortBy: globalSortBy,
-        setSortBy: setGlobalSortBy,
-        sortAsc: globalSortAsc,
-        setSortAsc: setGlobalSortAsc,
-        compact: true,
-      }),
-      React.createElement(
-        "button",
-        {
-          onClick: () => setShowFilterBuilder(!showFilterBuilder),
-          className: `flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-bold uppercase tracking-wider transition-colors ${
-            globalFilters.length
-              ? "border-sky-200 dark:border-sky-500/30 bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400"
-              : "border-slate-200 dark:border-neutral-700 text-slate-500 dark:text-neutral-400 hover:bg-slate-50 dark:hover:bg-neutral-800"
-          }`,
-        },
-        React.createElement(Icon, { name: "filter", className: "w-3.5 h-3.5" }),
-        globalFilters.length
-          ? `Filters \u00b7 ${globalFilters.length}`
-          : "Filters",
-      ),
       showFilterBuilder &&
         ReactDOM.createPortal(
           React.createElement(
@@ -18962,259 +19167,47 @@ const AppUI = ({
             className:
               "absolute inset-4 rounded-xl border border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 overflow-hidden shadow-sm flex flex-col",
           },
-          ["slice", "chroma", "top", "3d", "db"].includes(activeTab) &&
-            React.createElement(
-              "div",
-              {
-                className:
-                  "px-4 py-2 border-b border-slate-100 dark:border-neutral-800 bg-slate-50/30 dark:bg-neutral-900/30 flex flex-wrap items-center gap-4 z-20",
+          (() => {
+            const isExplore = ["top", "chroma", "slice", "3d"].includes(activeTab);
+            const isDb = activeTab === "db";
+            const listTab = isDb || activeTab === "pins" || activeTab === "anchors";
+            const lay =
+              activeTab === "pins" ? [pinsLayout, setPinsLayout]
+              : activeTab === "anchors" ? [anchorsLayout, setAnchorsLayout]
+              : [swatchLayout, setSwatchLayout];
+            const srch =
+              activeTab === "pins" ? [pinsSearch, setPinsSearch, "Search pins, notes, codes\u2026"]
+              : activeTab === "anchors" ? [anchorsSearch, setAnchorsSearch, "Find anchor\u2026"]
+              : [viewportSearchQuery, setViewportSearchQuery, "Search\u2026"];
+            const srt =
+              activeTab === "pins"
+                ? { fields: DB_SORT_FIELDS, by: pinsSort.by, asc: pinsSort.asc, setBy: (by) => setPinsSort((p) => ({ ...p, by })), setAsc: (asc) => setPinsSort((p) => ({ ...p, asc })) }
+                : activeTab === "anchors"
+                  ? { fields: ANCHOR_SORT_FIELDS, by: anchorsSort.by, asc: anchorsSort.asc, setBy: (by) => setAnchorsSort((p) => ({ ...p, by })), setAsc: (asc) => setAnchorsSort((p) => ({ ...p, asc })) }
+                  : { fields: DB_SORT_FIELDS, by: globalSortBy, asc: globalSortAsc, setBy: setGlobalSortBy, setAsc: setGlobalSortAsc };
+            const brands = colorData ? Object.keys(colorData) : [];
+            return React.createElement(TabToolbar, {
+              view: { enabled: isExplore, value: isExplore ? explorePreset : null, onChange: (id) => setExplorePresetCmd({ id, t: Date.now() }) },
+              layout: { enabled: listTab, value: listTab ? lay[0] : null, onChange: lay[1] },
+              visibility: {
+                enabled: isExplore || isDb,
+                vis: viewportVisibility,
+                setVis: setViewportVisibility,
+                brands,
+                brandOn: (b) => (isDb ? viewportVisibility.brands[b] !== false : viewportVisibility.brands[b] === true),
+                setBrand: (b, on) => setViewportVisibility((p) => ({ ...p, brands: { ...p.brands, [b]: on } })),
+                brandLabel: getBrandDisplayName,
               },
-              !["top", "chroma", "slice", "3d"].includes(activeTab) &&
-              React.createElement(
-                "div",
-                { className: "flex items-center gap-2" },
-                React.createElement(
-                  "span",
-                  {
-                    className: "text-[10px] font-bold text-slate-400 uppercase",
-                  },
-                  "View:",
-                ),
-                React.createElement(
-                  "select",
-                  {
-                    value: viewMode,
-                    onChange: (e) => setViewMode(e.target.value),
-                    className:
-                      "bg-slate-200/50 dark:bg-neutral-800 rounded px-2 py-1.5 text-[10px] font-black uppercase tracking-tight text-slate-700 dark:text-neutral-300 outline-none hover:bg-slate-300/50 dark:hover:bg-neutral-700 transition-colors cursor-pointer border border-transparent focus:border-sky-500",
-                  },
-                  React.createElement("option", { value: "dots" }, "Dots"),
-                  React.createElement("option", { value: "bins" }, "Bins"),
-                  React.createElement(
-                    "option",
-                    { value: "swatches" },
-                    "Swatches",
-                  ),
-                ),
-              ),
-              (viewMode === "swatches" || activeTab === "db") &&
-                React.createElement(
-                  "div",
-                  { className: "flex items-center gap-2" },
-                  React.createElement(
-                    "span",
-                    {
-                      className:
-                        "text-[10px] font-bold text-slate-400 uppercase",
-                    },
-                    "Layout:",
-                  ),
-                  React.createElement(
-                    "select",
-                    {
-                      value: swatchLayout,
-                      onChange: (e) => setSwatchLayout(e.target.value),
-                      className:
-                        "bg-slate-200/50 dark:bg-neutral-800 rounded px-2 py-1.5 text-[10px] font-black uppercase tracking-tight text-slate-700 dark:text-neutral-300 outline-none hover:bg-slate-300/50 dark:hover:bg-neutral-700 transition-colors cursor-pointer border border-transparent focus:border-sky-500",
-                    },
-                    React.createElement("option", { value: "table" }, "Table"),
-                    React.createElement(
-                      "option",
-                      { value: "gallery" },
-                      "Gallery",
-                    ),
-                    React.createElement(
-                      "option",
-                      { value: "matrix" },
-                      "Matrix",
-                    ),
-                  ),
-                ),
-              !["top", "chroma", "slice", "3d"].includes(activeTab) &&
-              React.createElement("div", {
-                className: "h-4 w-px bg-slate-200 dark:bg-neutral-800",
-              }),
-              React.createElement(
-                "div",
-                { className: "flex items-center gap-3" },
-                React.createElement(
-                  "div",
-                  {
-                    className: "flex items-center gap-2 relative",
-                    ref: visibilityMenuRef,
-                  },
-                  React.createElement(Icon, {
-                    name: "eye",
-                    className: "w-3.5 h-3.5 text-slate-400",
-                  }),
-                  React.createElement(
-                    "button",
-                    {
-                      onClick: () => setShowVisibilityMenu(!showVisibilityMenu),
-                      className:
-                        "bg-transparent border-none rounded text-[10px] font-bold uppercase tracking-widest text-slate-700 dark:text-neutral-300 outline-none cursor-pointer flex items-center gap-1",
-                    },
-                    "Visibility",
-                    React.createElement(Icon, {
-                      name: "chevron-down",
-                      className: "w-3 h-3",
-                    }),
-                  ),
-                  showVisibilityMenu &&
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "absolute top-full left-0 mt-2 w-48 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-lg shadow-xl z-[200] flex flex-col p-2 text-xs",
-                      },
-                      React.createElement(
-                        "label",
-                        {
-                          className:
-                            "flex items-center gap-2 px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded cursor-pointer text-slate-700 dark:text-neutral-300",
-                        },
-                        React.createElement("input", {
-                          type: "checkbox",
-                          checked: viewportVisibility.pins,
-                          onChange: (e) =>
-                            setViewportVisibility((prev) => ({
-                              ...prev,
-                              pins: e.target.checked,
-                            })),
-                          className:
-                            "rounded border-slate-300 text-sky-500 focus:ring-sky-500",
-                        }),
-                        "Pins",
-                      ),
-                      React.createElement(
-                        "label",
-                        {
-                          className:
-                            "flex items-center gap-2 px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded cursor-pointer text-slate-700 dark:text-neutral-300",
-                        },
-                        React.createElement("input", {
-                          type: "checkbox",
-                          checked: viewportVisibility.anchors,
-                          onChange: (e) =>
-                            setViewportVisibility((prev) => ({
-                              ...prev,
-                              anchors: e.target.checked,
-                            })),
-                          className:
-                            "rounded border-slate-300 text-sky-500 focus:ring-sky-500",
-                        }),
-                        "Anchors (Grid)",
-                      ),
-                      React.createElement("div", {
-                        className: "h-px bg-slate-200 dark:bg-neutral-800 my-1",
-                      }),
-                      React.createElement(
-                        "details",
-                        { className: "px-2 py-1.5", open: true },
-                        React.createElement(
-                          "summary",
-                          { className: "cursor-pointer text-slate-700 dark:text-neutral-300 font-bold" },
-                          "Commercial Colors"
-                        ),
-                        colorData &&
-                          Object.keys(colorData).map((brand) =>
-                            React.createElement(
-                              "label",
-                              {
-                                key: brand,
-                                className:
-                                  "flex items-center gap-2 px-2 py-1 pl-4 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded cursor-pointer text-slate-500 dark:text-neutral-400 mt-1",
-                              },
-                              React.createElement("input", {
-                                type: "checkbox",
-                                checked:
-                                  activeTab === "db" ? viewportVisibility.brands[brand] !== false : viewportVisibility.brands[brand] === true,
-                                onChange: (e) =>
-                                  setViewportVisibility((prev) => ({
-                                    ...prev,
-                                    brands: {
-                                      ...prev.brands,
-                                      [brand]: e.target.checked,
-                                    },
-                                  })),
-                                className:
-                                  "rounded border-slate-300 text-emerald-500 focus:ring-emerald-500 w-3 h-3",
-                              }),
-                              getBrandDisplayName(brand),
-                            ),
-                          ),
-                      ),
-                    ),
-                ),
-                React.createElement(
-                  "div",
-                  { className: "relative" },
-                  React.createElement(Icon, {
-                    name: "search",
-                    className:
-                      "absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400",
-                  }),
-                  React.createElement("input", {
-                    type: "text",
-                    value: viewportSearchQuery,
-                    onChange: (e) => setViewportSearchQuery(e.target.value),
-                    placeholder: "Search...",
-                    className:
-                      "w-32 bg-slate-200/40 dark:bg-neutral-800/50 border border-transparent rounded-lg pl-7 pr-2 py-1.5 text-[10px] font-bold uppercase tracking-widest focus:ring-1 focus:ring-sky-500 outline-none text-slate-900 dark:text-white placeholder:text-slate-400 transition-all",
-                  }),
-                ),
-                React.createElement(
-                  "div",
-                  { className: "relative" },
-                  React.createElement(Icon, {
-                    name: "tag",
-                    className:
-                      "absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400",
-                  }),
-                  React.createElement(
-                    "select",
-                    {
-                      value: viewportTagFilter,
-                      onChange: (e) => setViewportTagFilter(e.target.value),
-                      className:
-                        "w-32 bg-slate-200/40 dark:bg-neutral-800/50 border border-transparent rounded-lg pl-7 pr-2 py-1.5 text-[10px] font-bold uppercase tracking-widest focus:ring-1 focus:ring-sky-500 outline-none text-slate-900 dark:text-white transition-all appearance-none cursor-pointer",
-                    },
-                    React.createElement("option", { value: "" }, "All Tags"),
-                    globalTags.map((t) =>
-                      React.createElement("option", { key: t, value: t }, t),
-                    ),
-                  ),
-                ),
-              ),
-              (viewMode === "swatches" || activeTab === "db") &&
-                React.createElement(
-                  "div",
-                  { className: "ml-auto flex items-center gap-3" },
-                  React.createElement(Icon, {
-                    name: "zoom-in",
-                    className: "w-3.5 h-3.5 text-slate-400",
-                  }),
-                  React.createElement("input", {
-                    type: "range",
-                    min: "0.1",
-                    max: "5",
-                    step: "0.1",
-                    value: swatchZoom,
-                    onChange: (e) => setSwatchZoom(parseFloat(e.target.value)),
-                    className:
-                      "w-24 accent-sky-500 opacity-60 hover:opacity-100 transition-opacity cursor-pointer",
-                  }),
-                  React.createElement(
-                    "span",
-                    {
-                      className:
-                        "text-[10px] font-mono text-slate-400 min-w-[30px]",
-                    },
-                    Math.round(swatchZoom * 100),
-                    "%",
-                  ),
-                ),
-            ),
+              search: { enabled: activeTab !== "groups", value: srch[0], onChange: srch[1], placeholder: srch[2] },
+              zoom: { enabled: listTab && lay[0] !== "table", value: swatchZoom, onChange: setSwatchZoom },
+              sort: { enabled: listTab, ...srt },
+              filters: {
+                enabled: isExplore || isDb || activeTab === "pins",
+                count: globalFilters.length,
+                onClick: () => setShowFilterBuilder(!showFilterBuilder),
+              },
+            });
+          })(),
           React.createElement(
             "div",
             { className: "flex-1 relative overflow-hidden" },
@@ -19274,6 +19267,9 @@ const AppUI = ({
                 scrubC,
                 scrubH,
                 tether: crosshair ? crosshair.tether : null,
+                focusTick,
+                presetCmd: explorePresetCmd,
+                onPresetSummary: setExplorePreset,
                 handlePointClick,
                 onCursor: (L, C, H) => {
                   setScrubL(L);
@@ -19298,14 +19294,22 @@ const AppUI = ({
                 scrubH,
                 handleUpdate,
                 setActiveTab,
+                query: anchorsSearch,
+                setQuery: setAnchorsSearch,
+                sort: anchorsSort,
+                setSort: setAnchorsSort,
+                layout: anchorsLayout,
+                swatchZoom,
               }),
             activeTab === "pins" &&
               React.createElement(ViewPins, {
                 handlePointClick,
                 swatchZoom,
                 setSwatchZoom,
-                globalSortBy,
-                globalSortAsc,
+                globalSortBy: pinsSort.by,
+                globalSortAsc: pinsSort.asc,
+                searchTerm: pinsSearch,
+                layout: pinsLayout,
                 globalFilters,
                 globalFilterMode,
                 // Only rows that follow the cursor need its context; passing it
