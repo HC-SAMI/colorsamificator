@@ -5071,6 +5071,35 @@ const ViewportSwatches = ({
     viewportTagFilter,
     externalSort,
   ]);
+  // Full-size photo, opened from the eye button in any layout.
+  const imagePreview =
+    fullscreenImage &&
+    ReactDOM.createPortal(
+      React.createElement(
+        "div",
+        {
+          className:
+            "fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4 cursor-pointer",
+          onClick: () => setFullscreenImage(null),
+        },
+        React.createElement("img", {
+          src: fullscreenImage,
+          alt: "Fullscreen Image",
+          className: "max-w-full max-h-full object-contain rounded shadow-2xl",
+          onClick: (e) => e.stopPropagation(),
+        }),
+        React.createElement(
+          "button",
+          {
+            className:
+              "absolute top-4 right-4 text-white/70 hover:text-white bg-black/50 hover:bg-black/80 rounded-full w-12 h-12 flex items-center justify-center transition-colors",
+            onClick: () => setFullscreenImage(null),
+          },
+          React.createElement(Icon, { name: "x", className: "w-6 h-6" }),
+        ),
+      ),
+      document.body,
+    );
   if (layout === "matrix") {
     const quantize = (v) => Math.round(v * 1e3) / 1e3;
     const d1ValsUniq = new Set();
@@ -5302,6 +5331,7 @@ ${item.erpCode}`,
           { className: "text-center text-slate-400 text-xs w-full p-8 italic" },
           "No saved colors or pins found in this slice.",
         ),
+      imagePreview,
     );
   }
   if (layout === "table") {
@@ -5608,6 +5638,7 @@ ${item.erpCode}`,
           { className: "text-center text-slate-400 text-xs w-full p-8 italic" },
           "No saved colors or pins found in this slice.",
         ),
+      imagePreview,
     );
   }
   return React.createElement(
@@ -5810,16 +5841,13 @@ ${item.erpCode}`,
                 className:
                   "absolute inset-0 flex flex-col items-center justify-center pointer-events-none p-1 leading-none space-y-0.5 z-10",
                 style: {
-                  backgroundColor:
+                  color: item.L > 0.65 ? "rgba(0,0,0,0.85)" : "rgba(255,255,255,0.95)",
+                  textShadow:
                     item.image || item.note?.startsWith("http")
-                      ? "rgba(0,0,0,0.3)"
-                      : "transparent",
-                  color:
-                    item.image || item.note?.startsWith("http")
-                      ? "white"
-                      : item.L > 0.65
-                        ? "rgba(0,0,0,0.85)"
-                        : "rgba(255,255,255,0.95)",
+                      ? item.L > 0.65
+                        ? "0 0 3px rgba(255,255,255,0.8)"
+                        : "0 0 3px rgba(0,0,0,0.7)"
+                      : undefined,
                 },
               },
               item.displayName
@@ -5953,34 +5981,7 @@ ${item.erpCode}`,
         { className: "text-center text-slate-400 text-xs w-full p-8 italic" },
         "No saved colors or pins found in this slice.",
       ),
-    fullscreenImage &&
-      ReactDOM.createPortal(
-        React.createElement(
-          "div",
-          {
-            className:
-              "fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4 cursor-pointer",
-            onClick: () => setFullscreenImage(null),
-          },
-          React.createElement("img", {
-            src: fullscreenImage,
-            alt: "Fullscreen Image",
-            className:
-              "max-w-full max-h-full object-contain rounded shadow-2xl",
-            onClick: (e) => e.stopPropagation(),
-          }),
-          React.createElement(
-            "button",
-            {
-              className:
-                "absolute top-4 right-4 text-white/70 hover:text-white bg-black/50 hover:bg-black/80 rounded-full w-12 h-12 flex items-center justify-center transition-colors",
-              onClick: () => setFullscreenImage(null),
-            },
-            React.createElement(Icon, { name: "x", className: "w-6 h-6" }),
-          ),
-        ),
-        document.body,
-      ),
+    imagePreview,
   );
 };
 // Wraps a view so it skips re-rendering when only callback identities changed
