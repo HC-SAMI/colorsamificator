@@ -1702,6 +1702,53 @@ const spaceWorldToLCH = (x, y, z) => {
   return [y / SPACE_LW + SPACE_LC, Math.hypot(a, b), H];
 };
 // Is a world point a displayable sRGB colour? (OkLab a = C·cos H = b_app.)
+// sRGB (0–255) of a world point, clipped; `out` gets [r, g, b].
+const spaceWorldSrgb = (x, y, z, out) => {
+  const L = y / SPACE_LW + SPACE_LC, A = -z / SPACE_CW, B = x / SPACE_CW;
+  const l_ = L + 0.3963377774 * A + 0.2158037573 * B, m_ = L - 0.1055613458 * A - 0.0638541728 * B, s_ = L - 0.0894841775 * A - 1.291485548 * B;
+  const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
+  const lin = [
+    4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3,
+    -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3,
+    -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3,
+  ];
+  for (let i = 0; i < 3; i++) {
+    const v = Math.max(0, Math.min(1, lin[i]));
+    out[i] = Math.round((v > 0.0031308 ? 1.055 * Math.pow(v, 1 / 2.4) - 0.055 : 12.92 * v) * 255);
+  }
+  return out;
+};
+// The sRGB gamut's surface in world space: the six faces of the RGB cube,
+// each an n×n grid, coloured with their own (pure, unshaded) colours.
+const spaceGamutShell = (n = 40) => {
+  const pos = [], col = [], idx = [];
+  const lin = (c) => (c > 0.04045 ? Math.pow((c + 0.055) / 1.055, 2.4) : c / 12.92);
+  for (let ax = 0; ax < 3; ax++)
+    for (let side = 0; side < 2; side++) {
+      const base = pos.length / 3;
+      for (let i = 0; i <= n; i++)
+        for (let j = 0; j <= n; j++) {
+          const rgb = [0, 0, 0];
+          rgb[ax] = side; rgb[(ax + 1) % 3] = i / n; rgb[(ax + 2) % 3] = j / n;
+          const [r, g, b] = rgb.map(lin);
+          const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+          const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+          const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+          const L = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s;
+          const A = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
+          const B = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+          const C = Math.hypot(A, B), H = (Math.atan2(B, A) * 180) / Math.PI;
+          pos.push(...spaceToWorld(L, C, H));
+          col.push(...rgb);
+        }
+      for (let i = 0; i < n; i++)
+        for (let j = 0; j < n; j++) {
+          const a = base + i * (n + 1) + j, b = a + 1, c = a + n + 1, d = c + 1;
+          idx.push(a, c, b, b, c, d);
+        }
+    }
+  return { pos: new Float32Array(pos), col: new Float32Array(col), idx };
+};
 const spaceInGamut = (x, y, z) => {
   const L = y / SPACE_LW + SPACE_LC;
   if (L < 0 || L > 1) return false;
@@ -1752,34 +1799,55 @@ const spaceParseCss = (css, fallback) => {
   return [p[0] / 255, p[1] / 255, p[2] / 255];
 };
 
-// A closed unit sphere (no seam duplicates), shared by every cell. Fewer facets
-// when there are many anchors, so big libraries stay responsive.
 const SPACE_TEMPLATES = {};
-const spaceTemplate = (W, HS) => {
-  const key = W + "x" + HS;
+// An evenly spread unit sphere: each icosahedron face split into n² triangles
+// (10n² + 2 points). Unlike a latitude/longitude sphere, no points bunch at
+// the poles, so the same vertex count looks much smoother everywhere.
+const spaceGeodesic = (n) => {
+  const key = "g" + n;
   if (SPACE_TEMPLATES[key]) return SPACE_TEMPLATES[key];
-  const dirs = [0, 1, 0];
-  for (let i = 1; i < HS; i++) {
-    const v = (i / HS) * Math.PI;
-    for (let j = 0; j < W; j++) {
-      const u = (j / W) * 2 * Math.PI;
-      dirs.push(Math.sin(v) * Math.cos(u), Math.cos(v), Math.sin(v) * Math.sin(u));
+  const t = (1 + Math.sqrt(5)) / 2;
+  const ico = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t], [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]];
+  const faces = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+    [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
+  const dirs = [], index = new Map(), tris = [];
+  const vert = (x, y, z) => {
+    const l = Math.hypot(x, y, z); x /= l; y /= l; z /= l;
+    const k = Math.round(x * 1e6) + "," + Math.round(y * 1e6) + "," + Math.round(z * 1e6);
+    let id = index.get(k);
+    if (id === undefined) { id = dirs.length / 3; dirs.push(x, y, z); index.set(k, id); }
+    return id;
+  };
+  for (const [ia, ib, ic] of faces) {
+    const A = ico[ia], B = ico[ib], C = ico[ic], ids = [];
+    for (let i = 0; i <= n; i++) {
+      ids.push([]);
+      for (let j = 0; j <= n - i; j++)
+        ids[i].push(vert(
+          A[0] + ((B[0] - A[0]) * i) / n + ((C[0] - A[0]) * j) / n,
+          A[1] + ((B[1] - A[1]) * i) / n + ((C[1] - A[1]) * j) / n,
+          A[2] + ((B[2] - A[2]) * i) / n + ((C[2] - A[2]) * j) / n,
+        ));
     }
+    const tri = (a, b, c) => {
+      // keep every triangle facing outward
+      const ax = dirs[a * 3], ay = dirs[a * 3 + 1], az = dirs[a * 3 + 2];
+      const ux = dirs[b * 3] - ax, uy = dirs[b * 3 + 1] - ay, uz = dirs[b * 3 + 2] - az;
+      const vx = dirs[c * 3] - ax, vy = dirs[c * 3 + 1] - ay, vz = dirs[c * 3 + 2] - az;
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      if (nx * ax + ny * ay + nz * az >= 0) tris.push(a, b, c); else tris.push(a, c, b);
+    };
+    for (let i = 0; i < n; i++)
+      for (let j = 0; j < n - i; j++) {
+        tri(ids[i][j], ids[i + 1][j], ids[i][j + 1]);
+        if (j < n - i - 1) tri(ids[i + 1][j], ids[i + 1][j + 1], ids[i][j + 1]);
+      }
   }
-  dirs.push(0, -1, 0);
-  const S = dirs.length / 3 - 1;
-  const ring = (i, j) => 1 + (i - 1) * W + (((j % W) + W) % W);
-  const tris = [];
-  for (let j = 0; j < W; j++) tris.push(0, ring(1, j), ring(1, j + 1));
-  for (let i = 1; i < HS - 1; i++)
-    for (let j = 0; j < W; j++) {
-      const a = ring(i, j), b = ring(i, j + 1), c = ring(i + 1, j), d = ring(i + 1, j + 1);
-      tris.push(a, c, b, b, c, d);
-    }
-  for (let j = 0; j < W; j++) tris.push(S, ring(HS - 1, j + 1), ring(HS - 1, j));
-  for (let t = 0; t < tris.length; t += 3) { const k = tris[t + 1]; tris[t + 1] = tris[t + 2]; tris[t + 2] = k; } // outward-facing
-  return (SPACE_TEMPLATES[key] = { dirs: new Float32Array(dirs), tris, count: S + 1 });
+  return (SPACE_TEMPLATES[key] = { dirs: new Float32Array(dirs), tris, count: dirs.length / 3 });
 };
+// Detail for N cells: about 240k vertices in all (the old meshes used ~160k
+// in far less even spacing), between 162 and 1002 points per cell.
+const spaceTemplateFor = (N) => spaceGeodesic(Math.max(4, Math.min(10, Math.floor(Math.sqrt((240000 / Math.max(1, N) - 2) / 10)))));
 
 // Clip a closed mesh against f(p) <= 0 and seal the opening with a flat cap.
 // mesh = { P: [x,y,z,...], K: [1 = cap vertex], T: [triangle indices] }
@@ -1945,7 +2013,7 @@ function createSpaceEngine(opts) {
   // the default 3D view is ~75, a default section ~32)
   const NAME_ZOOM_3D = 150, NAME_ZOOM_2D = 85;
   const CW = SPACE_CW, LW = SPACE_LW, LC = SPACE_LC, AMAX = SPACE_AMAX;
-  let TPL = spaceTemplate(28, 18), NV = TPL.count;
+  let TPL = spaceTemplateFor(300), NV = TPL.count;
 
   // ── State ────────────────────────────────────────────────────────────────
   const S = {
@@ -1958,6 +2026,7 @@ function createSpaceEngine(opts) {
     // below its plane colours are projected onto it (0 = only the plane).
     ranges: { "3d": { hl: null, hc: null, hh: null }, l: { hl: null, hc: null, hh: null, depth: 0 }, c: { hl: null, hc: null, hh: null, depth: 0 }, h: { hl: null, hc: null, hh: null, depth: 0 } },
     alpha: { l: 1, c: 1, h: 1 },
+    gamut: { "3d": 0, l: 0, c: 0, h: 0 },   // per view: opacity of the seamless gamut solid beneath everything
     fill: 0.5, sep: 0, opacity: 1,
     dark: false, fg: [0.1, 0.1, 0.1], bg: [1, 1, 1],
     guide: { l: "#b7791f", c: "#0e7490", h: "#be185d" },
@@ -1979,24 +2048,30 @@ function createSpaceEngine(opts) {
   scene.add(axis);
 
   const cellVert = `
-    attribute vec3 aCenter; attribute vec3 aColor; attribute float aCap;
+    attribute vec3 aCenter; attribute vec3 aColor; attribute float aCap; attribute vec3 aNormal;
     uniform float uSep;
-    varying vec3 vColor; varying float vCap; varying vec3 vViewPos;
+    varying vec3 vColor; varying float vCap; varying vec3 vViewPos; varying vec3 vNormal;
     void main() {
       vec4 mv = modelViewMatrix * vec4(position + aCenter * (uSep - 1.0), 1.0);
       gl_Position = projectionMatrix * mv;
-      vViewPos = mv.xyz; vColor = aColor; vCap = aCap;
+      vViewPos = mv.xyz; vColor = aColor; vCap = aCap; vNormal = normalMatrix * aNormal;
     }`;
   const cellFrag = `
     precision highp float;
-    varying vec3 vColor; varying float vCap; varying vec3 vViewPos;
+    varying vec3 vColor; varying float vCap; varying vec3 vViewPos; varying vec3 vNormal;
     uniform vec3 uL1, uL2; uniform float uAlpha;
     void main() {
       vec3 col;
       if (vCap > 0.5) {
         col = vColor;                       // a cut face shows the anchor's exact colour
       } else {
-        vec3 N = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
+        // Smooth (per-vertex) shading on curved parts, the facet's own normal
+        // where the surface really creases (cell walls meeting), so round
+        // bodies look round and edges stay crisp.
+        vec3 Nf = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
+        vec3 Ns = length(vNormal) > 1e-6 ? normalize(vNormal) : Nf;
+        if (dot(Ns, Nf) < 0.0) Ns = -Ns;
+        vec3 N = normalize(mix(Nf, Ns, smoothstep(0.82, 0.96, dot(Ns, Nf))));
         vec3 V = normalize(-vViewPos);
         float d1 = max(dot(N, uL1), 0.0), d2 = max(dot(N, uL2), 0.0);
         float sp = pow(max(dot(N, normalize(uL1 + V)), 0.0), 55.0) * 0.28;
@@ -2027,23 +2102,61 @@ function createSpaceEngine(opts) {
     side: THREE.DoubleSide, depthTest: false, depthWrite: false,
   });
 
+  // The gamut solid: its own scene, drawn first so cells, dots and cards
+  // always sit on top. A depth-only pass, then colour where depth matches, so
+  // at part opacity only its nearest surface shows (no doubled back walls).
+  // Fragments outside the 3D view's visible range are cut away like the cells.
+  const gamutScene = new THREE.Scene();
+  const gamutU = { uSep: shared.uSep, uAlpha: { value: 0 }, uCur: { value: new THREE.Vector3(0.65, 0.12, 0) }, uRange: { value: new THREE.Vector3(-1, -1, -1) } };
+  {
+    const sh = spaceGamutShell(40), g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(sh.pos, 3));
+    g.setAttribute("aColor", new THREE.BufferAttribute(sh.col, 3));
+    g.setIndex(sh.idx);
+    const vert = `attribute vec3 aColor; uniform float uSep; varying vec3 vColor; varying vec3 vW;
+      void main() { vColor = aColor; vW = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position * uSep, 1.0); }`;
+    const frag = (depthOnly) => `uniform float uAlpha; uniform vec3 uCur, uRange; varying vec3 vColor; varying vec3 vW;
+      void main() {
+        float L = vW.y / ${LW.toFixed(4)} + ${LC.toFixed(4)}, C = length(vW.xz) / ${CW.toFixed(4)};
+        float H = degrees(atan(vW.x, -vW.z)); if (H < 0.0) H += 360.0;
+        if (uRange.x >= 0.0 && abs(L - uCur.x) > uRange.x) discard;
+        if (uRange.y >= 0.0 && abs(C - uCur.y) > uRange.y) discard;
+        if (uRange.z >= 0.0 && C >= 0.004 && abs(mod(H - uCur.z + 540.0, 360.0) - 180.0) > uRange.z) discard;
+        gl_FragColor = ${depthOnly ? "vec4(0.0)" : "vec4(vColor, uAlpha)"};
+      }`;
+    const pre = new THREE.Mesh(g, new THREE.ShaderMaterial({ vertexShader: vert, fragmentShader: frag(true), uniforms: gamutU, side: THREE.DoubleSide, colorWrite: false }));
+    const paintM = new THREE.Mesh(g, new THREE.ShaderMaterial({
+      vertexShader: vert, fragmentShader: frag(false), uniforms: gamutU, side: THREE.DoubleSide,
+      transparent: true, depthWrite: false, depthFunc: THREE.LessEqualDepth,
+    }));
+    pre.frustumCulled = paintM.frustumCulled = false;
+    pre.renderOrder = 0; paintM.renderOrder = 1;
+    gamutScene.add(pre, paintM);
+  }
+  const syncGamutRange = () => {
+    const r = S.ranges["3d"];
+    gamutU.uCur.value.set(S.cursor[0], S.cursor[1], S.cursor[2]);
+    gamutU.uRange.value.set(r.hl === null ? -1 : r.hl, r.hc === null ? -1 : r.hc, r.hh === null ? -1 : r.hh);
+  };
+
   // Main cells: one merged, re-sliced geometry
   const geo = new THREE.BufferGeometry();
   const mesh = new THREE.Mesh(geo, cellMat);
   mesh.frustumCulled = false;
   scene.add(mesh);
-  let capV = 0, capI = 0, bPos, bCen, bCol, bCap, bIdx;
+  let capV = 0, capI = 0, bPos, bCen, bCol, bCap, bIdx, bNor;
   const ensure = (nV, nI) => {
     if (nV <= capV && nI <= capI) return;
     capV = Math.max(nV, capV, 1024) * 1.5 | 0;
     capI = Math.max(nI, capI, 1024) * 1.5 | 0;
-    bPos = new Float32Array(capV * 3); bCen = new Float32Array(capV * 3); bCol = new Float32Array(capV * 3);
+    bPos = new Float32Array(capV * 3); bCen = new Float32Array(capV * 3); bCol = new Float32Array(capV * 3); bNor = new Float32Array(capV * 3);
     bCap = new Float32Array(capV); bIdx = new Uint32Array(capI);
     const dyn = (arr, n) => { const a = new THREE.BufferAttribute(arr, n); a.setUsage(THREE.DynamicDrawUsage); return a; };
     geo.setAttribute("position", dyn(bPos, 3));
     geo.setAttribute("aCenter", dyn(bCen, 3));
     geo.setAttribute("aColor", dyn(bCol, 3));
     geo.setAttribute("aCap", dyn(bCap, 1));
+    geo.setAttribute("aNormal", dyn(bNor, 3));
     geo.setIndex(dyn(bIdx, 1));
   };
 
@@ -2227,6 +2340,7 @@ function createSpaceEngine(opts) {
     camSnap = false;
     placeCamera();
     renderer.clear();
+    if (S.gamut["3d"] > 0) { renderer.render(gamutScene, camera); renderer.clearDepth(); }
     renderer.render(scene, camera);
     renderer.clearDepth();
     renderer.render(overlay, camera);
@@ -2269,7 +2383,7 @@ function createSpaceEngine(opts) {
       cols[i * 3] = c[0]; cols[i * 3 + 1] = c[1]; cols[i * 3 + 2] = c[2];
     }
     grid = spaceMakeGrid(px, py, pz, N);
-    TPL = N > 1800 ? spaceTemplate(14, 9) : N > 700 ? spaceTemplate(20, 12) : spaceTemplate(28, 18);
+    TPL = spaceTemplateFor(N);
     NV = TPL.count;
     rCell = new Float32Array(N * NV); meanR = new Float32Array(N); maxR = new Float32Array(N); dotR = new Float32Array(N); nnW = new Float32Array(N);
     selIdx = -1;
@@ -2399,11 +2513,40 @@ function createSpaceEngine(opts) {
     return { P, K: new Float32Array(NV), T: TPL.tris };
   };
 
+  // Area-weighted vertex normals for one cell's triangles (local indices T)
+  // over positions pos[(base + v) * 3], written to nor at the same places.
+  const cellNormals = (pos, nor, base, nv, T, nt) => {
+    nor.fill(0, base * 3, (base + nv) * 3);
+    for (let q = 0; q < nt; q += 3) {
+      const a = (base + T[q]) * 3, b = (base + T[q + 1]) * 3, c = (base + T[q + 2]) * 3;
+      const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2];
+      const vx = pos[c] - pos[a], vy = pos[c + 1] - pos[a + 1], vz = pos[c + 2] - pos[a + 2];
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      nor[a] += nx; nor[a + 1] += ny; nor[a + 2] += nz;
+      nor[b] += nx; nor[b + 1] += ny; nor[b + 2] += nz;
+      nor[c] += nx; nor[c + 1] += ny; nor[c + 2] += nz;
+    }
+  };
+
   // Every cell, sliced, in one buffer. The active cell is also in here; the
   // overlay draws it again on top.
-  function rebuild() {
+  // `defer`: while the inflation slider moves (and nothing is sliced, so every
+  // cell keeps its vertex layout) the previous normals still fit closely;
+  // they're recomputed once it pauses, keeping each drag step cheap.
+  let normalsTimer = 0, normalJobs = null;
+  const normalsPass = () => {
+    if (!normalJobs || disposed) return;
+    for (const [vo, nv, T, nt] of normalJobs) cellNormals(bPos, bNor, vo, nv, T, nt);
+    const a = geo.attributes.aNormal;
+    a.updateRange = { offset: 0, count: normalJobs.vo * 3 }; a.needsUpdate = true;
+    normalJobs = null;
+    requestRender();
+  };
+  function rebuild(defer = false) {
     if (!ready) return;
     const parts = [], cons = constraints();
+    defer = defer && !cons.length && !!bNor;
+    const jobs = [];
     let nV = 0, nI = 0;
     const tl = TPL.tris.length;
     for (let i = 0; i < N; i++) {
@@ -2426,6 +2569,7 @@ function createSpaceEngine(opts) {
           bCap[vo + v] = 0;
         }
         for (let q = 0; q < tl; q++) bIdx[io + q] = T[q] + vo;
+        jobs.push([vo, NV, T, tl]);
         vo += NV; io += tl;
         continue;
       }
@@ -2438,9 +2582,15 @@ function createSpaceEngine(opts) {
         bCap[vo + v] = m.K[v];
       }
       for (let q = 0; q < m.T.length; q++) bIdx[io + q] = m.T[q] + vo;
+      jobs.push([vo, nv, m.T, m.T.length]);
       vo += nv; io += m.T.length;
     }
-    ["position", "aCenter", "aColor", "aCap"].forEach((k) => {
+    jobs.vo = vo;
+    clearTimeout(normalsTimer);
+    normalJobs = jobs;
+    if (defer) normalsTimer = setTimeout(normalsPass, 140);
+    else for (const [o, nv, T, nt] of jobs) cellNormals(bPos, bNor, o, nv, T, nt), (normalJobs = null);
+    ["position", "aCenter", "aColor", "aCap"].concat(defer ? [] : ["aNormal"]).forEach((k) => {
       const a = geo.attributes[k];
       a.updateRange = { offset: 0, count: vo * a.itemSize };   // upload only what changed
       a.needsUpdate = true;
@@ -2467,6 +2617,7 @@ function createSpaceEngine(opts) {
         activeGeo.setAttribute("aCenter", dyn(new Float32Array(aCapV * 3), 3));
         activeGeo.setAttribute("aColor", dyn(new Float32Array(aCapV * 3), 3));
         activeGeo.setAttribute("aCap", dyn(new Float32Array(aCapV), 1));
+        activeGeo.setAttribute("aNormal", dyn(new Float32Array(aCapV * 3), 3));
         activeGeo.setIndex(dyn(new Uint32Array(aCapI), 1));
       }
       const A = activeGeo.attributes, pos = A.position.array, cen = A.aCenter.array, col = A.aColor.array, cap = A.aCap.array, idx = activeGeo.index.array;
@@ -2478,7 +2629,8 @@ function createSpaceEngine(opts) {
         cap[v] = m.K[v];
       }
       for (let q = 0; q < ni; q++) idx[q] = m.T[q];
-      ["position", "aCenter", "aColor", "aCap"].forEach((k) => { A[k].updateRange = { offset: 0, count: nv * A[k].itemSize }; A[k].needsUpdate = true; });
+      cellNormals(pos, A.aNormal.array, 0, nv, m.T, ni);
+      ["position", "aCenter", "aColor", "aCap", "aNormal"].forEach((k) => { A[k].updateRange = { offset: 0, count: nv * A[k].itemSize }; A[k].needsUpdate = true; });
       activeGeo.index.updateRange = { offset: 0, count: ni };
       activeGeo.index.needsUpdate = true;
       activeGeo.setDrawRange(0, ni);
@@ -2553,8 +2705,8 @@ function createSpaceEngine(opts) {
     const rc = slot["3d"].getBoundingClientRect();
     projM.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     const nx = ((clientX - rc.left) / rc.width) * 2 - 1, ny = -((clientY - rc.top) / rc.height) * 2 + 1;
-    // markers first: nearest projected dot within 7px
-    let best = null, bd = 49;
+    // markers first: nearest projected dot within 9px
+    let best = null, bd = 81;
     const k = 1 + S.sep;
     if (mVis && markerPos) {
       const e = projM.elements, hw = rc.width / 2, hh = rc.height / 2;
@@ -2696,7 +2848,7 @@ function createSpaceEngine(opts) {
     v.cv.width = W; v.cv.height = H;
     v.ctx = v.cv.getContext("2d");
     v.img = v.ctx.createImageData(W, H);
-    v.ids = new Int32Array(W * H); v.dim = new Float32Array(W * H);
+    v.ids = new Int32Array(W * H); v.dim = new Float32Array(W * H); v.gc = new Uint8Array(W * H * 4);
     if (!v.dom) v.user = false;
     fitIso(v);
     return true;
@@ -2713,22 +2865,41 @@ function createSpaceEngine(opts) {
     if (k === "c") return [((H - 180) * Math.PI / 180) * C, (L * LW) / CW];
     return [C, (L * LW) / CW];
   };
-  // Pan a section just enough to keep the cursor inside it (with a margin).
-  let dragView = null;
-  const followCursor = (k) => {
+  // Each section glides to keep the cursor at its centre whenever the cursor
+  // moves. A manual pan or zoom is left alone until the cursor next moves; the
+  // section being dragged on waits until the drag ends, so it never slides
+  // out from under the pointer.
+  let dragView = null, glideLast = 0;
+  const followCursor = (k, snap) => {
     const v = SV[k];
-    if (!v.dom || k === dragView) return false;
-    const [u, w] = cursorInView(k), d = v.dom;
-    const mx = (d.x1 - d.x0) * 0.06, my = (d.y1 - d.y0) * 0.06;
-    let sx = 0, sy = 0;
-    if (u < d.x0 + mx) sx = u - (d.x0 + mx); else if (u > d.x1 - mx) sx = u - (d.x1 - mx);
-    if (w < d.y0 + my) sy = w - (d.y0 + my); else if (w > d.y1 - my) sy = w - (d.y1 - my);
-    if (!sx && !sy) return false;
-    d.x0 += sx; d.x1 += sx; d.y0 += sy; d.y1 += sy;
-    v.user = true;
-    return true;
+    v.glide = true;
+    if (snap || !v.user) v.snap = true;   // a fresh or reset view jumps straight there
+    scheduleSections();
   };
-  const followAll = () => ["l", "c", "h"].forEach(followCursor);
+  const followAll = (snap) => ["l", "c", "h"].forEach((k) => followCursor(k, snap));
+  // How far the cursor sits from a section's centre, in view units.
+  const offCentre = (k) => {
+    const d = SV[k].dom, [u, w] = cursorInView(k);
+    return [u - (d.x0 + d.x1) / 2, w - (d.y0 + d.y1) / 2];
+  };
+  // One easing step for every gliding section; true while any still moves.
+  const glideStep = () => {
+    const now = performance.now(), dt = Math.min(400, glideLast ? now - glideLast : 16);
+    glideLast = now;
+    let moving = false;
+    ["l", "c", "h"].forEach((k) => {
+      const v = SV[k];
+      if (!v.glide || !v.dom || k === dragView) return;
+      const d = v.dom, [ox, oy] = offCentre(k);
+      const pxOff = Math.hypot((ox / (d.x1 - d.x0)) * v.cv.width, (oy / (d.y1 - d.y0)) * v.cv.height);
+      const f = v.snap || pxOff < 0.5 ? 1 : 1 - Math.exp(-dt / 70);   // time-based, like the 3D pivot
+      d.x0 += ox * f; d.x1 += ox * f; d.y0 += oy * f; d.y1 += oy * f;
+      v.user = true;
+      if (f === 1) { v.glide = false; v.snap = false; v.centred = true; } else moving = true;
+    });
+    if (!moving) glideLast = 0;
+    return moving;
+  };
 
   // A section pixel moved `off` along the view's own axis (L, C or degrees of
   // hue), keeping its place in the view: the straight-on projection.
@@ -2755,13 +2926,14 @@ function createSpaceEngine(opts) {
   const MAX_C = 0.33;   // no sRGB colour has more chroma
   // The bin a section pixel shows: the cell on the plane, or else the nearest
   // layer within the view's depth. Returns [id, depth fraction].
-  const binHit = [0, 0];
-  const binAt = (k, u, w, P) => {
-    binHit[0] = -1; binHit[1] = 0;
-    if (mappingAt(k, u, w, 0, P) && spaceInGamut(P[0], P[1], P[2])) { binHit[0] = grid.nearest(P[0], P[1], P[2]); return binHit; }
+  // The in-gamut point a section pixel shows: on the plane, or else the
+  // nearest layer within the view's depth (left in P). Returns its depth
+  // fraction (0 = on the plane), or -1 when there is none.
+  const gamutAt = (k, u, w, P) => {
+    if (mappingAt(k, u, w, 0, P) && spaceInGamut(P[0], P[1], P[2])) return 0;
     const D = depthOf(k);
-    if (D <= 0) return binHit;
-    if ((k === "l" && Math.hypot(u, w) > MAX_C) || (k === "h" && u > MAX_C)) return binHit;
+    if (D <= 0) return -1;
+    if ((k === "l" && Math.hypot(u, w) > MAX_C) || (k === "h" && u > MAX_C)) return -1;
     const n = Math.min(40, Math.ceil(D / ({ l: 0.01, c: 0.006, h: 1.5 })[k])), st = D / n;
     for (let j = 1; j <= n; j++)
       for (let sgn = 1; sgn >= -1; sgn -= 2) {
@@ -2775,42 +2947,65 @@ function createSpaceEngine(opts) {
             if (mappingAt(k, u, w, sgn * mid, P) && spaceInGamut(P[0], P[1], P[2])) hi = mid; else lo = mid;
           }
           mappingAt(k, u, w, sgn * hi, P);
-          binHit[0] = grid.nearest(P[0], P[1], P[2]); binHit[1] = hi / D; return binHit;
+          return hi / D;
         }
       }
+    return -1;
+  };
+  const binHit = [0, 0];
+  const binAt = (k, u, w, P) => {
+    const t = gamutAt(k, u, w, P);
+    binHit[0] = t >= 0 && ready && N ? grid.nearest(P[0], P[1], P[2]) : -1;
+    binHit[1] = Math.max(0, t);
     return binHit;
   };
   const toByte = (c) => Math.round(Math.max(0, Math.min(1, c)) * 255);
   // Classify pixels of rows [y0, y1) at the given block size. `dim` holds how
   // strongly each pixel shows its cell: 1 on the plane, fading with depth, low
   // when the other ranges filter it out.
+  // `gc` holds the gamut solid's own colour there (alpha byte = has one).
   const sampleRows = (k, step, y0, y1) => {
-    const v = SV[k], W = v.cv.width, H = v.cv.height, ids = v.ids, dim = v.dim, P = [0, 0, 0];
+    const v = SV[k], W = v.cv.width, H = v.cv.height, ids = v.ids, dim = v.dim, gc = v.gc, P = [0, 0, 0], rgb = [0, 0, 0];
+    const bins = S.modes[k] === "bins" && ready && N, gOn = S.gamut[k] > 0;
     for (let y = y0; y < y1; y += step)
       for (let x = 0; x < W; x += step) {
-        let id = -1, dm = 0;
-        if (S.modes[k] === "bins" && ready && N) {
-          const hit = binAt(k, px2u(v, x + step / 2), py2v(v, y + step / 2), P);
-          id = hit[0];
-          if (id >= 0) { const [L, C, Hh] = spaceWorldToLCH(P[0], P[1], P[2]); dm = (inRangeLCH(L, C, Hh, k) ? 1 : 0.3) * (1 - 0.45 * hit[1]); }
+        let id = -1, dm = 0, has = 0;
+        if (bins || gOn) {
+          const t = gamutAt(k, px2u(v, x + step / 2), py2v(v, y + step / 2), P);
+          if (t >= 0) {
+            const [L, C, Hh] = spaceWorldToLCH(P[0], P[1], P[2]);
+            dm = (inRangeLCH(L, C, Hh, k) ? 1 : 0.3) * (1 - 0.45 * t);
+            if (bins) id = grid.nearest(P[0], P[1], P[2]);
+            if (gOn) { spaceWorldSrgb(P[0], P[1], P[2], rgb); has = 1; }
+          }
         }
         for (let yy = y; yy < Math.min(y + step, H); yy++)
-          for (let xx = x; xx < Math.min(x + step, W); xx++) { ids[yy * W + xx] = id; dim[yy * W + xx] = dm; }
+          for (let xx = x; xx < Math.min(x + step, W); xx++) {
+            const i = yy * W + xx, o = i * 4;
+            ids[i] = id; dim[i] = dm;
+            gc[o] = rgb[0]; gc[o + 1] = rgb[1]; gc[o + 2] = rgb[2]; gc[o + 3] = has;
+          }
       }
   };
   // Turn classified pixels into colours, then draw the plane guides on top.
   const present = (k) => {
-    const v = SV[k], W = v.cv.width, H = v.cv.height, d = v.img.data, ids = v.ids, dim = v.dim, al = S.alpha[k];
+    const v = SV[k], W = v.cv.width, H = v.cv.height, d = v.img.data, ids = v.ids, dim = v.dim, gc = v.gc, al = S.alpha[k], ga = S.gamut[k];
     const bg = S.bg, empty = S.dark ? [bg[0] * 0.75, bg[1] * 0.75, bg[2] * 0.75] : [bg[0] * 0.94, bg[1] * 0.94, bg[2] * 0.94];
     for (let i = 0, n = W * H; i < n; i++) {
       const id = ids[i], o = i * 4;
       d[o + 3] = 255;
-      if (id < 0) { d[o] = toByte(empty[0]); d[o + 1] = toByte(empty[1]); d[o + 2] = toByte(empty[2]); continue; }
+      // backdrop: the gamut solid's own colour at its opacity, else the panel
+      let br = empty[0], bgc = empty[1], bb = empty[2];
+      if (ga > 0 && gc[o + 3]) {
+        const f = dim[i] * ga;
+        br += (gc[o] / 255 - br) * f; bgc += (gc[o + 1] / 255 - bgc) * f; bb += (gc[o + 2] / 255 - bb) * f;
+      }
+      if (id < 0) { d[o] = toByte(br); d[o + 1] = toByte(bgc); d[o + 2] = toByte(bb); continue; }
       const x = i % W, edge = (x > 0 && ids[i - 1] !== id) || (i >= W && ids[i - W] !== id);
       let r = cols[id * 3], g = cols[id * 3 + 1], b = cols[id * 3 + 2];
       const f = dim[i];
       if (f < 1) { r = r * f + empty[0] * (1 - f); g = g * f + empty[1] * (1 - f); b = b * f + empty[2] * (1 - f); }
-      if (al < 1 && id !== selIdx) { r = r * al + empty[0] * (1 - al); g = g * al + empty[1] * (1 - al); b = b * al + empty[2] * (1 - al); }
+      if (al < 1 && id !== selIdx) { r = r * al + br * (1 - al); g = g * al + bgc * (1 - al); b = b * al + bb * (1 - al); }
       if (edge) { const e = S.dark ? 0.55 : 0.7; r *= e; g *= e; b *= e; }
       d[o] = toByte(r); d[o + 1] = toByte(g); d[o + 2] = toByte(b);
     }
@@ -3064,6 +3259,12 @@ function createSpaceEngine(opts) {
       cardName(ctx, p.i, p.x, p.y, w);
     }
   };
+  // The pin (or commercial colour) under a point of a section, if any.
+  const markerAt = (k, x, y, r = 9) => {
+    let best = null, bd = r * r;
+    for (const [mx, my, mi] of SV[k].mk || []) { const d = (mx - x) ** 2 + (my - y) ** 2; if (d <= bd) { bd = d; best = S.markers[mi]; } }
+    return best;
+  };
   const dotAt = (k, x, y) => {
     const v = SV[k];
     if (v.cards) {
@@ -3078,8 +3279,9 @@ function createSpaceEngine(opts) {
     const v = SV[k], ctx = v.ctx, W = v.cv.width, H = v.cv.height, [L, C, Hh] = S.cursor, G = S.guide;
     const hr = (Hh * Math.PI) / 180, TOL = 0.012;
     drawAnchors2D(k);
-    // markers lying on this section
-    S.markers.forEach((m) => {
+    // markers lying on this section (positions kept for hover and click)
+    v.mk = [];
+    S.markers.forEach((m, mi) => {
       if (!inRangeLCH(m.L, m.C, m.H, k)) return;
       let u, w;
       const D = depthOf(k);
@@ -3090,7 +3292,9 @@ function createSpaceEngine(opts) {
         if (!onPlane && !(m.C < 0.004 || spaceHueDist(m.H, Hh) <= D)) return;
         u = m.C; w = (m.L * LW) / CW;
       }
-      markerShape(ctx, u2px(v, u), v2py(v, w), m.hex, m.kind === "brand");
+      const mx = u2px(v, u), my = v2py(v, w);
+      markerShape(ctx, mx, my, m.hex, m.kind === "brand");
+      v.mk.push([mx, my, mi]);
     });
     if (k === "l") {
       const ox = u2px(v, 0), oy = v2py(v, 0), sc = W / (v.dom.x1 - v.dom.x0);
@@ -3122,11 +3326,13 @@ function createSpaceEngine(opts) {
     sharpJob++;
     if (!secRaf) secRaf = requestAnimationFrame(() => {
       secRaf = 0;
+      const gliding = glideStep();
       let pxs = 0; Object.values(SV).forEach((v) => (pxs += v.cv.width * v.cv.height));
       const step = Math.max(3, Math.ceil(Math.sqrt(pxs / 18000)));
       ["l", "c", "h"].forEach((k) => paint(k, step));
       clearTimeout(secTimer);
-      secTimer = setTimeout(sharpPass, 180);
+      if (gliding) scheduleSections();
+      else secTimer = setTimeout(sharpPass, 180);
     });
   }
   function sharpPass() {
@@ -3162,16 +3368,22 @@ function createSpaceEngine(opts) {
     const v = SV[k], ptrs = new Map();
     let mode = null, last = null, pinch = null;
     const rel = (e) => { const r = v.cv.getBoundingClientRect(); return [((e.clientX - r.left) * v.cv.width) / r.width, ((e.clientY - r.top) * v.cv.height) / r.height]; };
-    const zoom = (x, y, f) => {
-      const u = px2u(v, x), w = py2v(v, y), d = v.dom;
+    // While a section is centred on the cursor, the wheel zooms about the
+    // cursor so it stays centred; once panned away, about the pointer.
+    const zoom = (x, y, f, atPointer) => {
+      const d = v.dom;
+      let u, w;
+      if (!atPointer && (v.centred || v.glide)) { const [cu, cw] = cursorInView(k); u = cu; w = cw; }
+      else { u = px2u(v, x); w = py2v(v, y); v.centred = false; v.glide = false; }
       d.x0 = u + (d.x0 - u) * f; d.x1 = u + (d.x1 - u) * f; d.y0 = w + (d.y0 - w) * f; d.y1 = w + (d.y1 - w) * f;
       v.user = true;
-      fitIso(v); followCursor(k); scheduleSections();
+      fitIso(v); scheduleSections();
     };
     const panV = (dx, dy) => {
       const d = v.dom, su = (d.x1 - d.x0) / v.cv.width, sv = (d.y1 - d.y0) / v.cv.height;
       d.x0 -= dx * su; d.x1 -= dx * su; d.y0 += dy * sv; d.y1 += dy * sv; v.user = true;
-      followCursor(k); scheduleSections();
+      v.glide = false; v.centred = false;
+      scheduleSections();
     };
     handlers[k]["contextmenu"] = ((e) => e.preventDefault());
     handlers[k]["pointerdown"] = ((e) => {
@@ -3181,13 +3393,20 @@ function createSpaceEngine(opts) {
       if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }; mode = "pinch"; return; }
       mode = e.button === 1 || e.button === 2 || e.shiftKey ? "pan" : "cursor";
       last = rel(e);
+      // A pin under the pointer: snap the cursor to it (and select it), no drag.
+      if (mode === "cursor") {
+        const m = markerAt(k, last[0], last[1], e.pointerType === "mouse" ? 9 : 16);
+        if (m) { mode = "picked"; onPick(m); return; }
+      }
       if (mode === "cursor") dragView = k;
       if (mode === "cursor") moveCursor(setFromView[k](px2u(v, last[0]), py2v(v, last[1])));
     });
     handlers[k]["pointermove"] = ((e) => {
       if (!ptrs.has(e.pointerId)) {
         if (e.pointerType === "mouse") {
-          const p = rel(e), P = [0, 0, 0];
+          const p = rel(e), P = [0, 0, 0], m = markerAt(k, p[0], p[1]);
+          if (m) { onHover({ item: m, x: e.clientX, y: e.clientY }); v.cv.style.cursor = "pointer"; return; }
+          v.cv.style.cursor = "";
           const id = S.modes[k] !== "bins" ? dotAt(k, p[0], p[1]) : ready && N ? binAt(k, px2u(v, p[0]), py2v(v, p[1]), P)[0] : -1;
           onHover(id >= 0 ? { item: S.anchors[id], x: e.clientX, y: e.clientY } : null);
         }
@@ -3197,7 +3416,7 @@ function createSpaceEngine(opts) {
       ptrs.set(e.pointerId, p);
       if (mode === "pinch" && ptrs.size === 2) {
         const [a, b] = [...ptrs.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]), m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-        panV(m[0] - pinch.m[0], m[1] - pinch.m[1]); zoom(m[0], m[1], pinch.d / d); pinch = { d, m }; return;
+        panV(m[0] - pinch.m[0], m[1] - pinch.m[1]); zoom(m[0], m[1], pinch.d / d, true); pinch = { d, m }; return;
       }
       if (mode === "pan") { panV(p[0] - last[0], p[1] - last[1]); last = p; }
       else if (mode === "cursor") moveCursor(setFromView[k](px2u(v, p[0]), py2v(v, p[1])));
@@ -3205,7 +3424,7 @@ function createSpaceEngine(opts) {
     const up = (e) => {
       ptrs.delete(e.pointerId);
       if (!ptrs.size || mode === "pinch") mode = null;
-      if (!ptrs.size && dragView === k) { dragView = null; if (followCursor(k)) scheduleSections(); }
+      if (!ptrs.size && dragView === k) { dragView = null; followCursor(k); }
     };
     handlers[k]["pointerup"] = (up);
     handlers[k]["pointercancel"] = (up);
@@ -3222,8 +3441,7 @@ function createSpaceEngine(opts) {
     if (!slot["3d"] || slot["3d"].clientWidth === 0) return;   // hidden tab
     let changed = false;
     Object.values(SV).forEach((v) => { if (sizeView(v)) { fitIso(v); changed = true; } });
-    if (changed) followAll();
-    if (changed) scheduleSections();
+    if (changed) followAll(true);
     resize();
   });
   slotCanvases.forEach((el) => ro.observe(el));
@@ -3250,6 +3468,7 @@ function createSpaceEngine(opts) {
       if (Math.abs(l0 - L) < 1e-6 && Math.abs(c0 - C) < 1e-6 && Math.abs(h0 - H) < 1e-6) return;
       S.cursor = [L, C, H];
       const changedCell = updateCursor();
+      syncGamutRange();
       followAll();
       const r3 = S.ranges["3d"], sliced = r3.hl !== null || r3.hc !== null || r3.hh !== null;
       if (sliced) { rebuild(); rebuildActive(); }
@@ -3265,7 +3484,19 @@ function createSpaceEngine(opts) {
         S.ranges[k] = { hl: b.hl, hc: b.hc, hh: b.hh, depth };
         if (k === "3d") three = true; else flat = true;
       });
-      if (three) { rebuild(); rebuildActive(); updateDotVisibility(); }
+      if (three) { rebuild(); rebuildActive(); updateDotVisibility(); syncGamutRange(); }
+      if (flat) scheduleSections();
+    },
+    // { view: opacity } of the seamless gamut solid beneath each view (0 = off).
+    setGamut(map) {
+      let three = false, flat = false;
+      Object.keys(map).forEach((k) => {
+        const a = Math.max(0, Math.min(1, Number(map[k]) || 0));
+        if (!(k in S.gamut) || a === S.gamut[k]) return;
+        S.gamut[k] = a;
+        if (k === "3d") { gamutU.uAlpha.value = a; three = true; } else flat = true;
+      });
+      if (three) requestRender();
       if (flat) scheduleSections();
     },
     // { view: opacity } for the sections
@@ -3281,7 +3512,7 @@ function createSpaceEngine(opts) {
       cellMat.uniforms.uAlpha.value = opacity;
       cardMat.uniforms.uAlpha.value = opacity;
       placeMarker(); updatePlanes();
-      if (geoChange) { rebuild(); rebuildActive(); } else requestRender();
+      if (geoChange) { rebuild(true); rebuildActive(); } else requestRender();
     },
     setTheme({ dark, fg, bg }) {
       S.dark = dark; S.fg = fg; S.bg = bg;
@@ -3309,11 +3540,11 @@ function createSpaceEngine(opts) {
     setLayout(next) {
       Object.assign(slot, next);
       ["l", "c", "h"].forEach((k) => { const v = SV[k]; v.cv = slot[k]; v.img = null; v.dom = null; v.user = false; sizeView(v); });
-      followAll();
+      followAll(true);
       slotCanvases.forEach((el) => (el.style.cursor = viewOf(el) === "3d" ? "grab" : "crosshair"));
       resize(); scheduleSections(); requestRender();
     },
-    resetView(k) { const v = SV[k]; fitContain(v); followCursor(k); scheduleSections(); },
+    resetView(k) { const v = SV[k]; fitContain(v); followCursor(k, true); },
     resetCamera() { Object.assign(orb, { theta: 0.75, phi: 1.12, r: 14, ox: 0, oy: 0, oz: 0 }); placeMarker(); applyOrbit(); },
     resize,
     dispose() {
@@ -3418,7 +3649,7 @@ const SpaceIconButton = ({ icon, title, onClick, active }) =>
 const SPACE_VIEWS = ["3d", "l", "c", "h"];
 // A section starts on its plane alone (its own axis at 0); everything else
 // starts wide open.
-const spaceViewDefault = (k) => ({ mode: k === "3d" ? "cells" : "bins", fill: 0.5, sep: 0, opacity: 1, tol: { l: k === "l" ? 0 : 1, c: k === "c" ? 0 : 0.4, h: k === "h" ? 0 : 180 } });
+const spaceViewDefault = (k) => ({ mode: k === "3d" ? "cells" : "bins", fill: 0.5, sep: 0, opacity: 1, gamut: 0, tol: { l: k === "l" ? 0 : 1, c: k === "c" ? 0 : 0.4, h: k === "h" ? 0 : 180 } });
 const SPACE_TOL = {
   l: { label: "Lightness ±", max: 1, step: 0.005, fmt: (x) => x.toFixed(3) },
   c: { label: "Chroma ±", max: 0.4, step: 0.005, fmt: (x) => x.toFixed(3) },
@@ -3462,6 +3693,11 @@ const SpaceSettings = ({ k, v, preset, sync, onPreset, onPatch, onSync, onReset 
     React.createElement(SpaceSlider, {
       label: "Opacity", value: v.opacity, min: 0.05, max: 1, step: 0.01, format: (x) => `${Math.round(x * 100)}%`,
       onChange: (x) => onPatch({ opacity: x }),
+    }),
+    // Every in-gamut colour, seamless, drawn beneath the dots, bins and cards.
+    React.createElement(SpaceSlider, {
+      label: "Gamut solid", value: v.gamut || 0, min: 0, max: 1, step: 0.01, format: (x) => (x <= 0 ? "off" : `${Math.round(x * 100)}%`),
+      onChange: (x) => onPatch({ gamut: x }),
     }),
     // A section's own axis is its depth: 0 shows only what crosses the plane,
     // more brings in the colours on either side, seen straight on, up to all
@@ -3669,6 +3905,7 @@ const ViewSpaceInner = ({
   const patchView = (k, v, patch) => {
     const n = { ...v, tol: { ...v.tol, ...(patch.tol || {}) } };
     if (patch.opacity !== undefined) n.opacity = patch.opacity;
+    if (patch.gamut !== undefined) n.gamut = patch.gamut;
     if (patch.preset) {
       if (k === "3d") Object.assign(n, patch.preset === "swatches" ? { mode: "swatches" } : { mode: "cells", fill: patch.preset === "dots" ? 0 : 1 });
       else n.mode = patch.preset;
@@ -3694,7 +3931,7 @@ const ViewSpaceInner = ({
       if (!on) return { ...p, sync: false };
       const src = p.views[k], views = {}, preset = presetOf(k);
       SPACE_VIEWS.forEach((key) => {
-        views[key] = key === k ? src : patchView(key, p.views[key], { opacity: src.opacity, tol: src.tol, ...(preset ? { preset } : {}) });
+        views[key] = key === k ? src : patchView(key, p.views[key], { opacity: src.opacity, gamut: src.gamut || 0, tol: src.tol, ...(preset ? { preset } : {}) });
       });
       return { ...p, v: 2, sync: true, views };
     });
@@ -3809,6 +4046,7 @@ const ViewSpaceInner = ({
     eng.setLook({ fill: v3.fill, sep: v3.sep, opacity: v3.opacity });
     eng.setModes({ "3d": v3.mode, l: look.views.l.mode, c: look.views.c.mode, h: look.views.h.mode });
     eng.setAlpha({ l: look.views.l.opacity, c: look.views.c.opacity, h: look.views.h.opacity });
+    eng.setGamut({ "3d": look.views["3d"].gamut || 0, l: look.views.l.gamut || 0, c: look.views.c.gamut || 0, h: look.views.h.gamut || 0 });
     try { localStorage.setItem(SPACE_LOOK_KEY, JSON.stringify(look)); } catch (e) {}
   }, [ready, look, active]);
   useEffect(() => {
