@@ -231,17 +231,10 @@ function getGlobalDuplicate(
   if (!value || !isOverride) return null;
   const normalizedVal = value.trim().toLowerCase();
   if (!normalizedVal) return null;
-  // A deleted column can leave its entry behind in the names dictionary.
-  // Those orphans are not real conflicts, so skip any column key with no
-  // surviving saved colour.
-  const hasColumns = savedColors && Object.keys(savedColors).length > 0;
-  const isOrphan = (key) =>
-    hasColumns && String(key).startsWith("col-") && !savedColors[key];
   for (const [key, val] of Object.entries(names)) {
     if (
       key !== currentKey &&
       key !== ignoreAnchorId &&
-      !isOrphan(key) &&
       val &&
       val.trim().toLowerCase() === normalizedVal
     ) {
@@ -605,6 +598,145 @@ const createColorFromHex = (hex) => {
   return new Color("xyz-d65", xyz);
 };
 
+// ─── Fast colour math ───────────────────────────────────────────────────────
+// The same numbers colorjs gives for xyz-d65 → OkLab/OkLCH and ΔE OK (plain
+// OkLab distance), without building Color objects. Bulk loops (imports,
+// matches, filters) used to allocate several objects per colour per frame.
+const FAST_XYZ_LMS = [
+  0.819022437996703, 0.3619062600528904, -0.1288737815209879,
+  0.0329836539323885, 0.9292868615863434, 0.0361446663506424,
+  0.0481771893596242, 0.2642395317527308, 0.6335478284694309,
+];
+const FAST_LMS_LAB = [
+  0.210454268309314, 0.7936177747023054, -0.0040720430116193,
+  1.9779985324311684, -2.42859224204858, 0.450593709617411,
+  0.0259040424655478, 0.7827717124575296, -0.8086757549230774,
+];
+// → [L, C, H] with H = NaN for achromatic colours, exactly like colorjs.
+const fastXyzToOklch = (x, y, z) => {
+  const M = FAST_XYZ_LMS, N = FAST_LMS_LAB;
+  const l = Math.cbrt(M[0] * x + M[1] * y + M[2] * z);
+  const m = Math.cbrt(M[3] * x + M[4] * y + M[5] * z);
+  const s = Math.cbrt(M[6] * x + M[7] * y + M[8] * z);
+  const L = N[0] * l + N[1] * m + N[2] * s;
+  const a = N[3] * l + N[4] * m + N[5] * s;
+  const b = N[6] * l + N[7] * m + N[8] * s;
+  const C = Math.sqrt(a * a + b * b);
+  let H = NaN;
+  if (!(Math.abs(a) < 0.0002 && Math.abs(b) < 0.0002)) {
+    H = (Math.atan2(b, a) * 180) / Math.PI;
+    if (H < 0) H += 360;
+  }
+  return [L, C, H];
+};
+// "#rgb" / "#rrggbb" → [L, C, H] (null when it isn't a hex colour).
+const fastHexToOklch = (hex) => {
+  let ch = String(hex || "").replace("#", "").trim();
+  if (ch.length === 3) ch = ch[0] + ch[0] + ch[1] + ch[1] + ch[2] + ch[2];
+  const r = parseInt(ch.substring(0, 2), 16), g = parseInt(ch.substring(2, 4), 16), b = parseInt(ch.substring(4, 6), 16);
+  if (isNaN(r) || isNaN(g) || isNaN(b)) return null;
+  const xyz = srgbToXyzD65Raw(r, g, b);
+  return fastXyzToOklch(xyz[0], xyz[1], xyz[2]);
+};
+// ΔE OK ×100 between two OkLCH colours (H in degrees; NaN hue counts as 0).
+const fastDeltaEOK = (L1, C1, H1, L2, C2, H2) => {
+  const h1 = ((isNaN(H1) ? 0 : H1) * Math.PI) / 180, h2 = ((isNaN(H2) ? 0 : H2) * Math.PI) / 180;
+  const da = C1 * Math.cos(h1) - C2 * Math.cos(h2), db = C1 * Math.sin(h1) - C2 * Math.sin(h2), dL = L1 - L2;
+  return Math.sqrt(dL * dL + da * da + db * db) * 100;
+};
+// A commercial colour's OkLCH (and display hex), worked out once per record:
+// spectral data first, then stored L/C/H, then the hex.
+const FAST_ITEM_LCH = new WeakMap();
+const fastItemLch = (item) => {
+  if (!item || typeof item !== "object") return null;
+  let hit = FAST_ITEM_LCH.get(item);
+  if (hit) return hit;
+  let L, C, H, hex = item.hex || "#000000";
+  try {
+    if (item.spectral && item.spectral.length === 31) {
+      const xyz = calculateXYZFromSpectral(item.spectral, 2, "D65");
+      [L, C, H] = fastXyzToOklch(xyz[0], xyz[1], xyz[2]);
+      hex = new Color("xyz-d65", xyz).to("srgb").toString({ format: "hex" });
+    } else if (item.L !== undefined && item.C !== undefined && item.H !== undefined) {
+      L = item.L; C = item.C; H = item.H;
+    } else {
+      const o = fastHexToOklch(item.hex);
+      if (!o) return null;
+      [L, C, H] = o;
+    }
+  } catch (e) {
+    return null;
+  }
+  if (typeof L !== "number" || typeof C !== "number" || !isFinite(L) || !isFinite(C)) return null;
+  hit = { L, C, H: isNaN(H) ? 0 : H, hex };
+  FAST_ITEM_LCH.set(item, hit);
+  return hit;
+};
+// Gamut test and display hex for an OkLCH point, via colorjs once per distinct
+// coordinate (anchors are re-listed on every edit; their colours don't change).
+const LCH_GAMUT_HEX = new Map();
+const lchGamutHex = (L, C, H) => {
+  const k = L + "|" + C + "|" + H;
+  let hit = LCH_GAMUT_HEX.get(k);
+  if (!hit) {
+    const c = new Color("oklch", [L, C, H]);
+    const inGamut = c.inGamut("srgb");
+    hit = { inGamut, hex: inGamut ? c.clone().toGamut({ space: "srgb" }).toString({ format: "hex" }) : null };
+    if (LCH_GAMUT_HEX.size > 50000) LCH_GAMUT_HEX.clear();
+    LCH_GAMUT_HEX.set(k, hit);
+  }
+  return hit;
+};
+// colorjs's inGamut("srgb") (ε = 0.000075 on encoded channels) in plain maths.
+const FAST_INV3 = (m) => {
+  const [a, b, c, d, e, f, g, h, i] = m, A = e * i - f * h, B = -(d * i - f * g), Cc = d * h - e * g, det = a * A + b * B + c * Cc;
+  return [A / det, -(b * i - c * h) / det, (b * f - c * e) / det, B / det, (a * i - c * g) / det, -(a * f - c * d) / det, Cc / det, -(a * h - b * g) / det, (a * e - b * d) / det];
+};
+const FAST_LAB_LMS = FAST_INV3(FAST_LMS_LAB), FAST_LMS_XYZ = FAST_INV3(FAST_XYZ_LMS);
+const FAST_XYZ_RGB = [
+  3.2409699419045226, -1.537383177570094, -0.4986107602930034,
+  -0.9692436362808796, 1.8759675015077202, 0.04155505740717559,
+  0.05563007969699366, -0.20397695888897652, 1.0569715142428786,
+];
+const fastInGamutSrgb = (L, C, H) => {
+  if (![L, C, H].every((v) => typeof v === "number" && isFinite(v))) return new Color("oklch", [L, C, H]).inGamut("srgb");
+  const h = (H * Math.PI) / 180, A = C * Math.cos(h), B = C * Math.sin(h), M = FAST_LAB_LMS, X = FAST_LMS_XYZ, R = FAST_XYZ_RGB;
+  let l = M[0] * L + M[1] * A + M[2] * B, m = M[3] * L + M[4] * A + M[5] * B, s = M[6] * L + M[7] * A + M[8] * B;
+  l = l * l * l; m = m * m * m; s = s * s * s;
+  const x = X[0] * l + X[1] * m + X[2] * s, y = X[3] * l + X[4] * m + X[5] * s, z = X[6] * l + X[7] * m + X[8] * s;
+  const e = 0.000075;
+  for (let k = 0; k < 3; k++) {
+    const v = R[k * 3] * x + R[k * 3 + 1] * y + R[k * 3 + 2] * z, a = Math.abs(v);
+    const g = a > 0.0031308 ? Math.sign(v) * (1.055 * Math.pow(a, 1 / 2.4) - 0.055) : 12.92 * v;
+    if (g < -e || g > 1 + e) return false;
+  }
+  return true;
+};
+// toGamut(srgb) hex for an OkLCH point, cached per coordinate.
+const LCH_DISPLAY_HEX = new Map();
+const lchDisplayHex = (L, C, H) => {
+  const k = L + "|" + C + "|" + H;
+  let hex = LCH_DISPLAY_HEX.get(k);
+  if (hex === undefined) {
+    try {
+      hex = new Color("oklch", [L, C, H]).toGamut({ space: "srgb" }).toString({ format: "hex" });
+    } catch (e) {
+      hex = "#cccccc";
+    }
+    if (LCH_DISPLAY_HEX.size > 50000) LCH_DISPLAY_HEX.clear();
+    LCH_DISPLAY_HEX.set(k, hex);
+  }
+  return hex;
+};
+
+// History records never change once stored, so their JSON is cached.
+const HISTORY_STR = new WeakMap();
+const historyRecordStr = (rec) => {
+  if (!rec || typeof rec !== "object") return JSON.stringify(rec);
+  let s = HISTORY_STR.get(rec);
+  if (s === undefined) { s = JSON.stringify(rec); HISTORY_STR.set(rec, s); }
+  return s;
+};
 const ColorConverter = ({
   crosshair,
   onEdit,
@@ -1126,36 +1258,23 @@ const CommercialMatches = ({
     }
 
     const allMatches = [];
+    const cL = c.coords[0], cC = c.coords[1], cH = c.coords[2];
     const processList = (list, label, brandKey) => {
       if (!list || !Array.isArray(list)) return;
       for (let listIdx = 0; listIdx < list.length; listIdx++) {
         const item = list[listIdx];
         try {
-          let hexVal = item.hex || "#000000";
-          let targetColor;
-          if (item.spectral && item.spectral.length === 31) {
-            const xyzStandard = calculateXYZFromSpectral(
-              item.spectral,
-              2,
-              "D65",
-            );
-            targetColor = new Color("xyz-d65", xyzStandard).to("oklch");
-            hexVal = targetColor.to("srgb").toString({ format: "hex" });
-          } else if (
-            item.L !== void 0 &&
-            item.C !== void 0 &&
-            item.H !== void 0
-          ) {
-            targetColor = new Color("oklch", [item.L, item.C, item.H]);
-          } else {
-            targetColor = createColorFromHex(item.hex).to("oklch");
-          }
-          const d = c.deltaE(targetColor, "OK") * 100;
+          // Each record's OkLCH is worked out once and cached; ΔE OK is the
+          // plain OkLab distance, so no Color objects per record per move.
+          const lch = fastItemLch(item);
+          if (!lch) continue;
+          const hexVal = lch.hex;
+          const d = fastDeltaEOK(cL, cC, cH, lch.L, lch.C, lch.H);
           if (d <= maxDeltaE) {
             if ((filterSameAdjective || filterSameNoun) && sameGroup) {
-              const itemL = targetColor.coords[0];
-              const itemC = targetColor.coords[1];
-              const itemH = isNaN(targetColor.coords[2]) ? 0 : targetColor.coords[2];
+              const itemL = lch.L;
+              const itemC = lch.C;
+              const itemH = lch.H;
 
               if (filterSameAdjective && !matchesSameAdjective(sameGroup, itemL)) {
                 continue;
@@ -1170,9 +1289,9 @@ const CommercialMatches = ({
               match: {
                 ...item,
                 hex: hexVal,
-                L: targetColor.coords[0],
-                C: targetColor.coords[1],
-                H: isNaN(targetColor.coords[2]) ? 0 : targetColor.coords[2],
+                L: lch.L,
+                C: lch.C,
+                H: lch.H,
                 d,
                 brand: brandKey,
                 originalIndex: listIdx,
@@ -2218,6 +2337,2105 @@ const View3D = ({
     }),
   );
 };
+// ─── Explore: OkLCH colour-space viewer ──────────────────────────────────────
+// One 3D view and three 2D sections (L, C, H) of the anchors' cells. Each
+// anchor owns the region of colour space that is nearer to it than to any
+// other anchor (its Voronoi cell), clipped to the sRGB gamut. Inflation grows
+// every cell from a small dot to that full region; the viewport tolerance
+// sliders cut true sections through the solid.
+//
+// Coordinates follow the rest of the app: a = C·sin H, b = C·cos H, so hue 0°
+// points up in the L section, as in the old Light layers view.
+const SPACE_THREE_URL =
+  "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js";
+let SPACE_THREE_PROMISE = null;
+const loadSpaceThree = () => {
+  if (window.THREE) return Promise.resolve(window.THREE);
+  if (!SPACE_THREE_PROMISE) {
+    SPACE_THREE_PROMISE = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = SPACE_THREE_URL;
+      s.async = true;
+      s.onload = () =>
+        window.THREE ? resolve(window.THREE) : reject(new Error("three.js did not load"));
+      s.onerror = () => {
+        SPACE_THREE_PROMISE = null;
+        reject(new Error("Could not load three.js"));
+      };
+      document.head.appendChild(s);
+    });
+  }
+  return SPACE_THREE_PROMISE;
+};
+
+// World units: chroma ×10 across, lightness ×7 up (the solid's familiar shape).
+const SPACE_CW = 10, SPACE_LW = 7, SPACE_LC = 0.5, SPACE_AMAX = 0.34;
+const spaceHueDist = (a, b) => {
+  const d = Math.abs((((a - b) % 360) + 360) % 360);
+  return d > 180 ? 360 - d : d;
+};
+const spaceToWorld = (L, C, H) => {
+  const h = (H * Math.PI) / 180;
+  return [C * Math.sin(h) * SPACE_CW, (L - SPACE_LC) * SPACE_LW, -C * Math.cos(h) * SPACE_CW];
+};
+const spaceWorldToLCH = (x, y, z) => {
+  const a = x / SPACE_CW, b = -z / SPACE_CW;
+  let H = (Math.atan2(a, b) * 180) / Math.PI;
+  if (H < 0) H += 360;
+  return [y / SPACE_LW + SPACE_LC, Math.hypot(a, b), H];
+};
+// Is a world point a displayable sRGB colour? (OkLab a = C·cos H = b_app.)
+const spaceInGamut = (x, y, z) => {
+  const L = y / SPACE_LW + SPACE_LC;
+  if (L < 0 || L > 1) return false;
+  const A = -z / SPACE_CW, B = x / SPACE_CW;
+  const l_ = L + 0.3963377774 * A + 0.2158037573 * B;
+  const m_ = L - 0.1055613458 * A - 0.0638541728 * B;
+  const s_ = L - 0.0894841775 * A - 1.291485548 * B;
+  const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
+  const r = 4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3;
+  const g = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3;
+  const bl = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3;
+  const e = 0.002;
+  return r >= -e && r <= 1 + e && g >= -e && g <= 1 + e && bl >= -e && bl <= 1 + e;
+};
+// OkLCH → gamma-encoded sRGB, clipped. Used whenever a point has no usable hex.
+const spaceLchToRgb = (L, C, H) => {
+  const h = (H * Math.PI) / 180, A = C * Math.cos(h), B = C * Math.sin(h);
+  const l_ = L + 0.3963377774 * A + 0.2158037573 * B;
+  const m_ = L - 0.1055613458 * A - 0.0638541728 * B;
+  const s_ = L - 0.0894841775 * A - 1.291485548 * B;
+  const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
+  const enc = (v) => { const x = Math.max(0, Math.min(1, v)); return x <= 0.0031308 ? 12.92 * x : 1.055 * Math.pow(x, 1 / 2.4) - 0.055; };
+  return [
+    enc(4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3),
+    enc(-1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3),
+    enc(-0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3),
+  ];
+};
+// A point's display colour as #rrggbb: its own hex when it has one, else computed.
+const spaceHexFor = (hex, L, C, H) => {
+  if (typeof hex === "string" && /^#?[0-9a-f]{6}$|^#?[0-9a-f]{3}$/i.test(hex.trim()))
+    return hex.trim().startsWith("#") ? hex.trim() : "#" + hex.trim();
+  const rgb = spaceLchToRgb(L, C, H);
+  return "#" + rgb.map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("");
+};
+const spaceHexToRgb = (hex) => {
+  let h = String(hex || "").replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const n = parseInt(h.slice(0, 6), 16);
+  if (!isFinite(n)) return [0.6, 0.6, 0.6];
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+};
+const spaceParseCss = (css, fallback) => {
+  const m = String(css || "").match(/rgba?\(([^)]+)\)/);
+  if (!m) return fallback;
+  const p = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);
+  if (p.length >= 4 && p[3] === 0) return fallback; // transparent → use fallback
+  return [p[0] / 255, p[1] / 255, p[2] / 255];
+};
+
+// A closed unit sphere (no seam duplicates), shared by every cell. Fewer facets
+// when there are many anchors, so big libraries stay responsive.
+const SPACE_TEMPLATES = {};
+const spaceTemplate = (W, HS) => {
+  const key = W + "x" + HS;
+  if (SPACE_TEMPLATES[key]) return SPACE_TEMPLATES[key];
+  const dirs = [0, 1, 0];
+  for (let i = 1; i < HS; i++) {
+    const v = (i / HS) * Math.PI;
+    for (let j = 0; j < W; j++) {
+      const u = (j / W) * 2 * Math.PI;
+      dirs.push(Math.sin(v) * Math.cos(u), Math.cos(v), Math.sin(v) * Math.sin(u));
+    }
+  }
+  dirs.push(0, -1, 0);
+  const S = dirs.length / 3 - 1;
+  const ring = (i, j) => 1 + (i - 1) * W + (((j % W) + W) % W);
+  const tris = [];
+  for (let j = 0; j < W; j++) tris.push(0, ring(1, j), ring(1, j + 1));
+  for (let i = 1; i < HS - 1; i++)
+    for (let j = 0; j < W; j++) {
+      const a = ring(i, j), b = ring(i, j + 1), c = ring(i + 1, j), d = ring(i + 1, j + 1);
+      tris.push(a, c, b, b, c, d);
+    }
+  for (let j = 0; j < W; j++) tris.push(S, ring(HS - 1, j + 1), ring(HS - 1, j));
+  for (let t = 0; t < tris.length; t += 3) { const k = tris[t + 1]; tris[t + 1] = tris[t + 2]; tris[t + 2] = k; } // outward-facing
+  return (SPACE_TEMPLATES[key] = { dirs: new Float32Array(dirs), tris, count: S + 1 });
+};
+
+// Clip a closed mesh against f(p) <= 0 and seal the opening with a flat cap.
+// mesh = { P: [x,y,z,...], K: [1 = cap vertex], T: [triangle indices] }
+const spaceClipMesh = (m, f) => {
+  const nv = m.K.length, fv = new Float64Array(nv);
+  let anyIn = false, anyOut = false;
+  for (let v = 0; v < nv; v++) {
+    const d = f(m.P[v * 3], m.P[v * 3 + 1], m.P[v * 3 + 2]);
+    fv[v] = d;
+    if (d <= 0) anyIn = true; else anyOut = true;
+  }
+  if (!anyOut) return m;
+  if (!anyIn) return null;
+  const P = [], K = [], T = [], remap = new Int32Array(nv).fill(-1), edge = new Map(), segs = [];
+  const keep = (v) => {
+    if (remap[v] < 0) {
+      remap[v] = K.length;
+      P.push(m.P[v * 3], m.P[v * 3 + 1], m.P[v * 3 + 2]);
+      K.push(m.K[v]);
+    }
+    return remap[v];
+  };
+  const cut = (u, v) => {
+    const key = u < v ? u * 1e6 + v : v * 1e6 + u;
+    let id = edge.get(key);
+    if (id === undefined) {
+      const t = fv[u] / (fv[u] - fv[v]);
+      id = K.length;
+      P.push(
+        m.P[u * 3] + t * (m.P[v * 3] - m.P[u * 3]),
+        m.P[u * 3 + 1] + t * (m.P[v * 3 + 1] - m.P[u * 3 + 1]),
+        m.P[u * 3 + 2] + t * (m.P[v * 3 + 2] - m.P[u * 3 + 2]),
+      );
+      K.push(m.K[u]);
+      edge.set(key, id);
+    }
+    return id;
+  };
+  for (let q = 0; q < m.T.length; q += 3) {
+    const tri = [m.T[q], m.T[q + 1], m.T[q + 2]];
+    const ins = [fv[tri[0]] <= 0, fv[tri[1]] <= 0, fv[tri[2]] <= 0];
+    const nIn = ins[0] + ins[1] + ins[2];
+    if (nIn === 3) { T.push(keep(tri[0]), keep(tri[1]), keep(tri[2])); continue; }
+    if (nIn === 0) continue;
+    const poly = [], cuts = [];
+    for (let e = 0; e < 3; e++) {
+      const u = tri[e], v = tri[(e + 1) % 3];
+      if (ins[e]) poly.push(keep(u));
+      if (ins[e] !== ins[(e + 1) % 3]) { const c = cut(u, v); poly.push(c); cuts.push(c); }
+    }
+    for (let k = 1; k + 1 < poly.length; k++) T.push(poly[0], poly[k], poly[k + 1]);
+    if (cuts.length === 2) segs.push(cuts[0], cuts[1]);
+  }
+  if (segs.length) {
+    let cx = 0, cy = 0, cz = 0;
+    for (const id of segs) { cx += P[id * 3]; cy += P[id * 3 + 1]; cz += P[id * 3 + 2]; }
+    cx /= segs.length; cy /= segs.length; cz /= segs.length;
+    const c0 = K.length;
+    P.push(cx, cy, cz); K.push(1);
+    const dup = new Map();
+    const capV = (id) => {
+      let d = dup.get(id);
+      if (d === undefined) { d = K.length; P.push(P[id * 3], P[id * 3 + 1], P[id * 3 + 2]); K.push(1); dup.set(id, d); }
+      return d;
+    };
+    for (let k = 0; k < segs.length; k += 2) T.push(c0, capV(segs[k]), capV(segs[k + 1]));
+  }
+  return { P, K, T };
+};
+
+// Uniform grid for nearest-anchor queries in world space.
+const spaceMakeGrid = (px, py, pz, n) => {
+  const G = 0.6, MIN = -5, GD = Math.ceil(10 / G);
+  const cells = Array.from({ length: GD * GD * GD }, () => []);
+  const gi = (v) => Math.max(0, Math.min(GD - 1, Math.floor((v - MIN) / G)));
+  for (let i = 0; i < n; i++) cells[(gi(px[i]) * GD + gi(py[i])) * GD + gi(pz[i])].push(i);
+  // Exact nearest via per-cell candidate lists: the nearest anchor of any
+  // point in a cell lies within (centre's nearest distance + cell diagonal) of
+  // the centre. Built lazily, so a query costs a short scan instead of a
+  // growing shell search (sections ask this for every pixel).
+  const HALF_DIAG = (G * Math.sqrt(3)) / 2, MAX = MIN + GD * G;
+  const cand = new Array(GD * GD * GD);
+  const nearest = (x, y, z, skip = -1) => {
+    if (skip < 0 && x >= MIN && x < MAX && y >= MIN && y < MAX && z >= MIN && z < MAX) {
+      const ci = (gi(x) * GD + gi(y)) * GD + gi(z);
+      let list = cand[ci];
+      if (!list) {
+        const ix = Math.floor(ci / (GD * GD)), iy = Math.floor(ci / GD) % GD, iz = ci % GD;
+        const ox = MIN + (ix + 0.5) * G, oy = MIN + (iy + 0.5) * G, oz = MIN + (iz + 0.5) * G;
+        const a0 = shellNearest(ox, oy, oz, -1);
+        if (a0 < 0) list = [];
+        else {
+          const d0 = Math.hypot(px[a0] - ox, py[a0] - oy, pz[a0] - oz);
+          list = within(ox, oy, oz, d0 + 2 * HALF_DIAG + 1e-6, -1).map((e) => e[1]);
+        }
+        cand[ci] = list;
+      }
+      let best = -1, bd = 1e18;
+      for (let q = 0; q < list.length; q++) {
+        const a = list[q], dx = px[a] - x, dy = py[a] - y, dz = pz[a] - z, d = dx * dx + dy * dy + dz * dz;
+        if (d < bd) { bd = d; best = a; }
+      }
+      return best;
+    }
+    return shellNearest(x, y, z, skip);
+  };
+  const shellNearest = (x, y, z, skip = -1) => {
+    const cx = gi(x), cy = gi(y), cz = gi(z);
+    let best = -1, bd = 1e18;
+    for (let k = 0; k < GD; k++) {
+      for (let i = cx - k; i <= cx + k; i++) {
+        if (i < 0 || i >= GD) continue;
+        for (let j = cy - k; j <= cy + k; j++) {
+          if (j < 0 || j >= GD) continue;
+          for (let l = cz - k; l <= cz + k; l++) {
+            if (l < 0 || l >= GD) continue;
+            if (Math.max(Math.abs(i - cx), Math.abs(j - cy), Math.abs(l - cz)) !== k) continue;
+            for (const a of cells[(i * GD + j) * GD + l]) {
+              if (a === skip) continue;
+              const dx = px[a] - x, dy = py[a] - y, dz = pz[a] - z, d = dx * dx + dy * dy + dz * dz;
+              if (d < bd) { bd = d; best = a; }
+            }
+          }
+        }
+      }
+      if (best >= 0 && Math.sqrt(bd) <= k * G) break;
+    }
+    return best;
+  };
+  // Every anchor within radius R of a point, sorted nearest first.
+  const within = (x, y, z, R, skip) => {
+    const out = [], k = Math.ceil(R / G), cx = gi(x), cy = gi(y), cz = gi(z), R2 = R * R;
+    for (let i = Math.max(0, cx - k); i <= Math.min(GD - 1, cx + k); i++)
+      for (let j = Math.max(0, cy - k); j <= Math.min(GD - 1, cy + k); j++)
+        for (let l = Math.max(0, cz - k); l <= Math.min(GD - 1, cz + k); l++)
+          for (const a of cells[(i * GD + j) * GD + l]) {
+            if (a === skip) continue;
+            const dx = px[a] - x, dy = py[a] - y, dz = pz[a] - z, d = dx * dx + dy * dy + dz * dz;
+            if (d <= R2) out.push([d, a]);
+          }
+    out.sort((p, q) => p[0] - q[0]);
+    return out;
+  };
+  return { nearest, within };
+};
+
+function createSpaceEngine(opts) {
+  const THREE = window.THREE;
+  const { glCanvas, views, onCursor, onHover, onPick, onStatus } = opts;
+  const CW = SPACE_CW, LW = SPACE_LW, LC = SPACE_LC, AMAX = SPACE_AMAX;
+  let TPL = spaceTemplate(28, 18), NV = TPL.count;
+
+  // ── State ────────────────────────────────────────────────────────────────
+  const S = {
+    anchors: [], markers: [],
+    cursor: [0.65, 0.12, 0], range: { hl: null, hc: null, hh: null },
+    fill: 0.5, sep: 0, opacity: 1,
+    dark: false, fg: [0.1, 0.1, 0.1], bg: [1, 1, 1],
+    guide: { l: "#b7791f", c: "#0e7490", h: "#be185d" },
+  };
+  let N = 0, px, py, pz, cols, rCell, meanR, maxR, dotR, grid = null, ready = false, buildToken = 0;
+  let selIdx = -1, disposed = false, anchorSig = null, markerSig = null;
+
+  // ── Renderer ─────────────────────────────────────────────────────────────
+  const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setClearColor(0x000000, 0);
+  renderer.autoClear = false;
+  const scene = new THREE.Scene(), overlay = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 200);
+  const axis = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, -LC * LW - 0.6, 0), new THREE.Vector3(0, (1 - LC) * LW + 0.6, 0)]),
+    new THREE.LineBasicMaterial({ color: 0x888888, transparent: true, opacity: 0.35 }),
+  );
+  scene.add(axis);
+
+  const cellVert = `
+    attribute vec3 aCenter; attribute vec3 aColor; attribute float aCap;
+    uniform float uSep;
+    varying vec3 vColor; varying float vCap; varying vec3 vViewPos;
+    void main() {
+      vec4 mv = modelViewMatrix * vec4(position + aCenter * (uSep - 1.0), 1.0);
+      gl_Position = projectionMatrix * mv;
+      vViewPos = mv.xyz; vColor = aColor; vCap = aCap;
+    }`;
+  const cellFrag = `
+    precision highp float;
+    varying vec3 vColor; varying float vCap; varying vec3 vViewPos;
+    uniform vec3 uL1, uL2; uniform float uAlpha;
+    void main() {
+      vec3 col;
+      if (vCap > 0.5) {
+        col = vColor;                       // a cut face shows the anchor's exact colour
+      } else {
+        vec3 N = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
+        vec3 V = normalize(-vViewPos);
+        float d1 = max(dot(N, uL1), 0.0), d2 = max(dot(N, uL2), 0.0);
+        float sp = pow(max(dot(N, normalize(uL1 + V)), 0.0), 55.0) * 0.28;
+        col = vColor * (0.34 + d1 * 0.56 + d2 * 0.2) + sp;
+      }
+      gl_FragColor = vec4(col, uAlpha);
+    }`;
+  const shared = { uSep: { value: 1 }, uL1: { value: new THREE.Vector3() }, uL2: { value: new THREE.Vector3() } };
+  const cellMat = new THREE.ShaderMaterial({
+    vertexShader: cellVert, fragmentShader: cellFrag,
+    uniforms: { ...shared, uAlpha: { value: 1 } },
+    transparent: true, depthWrite: true, side: THREE.DoubleSide, extensions: { derivatives: true },
+  });
+  const activeMat = new THREE.ShaderMaterial({
+    vertexShader: cellVert, fragmentShader: cellFrag,
+    uniforms: { ...shared, uAlpha: { value: 1 } },
+    side: THREE.DoubleSide, extensions: { derivatives: true },
+  });
+  const rimMat = new THREE.ShaderMaterial({
+    vertexShader: `attribute vec3 aCenter; uniform float uSep, uGrow;
+      void main() { vec3 d = position - aCenter; float l = length(d);
+        vec3 p = position + (l > 1e-5 ? d / l : vec3(0.0)) * uGrow + aCenter * (uSep - 1.0);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }`,
+    fragmentShader: `uniform vec3 uColor; void main() { gl_FragColor = vec4(uColor, 1.0); }`,
+    uniforms: { uSep: shared.uSep, uGrow: { value: 0.045 }, uColor: { value: new THREE.Color(0, 0, 0) } },
+    // Outline = a slightly grown copy painted flat first; the cell then covers
+    // all but its rim. No depth use, so it works for any triangle winding.
+    side: THREE.DoubleSide, depthTest: false, depthWrite: false,
+  });
+
+  // Main cells: one merged, re-sliced geometry
+  const geo = new THREE.BufferGeometry();
+  const mesh = new THREE.Mesh(geo, cellMat);
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  let capV = 0, capI = 0, bPos, bCen, bCol, bCap, bIdx;
+  const ensure = (nV, nI) => {
+    if (nV <= capV && nI <= capI) return;
+    capV = Math.max(nV, capV, 1024) * 1.5 | 0;
+    capI = Math.max(nI, capI, 1024) * 1.5 | 0;
+    bPos = new Float32Array(capV * 3); bCen = new Float32Array(capV * 3); bCol = new Float32Array(capV * 3);
+    bCap = new Float32Array(capV); bIdx = new Uint32Array(capI);
+    const dyn = (arr, n) => { const a = new THREE.BufferAttribute(arr, n); a.setUsage(THREE.DynamicDrawUsage); return a; };
+    geo.setAttribute("position", dyn(bPos, 3));
+    geo.setAttribute("aCenter", dyn(bCen, 3));
+    geo.setAttribute("aColor", dyn(bCol, 3));
+    geo.setAttribute("aCap", dyn(bCap, 1));
+    geo.setIndex(dyn(bIdx, 1));
+  };
+
+  // Active cell: drawn after a depth clear so it is never hidden
+  const activeGeo = new THREE.BufferGeometry();
+  let aCapV = 0, aCapI = 0;
+  const activeMesh = new THREE.Mesh(activeGeo, activeMat);
+  const activeRim = new THREE.Mesh(activeGeo, rimMat);
+  activeMesh.frustumCulled = activeRim.frustumCulled = false;
+  activeRim.renderOrder = 1; activeMesh.renderOrder = 2;
+  overlay.add(activeRim, activeMesh);
+
+  // Cursor marker
+  const marker = new THREE.Group();
+  const markerMats = [];
+  {
+    const m1 = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.9, depthTest: false });
+    const m2 = new THREE.MeshBasicMaterial({ depthTest: false });
+    markerMats.push(m1, m2);
+    const ring = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.SphereGeometry(0.11, 12, 8)), m1);
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.035, 10, 8), m2);
+    const ax = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-0.22, 0, 0), new THREE.Vector3(0.22, 0, 0), new THREE.Vector3(0, -0.22, 0),
+      new THREE.Vector3(0, 0.22, 0), new THREE.Vector3(0, 0, -0.22), new THREE.Vector3(0, 0, 0.22)]), m1);
+    marker.add(ring, dot, ax);
+    marker.traverse((o) => (o.renderOrder = 999));
+  }
+  overlay.add(marker);
+
+  // Plane outlines (L, C, H)
+  const planes = new THREE.Group();
+  const lineMat = () => new THREE.LineBasicMaterial({ transparent: true, opacity: 0.55, depthTest: false, depthWrite: false });
+  const PN = 96;
+  const fixedGeo = (n) => {
+    const g = new THREE.BufferGeometry(), a = new THREE.BufferAttribute(new Float32Array(n * 3), 3);
+    a.setUsage(THREE.DynamicDrawUsage); g.setAttribute("position", a); return g;
+  };
+  const plL = new THREE.LineLoop(fixedGeo(PN), lineMat());
+  const plC = new THREE.LineSegments(fixedGeo(PN * 4 + 2), lineMat());
+  const plH = new THREE.LineLoop(fixedGeo(4), lineMat());
+  [plL, plC, plH].forEach((o) => { o.renderOrder = 998; planes.add(o); });
+  overlay.add(planes);
+
+  // Pins and commercial colours: round dots drawn before the cells
+  const dotGeo = new THREE.BufferGeometry();
+  const dotMat = new THREE.ShaderMaterial({
+    vertexShader: `attribute vec3 aColor; attribute float aKind; attribute float aVis;
+      uniform float uSep, uSize; varying vec3 vColor; varying float vKind;
+      void main() { vColor = aColor; vKind = aKind;
+        vec4 mv = modelViewMatrix * vec4(position * uSep, 1.0);
+        gl_Position = aVis < 0.5 ? vec4(2.0, 2.0, 2.0, 1.0) : projectionMatrix * mv;
+        gl_PointSize = uSize; }`,
+    fragmentShader: `precision highp float; varying vec3 vColor; varying float vKind; uniform vec3 uRing;
+      void main() { vec2 p = gl_PointCoord * 2.0 - 1.0;
+        float d = vKind > 0.5 ? abs(p.x) + abs(p.y) : length(p);   // pins round, commercial diamonds
+        if (d > 1.0) discard;
+        gl_FragColor = vec4(d > 0.62 ? uRing : vColor, 1.0); }`,
+    uniforms: { uSep: shared.uSep, uSize: { value: 12 * Math.min(window.devicePixelRatio || 1, 2) }, uRing: { value: new THREE.Color(0, 0, 0) } },
+  });
+  const dots = new THREE.Points(dotGeo, dotMat);
+  dots.frustumCulled = false;
+  dots.renderOrder = -1;
+  scene.add(dots);
+  // A faint copy drawn over everything, so pins buried inside the solid stay findable.
+  const ghostMat = dotMat.clone();
+  ghostMat.uniforms = { uSep: shared.uSep, uSize: dotMat.uniforms.uSize, uRing: dotMat.uniforms.uRing };
+  ghostMat.fragmentShader = dotMat.fragmentShader.replace("gl_FragColor = vec4(d > 0.62 ? uRing : vColor, 1.0);", "gl_FragColor = vec4(d > 0.62 ? uRing : vColor, 0.8);");
+  ghostMat.transparent = true; ghostMat.depthTest = false; ghostMat.depthWrite = false;
+  const ghostDots = new THREE.Points(dotGeo, ghostMat);
+  ghostDots.frustumCulled = false;
+  ghostDots.renderOrder = -1;
+  overlay.add(ghostDots);
+
+  // ── Orbit camera ─────────────────────────────────────────────────────────
+  const orb = { theta: 0.75, phi: 1.12, r: 14, tx: 0, ty: 0, tz: 0 };
+  const applyOrbit = () => {
+    orb.phi = Math.max(0.12, Math.min(Math.PI - 0.12, orb.phi));
+    const sp = Math.sin(orb.phi);
+    camera.position.set(orb.tx + orb.r * sp * Math.cos(orb.theta), orb.ty + orb.r * Math.cos(orb.phi), orb.tz + orb.r * sp * Math.sin(orb.theta));
+    camera.lookAt(orb.tx, orb.ty, orb.tz);
+    camera.updateMatrixWorld();
+    const m3 = new THREE.Matrix3().setFromMatrix4(camera.matrixWorldInverse);
+    shared.uL1.value.set(8, 16, 6).normalize().applyMatrix3(m3).normalize();
+    shared.uL2.value.set(-6, -3, -5).normalize().applyMatrix3(m3).normalize();
+    requestRender();
+  };
+
+  // ── Render scheduling (only when something changed) ──────────────────────
+  let rafId = 0;
+  const frame = () => {
+    rafId = 0;
+    if (disposed) return;
+    renderer.clear();
+    renderer.render(scene, camera);
+    renderer.clearDepth();
+    renderer.render(overlay, camera);
+  };
+  function requestRender() { if (!rafId && !disposed) rafId = requestAnimationFrame(frame); }
+
+  const resize = () => {
+    const el = glCanvas.parentElement;
+    const w = Math.max(10, el.clientWidth), h = Math.max(10, el.clientHeight);
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    requestRender();
+  };
+
+  // ── Cells ────────────────────────────────────────────────────────────────
+  const inflR = (i, r) => dotR[i] + (r - dotR[i]) * S.fill;
+  const buildCells = () => {
+    const token = ++buildToken;
+    ready = false;
+    const list = S.anchors;
+    N = list.length;
+    px = new Float32Array(N); py = new Float32Array(N); pz = new Float32Array(N); cols = new Float32Array(N * 3);
+    for (let i = 0; i < N; i++) {
+      const a = list[i], w = spaceToWorld(a.L, a.C, a.H);
+      px[i] = w[0]; py[i] = w[1]; pz[i] = w[2];
+      const c = spaceHexToRgb(a.hex);
+      cols[i * 3] = c[0]; cols[i * 3 + 1] = c[1]; cols[i * 3 + 2] = c[2];
+    }
+    grid = spaceMakeGrid(px, py, pz, N);
+    TPL = N > 1800 ? spaceTemplate(14, 9) : N > 700 ? spaceTemplate(20, 12) : spaceTemplate(28, 18);
+    NV = TPL.count;
+    rCell = new Float32Array(N * NV); meanR = new Float32Array(N); maxR = new Float32Array(N); dotR = new Float32Array(N);
+    selIdx = -1;
+    if (!N) { ready = true; onStatus({ phase: "empty" }); rebuild(); rebuildActive(); return; }
+    const D = TPL.dirs;
+    let i = 0;
+    const step = () => {
+      if (token !== buildToken || disposed) return;
+      const t0 = performance.now();
+      for (; i < N && performance.now() - t0 < 14; i++) {
+        const X = px[i], Y = py[i], Z = pz[i];
+        let near = grid.within(X, Y, Z, 1.2, i);
+        dotR[i] = Math.max(0.035, Math.min(0.1, (near.length ? Math.sqrt(near[0][0]) : 1) * 0.45));
+        const radii = rCell.subarray(i * NV, (i + 1) * NV);
+        // Distance to the nearest bisector plane along direction v, starting from cap r0
+        const voronoi = (v, cand, r0) => {
+          const dx = D[v * 3], dy = D[v * 3 + 1], dz = D[v * 3 + 2];
+          let r = r0;
+          for (const [d2, j] of cand) {
+            if (Math.sqrt(d2) * 0.5 >= r) break; // nobody further away can cut closer
+            const den = (px[j] - X) * dx + (py[j] - Y) * dy + (pz[j] - Z) * dz;
+            if (den > 1e-6) { const rv = d2 / (2 * den); if (rv < r) r = rv; }
+          }
+          return r;
+        };
+        // Pull r back inside the sRGB gamut (the gamut is star-shaped from inside)
+        const gamut = (v, r) => {
+          const dx = D[v * 3], dy = D[v * 3 + 1], dz = D[v * 3 + 2];
+          if (spaceInGamut(X + dx * r, Y + dy * r, Z + dz * r)) return r;
+          let lo = 0, hi = r;
+          for (let k = 0; k < 15; k++) { const m = (lo + hi) / 2; if (spaceInGamut(X + dx * m, Y + dy * m, Z + dz * m)) lo = m; else hi = m; }
+          return lo;
+        };
+        let need = 0;
+        for (let v = 0; v < NV; v++) {
+          let r = voronoi(v, near, 8);
+          if (r > 0.6) { r = gamut(v, r); if (r > 0.6) need = Math.max(need, r); }
+          radii[v] = r;
+        }
+        if (need) { // a few directions reach past the first search radius: widen it for those
+          near = grid.within(X, Y, Z, 2 * need + 0.01, i);
+          for (let v = 0; v < NV; v++) if (radii[v] > 0.6) radii[v] = voronoi(v, near, radii[v]);
+        }
+        let sum = 0, mx = 0;
+        for (let v = 0; v < NV; v++) {
+          const r = Math.max(gamut(v, radii[v]), 0.002);
+          radii[v] = r; sum += r; if (r > mx) mx = r;
+        }
+        meanR[i] = sum / NV; maxR[i] = mx;
+      }
+      if (i < N) { onStatus({ phase: "building", progress: i / N }); setTimeout(step, 0); return; }
+      ready = true;
+      onStatus({ phase: "ready" });
+      updateCursor();
+      rebuild();
+      rebuildActive();
+    };
+    onStatus({ phase: "building", progress: 0 });
+    setTimeout(step, 0);
+  };
+
+  const constraints = () => {
+    const cons = [], [lc, cc, hc] = S.cursor, { hl, hc: dc, hh } = S.range;
+    if (hl !== null) {
+      const lo = (lc - hl - LC) * LW, hi = (lc + hl - LC) * LW;
+      cons.push((x, y) => lo - y, (x, y) => y - hi);
+    }
+    if (dc !== null) {
+      const outer = (cc + dc) * CW, inner = (cc - dc) * CW;
+      cons.push((x, y, z) => Math.hypot(x, z) - outer);
+      if (inner > 0) cons.push((x, y, z) => inner - Math.hypot(x, z));
+    }
+    if (hh !== null) {
+      // Hue direction θ points along (sin θ, −cos θ) in x/z
+      if (hh < 90) {
+        const t1 = ((hc - hh) * Math.PI) / 180, t2 = ((hc + hh) * Math.PI) / 180;
+        cons.push((x, y, z) => -(Math.cos(t1) * x + Math.sin(t1) * z));
+        cons.push((x, y, z) => Math.cos(t2) * x + Math.sin(t2) * z);
+      } else {
+        const t = (hc * Math.PI) / 180, ux = Math.sin(t), uz = -Math.cos(t), k = Math.cos((hh * Math.PI) / 180);
+        cons.push((x, y, z) => k * Math.hypot(x, z) - (ux * x + uz * z));
+      }
+    }
+    return cons;
+  };
+  const inRangeLCH = (L, C, H) => {
+    const [lc, cc, hc] = S.cursor, { hl, hc: dc, hh } = S.range;
+    return (hl === null || Math.abs(L - lc) <= hl) && (dc === null || Math.abs(C - cc) <= dc) &&
+      (hh === null || C < 0.004 || spaceHueDist(H, hc) <= hh);
+  };
+
+  // A cell after inflation and slicing: null (sliced away), "whole" (untouched
+  // template, written straight into the buffers) or a clipped mesh.
+  // Every section function is at most 2-Lipschitz, so a cell whose bounding
+  // sphere sits clearly on one side of a cut is decided without clipping.
+  const cellMesh = (i, cons) => {
+    const X = px[i], Y = py[i], Z = pz[i], R = inflR(i, maxR[i]) * 2 + 1e-4;
+    const active = [];
+    for (const f of cons) {
+      const fc = f(X, Y, Z);
+      if (fc > R) return null;
+      if (fc >= -R) active.push(f);
+    }
+    if (!active.length) return "whole";
+    const P = new Array(NV * 3), D = TPL.dirs;
+    for (let v = 0; v < NV; v++) {
+      const r = inflR(i, rCell[i * NV + v]);
+      P[v * 3] = X + D[v * 3] * r; P[v * 3 + 1] = Y + D[v * 3 + 1] * r; P[v * 3 + 2] = Z + D[v * 3 + 2] * r;
+    }
+    let m = { P, K: new Array(NV).fill(0), T: TPL.tris };
+    for (const f of active) { m = spaceClipMesh(m, f); if (!m) return null; }
+    return m;
+  };
+  const wholeMesh = (i) => {
+    const P = new Float32Array(NV * 3), D = TPL.dirs, X = px[i], Y = py[i], Z = pz[i];
+    for (let v = 0; v < NV; v++) {
+      const r = inflR(i, rCell[i * NV + v]);
+      P[v * 3] = X + D[v * 3] * r; P[v * 3 + 1] = Y + D[v * 3 + 1] * r; P[v * 3 + 2] = Z + D[v * 3 + 2] * r;
+    }
+    return { P, K: new Float32Array(NV), T: TPL.tris };
+  };
+
+  // Every cell, sliced, in one buffer. The active cell is also in here; the
+  // overlay draws it again on top.
+  function rebuild() {
+    if (!ready) return;
+    const parts = [], cons = constraints();
+    let nV = 0, nI = 0;
+    const tl = TPL.tris.length;
+    for (let i = 0; i < N; i++) {
+      const m = cellMesh(i, cons);
+      if (!m) continue;
+      parts.push([i, m]);
+      if (m === "whole") { nV += NV; nI += tl; } else { nV += m.K.length; nI += m.T.length; }
+    }
+    ensure(nV, nI);
+    let vo = 0, io = 0;
+    const D = TPL.dirs, T = TPL.tris;
+    for (const [i, m] of parts) {
+      const r = cols[i * 3], g = cols[i * 3 + 1], b = cols[i * 3 + 2], X = px[i], Y = py[i], Z = pz[i];
+      if (m === "whole") {
+        for (let v = 0; v < NV; v++) {
+          const o = (vo + v) * 3, rr = inflR(i, rCell[i * NV + v]);
+          bPos[o] = X + D[v * 3] * rr; bPos[o + 1] = Y + D[v * 3 + 1] * rr; bPos[o + 2] = Z + D[v * 3 + 2] * rr;
+          bCen[o] = X; bCen[o + 1] = Y; bCen[o + 2] = Z;
+          bCol[o] = r; bCol[o + 1] = g; bCol[o + 2] = b;
+          bCap[vo + v] = 0;
+        }
+        for (let q = 0; q < tl; q++) bIdx[io + q] = T[q] + vo;
+        vo += NV; io += tl;
+        continue;
+      }
+      const nv = m.K.length;
+      for (let v = 0; v < nv; v++) {
+        const o = (vo + v) * 3;
+        bPos[o] = m.P[v * 3]; bPos[o + 1] = m.P[v * 3 + 1]; bPos[o + 2] = m.P[v * 3 + 2];
+        bCen[o] = X; bCen[o + 1] = Y; bCen[o + 2] = Z;
+        bCol[o] = r; bCol[o + 1] = g; bCol[o + 2] = b;
+        bCap[vo + v] = m.K[v];
+      }
+      for (let q = 0; q < m.T.length; q++) bIdx[io + q] = m.T[q] + vo;
+      vo += nv; io += m.T.length;
+    }
+    ["position", "aCenter", "aColor", "aCap"].forEach((k) => {
+      const a = geo.attributes[k];
+      a.updateRange = { offset: 0, count: vo * a.itemSize };   // upload only what changed
+      a.needsUpdate = true;
+    });
+    geo.index.updateRange = { offset: 0, count: io };
+    geo.index.needsUpdate = true;
+    geo.setDrawRange(0, io);
+    updateDotVisibility();
+    requestRender();
+    scheduleSections();
+  }
+  // Just the highlighted cell (cheap: runs on every cursor move).
+  function rebuildActive() {
+    let m = ready && selIdx >= 0 ? cellMesh(selIdx, constraints()) : null;
+    if (m === "whole") m = wholeMesh(selIdx);
+    activeMesh.visible = activeRim.visible = !!m;
+    if (m) {
+      const nv = m.K.length, ni = m.T.length;
+      if (nv > aCapV || ni > aCapI) {
+        if (activeGeo.attributes.position) activeGeo.dispose();   // frees the old GPU buffers
+        aCapV = Math.max(nv, aCapV) * 1.5 | 0; aCapI = Math.max(ni, aCapI) * 1.5 | 0;
+        const dyn = (arr, n) => { const a = new THREE.BufferAttribute(arr, n); a.setUsage(THREE.DynamicDrawUsage); return a; };
+        activeGeo.setAttribute("position", dyn(new Float32Array(aCapV * 3), 3));
+        activeGeo.setAttribute("aCenter", dyn(new Float32Array(aCapV * 3), 3));
+        activeGeo.setAttribute("aColor", dyn(new Float32Array(aCapV * 3), 3));
+        activeGeo.setAttribute("aCap", dyn(new Float32Array(aCapV), 1));
+        activeGeo.setIndex(dyn(new Uint32Array(aCapI), 1));
+      }
+      const A = activeGeo.attributes, pos = A.position.array, cen = A.aCenter.array, col = A.aColor.array, cap = A.aCap.array, idx = activeGeo.index.array;
+      const X = px[selIdx], Y = py[selIdx], Z = pz[selIdx], r = cols[selIdx * 3], g = cols[selIdx * 3 + 1], b = cols[selIdx * 3 + 2];
+      for (let v = 0; v < nv; v++) {
+        pos[v * 3] = m.P[v * 3]; pos[v * 3 + 1] = m.P[v * 3 + 1]; pos[v * 3 + 2] = m.P[v * 3 + 2];
+        cen[v * 3] = X; cen[v * 3 + 1] = Y; cen[v * 3 + 2] = Z;
+        col[v * 3] = r; col[v * 3 + 1] = g; col[v * 3 + 2] = b;
+        cap[v] = m.K[v];
+      }
+      for (let q = 0; q < ni; q++) idx[q] = m.T[q];
+      ["position", "aCenter", "aColor", "aCap"].forEach((k) => { A[k].updateRange = { offset: 0, count: nv * A[k].itemSize }; A[k].needsUpdate = true; });
+      activeGeo.index.updateRange = { offset: 0, count: ni };
+      activeGeo.index.needsUpdate = true;
+      activeGeo.setDrawRange(0, ni);
+    }
+    requestRender();
+  }
+
+  // ── Cursor ───────────────────────────────────────────────────────────────
+  const cursorWorld = new THREE.Vector3();
+  function updateCursor() {
+    const [L, C, H] = S.cursor, w = spaceToWorld(L, C, H);
+    cursorWorld.set(w[0], w[1], w[2]);
+    const prev = selIdx;
+    selIdx = ready && N ? grid.nearest(w[0], w[1], w[2]) : -1;
+    placeMarker();
+    updatePlanes();
+    return prev !== selIdx;
+  }
+  const placeMarker = () => {
+    const k = S.sep, c = selIdx >= 0 ? [px[selIdx], py[selIdx], pz[selIdx]] : [0, 0, 0];
+    marker.position.set(cursorWorld.x + c[0] * k, cursorWorld.y + c[1] * k, cursorWorld.z + c[2] * k);
+    marker.scale.setScalar(orb.r / 14);
+  };
+  const updatePlanes = () => {
+    const [L, C, H] = S.cursor, R = AMAX * CW, y = (L - LC) * LW, y0 = -LC * LW, y1 = (1 - LC) * LW, n = PN;
+    const hr = (H * Math.PI) / 180, sx = Math.sin(hr), cz = -Math.cos(hr);
+    const put = (obj, arr) => { const a = obj.geometry.attributes.position; a.array.set(arr); a.needsUpdate = true; };
+    const ring = (r, yy) => { const a = []; for (let i = 0; i < n; i++) { const t = (i / n) * Math.PI * 2; a.push(r * Math.sin(t), yy, -r * Math.cos(t)); } return a; };
+    put(plL, ring(R, y));
+    const rc = Math.max(C * CW, 0.001), segs = [];
+    for (const yy of [y0, y1]) { const r = ring(rc, yy); for (let i = 0; i < n; i++) { const j = (i + 1) % n; segs.push(r[i * 3], r[i * 3 + 1], r[i * 3 + 2], r[j * 3], r[j * 3 + 1], r[j * 3 + 2]); } }
+    segs.push(rc * sx, y0, rc * cz, rc * sx, y1, rc * cz);
+    put(plC, segs);
+    plC.visible = C > 0.002;
+    put(plH, [0, y0, 0, R * sx, y0, R * cz, R * sx, y1, R * cz, 0, y1, 0]);
+    planes.scale.setScalar(1 + S.sep);
+    requestRender();
+  };
+
+  // ── Markers (pins, commercial) ───────────────────────────────────────────
+  let mVis = null, markerPos = null, mVisAll = false;
+  const setMarkerGeometry = () => {
+    const M = S.markers, n = M.length, pos = new Float32Array(n * 3), col = new Float32Array(n * 3), kind = new Float32Array(n);
+    markerPos = pos;
+    if (dotGeo.attributes.position) dotGeo.dispose();   // release the previous GPU buffers
+    mVis = new Float32Array(n).fill(1); mVisAll = false;
+    M.forEach((m, i) => {
+      const w = spaceToWorld(m.L, m.C, m.H), c = spaceHexToRgb(m.hex);
+      pos.set(w, i * 3); col.set(c, i * 3); kind[i] = m.kind === "brand" ? 1 : 0;
+    });
+    dotGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    dotGeo.setAttribute("aColor", new THREE.BufferAttribute(col, 3));
+    dotGeo.setAttribute("aKind", new THREE.BufferAttribute(kind, 1));
+    dotGeo.setAttribute("aVis", new THREE.BufferAttribute(mVis, 1));
+    updateDotVisibility();
+  };
+  function updateDotVisibility() {
+    if (!mVis) return;
+    const M = S.markers, { hl, hc, hh } = S.range;
+    if (hl === null && hc === null && hh === null) { if (mVisAll) return; mVis.fill(1); mVisAll = true; }
+    else { mVisAll = false; for (let i = 0; i < M.length; i++) mVis[i] = inRangeLCH(M[i].L, M[i].C, M[i].H) ? 1 : 0; }
+    dotGeo.attributes.aVis.needsUpdate = true;
+    requestRender();
+  }
+
+  // ── Picking ──────────────────────────────────────────────────────────────
+  const rayDir = new THREE.Vector3(), tmpV = new THREE.Vector3(), projM = new THREE.Matrix4();
+  const pick3D = (clientX, clientY) => {
+    const rc = glCanvas.getBoundingClientRect();
+    const nx = ((clientX - rc.left) / rc.width) * 2 - 1, ny = -((clientY - rc.top) / rc.height) * 2 + 1;
+    // markers first: nearest projected dot within 7px
+    let best = null, bd = 49;
+    const k = 1 + S.sep;
+    if (mVis && markerPos) {
+      projM.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+      const e = projM.elements, hw = rc.width / 2, hh = rc.height / 2;
+      for (let i = 0, n = S.markers.length; i < n; i++) {
+        if (!mVis[i]) continue;
+        const x = markerPos[i * 3] * k, y = markerPos[i * 3 + 1] * k, z = markerPos[i * 3 + 2] * k;
+        const w = e[3] * x + e[7] * y + e[11] * z + e[15];
+        if (w <= 0) continue;
+        const sz = (e[2] * x + e[6] * y + e[10] * z + e[14]) / w;
+        if (sz > 1) continue;
+        const dx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w - nx) * hw, dy = ((e[1] * x + e[5] * y + e[9] * z + e[13]) / w - ny) * hh;
+        const d = dx * dx + dy * dy;
+        if (d < bd) { bd = d; best = S.markers[i]; }
+      }
+    }
+    if (best) return best;
+    if (!ready || !N) return null;
+    const ro = camera.position;
+    rayDir.set(nx, ny, 0.5).unproject(camera).sub(ro).normalize();
+    let bt = 1e9, bi = -1;
+    const kk = S.sep;
+    for (let i = 0; i < N; i++) {
+      const a = S.anchors[i];
+      if (i !== selIdx && !inRangeLCH(a.L, a.C, a.H)) continue;
+      const r = inflR(i, meanR[i]);
+      const cx = px[i] * (1 + kk) - ro.x, cy = py[i] * (1 + kk) - ro.y, cz = pz[i] * (1 + kk) - ro.z;
+      const b = cx * rayDir.x + cy * rayDir.y + cz * rayDir.z, disc = b * b - (cx * cx + cy * cy + cz * cz - r * r);
+      if (disc < 0) continue;
+      const t = b - Math.sqrt(disc);
+      if (t > 0 && t < bt) { bt = t; bi = i; }
+    }
+    return bi >= 0 ? S.anchors[bi] : null;
+  };
+
+  // ── 3D pointer controls ──────────────────────────────────────────────────
+  const listeners = [];
+  const on = (el, ev, fn, o) => { el.addEventListener(ev, fn, o); listeners.push([el, ev, fn, o]); };
+  {
+    const ptrs = new Map();
+    let mode = null, lx = 0, ly = 0, pinch = null, down = null;
+    const pan = (dx, dy) => {
+      const s = orb.r * 0.0016, right = new THREE.Vector3(), up = new THREE.Vector3();
+      camera.matrixWorld.extractBasis(right, up, new THREE.Vector3());
+      orb.tx -= (right.x * dx - up.x * dy) * s; orb.ty -= (right.y * dx - up.y * dy) * s; orb.tz -= (right.z * dx - up.z * dy) * s;
+    };
+    on(glCanvas, "contextmenu", (e) => e.preventDefault());
+    on(glCanvas, "pointerdown", (e) => {
+      glCanvas.setPointerCapture(e.pointerId);
+      ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+      onHover(null);
+      if (ptrs.size === 2) {
+        const [a, b] = [...ptrs.values()];
+        pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] };
+        mode = "pinch"; down = null; return;
+      }
+      mode = e.button === 1 || e.button === 2 || e.shiftKey ? "pan" : "rotate";
+      lx = e.clientX; ly = e.clientY;
+      down = { x: e.clientX, y: e.clientY, t: performance.now() };
+    });
+    on(glCanvas, "pointermove", (e) => {
+      if (!ptrs.has(e.pointerId)) {
+        if (e.pointerType === "mouse") {
+          const hit = pick3D(e.clientX, e.clientY);
+          onHover(hit ? { item: hit, x: e.clientX, y: e.clientY } : null);
+        }
+        return;
+      }
+      ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+      if (mode === "pinch" && ptrs.size === 2) {
+        const [a, b] = [...ptrs.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]), m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        orb.r = Math.max(3, Math.min(40, orb.r * (pinch.d / d)));
+        pan(m[0] - pinch.m[0], m[1] - pinch.m[1]);
+        pinch = { d, m }; placeMarker(); applyOrbit(); return;
+      }
+      const dx = e.clientX - lx, dy = e.clientY - ly;
+      lx = e.clientX; ly = e.clientY;
+      if (mode === "pan") pan(dx, dy);
+      else if (mode === "rotate") { orb.theta += dx * 0.006; orb.phi -= dy * 0.006; }
+      applyOrbit();
+    });
+    const up = (e) => {
+      ptrs.delete(e.pointerId);
+      if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 5 && performance.now() - down.t < 400) {
+        const hit = pick3D(e.clientX, e.clientY);
+        if (hit) onPick(hit);
+      }
+      down = null;
+      if (!ptrs.size) mode = null;
+    };
+    on(glCanvas, "pointerup", up);
+    on(glCanvas, "pointercancel", up);
+    on(glCanvas, "pointerleave", () => onHover(null));
+    on(glCanvas, "wheel", (e) => {
+      e.preventDefault();
+      orb.r = Math.max(3, Math.min(40, orb.r * Math.exp(e.deltaY * 0.0012)));
+      placeMarker(); applyOrbit();
+    }, { passive: false });
+  }
+
+  // ── 2D sections ──────────────────────────────────────────────────────────
+  const SV = {
+    l: { cv: views.l, def: { x0: -AMAX, x1: AMAX, y0: -AMAX, y1: AMAX }, iso: true },
+    c: { cv: views.c, def: { x0: -Math.PI * AMAX, x1: Math.PI * AMAX, y0: -0.05, y1: LW / CW + 0.05 }, iso: true },
+    h: { cv: views.h, def: { x0: 0, x1: AMAX, y0: 0, y1: 1 }, iso: false },
+  };
+  const fitIso = (v) => {
+    if (!v.iso) return;
+    const d = v.dom, sx = (d.x1 - d.x0) / v.cv.width, cy = (d.y0 + d.y1) / 2;
+    d.y0 = cy - (sx * v.cv.height) / 2; d.y1 = cy + (sx * v.cv.height) / 2;
+  };
+  const sizeView = (v) => {
+    const W = Math.max(40, Math.round(v.cv.clientWidth)), H = Math.max(40, Math.round(v.cv.clientHeight));
+    if (v.cv.width === W && v.cv.height === H && v.img) return false;
+    v.cv.width = W; v.cv.height = H;
+    v.ctx = v.cv.getContext("2d");
+    v.img = v.ctx.createImageData(W, H);
+    v.ids = new Int32Array(W * H); v.dim = new Float32Array(W * H);
+    if (!v.dom) v.dom = { ...v.def };
+    fitIso(v);
+    return true;
+  };
+  Object.values(SV).forEach(sizeView);
+  const px2u = (v, x) => v.dom.x0 + (x / v.cv.width) * (v.dom.x1 - v.dom.x0);
+  const py2v = (v, y) => v.dom.y1 - (y / v.cv.height) * (v.dom.y1 - v.dom.y0);
+  const u2px = (v, u) => ((u - v.dom.x0) / (v.dom.x1 - v.dom.x0)) * v.cv.width;
+  const v2py = (v, w) => ((v.dom.y1 - w) / (v.dom.y1 - v.dom.y0)) * v.cv.height;
+
+  // Which cell (if any) covers a world point at the current inflation.
+  const cellAt = (x, y, z) => {
+    if (!ready || !N) return -1;
+    const i = grid.nearest(x, y, z);
+    if (S.fill >= 0.999) return spaceInGamut(x, y, z) ? i : -1;
+    const dx = x - px[i], dy = y - py[i], dz = z - pz[i], dist = Math.sqrt(dx * dx + dy * dy + dz * dz), r0 = dotR[i];
+    if (dist <= r0) return i;
+    if (S.fill < 0.001) return -1;
+    const k = (r0 + (dist - r0) / S.fill) / dist;
+    const qx = px[i] + dx * k, qy = py[i] + dy * k, qz = pz[i] + dz * k;
+    if (!spaceInGamut(qx, qy, qz)) return -1;
+    return grid.nearest(qx, qy, qz) === i ? i : -1;
+  };
+  const mapping = {
+    // L section: a → right, b → up, at the cursor's lightness
+    l: (u, w, out) => { out[0] = u * CW; out[1] = (S.cursor[0] - LC) * LW; out[2] = -w * CW; return true; },
+    // C section: the cylinder at the cursor's chroma, unrolled at true size (seam at 0°/360°)
+    c: (s, w, out) => {
+      const C = S.cursor[1], L = (w * CW) / LW;
+      if (L < 0 || L > 1 || C < 0.002 || Math.abs(s) > Math.PI * C) return false;
+      const p = spaceToWorld(L, C, 180 + ((s / C) * 180) / Math.PI);
+      out[0] = p[0]; out[1] = p[1]; out[2] = p[2]; return true;
+    },
+    // H section: chroma → right, lightness → up, at the cursor's hue
+    h: (c, L, out) => {
+      if (c < 0 || L < 0 || L > 1) return false;
+      const p = spaceToWorld(L, c, S.cursor[2]);
+      out[0] = p[0]; out[1] = p[1]; out[2] = p[2]; return true;
+    },
+  };
+  const toByte = (c) => Math.round(Math.max(0, Math.min(1, c)) * 255);
+  // Classify pixels of rows [y0, y1) at the given block size.
+  const sampleRows = (k, step, y0, y1) => {
+    const v = SV[k], W = v.cv.width, H = v.cv.height, ids = v.ids, dim = v.dim, P = [0, 0, 0];
+    for (let y = y0; y < y1; y += step)
+      for (let x = 0; x < W; x += step) {
+        let id = -1, dm = 0;
+        if (mapping[k](px2u(v, x + step / 2), py2v(v, y + step / 2), P)) {
+          id = cellAt(P[0], P[1], P[2]);
+          if (id >= 0) { const [L, C, Hh] = spaceWorldToLCH(P[0], P[1], P[2]); dm = inRangeLCH(L, C, Hh) ? 1 : 0; }
+        }
+        for (let yy = y; yy < Math.min(y + step, H); yy++)
+          for (let xx = x; xx < Math.min(x + step, W); xx++) { ids[yy * W + xx] = id; dim[yy * W + xx] = dm; }
+      }
+  };
+  // Turn classified pixels into colours, then draw the plane guides on top.
+  const present = (k) => {
+    const v = SV[k], W = v.cv.width, H = v.cv.height, d = v.img.data, ids = v.ids, dim = v.dim;
+    const bg = S.bg, empty = S.dark ? [bg[0] * 0.75, bg[1] * 0.75, bg[2] * 0.75] : [bg[0] * 0.94, bg[1] * 0.94, bg[2] * 0.94];
+    for (let i = 0, n = W * H; i < n; i++) {
+      const id = ids[i], o = i * 4;
+      d[o + 3] = 255;
+      if (id < 0) { d[o] = toByte(empty[0]); d[o + 1] = toByte(empty[1]); d[o + 2] = toByte(empty[2]); continue; }
+      const x = i % W, edge = (x > 0 && ids[i - 1] !== id) || (i >= W && ids[i - W] !== id);
+      let r = cols[id * 3], g = cols[id * 3 + 1], b = cols[id * 3 + 2];
+      if (!dim[i]) { r = r * 0.3 + empty[0] * 0.7; g = g * 0.3 + empty[1] * 0.7; b = b * 0.3 + empty[2] * 0.7; }
+      if (edge) { const e = S.dark ? 0.55 : 0.7; r *= e; g *= e; b *= e; }
+      d[o] = toByte(r); d[o + 1] = toByte(g); d[o + 2] = toByte(b);
+    }
+    v.ctx.putImageData(v.img, 0, 0);
+    drawGuides(k);
+  };
+  const paint = (k, step) => { sampleRows(k, step, 0, SV[k].cv.height); present(k); };
+  const fgCss = () => `rgb(${toByte(S.fg[0])},${toByte(S.fg[1])},${toByte(S.fg[2])})`;
+  const line = (ctx, col, pts, dash) => {
+    ctx.save(); ctx.strokeStyle = col; ctx.globalAlpha = 0.8; ctx.lineWidth = 1.25;
+    if (dash) ctx.setLineDash([4, 3]);
+    ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke(); ctx.restore();
+  };
+  const dot = (ctx, x, y, fill, r = 4.5) => {
+    ctx.save(); ctx.fillStyle = fill; ctx.strokeStyle = S.dark ? "#000" : "#fff"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.restore();
+  };
+  // Pins: outlined circles; commercial colours: diamonds. Halo keeps them off the cells.
+  const markerShape = (ctx, x, y, fill, diamond) => {
+    const r = 4;
+    const path = () => {
+      ctx.beginPath();
+      if (diamond) { ctx.moveTo(x, y - r - 1); ctx.lineTo(x + r + 1, y); ctx.lineTo(x, y + r + 1); ctx.lineTo(x - r - 1, y); ctx.closePath(); }
+      else ctx.arc(x, y, r, 0, Math.PI * 2);
+    };
+    ctx.save();
+    path(); ctx.lineWidth = 4; ctx.strokeStyle = S.dark ? "rgba(0,0,0,0.75)" : "rgba(255,255,255,0.9)"; ctx.stroke();
+    path(); ctx.fillStyle = fill; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = fgCss(); ctx.stroke();
+    ctx.restore();
+  };
+  const drawGuides = (k) => {
+    const v = SV[k], ctx = v.ctx, W = v.cv.width, H = v.cv.height, [L, C, Hh] = S.cursor, G = S.guide;
+    const hr = (Hh * Math.PI) / 180, TOL = 0.012;
+    // markers lying on this section
+    S.markers.forEach((m, i) => {
+      if (!mVis || !mVis[i]) return;
+      let u, w;
+      if (k === "l") { if (Math.abs(m.L - L) > TOL) return; const h = (m.H * Math.PI) / 180; u = m.C * Math.sin(h); w = m.C * Math.cos(h); }
+      else if (k === "c") { if (Math.abs(m.C - C) > TOL || C < 0.002) return; u = ((m.H - 180) * Math.PI / 180) * C; w = (m.L * LW) / CW; }
+      else { const dh = ((m.H - Hh) * Math.PI) / 180; if (Math.abs(m.C * Math.sin(dh)) > TOL || Math.cos(dh) < 0) return; u = m.C * Math.cos(dh); w = m.L; }
+      markerShape(ctx, u2px(v, u), v2py(v, w), m.hex, m.kind === "brand");
+    });
+    if (k === "l") {
+      const ox = u2px(v, 0), oy = v2py(v, 0), sc = W / (v.dom.x1 - v.dom.x0);
+      ctx.save(); ctx.strokeStyle = G.l; ctx.globalAlpha = 0.7; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.arc(ox, oy, AMAX * sc, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+      if (C > 0.002) { ctx.save(); ctx.strokeStyle = G.c; ctx.globalAlpha = 0.8; ctx.lineWidth = 1.25; ctx.beginPath(); ctx.arc(ox, oy, C * sc, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); }
+      line(ctx, G.h, [[ox, oy], [u2px(v, AMAX * Math.sin(hr)), v2py(v, AMAX * Math.cos(hr))]]);
+      dot(ctx, u2px(v, C * Math.sin(hr)), v2py(v, C * Math.cos(hr)), fgCss());
+    } else if (k === "c") {
+      const half = Math.PI * C, xl = u2px(v, -half), xr = u2px(v, half), yt = v2py(v, LW / CW), yb = v2py(v, 0);
+      const X = u2px(v, ((Hh - 180) * Math.PI / 180) * C), Y = v2py(v, (L * LW) / CW);
+      line(ctx, G.c, [[xl, yb], [xr, yb], [xr, yt], [xl, yt], [xl, yb]], true);
+      line(ctx, G.l, [[xl, Y], [xr, Y]]);
+      line(ctx, G.h, [[X, yt], [X, yb]]);
+      dot(ctx, X, Y, fgCss());
+    } else {
+      const X = u2px(v, C), Y = v2py(v, L), x0 = u2px(v, 0), x1 = u2px(v, AMAX), y0 = v2py(v, 0), y1 = v2py(v, 1);
+      line(ctx, G.h, [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]], true);
+      line(ctx, G.l, [[0, Y], [W, Y]]);
+      line(ctx, G.c, [[X, 0], [X, H]]);
+      dot(ctx, X, Y, fgCss());
+    }
+  };
+  // Sections redraw in two passes: a coarse one right away (cheap enough to
+  // follow a drag), then a sharp one built a few rows per frame once input
+  // pauses, so the page never stalls on it.
+  let secTimer = 0, secRaf = 0, sharpJob = 0;
+  function scheduleSections() {
+    if (disposed) return;
+    sharpJob++;
+    if (!secRaf) secRaf = requestAnimationFrame(() => {
+      secRaf = 0;
+      let pxs = 0; Object.values(SV).forEach((v) => (pxs += v.cv.width * v.cv.height));
+      const step = Math.max(3, Math.ceil(Math.sqrt(pxs / 18000)));
+      ["l", "c", "h"].forEach((k) => paint(k, step));
+      clearTimeout(secTimer);
+      secTimer = setTimeout(sharpPass, 180);
+    });
+  }
+  function sharpPass() {
+    const job = ++sharpJob, keys = ["l", "c", "h"];
+    let ki = 0, y = 0;
+    const slice = () => {
+      if (disposed || job !== sharpJob) return;
+      const t0 = performance.now();
+      while (ki < keys.length && performance.now() - t0 < 10) {
+        const k = keys[ki], H = SV[k].cv.height, y1 = Math.min(H, y + 8);
+        sampleRows(k, 1, y, y1);
+        y = y1;
+        if (y >= H) { present(k); ki++; y = 0; }
+      }
+      if (ki < keys.length) requestAnimationFrame(slice);
+    };
+    requestAnimationFrame(slice);
+  }
+  // Section interaction: drag = move cursor, wheel/pinch = zoom, right-drag/2 fingers = pan
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const setFromView = {
+    l: (u, w) => { const C = clamp(Math.hypot(u, w), 0, 0.4); let H = (Math.atan2(u, w) * 180) / Math.PI; if (H < 0) H += 360; return [S.cursor[0], C, C < 1e-4 ? S.cursor[2] : H]; },
+    c: (s, w) => { const C = S.cursor[1]; const H = C > 0.002 ? clamp(180 + ((s / C) * 180) / Math.PI, 0, 360) : S.cursor[2]; return [clamp((w * CW) / LW, 0, 1), C, H]; },
+    h: (c, L) => [clamp(L, 0, 1), clamp(c, 0, 0.4), S.cursor[2]],
+  };
+  // Rounded to the sidebar sliders' own steps so the app shows tidy values.
+  const moveCursor = (lch) => {
+    const L = Math.round(lch[0] * 1000) / 1000, C = Math.round(lch[1] * 1000) / 1000, H = Math.round(lch[2] * 10) / 10;
+    api.setCursor(L, C, H);
+    onCursor(L, C, H);
+  };
+  Object.keys(SV).forEach((k) => {
+    const v = SV[k], cv = v.cv, ptrs = new Map();
+    let mode = null, last = null, pinch = null;
+    const rel = (e) => { const r = cv.getBoundingClientRect(); return [((e.clientX - r.left) * cv.width) / r.width, ((e.clientY - r.top) * cv.height) / r.height]; };
+    const zoom = (x, y, f) => {
+      const u = px2u(v, x), w = py2v(v, y), d = v.dom;
+      d.x0 = u + (d.x0 - u) * f; d.x1 = u + (d.x1 - u) * f; d.y0 = w + (d.y0 - w) * f; d.y1 = w + (d.y1 - w) * f;
+      fitIso(v); scheduleSections();
+    };
+    const panV = (dx, dy) => {
+      const d = v.dom, su = (d.x1 - d.x0) / cv.width, sv = (d.y1 - d.y0) / cv.height;
+      d.x0 -= dx * su; d.x1 -= dx * su; d.y0 += dy * sv; d.y1 += dy * sv; scheduleSections();
+    };
+    on(cv, "contextmenu", (e) => e.preventDefault());
+    on(cv, "pointerdown", (e) => {
+      cv.setPointerCapture(e.pointerId);
+      ptrs.set(e.pointerId, rel(e));
+      onHover(null);
+      if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }; mode = "pinch"; return; }
+      mode = e.button === 1 || e.button === 2 || e.shiftKey ? "pan" : "cursor";
+      last = rel(e);
+      if (mode === "cursor") moveCursor(setFromView[k](px2u(v, last[0]), py2v(v, last[1])));
+    });
+    on(cv, "pointermove", (e) => {
+      if (!ptrs.has(e.pointerId)) {
+        if (e.pointerType === "mouse") {
+          const p = rel(e), P = [0, 0, 0];
+          const id = mapping[k](px2u(v, p[0]), py2v(v, p[1]), P) ? cellAt(P[0], P[1], P[2]) : -1;
+          onHover(id >= 0 ? { item: S.anchors[id], x: e.clientX, y: e.clientY } : null);
+        }
+        return;
+      }
+      const p = rel(e);
+      ptrs.set(e.pointerId, p);
+      if (mode === "pinch" && ptrs.size === 2) {
+        const [a, b] = [...ptrs.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]), m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        panV(m[0] - pinch.m[0], m[1] - pinch.m[1]); zoom(m[0], m[1], pinch.d / d); pinch = { d, m }; return;
+      }
+      if (mode === "pan") { panV(p[0] - last[0], p[1] - last[1]); last = p; }
+      else if (mode === "cursor") moveCursor(setFromView[k](px2u(v, p[0]), py2v(v, p[1])));
+    });
+    const up = (e) => { ptrs.delete(e.pointerId); if (!ptrs.size || mode === "pinch") mode = null; };
+    on(cv, "pointerup", up);
+    on(cv, "pointercancel", up);
+    on(cv, "pointerleave", () => onHover(null));
+    on(cv, "wheel", (e) => { e.preventDefault(); const [x, y] = rel(e); zoom(x, y, Math.exp(e.deltaY * 0.0015)); }, { passive: false });
+    on(cv, "dblclick", () => api.resetView(k));
+  });
+  const ro = new ResizeObserver(() => {
+    if (!glCanvas.parentElement || glCanvas.parentElement.clientWidth === 0) return;   // hidden tab
+    let changed = false;
+    Object.values(SV).forEach((v) => { if (sizeView(v)) { fitIso(v); changed = true; } });
+    if (changed) scheduleSections();
+    resize();
+  });
+  Object.values(SV).forEach((v) => ro.observe(v.cv));
+  ro.observe(glCanvas.parentElement);
+
+  // ── Public API ───────────────────────────────────────────────────────────
+  const api = {
+    // Renames and other label-only changes keep the built cells.
+    setAnchors(list) {
+      const sig = list.map((a) => `${a.L},${a.C},${a.H},${a.hex}`).join(";");
+      S.anchors = list;
+      if (sig === anchorSig && N === list.length) return;
+      anchorSig = sig;
+      buildCells();
+    },
+    setMarkers(list) {
+      const sig = list.length + ":" + list.map((m) => `${m.L},${m.C},${m.H},${m.hex},${m.kind}`).join(";");
+      S.markers = list;
+      if (sig === markerSig) return;
+      markerSig = sig;
+      setMarkerGeometry(); scheduleSections();
+    },
+    setCursor(L, C, H) {
+      const [l0, c0, h0] = S.cursor;
+      if (Math.abs(l0 - L) < 1e-6 && Math.abs(c0 - C) < 1e-6 && Math.abs(h0 - H) < 1e-6) return;
+      S.cursor = [L, C, H];
+      const changedCell = updateCursor();
+      const sliced = S.range.hl !== null || S.range.hc !== null || S.range.hh !== null;
+      if (sliced) { rebuild(); rebuildActive(); }
+      else { if (changedCell) rebuildActive(); updateDotVisibility(); scheduleSections(); }
+    },
+    setRange(hl, hc, hh) {
+      const r = S.range;
+      if (r.hl === hl && r.hc === hc && r.hh === hh) return;
+      S.range = { hl, hc, hh };
+      rebuild(); rebuildActive();
+    },
+    setLook({ fill, sep, opacity }) {
+      const geoChange = fill !== S.fill;
+      S.fill = fill; S.sep = sep; S.opacity = opacity;
+      shared.uSep.value = 1 + sep;
+      cellMat.uniforms.uAlpha.value = opacity;
+      placeMarker(); updatePlanes();
+      if (geoChange) { rebuild(); rebuildActive(); } else requestRender();
+    },
+    setTheme({ dark, fg, bg }) {
+      S.dark = dark; S.fg = fg; S.bg = bg;
+      S.guide = dark ? { l: "#ffd27a", c: "#7ad7ff", h: "#ff8ad8" } : { l: "#b7791f", c: "#0e7490", h: "#be185d" };
+      const fgc = new THREE.Color(fg[0], fg[1], fg[2]);
+      rimMat.uniforms.uColor.value.copy(fgc);
+      dotMat.uniforms.uRing.value.copy(fgc);
+      markerMats.forEach((m) => m.color.copy(fgc));
+      plL.material.color.set(S.guide.l); plC.material.color.set(S.guide.c); plH.material.color.set(S.guide.h);
+      axis.material.color.copy(fgc);
+      requestRender(); scheduleSections();
+    },
+    resetView(k) { const v = SV[k]; v.dom = { ...v.def }; fitIso(v); scheduleSections(); },
+    resetCamera() { Object.assign(orb, { theta: 0.75, phi: 1.12, r: 14, tx: 0, ty: 0, tz: 0 }); placeMarker(); applyOrbit(); },
+    resize,
+    dispose() {
+      disposed = true; buildToken++;
+      cancelAnimationFrame(rafId); cancelAnimationFrame(secRaf); clearTimeout(secTimer); sharpJob++;
+      ro.disconnect();
+      listeners.forEach(([el, ev, fn, o]) => el.removeEventListener(ev, fn, o));
+      scene.traverse((o) => { o.geometry && o.geometry.dispose(); });
+      overlay.traverse((o) => { o.geometry && o.geometry.dispose(); });
+      [cellMat, activeMat, rimMat, dotMat, ghostMat, axis.material, plL.material, plC.material, plH.material, ...markerMats].forEach((m) => m.dispose());
+      renderer.dispose();
+      renderer.forceContextLoss();
+    },
+  };
+  resize();
+  applyOrbit();
+  updatePlanes();
+  return api;
+}
+
+// Display name for an Explore point, same rules as the old 3D view.
+const spacePointLabel = (p, names, adjectives) => {
+  const adj = p.adjOverride || adjectives[p.adjId || p.lStr] || "";
+  const noun =
+    p.nameOverride ||
+    (p.parentNounId && names[p.parentNounId]) ||
+    (p.anchorId && names[p.anchorId]) ||
+    names[`${p.cStr}-${p.hStr}`] ||
+    "";
+  return `${adj} ${noun}`.trim() || "Unnamed";
+};
+const SPACE_LOOK_KEY = "color-samificator-space-look";
+const SPACE_PLANE_COLORS = {
+  light: { l: "#b7791f", c: "#0e7490", h: "#be185d" },
+  dark: { l: "#ffd27a", c: "#7ad7ff", h: "#ff8ad8" },
+};
+
+const SpaceSlider = ({ label, value, min, max, step, onChange, format }) =>
+  React.createElement(
+    "label",
+    { className: "flex flex-col gap-1" },
+    React.createElement(
+      "div",
+      { className: "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono" },
+      React.createElement("span", { className: "font-bold tracking-wider" }, label),
+      React.createElement(
+        "span",
+        { className: "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-slate-600 dark:text-neutral-300" },
+        format(value),
+      ),
+    ),
+    React.createElement("input", {
+      type: "range", min, max, step, value,
+      onChange: (e) => onChange(Number(e.target.value)),
+      className: "w-full accent-sky-500",
+    }),
+  );
+
+const SpaceSection = ({ id, title, color, value, canvasRef, height, setHeight, axes, onReset, narrow }) =>
+  React.createElement(
+    "div",
+    { className: narrow ? "shrink-0 w-40 flex flex-col" : "flex flex-col" },
+    React.createElement(
+      "div",
+      { className: "flex items-center justify-between gap-2 mb-1.5" },
+      React.createElement(
+        "div",
+        { className: "flex items-center gap-1.5 min-w-0" },
+        React.createElement("span", { className: "w-2 h-2 rounded-full shrink-0", style: { background: color } }),
+        React.createElement(
+          "span",
+          { className: "text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400 truncate" },
+          title,
+        ),
+      ),
+      React.createElement(
+        "div",
+        { className: "flex items-center gap-1.5 shrink-0" },
+        !narrow &&
+          React.createElement("span", { className: "text-[10px] font-mono text-slate-400" }, value),
+        React.createElement(
+          "button",
+          {
+            onClick: onReset,
+            title: "Reset zoom",
+            className: "p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-neutral-200 dark:hover:bg-neutral-800 transition-colors",
+          },
+          React.createElement(Icon, { name: "rotate-ccw", className: "w-3 h-3" }),
+        ),
+      ),
+    ),
+    React.createElement("canvas", {
+      ref: canvasRef,
+      "data-section": id,
+      style: { height: narrow ? 120 : height, width: "100%", display: "block", touchAction: "none", cursor: "crosshair" },
+      className: narrow
+        ? "rounded-lg border border-slate-200 dark:border-neutral-800"
+        : "rounded-t-lg border border-b-0 border-slate-200 dark:border-neutral-800",
+    }),
+    !narrow &&
+      React.createElement("div", {
+        title: "Drag to resize",
+        className: "h-2.5 rounded-b-lg border border-t-0 border-slate-200 dark:border-neutral-800 bg-slate-50 dark:bg-neutral-800/50 cursor-ns-resize flex items-center justify-center",
+        style: { touchAction: "none" },
+        onPointerDown: (e) => {
+          const el = e.currentTarget, y0 = e.clientY, h0 = height;
+          el.setPointerCapture(e.pointerId);
+          const mv = (ev) => setHeight(Math.max(90, Math.min(900, h0 + ev.clientY - y0)));
+          const end = () => { el.removeEventListener("pointermove", mv); el.removeEventListener("pointerup", end); };
+          el.addEventListener("pointermove", mv);
+          el.addEventListener("pointerup", end);
+        },
+      }, React.createElement("span", { className: "w-6 h-0.5 rounded bg-slate-300 dark:bg-neutral-600" })),
+    !narrow &&
+      React.createElement(
+        "div",
+        { className: "flex justify-between mt-1 text-[9px] font-mono uppercase tracking-wider text-slate-400" },
+        axes.map((a, i) => React.createElement("span", { key: i }, a)),
+      ),
+  );
+
+const ViewSpaceInner = ({
+  active = true,
+  points,
+  colorData,
+  names,
+  adjectives,
+  theme,
+  scrubL,
+  scrubC,
+  scrubH,
+  filterL,
+  filterC,
+  filterH,
+  onCursor,
+  handlePointClick,
+}) => {
+  const rootRef = useRef(null), glRef = useRef(null);
+  const lRef = useRef(null), cRef = useRef(null), hRef = useRef(null);
+  const engineRef = useRef(null);
+  const cbRef = useRef({});
+  cbRef.current = { onCursor, handlePointClick };
+  const [ready, setReady] = useState(false);
+  const [status, setStatus] = useState({ phase: "loading" });
+  const [hover, setHover] = useState(null);
+  const [narrow, setNarrow] = useState(false);
+  const [lookOpen, setLookOpen] = useState(true);
+  const [secW, setSecW] = useState(250);
+  const [heights, setHeights] = useState({ l: 230, c: 150, h: 230 });
+  const [look, setLook] = useState(() => {
+    const d = { fill: 0.5, sep: 0, opacity: 1 };
+    try { return { ...d, ...JSON.parse(localStorage.getItem(SPACE_LOOK_KEY) || "{}") }; } catch (e) { return d; }
+  });
+  const isDark = theme === "dark";
+  const planeCol = SPACE_PLANE_COLORS[isDark ? "dark" : "light"];
+
+  // Anchors become cells; pins and commercial colours become dots.
+  const anchors = useMemo(() => {
+    const seen = new Set(), out = [];
+    (points || []).forEach((p) => {
+      if (p.isPin || !isFinite(p.L) || !isFinite(p.C) || !isFinite(p.H)) return;
+      const key = `${p.L.toFixed(4)}|${p.C.toFixed(4)}|${p.C < 1e-4 ? 0 : p.H.toFixed(3)}`;
+      if (seen.has(key)) return; // two anchors on one spot would share a cell
+      seen.add(key);
+      const label = spacePointLabel(p, names || {}, adjectives || {});
+      const nounId = p.parentNounId || p.anchorId || `${p.cStr}-${p.hStr}`;
+      out.push({
+        L: p.L, C: p.C, H: p.H, hex: spaceHexFor(p.color, p.L, p.C, p.H), label, kind: "anchor",
+        pick: [p.L, p.C, p.H, { anchorId: nounId, adjId: p.lStr, fullName: label }],
+      });
+    });
+    return out;
+  }, [points, names, adjectives]);
+  const markers = useMemo(() => {
+    const out = [];
+    (points || []).forEach((p) => {
+      if (!p.isPin) return;
+      out.push({ L: p.L, C: p.C, H: p.H, hex: spaceHexFor(p.color, p.L, p.C, p.H), kind: "pin",
+        label: (() => {
+          const n = spacePointLabel(p, names || {}, adjectives || {});
+          return `Pin · ${n !== "Unnamed" ? n : p.erpCode || p.pinId || "unnamed"}`;
+        })(),
+        pick: [p.L, p.C, p.H, { pinId: p.pinId }] });
+    });
+    if (colorData) {
+      Object.keys(colorData).forEach((brand) => {
+        (colorData[brand] || []).forEach((c, idx) => {
+          if (!isFinite(c.L) || !isFinite(c.C)) return;
+          const H = isFinite(c.H) ? c.H : 0;
+          const oi = c.originalIndex !== undefined ? c.originalIndex : idx;
+          out.push({ L: c.L, C: c.C, H, hex: spaceHexFor(c.hex, c.L, c.C, H), kind: "brand",
+            label: `${typeof getBrandDisplayName === "function" ? getBrandDisplayName(brand) : brand} · ${c.name}`,
+            pick: [c.L, c.C, H, { brand, originalIndex: oi }] });
+        });
+      });
+    }
+    return out;
+  }, [points, colorData, names, adjectives]);
+
+  // Engine lifetime: one WebGL context per mount, released on unmount.
+  useEffect(() => {
+    let dead = false;
+    loadSpaceThree()
+      .then(() => {
+        if (dead) return;
+        try {
+          engineRef.current = createSpaceEngine({
+            glCanvas: glRef.current,
+            views: { l: lRef.current, c: cRef.current, h: hRef.current },
+            onCursor: (L, C, H) => cbRef.current.onCursor && cbRef.current.onCursor(L, C, H),
+            onHover: (h) => setHover(h),
+            onPick: (item) => cbRef.current.handlePointClick && cbRef.current.handlePointClick(item.pick),
+            onStatus: (s) => !dead && setStatus(s),
+          });
+          setReady(true);
+        } catch (e) {
+          setStatus({ phase: "error", message: "WebGL couldn't start here. Reload the page, or try another browser." });
+        }
+      })
+      .catch(() => !dead && setStatus({ phase: "error", message: "The 3D library couldn't be loaded. Check your connection and reload." }));
+    return () => {
+      dead = true;
+      if (engineRef.current) engineRef.current.dispose();
+      engineRef.current = null;
+    };
+  }, []);
+
+  // While another tab is showing, the view stays mounted (no rebuild, no new
+  // WebGL context on return) but takes no updates; they apply when shown.
+  const eng = active ? engineRef.current : null;
+  useEffect(() => { ready && eng && eng.setAnchors(anchors); }, [ready, anchors, active]);
+  useEffect(() => { ready && eng && eng.setMarkers(markers); }, [ready, markers, active]);
+  useEffect(() => { ready && eng && eng.setCursor(scrubL, scrubC, ((scrubH % 360) + 360) % 360); }, [ready, scrubL, scrubC, scrubH, active]);
+  useEffect(() => {
+    if (!ready || !eng) return;
+    // The tolerance sliders are half-widths; at their maximum they mean "everything".
+    const hl = filterL >= 1 || (scrubL - filterL <= 0 && scrubL + filterL >= 1) ? null : filterL;
+    const hc = filterC >= 0.4 || (scrubC - filterC <= 0 && scrubC + filterC >= 0.4) ? null : filterC;
+    const hh = filterH >= 180 ? null : filterH;
+    eng.setRange(hl, hc, hh);
+  }, [ready, filterL, filterC, filterH, scrubL, scrubC, active]);
+  useEffect(() => {
+    ready && eng && eng.setLook(look);
+    try { localStorage.setItem(SPACE_LOOK_KEY, JSON.stringify(look)); } catch (e) {}
+  }, [ready, look, active]);
+  useEffect(() => {
+    if (!ready || !eng) return;
+    // Read the theme's real colours once the app has applied its dark class.
+    const id = requestAnimationFrame(() => {
+      const el = rootRef.current;
+      if (!el || !engineRef.current) return;
+      const cs = getComputedStyle(el);
+      let bgEl = el, bg = null;
+      while (bgEl && !bg) { bg = spaceParseCss(getComputedStyle(bgEl).backgroundColor, null); bgEl = bgEl.parentElement; }
+      engineRef.current.setTheme({
+        dark: isDark,
+        fg: spaceParseCss(cs.color, isDark ? [0.95, 0.91, 0.87] : [0.1, 0.12, 0.1]),
+        bg: bg || (isDark ? [0.08, 0.08, 0.08] : [1, 1, 1]),
+      });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [ready, isDark, active]);
+
+  // Narrow containers (phones) stack the sections under the 3D view.
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return undefined;
+    const ro = new ResizeObserver(() => { if (el.clientWidth > 0) setNarrow(el.clientWidth < 720); });   // 0 = hidden tab
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  useEffect(() => { if (narrow) setLookOpen(false); }, [narrow]);
+  useEffect(() => { if (!active) setHover(null); }, [active]);
+
+  const fmtL = (v) => v.toFixed(3), fmtC = (v) => v.toFixed(3), fmtH = (v) => `${(((v % 360) + 360) % 360).toFixed(1)}°`;
+  const sections = [
+    { id: "l", title: "L section", color: planeCol.l, value: `L ${fmtL(scrubL)}`, ref: lRef, axes: ["a −", "a → · b ↑", "a +"] },
+    { id: "c", title: "C section", color: planeCol.c, value: `C ${fmtC(scrubC)}`, ref: cRef, axes: ["0°", "hue (true length) →", "360°"] },
+    { id: "h", title: "H section", color: planeCol.h, value: `H ${fmtH(scrubH)}`, ref: hRef, axes: ["C 0", "chroma → · L ↑", "0.34"] },
+  ];
+  const overlayCard = "bg-white/90 dark:bg-neutral-900/90 backdrop-blur border border-slate-200 dark:border-neutral-800 rounded-xl shadow-sm";
+
+  return React.createElement(
+    "div",
+    { ref: rootRef, className: `w-full h-full flex ${narrow ? "flex-col-reverse" : "flex-row"} text-slate-900 dark:text-neutral-100 overflow-hidden` },
+    // ── Section views ──
+    React.createElement(
+      "div",
+      {
+        className: narrow
+          ? "shrink-0 flex flex-row gap-3 overflow-x-auto no-scrollbar p-3 border-t border-slate-100 dark:border-neutral-800"
+          : "shrink-0 h-full overflow-y-auto custom-scrollbar p-3 flex flex-col gap-4 border-r border-slate-100 dark:border-neutral-800 relative",
+        style: narrow ? undefined : { width: secW },
+      },
+      sections.map((s) =>
+        React.createElement(SpaceSection, {
+          key: s.id, id: s.id, title: s.title, color: s.color, value: s.value, canvasRef: s.ref,
+          height: heights[s.id], narrow, axes: s.axes,
+          setHeight: (h) => setHeights((prev) => ({ ...prev, [s.id]: h })),
+          onReset: () => engineRef.current && engineRef.current.resetView(s.id),
+        }),
+      ),
+      !narrow &&
+        React.createElement(
+          "p",
+          { className: "text-[9px] leading-relaxed text-slate-400 uppercase tracking-wider" },
+          "Drag to move the cursor · scroll or pinch to zoom · right-drag to pan · double-click to reset",
+        ),
+    ),
+    // column resize handle
+    !narrow &&
+      React.createElement("div", {
+        title: "Drag to resize",
+        className: "w-1.5 -ml-1.5 shrink-0 cursor-ew-resize hover:bg-slate-300 dark:hover:bg-neutral-700 z-10",
+        style: { touchAction: "none" },
+        onPointerDown: (e) => {
+          const el = e.currentTarget, x0 = e.clientX, w0 = secW;
+          el.setPointerCapture(e.pointerId);
+          const mv = (ev) => setSecW(Math.max(190, Math.min(640, w0 + ev.clientX - x0)));
+          const end = () => { el.removeEventListener("pointermove", mv); el.removeEventListener("pointerup", end); };
+          el.addEventListener("pointermove", mv);
+          el.addEventListener("pointerup", end);
+        },
+      }),
+    // ── 3D view ──
+    React.createElement(
+      "div",
+      { className: "relative flex-1 min-w-0 min-h-0" },
+      React.createElement("canvas", {
+        ref: glRef,
+        className: "absolute inset-0 w-full h-full",
+        style: { touchAction: "none", cursor: "grab" },
+      }),
+      // appearance controls
+      React.createElement(
+        "div",
+        { className: `absolute top-3 left-3 z-10 ${overlayCard} ${lookOpen ? "w-56 p-3" : "p-1"}` },
+        React.createElement(
+          "button",
+          {
+            onClick: () => setLookOpen(!lookOpen),
+            className: `flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400 hover:text-slate-800 dark:hover:text-white ${lookOpen ? "w-full mb-3" : "p-1.5"}`,
+            title: lookOpen ? "Hide appearance" : "Appearance",
+          },
+          React.createElement(Icon, { name: "sliders-horizontal", className: "w-3.5 h-3.5" }),
+          lookOpen && "Appearance",
+          lookOpen && React.createElement("span", { className: "ml-auto" }, React.createElement(Icon, { name: "chevron-up", className: "w-3 h-3" })),
+        ),
+        lookOpen &&
+          React.createElement(
+            "div",
+            { className: "flex flex-col gap-3" },
+            React.createElement(SpaceSlider, {
+              label: "Inflation", value: look.fill, min: 0, max: 1, step: 0.01,
+              format: (v) => (v < 0.005 ? "dot" : `${Math.round(v * 100)}%`),
+              onChange: (v) => setLook((p) => ({ ...p, fill: v })),
+            }),
+            React.createElement(SpaceSlider, {
+              label: "Separation", value: look.sep, min: 0, max: 2, step: 0.02,
+              format: (v) => v.toFixed(2),
+              onChange: (v) => setLook((p) => ({ ...p, sep: v })),
+            }),
+            React.createElement(SpaceSlider, {
+              label: "Opacity", value: look.opacity, min: 0.05, max: 1, step: 0.01,
+              format: (v) => `${Math.round(v * 100)}%`,
+              onChange: (v) => setLook((p) => ({ ...p, opacity: v })),
+            }),
+            React.createElement(
+              "button",
+              {
+                onClick: () => engineRef.current && engineRef.current.resetCamera(),
+                className: "mt-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400 bg-slate-100 dark:bg-neutral-800 hover:bg-slate-200 dark:hover:bg-neutral-700 transition-colors",
+              },
+              React.createElement(Icon, { name: "rotate-ccw", className: "w-3 h-3" }),
+              "Reset camera",
+            ),
+          ),
+      ),
+      // plane legend
+      React.createElement(
+        "div",
+        { className: "absolute bottom-3 left-3 z-10 flex items-center gap-3 px-2.5 py-1.5 text-[9px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400 pointer-events-none " + overlayCard },
+        [["l", "L plane"], ["c", "C plane"], ["h", "H plane"]].map(([k, t]) =>
+          React.createElement(
+            "span",
+            { key: k, className: "flex items-center gap-1.5" },
+            React.createElement("span", { className: "w-2 h-2 rounded-full", style: { background: planeCol[k] } }),
+            t,
+          ),
+        ),
+      ),
+      // status
+      status.phase !== "ready" &&
+        React.createElement(
+          "div",
+          { className: "absolute inset-0 flex items-center justify-center pointer-events-none z-0" },
+          React.createElement(
+            "div",
+            { className: "text-center max-w-xs px-6" },
+            React.createElement(
+              "div",
+              { className: "text-[10px] font-bold uppercase tracking-widest text-slate-400" },
+              status.phase === "loading" ? "Loading 3D view…"
+                : status.phase === "building" ? `Shaping cells · ${Math.round((status.progress || 0) * 100)}%`
+                : status.phase === "empty" ? "No anchors to show"
+                : "3D view unavailable",
+            ),
+            (status.phase === "empty" || status.phase === "error") &&
+              React.createElement(
+                "p",
+                { className: "mt-2 text-[11px] text-slate-500 dark:text-neutral-400" },
+                status.phase === "empty"
+                  ? "Load anchors, or clear the search, tag and visibility filters above."
+                  : status.message,
+              ),
+          ),
+        ),
+      // hover card
+      hover &&
+        React.createElement(
+          "div",
+          {
+            className: `fixed z-[300] pointer-events-none flex items-center gap-2.5 px-2.5 py-2 ${overlayCard} shadow-lg`,
+            style: { left: hover.x + 14, top: hover.y + 14 },
+          },
+          React.createElement("span", {
+            className: "w-7 h-7 rounded-md border border-black/10 dark:border-white/10 shrink-0",
+            style: { background: hover.item.hex },
+          }),
+          React.createElement(
+            "div",
+            { className: "flex flex-col" },
+            React.createElement("span", { className: "text-[11px] font-bold text-slate-800 dark:text-neutral-100" }, hover.item.label),
+            React.createElement(
+              "span",
+              { className: "text-[10px] font-mono text-slate-500 dark:text-neutral-400" },
+              `L ${hover.item.L.toFixed(3)} · C ${hover.item.C.toFixed(3)} · H ${hover.item.H.toFixed(1)}°`,
+            ),
+          ),
+        ),
+    ),
+  );
+};
+
+// Hidden and staying hidden: nothing to redraw, so skip the render entirely.
+const ViewSpace = React.memo(ViewSpaceInner, (prev, next) => !prev.active && !next.active && prev.active !== undefined);
+
+// ─── Anchors: add, rename, move and delete the named points ─────────────────
+// Distances are OkLab ΔE ×100 (so 1.0 ≈ a just-noticeable step).
+const ANCHOR_CLOSE_DE = 1;
+const anchorDE = (p, q) => {
+  const ha = (p.H * Math.PI) / 180, hb = (q.H * Math.PI) / 180;
+  const da = p.C * Math.cos(ha) - q.C * Math.cos(hb), db = p.C * Math.sin(ha) - q.C * Math.sin(hb);
+  return Math.sqrt((p.L - q.L) ** 2 + da * da + db * db) * 100;
+};
+// Rows carry their OkLab a/b, so pair distances need no trigonometry.
+const anchorRowDE = (p, q) => {
+  const dL = p.L - q.L, da = p.oa - q.oa, db = p.ob - q.ob;
+  return Math.sqrt(dL * dL + da * da + db * db) * 100;
+};
+// Fixed row height: the table only mounts the rows in view (plus a margin),
+// so a few thousand anchors scroll as smoothly as a few dozen.
+const ANCHOR_ROW_H = 38, ANCHOR_OVERSCAN = 12;
+
+// A number cell that edits freely and commits on Enter or blur.
+const AnchorNumberInput = ({ value, onCommit, step, min, max, digits, label, wide }) => {
+  const [draft, setDraft] = useState(null);
+  const shown = draft !== null ? draft : Number(value).toFixed(digits);
+  const commit = () => {
+    if (draft === null) return;
+    const v = parseFloat(draft);
+    setDraft(null);
+    if (isFinite(v)) onCommit(Math.min(max, Math.max(min, v)));
+  };
+  return React.createElement("input", {
+    type: "number", step, min, max, value: shown, "aria-label": label,
+    onChange: (e) => setDraft(e.target.value),
+    onBlur: commit,
+    onKeyDown: (e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { setDraft(null); e.currentTarget.blur(); } },
+    className: `${wide ? "w-20" : "w-16"} text-right text-[11px] font-mono tabular-nums bg-transparent border border-transparent hover:border-slate-200 dark:hover:border-neutral-700 focus:border-sky-500 rounded px-1.5 py-1 outline-none text-slate-800 dark:text-neutral-200`,
+  });
+};
+
+const AnchorNameInput = ({ value, onCommit, autoFocus }) => {
+  const [draft, setDraft] = useState(null);
+  const ref = useRef(null);
+  useEffect(() => { if (autoFocus && ref.current) { ref.current.focus(); ref.current.select(); } }, [autoFocus]);
+  const commit = () => { if (draft === null) return; const v = draft.trim(); setDraft(null); if (v !== value) onCommit(v); };
+  return React.createElement("input", {
+    ref, type: "text", value: draft !== null ? draft : value, placeholder: "Unnamed",
+    "aria-label": "Anchor name",
+    onChange: (e) => setDraft(e.target.value),
+    onBlur: commit,
+    onKeyDown: (e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { setDraft(null); e.currentTarget.blur(); } },
+    className: "w-full min-w-[9rem] text-[12px] font-bold uppercase tracking-wide bg-transparent border border-transparent hover:border-slate-200 dark:hover:border-neutral-700 focus:border-sky-500 rounded px-1.5 py-1 outline-none text-slate-900 dark:text-white placeholder:normal-case placeholder:font-normal",
+  });
+};
+
+const AnchorIconButton = ({ icon, title, onClick, danger, active }) =>
+  React.createElement(
+    "button",
+    {
+      onClick, title, "aria-label": title,
+      className: `p-1.5 rounded-md transition-colors ${
+        danger
+          ? active
+            ? "bg-red-500 text-white"
+            : "text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
+          : "text-slate-400 hover:text-slate-800 hover:bg-slate-100 dark:hover:text-white dark:hover:bg-neutral-800"
+      }`,
+    },
+    React.createElement(Icon, { name: icon, className: "w-3.5 h-3.5" }),
+  );
+
+
+// One table row. Memoised: a row re-renders only when its own data, selection,
+// confirm state or distance to the cursor changes.
+const AnchorRow = React.memo(({ r, isHere, checked, confirming, autoFocus, deCursor, act }) =>
+  React.createElement(
+    "tr",
+    {
+      style: { height: ANCHOR_ROW_H },
+      className: `border-b border-slate-100 dark:border-neutral-800/70 ${isHere ? "bg-slate-100 dark:bg-neutral-800" : ""} hover:bg-slate-50 dark:hover:bg-neutral-800/40`,
+    },
+    React.createElement(
+      "td",
+      { className: "px-2 py-1" },
+      React.createElement("input", {
+        type: "checkbox", "aria-label": `Select ${r.name || "unnamed anchor"}`, checked,
+        onChange: (e) => act.select(r.id, e.target.checked),
+        className: "rounded border-slate-300 text-sky-500 focus:ring-sky-500",
+      }),
+    ),
+    React.createElement(
+      "td",
+      { className: "px-2 py-1" },
+      React.createElement("button", {
+        onClick: () => act.goTo(r), title: "Move the cursor here",
+        className: `w-7 h-7 rounded-md border block ${isHere ? "border-slate-800 dark:border-white" : "border-black/10 dark:border-white/10"}`,
+        style: { background: r.hex },
+      }),
+    ),
+    React.createElement(
+      "td",
+      { className: "px-1 py-1" },
+      React.createElement(AnchorNameInput, { value: r.name, autoFocus, onCommit: (v) => act.rename(r, v) }),
+    ),
+    React.createElement(
+      "td",
+      { className: "px-1 py-1 text-right whitespace-nowrap" },
+      r.range
+        ? React.createElement("span", { className: "text-[10px] font-mono text-slate-400 pr-1.5", title: "Legacy lightness range; editing L turns it into a point" },
+            `${r.range[0].toFixed(2)}–${r.range[1].toFixed(2)}`)
+        : null,
+      React.createElement(AnchorNumberInput, { value: r.L, step: 0.001, min: 0, max: 1, digits: 3, label: "Lightness", onCommit: (v) => act.move(r, { L: v }) }),
+    ),
+    React.createElement(
+      "td",
+      { className: "px-1 py-1 text-right" },
+      React.createElement(AnchorNumberInput, { value: r.C, step: 0.001, min: 0, max: 0.4, digits: 3, label: "Chroma", onCommit: (v) => act.move(r, { C: v }) }),
+    ),
+    React.createElement(
+      "td",
+      { className: "px-1 py-1 text-right" },
+      React.createElement(AnchorNumberInput, { value: r.H, step: 0.1, min: 0, max: 360, digits: 1, label: "Hue", wide: true, onCommit: (v) => act.move(r, { H: v }) }),
+    ),
+    React.createElement(
+      "td",
+      { className: "px-2 py-1" },
+      r.nn &&
+        React.createElement(
+          "button",
+          {
+            onClick: () => act.find(r.nn.name || ""),
+            title: "Show this anchor",
+            className: "flex items-center gap-2 text-left max-w-[14rem]",
+          },
+          React.createElement("span", { className: "w-3 h-3 rounded-sm shrink-0 border border-black/10", style: { background: r.nn.hex } }),
+          React.createElement("span", { className: "text-[10px] font-bold uppercase text-slate-600 dark:text-neutral-300 truncate" }, r.nn.name || "Unnamed"),
+          React.createElement(
+            "span",
+            {
+              className: `text-[10px] font-mono tabular-nums px-1.5 rounded ${
+                r.nnDE < ANCHOR_CLOSE_DE ? "bg-amber-500/15 text-amber-700 dark:text-amber-300" : "text-slate-400"
+              }`,
+            },
+            r.nnDE.toFixed(1),
+          ),
+        ),
+    ),
+    React.createElement(
+      "td",
+      { className: "px-2 py-1 text-right text-[10px] font-mono tabular-nums text-slate-500" },
+      deCursor,
+    ),
+    React.createElement(
+      "td",
+      { className: "px-2 py-1" },
+      React.createElement(
+        "div",
+        { className: "flex items-center justify-end gap-0.5" },
+        React.createElement(AnchorIconButton, { icon: "crosshair", title: "Move the cursor here", onClick: () => act.goTo(r) }),
+        React.createElement(AnchorIconButton, { icon: "move", title: "Move this anchor to the cursor", onClick: () => act.moveToCursor(r) }),
+        React.createElement(AnchorIconButton, { icon: "box", title: "Show in Explore", onClick: () => act.explore(r) }),
+        React.createElement(AnchorIconButton, {
+          icon: "trash-2", danger: true, active: confirming,
+          title: confirming ? "Click again to delete" : "Delete anchor",
+          onClick: () => act.trash(r),
+        }),
+      ),
+    ),
+  ),
+);
+
+const ViewAnchors = ({
+  savedColors, setSavedColors, names, setNames,
+  scrubL, scrubC, scrubH, handleUpdate, setActiveTab,
+}) => {
+  const [query, setQuery] = useState("");
+  const [sortBy, setSortBy] = useState("name");
+  const [sortAsc, setSortAsc] = useState(true);
+  const [selected, setSelected] = useState({});
+  const [confirm, setConfirm] = useState(null); // id or "bulk" awaiting a second click
+  const [focusId, setFocusId] = useState(null);
+  const scrollRef = useRef(null);
+  const [view, setView] = useState({ top: 0, h: 800 });
+  const [notice, setNotice] = useState("");
+  useEffect(() => { if (!confirm) return undefined; const t = setTimeout(() => setConfirm(null), 3000); return () => clearTimeout(t); }, [confirm]);
+  useEffect(() => { if (!notice) return undefined; const t = setTimeout(() => setNotice(""), 2500); return () => clearTimeout(t); }, [notice]);
+
+  // Every anchor as a flat record, plus its nearest neighbour (to spot near-duplicates).
+  const rows = useMemo(() => {
+    const list = anchorPointsOf(savedColors).map((an) => {
+      const L = (an.minL + an.maxL) / 2, C = Number(an.sc.C) || 0, H = ((Number(an.sc.H) || 0) % 360 + 360) % 360;
+      const h = (H * Math.PI) / 180;
+      return {
+        id: an.id, nameKey: an.nameKey, type: an.sc.type,
+        L, C, H, oa: C * Math.cos(h), ob: C * Math.sin(h),
+        range: an.maxL - an.minL > 1e-6 ? [an.minL, an.maxL] : null,
+        name: anchorNameOf(an, names),
+      };
+    });
+    list.forEach((r) => (r.hex = spaceHexFor(null, r.L, r.C, r.H)));
+    // Nearest neighbour per anchor: sort by L once, then only scan while the
+    // lightness gap alone is still smaller than the best distance found.
+    const byL = list.slice().sort((p, q) => p.L - q.L);
+    for (let i = 0; i < byL.length; i++) {
+      const p = byL[i];
+      let best = null, bd = Infinity;
+      for (let dir = -1; dir <= 1; dir += 2)
+        for (let j = i + dir; j >= 0 && j < byL.length; j += dir) {
+          const q = byL[j];
+          if (Math.abs(q.L - p.L) * 100 >= bd) break;
+          const d = anchorRowDE(p, q);
+          if (d < bd) { bd = d; best = q; }
+        }
+      p.nn = best; p.nnDE = bd;
+    }
+    return list;
+  }, [savedColors, names]);
+
+  const cursor = useMemo(() => {
+    const H = ((scrubH % 360) + 360) % 360, h = (H * Math.PI) / 180;
+    return { L: scrubL, C: scrubC, H, oa: scrubC * Math.cos(h), ob: scrubC * Math.sin(h) };
+  }, [scrubL, scrubC, scrubH]);
+  const cursorHex = spaceHexFor(null, cursor.L, cursor.C, cursor.H);
+  const cursorAnchor = useMemo(() => {
+    let best = null, bd = Infinity;
+    rows.forEach((r) => { const d = anchorRowDE(r, cursor); if (d < bd) { bd = d; best = r; } });
+    return best ? { ...best, de: bd } : null;
+  }, [rows, cursor]);
+
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    let out = q ? rows.filter((r) => r.name.toLowerCase().includes(q) || r.hex.includes(q)) : rows.slice();
+    const key = {
+      name: (r) => r.name.toLowerCase() || "￿",
+      L: (r) => r.L, C: (r) => r.C, H: (r) => r.H,
+      cursor: (r) => anchorRowDE(r, cursor),
+      nn: (r) => r.nnDE,
+    }[sortBy];
+    // Keys computed once per row, not once per comparison.
+    const keyed = out.map((r) => [key(r), r]);
+    keyed.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0) * (sortAsc ? 1 : -1));
+    return keyed.map((k) => k[1]);
+  }, [rows, query, sortBy, sortAsc, sortBy === "cursor" ? cursor : null]);
+
+  const closePairs = useMemo(() => rows.filter((r) => r.nnDE < ANCHOR_CLOSE_DE).length, [rows]);
+  const unnamed = useMemo(() => rows.filter((r) => !r.name).length, [rows]);
+
+  // ── edits ──
+  const rename = (r, v) => {
+    setSavedColors((prev) => (prev[r.id] ? { ...prev, [r.id]: { ...prev[r.id], nameOverride: v } } : prev));
+    setNames((prev) => {
+      const next = { ...prev };
+      if (v) next[r.nameKey] = v; else delete next[r.nameKey];
+      return next;
+    });
+  };
+  const move = (r, patch) => {
+    setSavedColors((prev) => {
+      const sc = prev[r.id];
+      if (!sc) return prev;
+      const L = patch.L !== undefined ? patch.L : r.L, C = patch.C !== undefined ? patch.C : r.C, H = patch.H !== undefined ? patch.H : r.H;
+      const h = (H * Math.PI) / 180;
+      const next = { ...sc, C, H, a: C * Math.sin(h), b: C * Math.cos(h) };
+      if (sc.type === "anchor") next.L = L;
+      else if (patch.L !== undefined || !r.range) { next.minL = L; next.maxL = L; }
+      return { ...prev, [r.id]: next };
+    });
+  };
+  const remove = (ids) => {
+    const set = new Set(ids);
+    const keys = rows.filter((r) => set.has(r.id)).map((r) => r.nameKey);
+    setSavedColors((prev) => { const next = { ...prev }; ids.forEach((id) => delete next[id]); return next; });
+    setNames((prev) => { const next = { ...prev }; keys.forEach((k) => delete next[k]); return next; });
+    setSelected({});
+    setNotice(`Deleted ${ids.length} anchor${ids.length === 1 ? "" : "s"}`);
+  };
+  const addAtCursor = () => {
+    const id = `anchor-${Date.now().toString(36)}`, h = (cursor.H * Math.PI) / 180;
+    setSavedColors((prev) => ({
+      ...prev,
+      [id]: { id, type: "nounColumn", nameOverride: "", C: cursor.C, H: cursor.H, minL: cursor.L, maxL: cursor.L,
+        a: cursor.C * Math.sin(h), b: cursor.C * Math.cos(h), notes: "" },
+    }));
+    setQuery(""); setSortBy("cursor"); setSortAsc(true); setFocusId(id);
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;   // it sorts first (ΔE 0)
+    setNotice("Anchor added at the cursor. Name it below.");
+  };
+  const goTo = (r) => handleUpdate([r.L, r.C, r.H]);
+  const selectedIds = Object.keys(selected).filter((k) => selected[k]);
+  // Rows get one stable object of handlers that always calls the latest code,
+  // so passing it never makes a memoised row re-render.
+  const actRef = useRef({});
+  actRef.current = {
+    select: (id, v) => setSelected((p) => ({ ...p, [id]: v })),
+    goTo, rename, move,
+    find: (q) => setQuery(q),
+    moveToCursor: (r) => { move(r, { L: cursor.L, C: cursor.C, H: cursor.H }); setNotice(`Moved ${r.name || "anchor"} to the cursor`); },
+    explore: (r) => { goTo(r); setActiveTab("3d"); },
+    trash: (r) => (confirm === r.id ? (remove([r.id]), setConfirm(null)) : setConfirm(r.id)),
+  };
+  const act = useMemo(() => {
+    const o = {};
+    ["select", "goTo", "rename", "move", "find", "moveToCursor", "explore", "trash"].forEach((k) => (o[k] = (...a) => actRef.current[k](...a)));
+    return o;
+  }, []);
+  // Visible window of rows.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return undefined;
+    let raf = 0;
+    const read = () => { raf = 0; setView((v) => (v.top === el.scrollTop && v.h === el.clientHeight ? v : { top: el.scrollTop, h: el.clientHeight })); };
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(read); };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const ro = new ResizeObserver(onScroll);
+    ro.observe(el);
+    read();
+    return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); cancelAnimationFrame(raf); };
+  }, [rows.length === 0]);
+  const first = Math.max(0, Math.floor(view.top / ANCHOR_ROW_H) - ANCHOR_OVERSCAN);
+  const last = Math.min(shown.length, Math.ceil((view.top + view.h) / ANCHOR_ROW_H) + ANCHOR_OVERSCAN);
+
+  const th = "px-2 py-2 text-left text-[9px] font-bold uppercase tracking-widest text-slate-400 whitespace-nowrap";
+  const sortHeader = (id, label, right) =>
+    React.createElement(
+      "th",
+      { className: th + (right ? " text-right" : "") },
+      React.createElement(
+        "button",
+        {
+          onClick: () => { if (sortBy === id) setSortAsc(!sortAsc); else { setSortBy(id); setSortAsc(true); } },
+          className: `inline-flex items-center gap-1 uppercase tracking-widest hover:text-slate-700 dark:hover:text-neutral-200 ${sortBy === id ? "text-slate-700 dark:text-neutral-200" : ""}`,
+        },
+        label,
+        sortBy === id && React.createElement(Icon, { name: sortAsc ? "arrow-up" : "arrow-down", className: "w-3 h-3" }),
+      ),
+    );
+
+  return React.createElement(
+    "div",
+    { className: "w-full h-full flex flex-col min-h-0" },
+    // ── header: cursor + actions ──
+    React.createElement(
+      "div",
+      { className: "px-4 py-3 border-b border-slate-100 dark:border-neutral-800 flex flex-wrap items-center gap-x-6 gap-y-3" },
+      React.createElement(
+        "div",
+        { className: "flex items-baseline gap-2" },
+        React.createElement("span", { className: "text-[11px] font-black uppercase tracking-widest text-slate-800 dark:text-neutral-100" }, "Anchors"),
+        React.createElement("span", { className: "text-[10px] font-mono text-slate-400" }, `${rows.length}`),
+        unnamed > 0 && React.createElement("span", { className: "text-[10px] font-mono text-slate-400" }, `· ${unnamed} unnamed`),
+        closePairs > 0 &&
+          React.createElement(
+            "button",
+            {
+              onClick: () => { setSortBy("nn"); setSortAsc(true); },
+              title: `Anchors closer than ΔE ${ANCHOR_CLOSE_DE} to another anchor`,
+              className: "text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:bg-amber-500/25",
+            },
+            `${closePairs} near-duplicate${closePairs === 1 ? "" : "s"}`,
+          ),
+      ),
+      // cursor card
+      React.createElement(
+        "div",
+        { className: "flex items-center gap-3 min-w-0" },
+        React.createElement("button", {
+          onClick: () => setActiveTab("3d"), title: "Open the cursor in Explore",
+          className: "w-8 h-8 rounded-lg border border-black/10 dark:border-white/10 shrink-0",
+          style: { background: cursorHex },
+        }),
+        React.createElement(
+          "div",
+          { className: "flex flex-col min-w-0" },
+          React.createElement("span", { className: "text-[9px] font-bold uppercase tracking-widest text-slate-400" }, "Cursor"),
+          React.createElement(
+            "span",
+            { className: "text-[10px] font-mono text-slate-600 dark:text-neutral-300 whitespace-nowrap" },
+            `L ${cursor.L.toFixed(3)} · C ${cursor.C.toFixed(3)} · H ${cursor.H.toFixed(1)}°`,
+          ),
+          cursorAnchor &&
+            React.createElement(
+              "span",
+              { className: "text-[10px] text-slate-500 dark:text-neutral-400 truncate" },
+              "Named ",
+              React.createElement("b", { className: "uppercase text-slate-800 dark:text-neutral-100" }, cursorAnchor.name || "Unnamed"),
+              ` · ΔE ${cursorAnchor.de.toFixed(1)}`,
+            ),
+        ),
+        React.createElement(
+          "button",
+          {
+            onClick: addAtCursor,
+            className: "ml-1 flex items-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-slate-900 text-white hover:bg-slate-800 transition-colors whitespace-nowrap",
+          },
+          React.createElement(Icon, { name: "plus", className: "w-3.5 h-3.5" }),
+          "Add at cursor",
+        ),
+      ),
+      React.createElement(
+        "div",
+        { className: "relative ml-auto" },
+        React.createElement(Icon, { name: "search", className: "absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" }),
+        React.createElement("input", {
+          type: "text", value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Find anchor…", id: "anchor-search",
+          className: "w-44 bg-slate-200/40 dark:bg-neutral-800/50 border border-transparent rounded-lg pl-7 pr-2 py-1.5 text-[10px] font-bold uppercase tracking-widest focus:ring-1 focus:ring-sky-500 outline-none text-slate-900 dark:text-white placeholder:text-slate-400",
+        }),
+      ),
+    ),
+    // ── selection bar ──
+    (selectedIds.length > 0 || notice) &&
+      React.createElement(
+        "div",
+        { className: "px-4 py-2 border-b border-slate-100 dark:border-neutral-800 flex items-center gap-3 text-[10px] font-bold uppercase tracking-widest text-slate-500" },
+        selectedIds.length > 0 && React.createElement("span", null, `${selectedIds.length} selected`),
+        selectedIds.length > 0 &&
+          React.createElement(
+            "button",
+            {
+              onClick: () => (confirm === "bulk" ? (remove(selectedIds), setConfirm(null)) : setConfirm("bulk")),
+              className: `px-2.5 py-1 rounded-md transition-colors ${confirm === "bulk" ? "bg-red-500 text-white" : "text-red-600 hover:bg-red-50 dark:hover:bg-red-950"}`,
+            },
+            confirm === "bulk" ? `Click again to delete ${selectedIds.length}` : "Delete selected",
+          ),
+        selectedIds.length > 0 &&
+          React.createElement("button", { onClick: () => setSelected({}), className: "px-2 py-1 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800" }, "Clear"),
+        notice && React.createElement("span", { className: "ml-auto normal-case tracking-normal font-medium text-slate-500 dark:text-neutral-400" }, notice),
+      ),
+    // ── table ──
+    React.createElement(
+      "div",
+      { ref: scrollRef, className: "flex-1 min-h-0 overflow-auto custom-scrollbar" },
+      rows.length === 0
+        ? React.createElement(
+            "div",
+            { className: "h-full flex flex-col items-center justify-center gap-2 p-8 text-center" },
+            React.createElement("span", { className: "text-[11px] font-bold uppercase tracking-widest text-slate-400" }, "No anchors yet"),
+            React.createElement("p", { className: "text-[12px] text-slate-500 max-w-sm" }, "Move the cursor to a colour and press Add at cursor, or import an anchors CSV with Type NOUN rows."),
+          )
+        : React.createElement(
+            "table",
+            { className: "w-full border-collapse" },
+            React.createElement(
+              "thead",
+              { className: "sticky top-0 z-10 bg-white dark:bg-neutral-900 border-b border-slate-100 dark:border-neutral-800" },
+              React.createElement(
+                "tr",
+                null,
+                React.createElement(
+                  "th",
+                  { className: th + " w-8" },
+                  React.createElement("input", {
+                    type: "checkbox", "aria-label": "Select all shown",
+                    checked: shown.length > 0 && shown.every((r) => selected[r.id]),
+                    onChange: (e) => { const v = e.target.checked; setSelected((p) => { const n = { ...p }; shown.forEach((r) => (n[r.id] = v)); return n; }); },
+                    className: "rounded border-slate-300 text-sky-500 focus:ring-sky-500",
+                  }),
+                ),
+                React.createElement("th", { className: th + " w-10" }),
+                sortHeader("name", "Name"),
+                sortHeader("L", "L", true),
+                sortHeader("C", "C", true),
+                sortHeader("H", "H °", true),
+                sortHeader("nn", "Nearest anchor"),
+                sortHeader("cursor", "ΔE cursor", true),
+                React.createElement("th", { className: th + " text-right" }, ""),
+              ),
+            ),
+            React.createElement(
+              "tbody",
+              null,
+              first > 0 && React.createElement("tr", { key: "pad-top", "aria-hidden": true, style: { height: first * ANCHOR_ROW_H } }),
+              shown.slice(first, last).map((r) =>
+                React.createElement(AnchorRow, {
+                  key: r.id, r, act,
+                  isHere: !!cursorAnchor && cursorAnchor.id === r.id,
+                  checked: !!selected[r.id],
+                  confirming: confirm === r.id,
+                  autoFocus: focusId === r.id,
+                  deCursor: anchorRowDE(r, cursor).toFixed(1),
+                }),
+              ),
+              last < shown.length && React.createElement("tr", { key: "pad-bottom", "aria-hidden": true, style: { height: (shown.length - last) * ANCHOR_ROW_H } }),
+            ),
+          ),
+    ),
+  );
+};
+
 const ViewVertical = ({
   colorData,
   points,
@@ -3402,6 +5620,51 @@ const ViewChromaRings = ({
     theme,
   });
 };
+const PIN_NAME_CANDS = new WeakMap();
+const pinNameCandidates = (savedColors, names) => {
+  let byNames = PIN_NAME_CANDS.get(savedColors);
+  if (!byNames) { byNames = new WeakMap(); PIN_NAME_CANDS.set(savedColors, byNames); }
+  let hit = byNames.get(names);
+  if (hit) return hit;
+  const saved = [], dict = [];
+  Object.values(savedColors).forEach((other) => {
+    if (other.type === "nounColumn" || other.type === "anchor") {
+      const oName = (other.nameOverride || names[other.id] || names[other.anchorId] || "").trim();
+      if (!oName || oName.toLowerCase() === "unnamed" || oName.toLowerCase() === "unnamed noun") return;
+      const oA = other.a !== undefined ? other.a : (other.C || 0) * Math.sin(((other.H || 0) * Math.PI) / 180);
+      const oB = other.b !== undefined ? other.b : (other.C || 0) * Math.cos(((other.H || 0) * Math.PI) / 180);
+      const minL = other.type === "anchor" ? other.L : (other.minL !== undefined ? other.minL : 0);
+      const maxL = other.type === "anchor" ? other.L : (other.maxL !== undefined ? other.maxL : 1);
+      saved.push({ oName, oA, oB, minL, maxL, id: other.id, type: other.type });
+    }
+  });
+  Object.entries(names).forEach(([k, val]) => {
+    if (!val || typeof val !== "string") return;
+    const cleanVal = val.trim();
+    if (!cleanVal || cleanVal.toLowerCase() === "unnamed" || cleanVal.toLowerCase() === "unnamed noun") return;
+    if (String(k).startsWith("commercial-")) return;
+    const parts = k.split("-");
+    let nC = 0, nH = 0, nMidL = 0.5;
+    if (parts.length === 2 && !isNaN(parseInt(parts[0], 10)) && !isNaN(parseInt(parts[1], 10))) {
+      nC = parseInt(parts[0], 10) / 100;
+      nH = parseInt(parts[1], 10);
+    } else if (parts.length === 3 && !isNaN(parseInt(parts[1], 10)) && !isNaN(parseInt(parts[2], 10))) {
+      const pref = parts[0];
+      nC = parseInt(parts[1], 10) / 100;
+      nH = parseInt(parts[2], 10);
+      if (pref === "UL") nMidL = 0.975;
+      else if (pref === "L") nMidL = 0.725;
+      else if (pref === "D") nMidL = 0.35;
+      else if (pref === "UD") nMidL = 0.1;
+    } else {
+      return;
+    }
+    dict.push({ cleanVal, k, nMidL, nA: nC * Math.cos((nH * Math.PI) / 180), nB: nC * Math.sin((nH * Math.PI) / 180) });
+  });
+  hit = { saved, dict };
+  byNames.set(names, hit);
+  return hit;
+};
 function getInheritedPinNames(
   sc,
   savedColors = {},
@@ -3510,64 +5773,29 @@ function getInheritedPinNames(
     let bestSourceId = sourceId;
     let bestSourceType = source;
 
-    // Check savedColors nounColumns and anchors
-    Object.values(savedColors).forEach((other) => {
-      if (other.type === "nounColumn" || other.type === "anchor") {
-        const oName = (other.nameOverride || names[other.id] || names[other.anchorId] || "").trim();
-        if (!oName || oName.toLowerCase() === "unnamed" || oName.toLowerCase() === "unnamed noun") return;
-        const oA = other.a !== undefined ? other.a : (other.C || 0) * Math.sin(((other.H || 0) * Math.PI) / 180);
-        const oB = other.b !== undefined ? other.b : (other.C || 0) * Math.cos(((other.H || 0) * Math.PI) / 180);
-        const minL = other.minL !== undefined ? other.minL : (other.L !== undefined ? other.L - 0.05 : -0.01);
-        const maxL = other.maxL !== undefined ? other.maxL : (other.L !== undefined ? other.L + 0.05 : 1.01);
-        const midL = (minL + maxL) / 2;
-        const inL = scL === null || (scL >= minL - 0.01 && scL <= maxL + 0.01);
-        const dL = scL !== null ? (scL - midL) : 0;
-        const d = Math.pow(scA - oA, 2) + Math.pow(scB - oB, 2) + Math.pow(dL * 0.4, 2);
-        if (d < minDist && (inL || d < minDist * 0.5)) {
-          minDist = d;
-          bestNoun = oName;
-          bestSourceId = other.id;
-          bestSourceType = other.type;
-        }
-      }
-    });
-
-    // Check all entries in names dictionary
-    Object.entries(names).forEach(([k, val]) => {
-      if (!val || typeof val !== "string") return;
-      const cleanVal = val.trim();
-      if (!cleanVal || cleanVal.toLowerCase() === "unnamed" || cleanVal.toLowerCase() === "unnamed noun") return;
-      if (String(k).startsWith("commercial-")) return;
-
-      const parts = k.split("-");
-      let nC = 0, nH = 0, nMidL = 0.5;
-      if (parts.length === 2 && !isNaN(parseInt(parts[0], 10)) && !isNaN(parseInt(parts[1], 10))) {
-        nC = parseInt(parts[0], 10) / 100;
-        nH = parseInt(parts[1], 10);
-      } else if (parts.length === 3 && !isNaN(parseInt(parts[1], 10)) && !isNaN(parseInt(parts[2], 10))) {
-        const pref = parts[0];
-        nC = parseInt(parts[1], 10) / 100;
-        nH = parseInt(parts[2], 10);
-        if (pref === "UL") nMidL = 0.975;
-        else if (pref === "L") nMidL = 0.725;
-        else if (pref === "D") nMidL = 0.35;
-        else if (pref === "UD") nMidL = 0.1;
-      } else {
-        return;
-      }
-
-      const nA = nC * Math.cos((nH * Math.PI) / 180);
-      const nB = nC * Math.sin((nH * Math.PI) / 180);
-      const dL = scL !== null ? (scL - nMidL) : 0;
-      const d = Math.pow(scA - nA, 2) + Math.pow(scB - nB, 2) + Math.pow(dL * 0.4, 2);
+    // Candidates depend only on savedColors + names, so they are listed once
+    // and reused for every pin (was a full pass over both, per pin, per render).
+    const cands = pinNameCandidates(savedColors, names);
+    for (const o of cands.saved) {
+      const dL = scL === null ? 0 : scL < o.minL ? o.minL - scL : scL > o.maxL ? scL - o.maxL : 0;
+      const d = Math.pow(scA - o.oA, 2) + Math.pow(scB - o.oB, 2) + dL * dL;
       if (d < minDist) {
         minDist = d;
-        bestNoun = cleanVal;
-        bestSourceId = k;
+        bestNoun = o.oName;
+        bestSourceId = o.id;
+        bestSourceType = o.type;
+      }
+    }
+    for (const o of cands.dict) {
+      const dL = scL !== null ? (scL - o.nMidL) : 0;
+      const d = Math.pow(scA - o.nA, 2) + Math.pow(scB - o.nB, 2) + Math.pow(dL * 0.4, 2);
+      if (d < minDist) {
+        minDist = d;
+        bestNoun = o.cleanVal;
+        bestSourceId = o.k;
         bestSourceType = "anchor";
       }
-    });
-
+    }
     if (bestNoun) {
       inheritedName = bestNoun;
       sourceId = bestSourceId;
@@ -3629,6 +5857,90 @@ function getInheritedPinNames(
 // Every entity that carries a noun becomes a column candidate. An anchor pins
 // a single sample, but the noun it holds belongs to the whole C/H column, so
 // it stays a candidate at every lightness. A nounColumn keeps its own L range.
+// ─── Anchors are points ─────────────────────────────────────────────────────
+// An anchor names one colour. Any other colour takes the name of the anchor
+// nearest to it in OkLab (straight-line distance over L, a, b), which is the
+// same rule that shapes the cells in Explore. Old lightness-range columns still
+// count: the distance is measured to the nearest point of their range.
+const ANCHOR_LIST_CACHE = new WeakMap();
+const anchorPointsOf = (savedColors) => {
+  if (!savedColors) return [];
+  const hit = ANCHOR_LIST_CACHE.get(savedColors);
+  if (hit) return hit;
+  const list = [];
+  Object.values(savedColors).forEach((sc) => {
+    if (!sc || (sc.type !== "nounColumn" && sc.type !== "anchor")) return;
+    const C = Number(sc.C), H = Number(sc.H) || 0;
+    if (!isFinite(C)) return;
+    let minL, maxL;
+    if (sc.type === "anchor") {
+      minL = maxL = Number(sc.L);
+    } else {
+      minL = isFinite(sc.minL) ? sc.minL : 0;
+      maxL = isFinite(sc.maxL) ? sc.maxL : 1;
+    }
+    if (!isFinite(minL) || !isFinite(maxL)) return;
+    const h = (H * Math.PI) / 180;
+    const nameKey =
+      sc.type === "anchor"
+        ? sc.anchorId ||
+          `custom-${Math.round(C * 100).toString().padStart(2, "0")}-${Math.round(H).toString().padStart(3, "0")}-${sc.adjId || getLStr(sc.L)}`
+        : sc.id;
+    list.push({ id: sc.id, nameKey, sc, minL, maxL, a: C * Math.sin(h), b: C * Math.cos(h) });
+  });
+  ANCHOR_LIST_CACHE.set(savedColors, list);
+  return list;
+};
+// Squared OkLab distance from a colour to an anchor (point or L range).
+const anchorDist2 = (L, a, b, an) => {
+  const dL = L < an.minL ? an.minL - L : L > an.maxL ? L - an.maxL : 0;
+  return dL * dL + (a - an.a) * (a - an.a) + (b - an.b) * (b - an.b);
+};
+const findNearestAnchor = (L, C, H, savedColors, opts = {}) => {
+  const list = anchorPointsOf(savedColors);
+  if (!list.length || !isFinite(L) || !isFinite(C)) return null;
+  const h = ((Number(H) || 0) * Math.PI) / 180, a = C * Math.sin(h), b = C * Math.cos(h);
+  let best = null, bd = Infinity;
+  for (const an of list) {
+    if (opts.named && !opts.named(an)) continue;
+    const d = anchorDist2(L, a, b, an);
+    if (d < bd) { bd = d; best = an; }
+  }
+  return best ? { ...best, dist: Math.sqrt(bd) } : null;
+};
+const anchorNameOf = (an, names) =>
+  String((names && names[an.nameKey]) || (names && names[an.id]) || an.sc.nameOverride || "").trim();
+// CSV headers in any case or spacing ("NOUN", "noun", "Oklch L") map onto the
+// names the importer reads, so a file exported elsewhere still loads its names.
+const CSV_CANONICAL_KEYS = "AdjId AdjOverride Adj_ID Adjective Adjective_Override Anchor AnchorId Anchor_ID Brand BrandName Brand_Name CIE_A CIE_B CIE_L DoorProfile Door_Profile ERP_Code HEX ID Illuminant Image LAB_L Lab_A Lab_B Lab_L Locked Material Measurement_Date Measurement_Device Measurement_Method Name Note Noun NounOverride Noun_Override OKLCH_C OKLCH_H OKLCH_L Observer Original_Index Parent ParentId ParentPinId Parent_ID Parent_Pin_ID PinId Pin_ID Profile RGB_B RGB_G RGB_R Sheen Spectral TactileTexture Tactile_Texture Tags Type URL VisualPattern VisualTexture Visual_Pattern Visual_Texture".split(" ");
+const CSV_KEY_LOOKUP = (() => {
+  const m = {};
+  CSV_CANONICAL_KEYS.forEach((k) => { const n = k.toLowerCase().replace(/[\s_-]+/g, ""); if (!m[n]) m[n] = k; });
+  return m;
+})();
+// Header → canonical name, worked out once per distinct header (not per row).
+const CSV_KEY_CANON = new Map();
+const csvCanonKey = (k) => {
+  let c = CSV_KEY_CANON.get(k);
+  if (c === undefined) {
+    c = CSV_KEY_LOOKUP[String(k).toLowerCase().replace(/[\s_-]+/g, "")] || null;
+    CSV_KEY_CANON.set(k, c);
+  }
+  return c;
+};
+const normalizeCsvRow = (row) => {
+  if (!row || typeof row !== "object") return row;
+  let out = null;
+  for (const k in row) {
+    const canon = csvCanonKey(k);
+    if (canon && canon !== k && row[canon] === undefined && (!out || out[canon] === undefined)) {
+      if (!out) out = { ...row };
+      out[canon] = row[k];
+    }
+  }
+  return out || row;
+};
+
 const getNounColumns = (gridData, savedColors) => {
   const cols = [];
   const push = (id, a, b, minL, maxL, nameOverride) => {
@@ -3663,7 +5975,7 @@ const getNounColumns = (gridData, savedColors) => {
       const id =
         sc.anchorId ||
         `custom-${Math.round(sc.C * 100).toString().padStart(2, "0")}-${Math.round(sc.H).toString().padStart(3, "0")}-${adjId}`;
-      push(id, a, b, -Infinity, Infinity, sc.nameOverride);
+      push(id, a, b, sc.L, sc.L, sc.nameOverride);
     }
   });
 
@@ -3677,20 +5989,17 @@ const resolveNounKey = (L, C, H, columns, namesObj) => {
   const a = C * Math.sin((normH * Math.PI) / 180);
   const b = C * Math.cos((normH * Math.PI) / 180);
 
+  // Nearest anchor in OkLab; a range column counts from its nearest point.
   let best = null;
   let bestDist = Infinity;
-  const consider = (requireRange) => {
-    columns.forEach((col) => {
-      if (requireRange && !(L >= col.minL - 0.001 && L <= col.maxL + 0.001)) return;
-      const d = Math.pow(a - col.a, 2) + Math.pow(b - col.b, 2);
-      if (d < bestDist) {
-        bestDist = d;
-        best = col;
-      }
-    });
-  };
-  consider(true);
-  if (!best) consider(false);
+  columns.forEach((col) => {
+    const dL = L < col.minL ? col.minL - L : L > col.maxL ? L - col.maxL : 0;
+    const d = dL * dL + Math.pow(a - col.a, 2) + Math.pow(b - col.b, 2);
+    if (d < bestDist) {
+      bestDist = d;
+      best = col;
+    }
+  });
 
   if (!best) {
     const cStr = Math.round(C * 100).toString().padStart(2, "0");
@@ -3707,6 +6016,8 @@ const resolveNounKey = (L, C, H, columns, namesObj) => {
 // Which adjective level does this colour fall under? The exact lightness
 // bucket if anchors.csv named it, otherwise the nearest named level.
 const resolveAdjectiveKey = (L, adjectivesObj) => {
+  // Without any named adjectives there is nothing to split colours by.
+  if (!adjectivesObj || !Object.values(adjectivesObj).some((v) => String(v || "").trim())) return "any";
   const lStr = getLStr(L);
   const exact = adjectivesObj && adjectivesObj[lStr];
   if (exact && String(exact).trim()) {
@@ -7615,7 +9926,46 @@ const ViewAdjectives = ({
     ),
   );
 };
-const ViewPins = ({
+// Wraps a view so it skips re-rendering when only callback identities changed
+// (the parent recreates them on every render). Callbacks still reach the
+// latest version through a ref, so nothing goes stale.
+const withStableCallbacks = (Comp) => {
+  const Inner = React.memo(Comp);
+  return (props) => {
+    const ref = useRef(props);
+    ref.current = props;
+    const cache = useRef({});
+    const next = {};
+    for (const k in props) {
+      const v = props[k];
+      if (typeof v === "function") {
+        if (!cache.current[k]) cache.current[k] = (...a) => (ref.current[k] ? ref.current[k](...a) : undefined);
+        next[k] = cache.current[k];
+      } else next[k] = v;
+    }
+    return React.createElement(Inner, next);
+  };
+};
+// Long lists mount a page at a time; the next page loads as the end of the
+// list scrolls into view (or on click).
+const LoadMoreSentinel = ({ onMore, left }) => {
+  const ref = useRef(null);
+  const cb = useRef(onMore);
+  cb.current = onMore;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === "undefined") return undefined;
+    const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) cb.current(); }, { rootMargin: "600px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [left]);
+  return React.createElement(
+    "button",
+    { ref, onClick: () => cb.current(), className: "w-full py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-slate-700 dark:hover:text-neutral-200" },
+    `Show more (${left} more)`,
+  );
+};
+const ViewPinsInner = ({
   handlePointClick,
   swatchZoom = 1,
   setSwatchZoom,
@@ -7650,6 +10000,7 @@ const ViewPins = ({
   const [isAdding, setIsAdding] = useState(false);
   // Catalog now offers the same three presentations as the other views.
   const [catalogView, setCatalogView] = useState("table");
+  const [tableLimit, setTableLimit] = useState(60);
   const [showSpecs, setShowSpecs] = useState(true);
   const [editForm, setEditForm] = useState({
     id: "",
@@ -7719,11 +10070,6 @@ const ViewPins = ({
       [newId]: {
         ...sourcePin,
         id: newId,
-        // A duplicate is a new pin at the same position: it should take the
-        // current anchor's name like any other pin, not inherit the source's
-        // frozen name. Only a deliberate override is kept.
-        nameOverride: "",
-        adjOverride: "",
       },
     }));
     setDictTags((prev) => {
@@ -8281,15 +10627,7 @@ const ViewPins = ({
                 ...item,
                 type: "pin",
                 displayName: `${item.displayAdj} ${item.displayName}`.trim() || item.id,
-                hex: (() => {
-                  try {
-                    return new Color("oklch", [item.L, item.C, item.H])
-                      .toGamut({ space: "srgb" })
-                      .toString({ format: "hex" });
-                  } catch (e) {
-                    return "#cccccc";
-                  }
-                })(),
+                hex: lchDisplayHex(item.L, item.C, item.H),
               })),
               layout: catalogView === "matrix" ? "matrix" : "gallery",
               swatchZoom,
@@ -8316,7 +10654,7 @@ const ViewPins = ({
             )
           : null,
         catalogView === "table" &&
-        sortedItems.map((item) =>
+        sortedItems.slice(0, tableLimit).map((item) =>
           React.createElement(
             "div",
             {
@@ -8544,6 +10882,12 @@ const ViewPins = ({
           ),
         ),
       ),
+      catalogView === "table" &&
+        sortedItems.length > tableLimit &&
+        React.createElement(LoadMoreSentinel, {
+          left: sortedItems.length - tableLimit,
+          onMore: () => setTableLimit((n) => n + 150),
+        }),
     ),
     selectedIds.length > 0 &&
       React.createElement(
@@ -8667,6 +11011,7 @@ const ViewPins = ({
       ),
   );
 };
+const ViewPins = withStableCallbacks(ViewPinsInner);
 const ViewGroups = ({ settings, setSettings }) => {
   const updateSetting = (key, val) => setSettings({ ...settings, [key]: val });
   const updateHue = (index, field, val) => {
@@ -9669,19 +12014,33 @@ const processCSVData = (
   currentGroupSettings = null,
   currentSavedPalettes = [],
 ) => {
-  const newColorData = currentColorData
-    ? JSON.parse(JSON.stringify(currentColorData))
-    : {};
-  const newSavedColors = currentSavedColors
-    ? JSON.parse(JSON.stringify(currentSavedColors))
-    : {};
-  const newNames = currentNames ? JSON.parse(JSON.stringify(currentNames)) : {};
-  const newAdjs = currentAdjs ? JSON.parse(JSON.stringify(currentAdjs)) : {};
-  const newNotes = currentNotes ? JSON.parse(JSON.stringify(currentNotes)) : {};
-  const newTags = currentTags ? JSON.parse(JSON.stringify(currentTags)) : {};
-  const newSavedPalettes = currentSavedPalettes
-    ? JSON.parse(JSON.stringify(currentSavedPalettes))
-    : [];
+  // Records are never edited in place below (each change writes a new object),
+  // so shallow copies are enough. Deep-copying everything loaded so far, once
+  // per file, made a 20-file load quadratic.
+  const newColorData = currentColorData ? { ...currentColorData } : {};
+  const newSavedColors = currentSavedColors ? { ...currentSavedColors } : {};
+  const newNames = currentNames ? { ...currentNames } : {};
+  const newAdjs = currentAdjs ? { ...currentAdjs } : {};
+  const newNotes = currentNotes ? { ...currentNotes } : {};
+  const newTags = currentTags ? { ...currentTags } : {};
+  const newSavedPalettes = currentSavedPalettes ? currentSavedPalettes.slice() : [];
+  // Brand lists are copied on first write; names are looked up through an index
+  // instead of a scan of the whole list for every row.
+  const brandCopied = new Set();
+  const brandNameIdx = {};
+  const brandListFor = (brand) => {
+    if (!brandCopied.has(brand)) {
+      newColorData[brand] = newColorData[brand] ? newColorData[brand].slice() : [];
+      brandCopied.add(brand);
+      const idx = new Map();
+      newColorData[brand].forEach((c, i) => {
+        const k = String((c && c.name) || "").toLowerCase();
+        if (!idx.has(k)) idx.set(k, i);
+      });
+      brandNameIdx[brand] = idx;
+    }
+    return newColorData[brand];
+  };
   let newGroupSettings = currentGroupSettings
     ? JSON.parse(JSON.stringify(currentGroupSettings))
     : null;
@@ -9690,7 +12049,8 @@ const processCSVData = (
   let hasNeutrals = false;
   let hasHues = false;
   let hasOverrides = false;
-  parsedData.forEach((row) => {
+  parsedData.forEach((rawRow) => {
+    const row = normalizeCsvRow(rawRow);
     const targetType = String(row.Type || "")
       .toUpperCase()
       .trim();
@@ -9772,16 +12132,10 @@ const processCSVData = (
         newGroupSettings.hues = [];
         hasHues = true;
       }
-      // Files written before the switch stored an upper bound in the same
-      // column. Without the marker, read it as a bound and let hueCenterOf
-      // derive the midpoint, so existing repos keep their regions.
-      const isMidpoint =
-        String(row.Note || "").trim().toLowerCase() === "midpoint";
-      const angle = parseFloat(row.OKLCH_H) || 0;
       newGroupSettings.hues.push({
         id: row.ID || crypto.randomUUID(),
         name: row.Noun || "",
-        ...(isMidpoint ? { centerH: angle } : { maxH: angle }),
+        maxH: parseFloat(row.OKLCH_H) || 0,
       });
       return;
     }
@@ -9850,15 +12204,17 @@ const processCSVData = (
           row.OKLCH_H !== void 0 &&
           row.OKLCH_L !== ""
         ) {
-          tc = new Color("oklch", [
-            parseFloat(row.OKLCH_L),
-            parseFloat(row.OKLCH_C),
-            parseFloat(row.OKLCH_H),
-          ]);
+          const hh = parseFloat(row.OKLCH_H);
+          pL = parseFloat(row.OKLCH_L);
+          pC = parseFloat(row.OKLCH_C);
+          pH = isNaN(hh) ? 0 : ((hh % 360) + 360) % 360;
         } else if (row.HEX) {
-          let ch = String(row.HEX).trim();
-          if (!ch.startsWith("#")) ch = "#" + ch;
-          tc = createColorFromHex(ch);
+          const f = fastHexToOklch(row.HEX);
+          if (f) {
+            pL = f[0];
+            pC = f[1];
+            pH = isNaN(f[2]) ? 0 : f[2];
+          }
         } else if (
           (row.CIE_L !== void 0 || row.Lab_L !== void 0 || row.LAB_L !== void 0) &&
           (row.CIE_A !== void 0 || row.CIE_a !== void 0 || row.Lab_A !== void 0 || row.Lab_a !== void 0) &&
@@ -9912,10 +12268,11 @@ const processCSVData = (
       if (image.includes("placehold") || image.includes("dummy")) image = "";
       const finalBrand = normalizeBrandKey(brandRaw) || "unknown";
       if (finalBrand) {
-        if (!newColorData[finalBrand]) newColorData[finalBrand] = [];
-        const existingIdx = newColorData[finalBrand].findIndex(
-          (c) => c.name.toLowerCase() === name.toLowerCase(),
-        );
+        brandListFor(finalBrand);
+        const nameKeyLc = name.toLowerCase();
+        const existingIdx = brandNameIdx[finalBrand].has(nameKeyLc)
+          ? brandNameIdx[finalBrand].get(nameKeyLc)
+          : -1;
         const colorObj = {
           name,
           hex,
@@ -9958,6 +12315,7 @@ const processCSVData = (
             ...colorObj,
           };
         } else {
+          brandNameIdx[finalBrand].set(nameKeyLc, newColorData[finalBrand].length);
           newColorData[finalBrand].push(colorObj);
         }
         colorsAdded++;
@@ -10270,10 +12628,12 @@ const GITHUB_API = "https://api.github.com";
 // differently. Grouping them into destinations changes only the selector —
 // activeTab stays the source of truth, so routing and saved state are untouched.
 const DESTINATIONS = [
-  { id: "explore", label: "Explore", tabs: ["top", "chroma", "slice", "3d"] },
+  // Explore is one combined view now; old tab ids still route to it.
+  { id: "explore", label: "Explore", tabs: ["3d"] },
   { id: "match", label: "Match", tabs: ["db"] },
   { id: "catalog", label: "Catalog", tabs: ["pins"] },
-  { id: "names", label: "Names", tabs: ["groups", "adjectives", "palette"] },
+  // The adjective × noun grid gave way to free anchor points.
+  { id: "names", label: "Anchors", tabs: ["anchors", "groups"] },
 ];
 const destForTab = (tabId) =>
   DESTINATIONS.find((d) => d.tabs.indexOf(tabId) !== -1) || DESTINATIONS[0];
@@ -10714,6 +13074,11 @@ const GitHubSyncModal = ({ config, setConfig, status, onSync, onPull, onClose })
 const App = () => {
   const [theme, setTheme] = useState("light");
   const [activeTab, setActiveTab] = useState("db");
+  // Retired tabs (old Explore views, adjective/noun grids) open their replacements.
+  useEffect(() => {
+    const alias = { adjectives: "anchors", palette: "anchors", top: "3d", chroma: "3d", slice: "3d" }[activeTab];
+    if (alias) setActiveTab(alias);
+  }, [activeTab]);
   const [colorData, setColorData] = useState(null);
   const [filterL, setFilterL] = useState(1);
   const [filterC, setFilterC] = useState(0.4);
@@ -11316,21 +13681,26 @@ const App = () => {
     ) {
       setLinkedFiles(filesToLoad);
     }
-    for (const file of filesToLoad) {
+    // Downloads run in parallel; processing still goes file by file, in order.
+    const fetchText = async (file) => {
+      let parsedUrl = new URL(window.location.href);
+      let p = parsedUrl.pathname;
+      if (!p.endsWith("/") && !p.split("/").pop().includes(".")) {
+        p += "/";
+      }
+      let baseForFetch = parsedUrl.origin + p;
+      const resolvedPath = file.startsWith("data/") ? file : "data/" + file;
+      const resolvedUrl = new URL(resolvedPath, baseForFetch).href;
+      const res = await fetch(resolvedUrl);
+      return res.ok ? await res.text() : "";
+    };
+    const pendingTexts = filesToLoad.map((file) => fetchText(file).catch((e) => e));
+    for (let fi = 0; fi < filesToLoad.length; fi++) {
+      const file = filesToLoad[fi];
       try {
-        let csvText = "";
-        let parsedUrl = new URL(window.location.href);
-        let p = parsedUrl.pathname;
-        if (!p.endsWith("/") && !p.split("/").pop().includes(".")) {
-          p += "/";
-        }
-        let baseForFetch = parsedUrl.origin + p;
-        const resolvedPath = file.startsWith("data/") ? file : "data/" + file;
-        const resolvedUrl = new URL(resolvedPath, baseForFetch).href;
-        const res = await fetch(resolvedUrl);
-        if (res.ok) {
-          csvText = await res.text();
-        }
+        const got = await pendingTexts[fi];
+        if (got instanceof Error) throw got;
+        let csvText = got || "";
         if (csvText) {
           const fc = csvText.trimStart().slice(0, 5).toLowerCase();
           if (fc === "<!doc" || fc === "<html") continue;
@@ -11479,6 +13849,22 @@ const App = () => {
       return null;
     }
   }, [scrubL, scrubC, scrubH, gridData, savedColors, names, adjectives]);
+  // Viewport filter rows that apply here, and whether any of them (or the
+  // same-group toggles) depend on the cursor. Only then must the filtered lists
+  // be rebuilt as the cursor moves; otherwise a drag rebuilt every list and,
+  // through them, every Explore cell, on each step.
+  const viewportRows = useMemo(
+    () => (globalFilters || []).filter((r) => !r.scope || r.scope === "viewport"),
+    [globalFilters],
+  );
+  const viewportCursorDep =
+    filterSameAdjective ||
+    filterSameNoun ||
+    viewportRows.some(
+      (r) => r.dynamic || r.field === "deltaE" || r.field === "noun" || r.field === "adjective",
+    );
+  const viewportCursorKey = viewportCursorDep ? `${scrubL}|${scrubC}|${scrubH}` : "";
+  const viewportCtxDep = viewportCursorDep ? viewportGroupContext : null;
   const filteredColorData = useMemo(() => {
     if (!colorData) return null;
     const isDb = activeTab === "db";
@@ -11537,25 +13923,13 @@ const App = () => {
             return true;
           });
         }
-        if (globalFilters && globalFilters.length) {
+        if (viewportRows.length) {
           // Commercial rows carry no \u0394E of their own; measure against the
           // cursor first or a \u0394E row rejects every one of them.
-          let center = null;
-          try {
-            center = new Color("oklch", [scrubL, scrubC, scrubH]);
-          } catch (e) {
-            center = null;
-          }
           const decorated = list.map((c) => {
             const item = { ...c, brand, displayName: c.name || "" };
-            if (item._d === undefined && center) {
-              try {
-                item._d =
-                  center.deltaE(
-                    new Color("oklch", [c.L, c.C, isNaN(c.H) ? 0 : c.H]),
-                    "OK",
-                  ) * 100;
-              } catch (e) {}
+            if (item._d === undefined) {
+              item._d = fastDeltaEOK(scrubL, scrubC, scrubH, c.L, c.C, c.H);
             }
             return item;
           });
@@ -11583,15 +13957,13 @@ const App = () => {
     filterSameAdjective,
     filterSameNoun,
     savedColors,
-    scrubL,
-    scrubC,
-    scrubH,
+    viewportCursorKey,
     names,
     adjectives,
     activeTab,
-    globalFilters,
+    viewportRows,
     globalFilterMode,
-    viewportGroupContext,
+    viewportCtxDep,
   ]);
   const [showVisibilityMenu, setShowVisibilityMenu] = useState(false);
   const visibilityMenuRef = useRef(null);
@@ -11680,10 +14052,12 @@ const App = () => {
         console.warn("Failed to persist state to localStorage:", e);
       }
       setHistory((prev) => {
-        const currentRecordStr = JSON.stringify(prev.list[prev.index]);
+        const currentRecordStr = historyRecordStr(prev.list[prev.index]);
         if (currentRecordStr === currentStateStr) return prev;
         const newList = prev.list.slice(0, prev.index + 1);
-        newList.push(JSON.parse(currentStateStr));
+        const rec = JSON.parse(currentStateStr);
+        HISTORY_STR.set(rec, currentStateStr);
+        newList.push(rec);
         if (newList.length > 50) newList.shift();
         return { list: newList, index: newList.length - 1 };
       });
@@ -11763,8 +14137,40 @@ const App = () => {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
   const filteredViewData = useMemo(() => {
+    // Points are matched by near-equal L/C/H through a bucket index (was a scan
+    // of every point for every anchor).
+    const nearIdx = new Map();
+    const nearKey = (L, C, H) => `${Math.round(L * 1000)}|${Math.round(C * 1000)}|${Math.round(H * 1000)}`;
+    const indexPoint = (p, i) => {
+      if (!isFinite(p.L) || !isFinite(p.C) || !isFinite(p.H)) return;
+      const k = nearKey(p.L, p.C, p.H);
+      const arr = nearIdx.get(k);
+      if (arr) arr.push(i); else nearIdx.set(k, [i]);
+    };
+    const findNear = (L, C, H) => {
+      let best = -1;
+      const l0 = Math.round(L * 1000), c0 = Math.round(C * 1000), h0 = Math.round(H * 1000);
+      for (let dl = -1; dl <= 1; dl++)
+        for (let dc = -1; dc <= 1; dc++)
+          for (let dh = -1; dh <= 1; dh++) {
+            const arr = nearIdx.get(`${l0 + dl}|${c0 + dc}|${h0 + dh}`);
+            if (!arr) continue;
+            for (const i of arr) {
+              const p = points[i];
+              if (
+                (best < 0 || i < best) &&
+                Math.abs(p.L - L) < 0.001 &&
+                Math.abs(p.C - C) < 0.001 &&
+                Math.abs(p.H - H) < 0.001
+              )
+                best = i;
+            }
+          }
+      return best;
+    };
     if (!gridData) return { points: [], baseAnchors: [], savedColors: {} };
     let points = [...gridData.allPoints];
+    points.forEach(indexPoint);
     let baseAnchors = [...gridData.baseAnchors];
     const filteredSavedColors = { ...savedColors };
     Object.values(filteredSavedColors).forEach((sc) => {
@@ -11803,6 +14209,7 @@ const App = () => {
           brand: sc.brand,
           originalIndex: sc.originalIndex,
         };
+        indexPoint(pt, points.length);
         points.push(pt);
         baseAnchors.push({
           C: sc.C,
@@ -11827,20 +14234,16 @@ const App = () => {
         const dL = 0.02;
         if (sc.minL === sc.maxL && sc.minL !== null) {
           const L = sc.minL;
-          const cColor = new Color("oklch", [L, sc.C, sc.H]);
-          const existingIdx = points.findIndex(
-            (p) =>
-              Math.abs(p.L - L) < 0.001 &&
-              Math.abs(p.C - sc.C) < 0.001 &&
-              Math.abs(p.H - sc.H) < 0.001,
-          );
+          const gh = lchGamutHex(L, sc.C, sc.H);
+          const existingIdx = findNear(L, sc.C, sc.H);
           if (existingIdx >= 0) {
             points[existingIdx] = {
               ...points[existingIdx],
               parentNounId: sc.id,
               isCustomNounGenerated: true,
             };
-          } else if (cColor.inGamut("srgb")) {
+          } else if (gh.inGamut) {
+            indexPoint({ L, C: sc.C, H: sc.H }, points.length);
             points.push({
               L,
               C: sc.C,
@@ -11858,10 +14261,7 @@ const App = () => {
                   2,
                   "0",
                 )}-H${Math.round(sc.H).toString().padStart(3, "0")}`,
-              color: cColor
-                .clone()
-                .toGamut({ space: "srgb" })
-                .toString({ format: "hex" }),
+              color: gh.hex,
               opacity: 1,
               ring: 0,
               delta: 0,
@@ -11872,20 +14272,15 @@ const App = () => {
           }
         } else {
           for (let L = Math.ceil(sc.minL / dL) * dL; L <= sc.maxL; L += dL) {
-            const cColor = new Color("oklch", [L, sc.C, sc.H]);
-            const existingIdx = points.findIndex(
-              (p) =>
-                Math.abs(p.L - L) < 0.001 &&
-                Math.abs(p.C - sc.C) < 0.001 &&
-                Math.abs(p.H - sc.H) < 0.001,
-            );
+            const gh = lchGamutHex(L, sc.C, sc.H);
+            const existingIdx = findNear(L, sc.C, sc.H);
             if (existingIdx >= 0) {
               points[existingIdx] = {
                 ...points[existingIdx],
                 parentNounId: sc.id,
                 isCustomNounGenerated: true,
               };
-            } else if (cColor.inGamut("srgb")) {
+            } else if (gh.inGamut) {
               const pt = {
                 L,
                 C: sc.C,
@@ -11903,10 +14298,7 @@ const App = () => {
                     2,
                     "0",
                   )}-H${Math.round(sc.H).toString().padStart(3, "0")}`,
-                color: cColor
-                  .clone()
-                  .toGamut({ space: "srgb" })
-                  .toString({ format: "hex" }),
+                color: gh.hex,
                 opacity: 1,
                 ring: 0,
                 delta: 0,
@@ -11914,6 +14306,7 @@ const App = () => {
                 isCustomNounGenerated: true,
                 parentNounId: sc.id,
               };
+              indexPoint(pt, points.length);
               points.push(pt);
             }
           }
@@ -12106,15 +14499,9 @@ const App = () => {
         activeColumns.has(`${ba.cStr}-${ba.hStr}`),
       );
     }
-    if (globalFilters && globalFilters.length) {
+    if (viewportRows.length) {
       // Grid points expose name/noun/adjective and L/C/H; \u0394E is measured
       // against the cursor so the same rows work here as in the list.
-      let center = null;
-      try {
-        center = new Color("oklch", [scrubL, scrubC, scrubH]);
-      } catch (e) {
-        center = null;
-      }
       const decorate = (p) => {
         const name =
           names[p.parentNounId || p.anchorId || p.id] ||
@@ -12122,19 +14509,8 @@ const App = () => {
           p.nameOverride ||
           p.name ||
           "";
-        let d;
-        if (center) {
-          try {
-            d =
-              center.deltaE(
-                new Color("oklch", [p.L, p.C, isNaN(p.H) ? 0 : p.H]),
-                "OK",
-              ) * 100;
-          } catch (e) {
-            d = undefined;
-          }
-        }
-        return { ...p, displayName: name, _d: d };
+        const d = fastDeltaEOK(scrubL, scrubC, scrubH, p.L, p.C, p.H);
+        return { ...p, displayName: name, _d: isFinite(d) ? d : undefined };
       };
       const strip = (p) => {
         const clean = { ...p };
@@ -12180,12 +14556,10 @@ const App = () => {
     dictNotes,
     filterSameAdjective,
     filterSameNoun,
-    scrubL,
-    scrubC,
-    scrubH,
-    globalFilters,
+    viewportCursorKey,
+    viewportRows,
     globalFilterMode,
-    viewportGroupContext,
+    viewportCtxDep,
   ]);
   useEffect(() => {
     if (theme === "dark") document.documentElement.classList.add("dark");
@@ -12342,41 +14716,11 @@ const App = () => {
       nearestAnchorId = closestGridPt.anchorId;
     } else {
       nearestAdjId = getLStr(effectiveL);
-      let min2d = Infinity,
-        bestAnchor = null;
-      if (filteredViewData.baseAnchors) {
-        for (const ba of filteredViewData.baseAnchors) {
-          const dist =
-            Math.pow(effectiveA - ba.a, 2) + Math.pow(effectiveB - ba.b, 2);
-          const minL = ba.minL !== void 0 ? ba.minL : -0.01;
-          const maxL = ba.maxL !== void 0 ? ba.maxL : 1.01;
-          const inRange =
-            effectiveL >= minL - 0.001 && effectiveL <= maxL + 0.001;
-          if (dist < min2d && inRange) {
-            min2d = dist;
-            bestAnchor = ba;
-          }
-        }
-      }
-      Object.values(savedColors)
-        .filter((sc) => sc.type === "nounColumn")
-        .forEach((cc) => {
-          const dist =
-            Math.pow(effectiveA - cc.a, 2) + Math.pow(effectiveB - cc.b, 2);
-          if (dist <= min2d && effectiveL >= cc.minL && effectiveL <= cc.maxL) {
-            min2d = dist;
-            bestAnchor = cc;
-          }
-        });
-      if (bestAnchor) {
-        if (bestAnchor.type === "nounColumn") {
-          nearestAnchorId = bestAnchor.id;
-        } else if (bestAnchor.isCustomAnchor) {
-          nearestAnchorId = `custom-${bestAnchor.cStr}-${bestAnchor.hStr}-${getLStr(effectiveL)}`;
-        } else {
-          nearestAnchorId =
-            bestAnchor.parentNounId || `${bestAnchor.cStr}-${bestAnchor.hStr}`;
-        }
+      // Anchors are points: the cursor takes the name of the nearest one in
+      // OkLab, the same rule that draws the cells in Explore.
+      const nearAnchor = findNearestAnchor(effectiveL, effectiveC, effectiveH, savedColors);
+      if (nearAnchor) {
+        nearestAnchorId = nearAnchor.nameKey;
       } else {
         const cStr = Math.round(effectiveC * 100).toString().padStart(2, "0");
         const hStr = Math.round(effectiveH).toString().padStart(3, "0");
@@ -12618,7 +14962,8 @@ const App = () => {
       { id: "top", label: "Light layers" },
       { id: "chroma", label: "Chroma rings" },
       { id: "slice", label: "Hue slices" },
-      { id: "3d", label: "3D view" },
+      { id: "3d", label: "Color space" },
+      { id: "anchors", label: "Anchors" },
       { id: "groups", label: "Color groups" },
       { id: "adjectives", label: "Adjectives" },
       { id: "palette", label: "Nouns" },
@@ -12685,15 +15030,12 @@ const App = () => {
             ? sc.notes || dictNotes[sc.id] || ""
             : sc.notes || dictNotes[sc.anchorId] || "";
         const realL = sc.type === "nounColumn" ? (sc.minL + sc.maxL) / 2 : sc.L;
-        const cFallback = new Color("oklch", [realL, sc.C || 0, sc.H || 0])
-          .toGamut({ space: "srgb" })
-          .toString({ format: "hex" });
         results.push({
           key: `saved-${sc.id}`,
           L: realL,
           C: sc.C,
           H: sc.H,
-          color: sc.color || cFallback,
+          color: sc.color || lchDisplayHex(realL, sc.C || 0, sc.H || 0),
           displayName: dn,
           erpCode: sc.erpCode,
           type: t,
@@ -12725,9 +15067,7 @@ const App = () => {
         );
       const isCodeSearch = q.length >= 2 && !isNaN(q) && codeStr.includes(q);
       if (hasDictMatch || isCodeSearch) {
-        const validPtColor = new Color("oklch", [pt.L, pt.C, pt.H])
-          .toGamut({ space: "srgb" })
-          .toString({ format: "hex" });
+        const validPtColor = lchDisplayHex(pt.L, pt.C, pt.H);
         results.push({
           key: `pt-${pt.erpCode}`,
           L: pt.L,
@@ -12770,9 +15110,7 @@ const App = () => {
             L: lVal,
             C: 0,
             H: 0,
-            color: new Color("oklch", [lVal, 0, 0])
-              .toGamut({ space: "srgb" })
-              .toString({ format: "hex" }),
+            color: lchDisplayHex(lVal, 0, 0),
             displayName: `${adjName} [Adjective]`.trim(),
             erpCode: "",
             type: "Adjective Definition",
@@ -13563,10 +15901,7 @@ const App = () => {
             Type: "HUE_REGION",
             Adjective: h.id,
             Noun: h.name,
-            // Regions are stored by midpoint now; OKLCH_H carries that angle
-            // and Note marks the format so older files are read correctly.
-            OKLCH_H: hueCenterOf(h, groupSettings.hues),
-            Note: "midpoint",
+            OKLCH_H: h.maxH,
           }),
         );
         (groupSettings.overrides || []).forEach((o) =>
@@ -14423,7 +16758,10 @@ const App = () => {
           inherited: inherited2,
         };
       }
-      let activeNoun = names[crosshair?.nearestAnchorId] || "";
+      let activeNoun =
+        names[crosshair?.nearestAnchorId] ||
+        savedColors[crosshair?.nearestAnchorId]?.nameOverride ||
+        "";
       let activeAdj = adjectives[crosshair?.nearestAdjId] || "";
       if (!activeNoun || activeNoun === "Unnamed" || activeNoun === "Unnamed Noun" || !activeAdj) {
         const derived = getInheritedPinNames(
@@ -15058,25 +17396,19 @@ const ViewDatabase = ({
         let H = c.H;
         let hexVal = c.hex || "#000000";
         if (c.spectral && c.spectral.length === 31) {
-          try {
-            const xyzStandard = calculateXYZFromSpectral(c.spectral, 2, "D65");
-            const col = new Color("xyz-d65", xyzStandard).to("oklch");
-            L = col.coords[0];
-            C = col.coords[1];
-            H = isNaN(col.coords[2]) ? 0 : ((col.coords[2] % 360) + 360) % 360;
-            hexVal = col.to("srgb").toString({ format: "hex" });
-          } catch (e) {}
-        } else if (L === void 0 || L === null) {
-          let tc;
-          if (c.hex) {
-            try {
-              tc = createColorFromHex(c.hex).to("oklch");
-            } catch (e) {}
+          const sp = fastItemLch(c);   // cached per record
+          if (sp) {
+            L = sp.L;
+            C = sp.C;
+            H = sp.H;
+            hexVal = sp.hex;
           }
+        } else if (L === void 0 || L === null) {
+          const tc = c.hex ? fastHexToOklch(c.hex) : null;
           if (tc) {
-            L = tc.coords[0];
-            C = tc.coords[1];
-            H = isNaN(tc.coords[2]) ? 0 : ((tc.coords[2] % 360) + 360) % 360;
+            L = tc[0];
+            C = tc[1];
+            H = isNaN(tc[2]) ? 0 : tc[2];
           } else {
             L = 0.5;
             C = 0;
@@ -15092,7 +17424,7 @@ const ViewDatabase = ({
           // than rebuilt for the whole list on every keystroke or slider move.
           _inGamut: (() => {
             try {
-              return new Color("oklch", [L, C, H]).inGamut("srgb");
+              return fastInGamutSrgb(L, C, H);
             } catch (e) {
               return true;
             }
@@ -15586,19 +17918,10 @@ const ViewDatabase = ({
     // scanned for, so every row carries it whenever there is a cursor to measure
     // against, even when the \u0394E limit itself is switched off.
     if (crosshair) {
-      const center = new Color("oklch", [
-        crosshair.rawL,
-        crosshair.rawC,
-        crosshair.rawH,
-      ]);
+      const cL = crosshair.rawL, cC = crosshair.rawC, cH = crosshair.rawH;
       items.forEach((item) => {
-        try {
-          item._d =
-            center.deltaE(new Color("oklch", [item.L, item.C, item.H]), "OK") *
-            100;
-        } catch (e) {
-          item._d = undefined;
-        }
+        const d = fastDeltaEOK(cL, cC, cH, item.L, item.C, item.H);
+        item._d = isFinite(d) ? d : undefined;
       });
     }
     if (brandFilter) {
@@ -18015,6 +20338,8 @@ const AppUI = ({
   tetheringPinId,
   setTetheringPinId,
 }) => {
+  const spaceSeenRef = useRef(false);
+  if (["top", "chroma", "slice", "3d"].includes(activeTab)) spaceSeenRef.current = true;
   // The input stays bound to the raw value so typing never lags; the heavy
   // table/grid re-filter runs against this deferred copy instead.
   const deferredSearch = useDeferredValue(viewportSearchQuery);
@@ -18081,7 +20406,7 @@ const AppUI = ({
     explore: "grid-3x3",
     match: "list",
     catalog: "bookmark",
-    names: "type",
+    names: "anchor",
   };
   // Destinations render twice from one definition: a rail beside the content on
   // desktop, a thumb-height bar at the bottom on phones.
@@ -18158,7 +20483,7 @@ const AppUI = ({
     // permanently, so they have to resolve whether or not it is.
 
     const pretty = (k) =>
-      k && k.indexOf("name:") === 0 ? k.slice(5).toUpperCase() : "unnamed";
+      k && k.indexOf("name:") === 0 ? k.slice(5).toUpperCase() : k === "any" ? "" : "unnamed";
     try {
       const ctx = getSameGroupContext(
         scrubL,
@@ -18850,7 +21175,7 @@ const AppUI = ({
               className:
                 "block text-[10px] uppercase tracking-widest text-slate-400 truncate",
             },
-            sameGroupLabels.adj || "\u2014",
+            sameGroupLabels.adj || "Anchor",
           ),
           React.createElement(
             "span",
@@ -19040,6 +21365,7 @@ const AppUI = ({
                       "absolute inset-0 flex flex-col items-center justify-center p-6 mt-1 z-20 pointer-events-none",
                     style: { color: isLight ? "#010D00" : "#F2E8DF" },
                   },
+                  (activeAdj || Object.keys(adjectives || {}).length > 0) &&
                   React.createElement(
                     "div",
                     {
@@ -19082,7 +21408,7 @@ const AppUI = ({
                       type: "text",
                       value: activeName,
                       onChange: (e) => onNameChange(e.target.value),
-                      placeholder: "Noun",
+                      placeholder: "Unnamed",
                       className: nounInputClass,
                       disabled:
                         isInputDisabled ||
@@ -20582,6 +22908,7 @@ const AppUI = ({
                 className:
                   "px-4 py-2 border-b border-slate-100 dark:border-neutral-800 bg-slate-50/30 dark:bg-neutral-900/30 flex flex-wrap items-center gap-4 z-20",
               },
+              !["top", "chroma", "slice", "3d"].includes(activeTab) &&
               React.createElement(
                 "div",
                 { className: "flex items-center gap-2" },
@@ -20642,6 +22969,7 @@ const AppUI = ({
                     ),
                   ),
                 ),
+              !["top", "chroma", "slice", "3d"].includes(activeTab) &&
               React.createElement("div", {
                 className: "h-4 w-px bg-slate-200 dark:bg-neutral-800",
               }),
@@ -20871,125 +23199,50 @@ const AppUI = ({
                 },
               })
             ),
-            activeTab === "3d" &&
-              React.createElement(View3D, {
-                colorData: filteredColorData,
+            spaceSeenRef.current &&
+              React.createElement(
+                "div",
+                {
+                  style: { display: ["top", "chroma", "slice", "3d"].includes(activeTab) ? "block" : "none" },
+                  className: "w-full h-full",
+                },
+              React.createElement(ViewSpace, {
+                active: ["top", "chroma", "slice", "3d"].includes(activeTab),
                 points: filteredViewData.points,
-                crosshair,
-                viewMode,
-                handlePointClick,
-                theme,
+                colorData: filteredColorData,
                 names,
                 adjectives,
-                savedColors: filteredViewData.savedColors,
-                lockedNouns,
-                lockedAdjectives,
-                tetheringPinId,
-                filterPt,
-              }),
-            activeTab === "slice" &&
-              React.createElement(ViewVertical, {
-                colorData: filteredColorData,
-                points: filteredViewData.points,
-                crosshair,
-                handlePointClick,
                 theme,
-                names,
-                adjectives,
-                savedColors: filteredViewData.savedColors,
-                lockedNouns,
-                lockedAdjectives,
-                viewMode,
-                tetheringPinId,
-                swatchLayout,
-                swatchZoom,
-                viewportSearchQuery: deferredSearch,
-                filterPt,
+                scrubL,
+                scrubC,
+                scrubH,
                 filterL,
                 filterC,
                 filterH,
-                groupSettings,
-              }),
-            activeTab === "chroma" &&
-              React.createElement(ViewChromaRings, {
-                colorData: filteredColorData,
-                points: filteredViewData.points,
-                crosshair,
                 handlePointClick,
-                theme,
-                names,
-                adjectives,
-                savedColors: filteredViewData.savedColors,
-                lockedNouns,
-                lockedAdjectives,
-                viewMode,
-                tetheringPinId,
-                swatchLayout,
-                swatchZoom,
-                viewportSearchQuery: deferredSearch,
-                filterPt,
-                filterL,
-                filterC,
-                filterH,
-                groupSettings,
-              }),
-            activeTab === "top" &&
-              React.createElement(ViewTopDown, {
-                colorData: filteredColorData,
-                points: filteredViewData.points,
-                baseAnchors: filteredViewData.baseAnchors,
-                crosshair,
-                handlePointClick,
-                theme,
-                names,
-                adjectives,
-                savedColors: filteredViewData.savedColors,
-                lockedNouns,
-                lockedAdjectives,
-                viewMode,
-                tetheringPinId,
-                swatchLayout,
-                swatchZoom,
-                viewportSearchQuery: deferredSearch,
-                filterPt,
-                filterL,
-                filterC,
-                filterH,
-                groupSettings,
-              }),
+                onCursor: (L, C, H) => {
+                  setScrubL(L);
+                  setScrubC(C);
+                  setScrubH(H);
+                  setTemporarySpectral(null);
+                },
+              })),
             activeTab === "groups" &&
               React.createElement(ViewGroups, {
                 settings: groupSettings,
                 setSettings: setGroupSettings,
               }),
-            activeTab === "adjectives" &&
-              React.createElement(ViewAdjectives, {
-                points: filteredViewData.points,
-                names,
-                adjectives,
-                setAdjectives,
-                handlePointClick,
-                crosshair,
-                lockedAdjectives,
-                savedColors,
-                onVisualize: handleVisualize,
-              }),
-            activeTab === "palette" &&
-              React.createElement(ViewPalette, {
-                baseAnchors: filteredViewData.baseAnchors,
-                points: filteredViewData.points,
-                handlePointClick,
-                names,
-                setNames,
-                adjectives,
-                setAdjectives,
-                dictNotes,
-                lockedNouns,
-                lockedAdjectives,
+            activeTab === "anchors" &&
+              React.createElement(ViewAnchors, {
                 savedColors,
                 setSavedColors,
-                dictTags,
-                onVisualize: handleVisualize,
+                names,
+                setNames,
+                scrubL,
+                scrubC,
+                scrubH,
+                handleUpdate,
+                setActiveTab,
               }),
             activeTab === "pins" &&
               React.createElement(ViewPins, {
@@ -21000,7 +23253,13 @@ const AppUI = ({
                 globalSortAsc,
                 globalFilters,
                 globalFilterMode,
-                sameGroupContext,
+                // Only rows that follow the cursor need its context; passing it
+                // otherwise re-rendered the whole catalog on every cursor move.
+                sameGroupContext: (globalFilters || []).some(
+                  (r) => (!r.scope || r.scope === "viewport") && (r.dynamic || r.field === "noun" || r.field === "adjective"),
+                )
+                  ? sameGroupContext
+                  : null,
                 names,
                 adjectives,
                 dictNotes,
