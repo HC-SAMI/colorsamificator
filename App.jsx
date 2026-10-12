@@ -101,18 +101,6 @@ const hueCenterOf = (hue, all) => {
   const mid = (prev + hue.maxH) / 2;
   return ((mid % 360) + 360) % 360;
 };
-// The visible edge between two regions is halfway between their midpoints.
-const hueBoundaries = (hues) => {
-  const list = (hues || [])
-    .map((x) => hueCenterOf(x, hues))
-    .sort((a, b) => a - b);
-  if (list.length < 2) return [];
-  return list.map((c, i) => {
-    const next = list[(i + 1) % list.length];
-    const span = (((next - c) % 360) + 360) % 360;
-    return ((c + span / 2) % 360 + 360) % 360;
-  });
-};
 const hueArcDistance = (a, b) => {
   const d = Math.abs((((a - b) % 360) + 360) % 360);
   return Math.min(d, 360 - d);
@@ -184,44 +172,8 @@ function getExactErpCode(L, C, H) {
   const hStr = Math.round(hVal).toString().padStart(3, "0");
   return `${lStr}${cStr}${hStr}`;
 }
-function applyJitter(items, xKey, yKey, zKey = null, jitterAmt = 0.003) {
-  const placed = [];
-  return items.map((item) => {
-    let x = item[xKey],
-      y = item[yKey],
-      z = zKey ? item[zKey] : 0;
-    if (isNaN(x) || isNaN(y)) return { ...item, _jX: x, _jY: y, _jZ: z };
-    let overlapIdx = -1;
-    for (let i = 0; i < placed.length; i++) {
-      const p = placed[i];
-      const dx = p.x - x,
-        dy = p.y - y,
-        dz = zKey ? p.z - z : 0;
-      if (
-        Math.abs(dx) < 0.001 &&
-        Math.abs(dy) < 0.001 &&
-        Math.abs(dz) < 0.001
-      ) {
-        overlapIdx = i;
-        break;
-      }
-    }
-    if (overlapIdx >= 0) {
-      placed[overlapIdx].collisions = (placed[overlapIdx].collisions || 0) + 1;
-      const c = placed[overlapIdx].collisions;
-      const angle = c * Math.PI * 0.5;
-      const rad = Math.ceil(c / 4) * jitterAmt;
-      x += Math.cos(angle) * rad;
-      y += Math.sin(angle) * rad;
-      if (zKey && c % 2 === 0) z += (c % 4 === 2 ? 1 : -1) * rad * 0.5;
-    }
-    placed.push({ x, y, z, collisions: 0 });
-    return { ...item, _jX: x, _jY: y, _jZ: z };
-  });
-}
 function getGlobalDuplicate(
   names,
-  adjectives,
   currentKey,
   value,
   savedColors = {},
@@ -238,17 +190,7 @@ function getGlobalDuplicate(
       val &&
       val.trim().toLowerCase() === normalizedVal
     ) {
-      return `Noun (${key})`;
-    }
-  }
-  for (const [key, val] of Object.entries(adjectives)) {
-    if (
-      key !== currentKey &&
-      key !== ignoreAnchorId &&
-      val &&
-      val.trim().toLowerCase() === normalizedVal
-    ) {
-      return `Layer Adj (${key})`;
+      return `Anchor (${key})`;
     }
   }
   for (const [id, pt] of Object.entries(savedColors)) {
@@ -259,24 +201,11 @@ function getGlobalDuplicate(
       ) {
         if (pt.anchorId === currentKey || pt.anchorId === ignoreAnchorId)
           continue;
-        return `Pin Noun (${pt.erpCode})`;
-      }
-      if (
-        pt.adjOverride &&
-        pt.adjOverride.trim().toLowerCase() === normalizedVal
-      ) {
-        if (pt.adjId === currentKey || pt.adjId === ignoreAnchorId) continue;
-        return `Pin Adj (${pt.erpCode})`;
+        return `Pin (${pt.erpCode})`;
       }
     }
   }
   return null;
-}
-function generateGridPoints(maxC = 0.3, maxL = 1) {
-  return { baseAnchors: [], allPoints: [] };
-}
-function generateGridData() {
-  return generateGridPoints(0.3, 1);
 }
 const SliderGroup = ({ label, value, min, max, step, onChange, icon }) =>
   React.createElement(
@@ -1219,11 +1148,8 @@ const MatchRow = ({ label, match, onSelectColor, setFullscreenImage, fmt }) => {
 const CommercialMatches = ({
   crosshair,
   colorData,
-  filterSameAdjective,
   filterSameNoun,
   names,
-  adjectives,
-  gridData,
   onSelectColor,
   savedColors = {},
 }) => {
@@ -1245,16 +1171,8 @@ const CommercialMatches = ({
     if (!colorData || Object.keys(colorData).length === 0) return null;
 
     let sameGroup = null;
-    if (filterSameAdjective || filterSameNoun) {
-      sameGroup = getSameGroupContext(
-        crosshair.rawL,
-        crosshair.rawC,
-        crosshair.rawH,
-        gridData,
-        savedColors,
-        names,
-        adjectives,
-      );
+    if (filterSameNoun) {
+      sameGroup = getSameGroupContext(crosshair.rawL, crosshair.rawC, crosshair.rawH, savedColors, names);
     }
 
     const allMatches = [];
@@ -1271,14 +1189,11 @@ const CommercialMatches = ({
           const hexVal = lch.hex;
           const d = fastDeltaEOK(cL, cC, cH, lch.L, lch.C, lch.H);
           if (d <= maxDeltaE) {
-            if ((filterSameAdjective || filterSameNoun) && sameGroup) {
+            if (filterSameNoun && sameGroup) {
               const itemL = lch.L;
               const itemC = lch.C;
               const itemH = lch.H;
 
-              if (filterSameAdjective && !matchesSameAdjective(sameGroup, itemL)) {
-                continue;
-              }
               if (filterSameNoun && !matchesSameNoun(sameGroup, itemL, itemC, itemH)) {
                 continue;
               }
@@ -1338,11 +1253,8 @@ const CommercialMatches = ({
     colorData,
     maxDeltaE,
     searchQuery,
-    filterSameAdjective,
     filterSameNoun,
     names,
-    adjectives,
-    gridData,
     savedColors,
   ]);
 
@@ -1737,606 +1649,11 @@ const PlotlyChart = ({
   });
 };
 
-// sRGB -> OKLab, returned in the app's axis convention (a = C sinH, b = C cosH,
-// i.e. the standard OKLab a/b swapped) so the solid registers with the points.
-const srgbToAppOklab = (r, g, b) => {
-  const lin = (v) =>
-    v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
-  const R = lin(r), G = lin(g), B = lin(b);
-  const l = 0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B;
-  const m = 0.2119034982 * R + 0.6806995451 * G + 0.1073969566 * B;
-  const s = 0.0883024619 * R + 0.2817188376 * G + 0.6299787005 * B;
-  const l_ = Math.cbrt(l), m_ = Math.cbrt(m), s_ = Math.cbrt(s);
-  const L = 0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_;
-  const aStd = 1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_;
-  const bStd = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_;
-  return { L, a: bStd, b: aStd };
-};
-
-// The sRGB gamut as a closed solid in OKLCH space: sample the six faces of the
-// RGB cube, map each to OKLab, and stitch them into one mesh. Every vertex
-// carries its own colour, so the solid is the gamut rather than a tinted blob.
-const buildGamutSolid = (M = 14) => {
-  const xs = [], ys = [], zs = [], vc = [];
-  const ti = [], tj = [], tk = [];
-  const faces = [
-    (u, v) => [0, u, v], (u, v) => [1, u, v],
-    (u, v) => [u, 0, v], (u, v) => [u, 1, v],
-    (u, v) => [u, v, 0], (u, v) => [u, v, 1],
-  ];
-  faces.forEach((f) => {
-    const base = xs.length;
-    for (let iv = 0; iv < M; iv++) {
-      for (let iu = 0; iu < M; iu++) {
-        const rgb = f(iu / (M - 1), iv / (M - 1));
-        const p = srgbToAppOklab(rgb[0], rgb[1], rgb[2]);
-        xs.push(p.a); ys.push(p.b); zs.push(p.L);
-        vc.push(
-          `rgb(${Math.round(rgb[0] * 255)},${Math.round(rgb[1] * 255)},${Math.round(rgb[2] * 255)})`,
-        );
-      }
-    }
-    for (let iv = 0; iv < M - 1; iv++) {
-      for (let iu = 0; iu < M - 1; iu++) {
-        const p = base + iv * M + iu;
-        ti.push(p, p + 1);
-        tj.push(p + 1, p + M + 1);
-        tk.push(p + M, p + M);
-      }
-    }
-  });
-  return { x: xs, y: ys, z: zs, i: ti, j: tj, k: tk, vertexcolor: vc };
-};
-let GAMUT_SOLID = null;
-
-// The gamut solid is built once; the view filters then carve it down to the
-// window around the cursor, so it responds like the points do.
-const clipSolidToFilter = (solid, filterPt) => {
-  if (!filterPt) return solid;
-  const keep = new Array(solid.x.length);
-  for (let v = 0; v < solid.x.length; v++) {
-    const a = solid.x[v], b = solid.y[v], L = solid.z[v];
-    const C = Math.hypot(a, b);
-    const H = ((Math.atan2(a, b) * 180) / Math.PI + 360) % 360;
-    keep[v] = filterPt({ L, C, H });
-  }
-  const i = [], j = [], k = [];
-  for (let t = 0; t < solid.i.length; t++) {
-    if (keep[solid.i[t]] && keep[solid.j[t]] && keep[solid.k[t]]) {
-      i.push(solid.i[t]); j.push(solid.j[t]); k.push(solid.k[t]);
-    }
-  }
-  return { ...solid, i, j, k };
-};
 
 
-// Bins in 3D: each noun column's Voronoi cell in the a/b plane, extruded over
-// the lightness range the column actually spans. One merged mesh for the
-// inactive bins, a second opaque one plus an outline for the bin under the
-// cursor.
-const buildBinPrisms = (points, crosshair) => {
-  const cols = new Map();
-  points.forEach((p) => {
-    if (p.isPin || p.a === undefined || p.b === undefined) return;
-    const key = `${p.a.toFixed(4)}|${p.b.toFixed(4)}`;
-    let c = cols.get(key);
-    if (!c) {
-      c = { a: p.a, b: p.b, levels: [], hex: p.hex || p.color };
-      cols.set(key, c);
-    }
-    // Each adjective level in the column is its own chunk, so the highlight
-    // can be one lightness band rather than the whole column.
-    c.levels.push({ L: p.L, hex: p.hex || p.color });
-    if (!c.hex) c.hex = p.hex || p.color;
-  });
-  cols.forEach((c) => {
-    c.levels.sort((x, y) => x.L - y.L);
-    const seen = new Set();
-    c.levels = c.levels.filter((lv) => {
-      const k = lv.L.toFixed(4);
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    });
-    c.minL = c.levels[0].L;
-    c.maxL = c.levels[c.levels.length - 1].L;
-  });
-  const list = [...cols.values()].filter((c) => isFinite(c.a) && isFinite(c.b));
-  if (list.length < 3 || !window.d3 || !window.d3.Delaunay) return null;
 
-  let vor;
-  try {
-    vor = window.d3.Delaunay.from(list.map((c) => [c.a, c.b])).voronoi([
-      -0.45, -0.45, 0.45, 0.45,
-    ]);
-  } catch (e) {
-    return null;
-  }
 
-  // which bin is the cursor in
-  let active = -1, best = Infinity;
-  if (crosshair) {
-    const ca = crosshair.rawC * Math.sin((crosshair.rawH * Math.PI) / 180);
-    const cb = crosshair.rawC * Math.cos((crosshair.rawH * Math.PI) / 180);
-    list.forEach((c, i) => {
-      const d = (c.a - ca) ** 2 + (c.b - cb) ** 2;
-      if (d < best) { best = d; active = i; }
-    });
-  }
 
-  const mk = () => ({ x: [], y: [], z: [], i: [], j: [], k: [], vertexcolor: [] });
-  const dim = mk(), hot = mk();
-  const outline = { x: [], y: [], z: [] };
-
-  list.forEach((c, idx) => {
-    let poly;
-    try { poly = vor.cellPolygon(idx); } catch (e) { poly = null; }
-    if (!poly || poly.length < 4) return;
-    // Hull cells run out to the clip box, which produced huge wedges. Clamp
-    // each vertex to a radius around its seed, then shrink slightly so
-    // neighbouring prisms leave a gap instead of z-fighting.
-    const MAX_R = 0.075, SHRINK = 0.88;
-    const ring = poly.slice(0, -1).map((pt) => {
-      let dx = pt[0] - c.a, dy = pt[1] - c.b;
-      const d = Math.hypot(dx, dy);
-      if (d > MAX_R) { dx = (dx / d) * MAX_R; dy = (dy / d) * MAX_R; }
-      return [c.a + dx * SHRINK, c.b + dy * SHRINK];
-    });
-    const n = ring.length;
-    const isActiveCol = idx === active;
-
-    // Split the column into one chunk per adjective level.
-    const lv = c.levels;
-    const chunks = [];
-    for (let s = 0; s < lv.length; s++) {
-      const prev = s > 0 ? lv[s - 1].L : lv[s].L - 0.02;
-      const next = s < lv.length - 1 ? lv[s + 1].L : lv[s].L + 0.02;
-      chunks.push({
-        lo: Math.max(0, (prev + lv[s].L) / 2),
-        hi: Math.min(1, (lv[s].L + next) / 2),
-        hex: lv[s].hex || c.hex || "#888888",
-        L: lv[s].L,
-      });
-    }
-
-    // Only the chunk containing the cursor's lightness is highlighted.
-    let hotChunk = -1;
-    if (isActiveCol && crosshair) {
-      let bestD = Infinity;
-      chunks.forEach((ck, ci) => {
-        const d = Math.abs(ck.L - crosshair.rawL);
-        if (d < bestD) { bestD = d; hotChunk = ci; }
-      });
-    }
-
-    chunks.forEach((ck, ci) => {
-      const m = ci === hotChunk ? hot : dim;
-      const base = m.x.length;
-      for (const z of [ck.lo, ck.hi]) {
-        ring.forEach((pt) => {
-          m.x.push(pt[0]); m.y.push(pt[1]); m.z.push(z); m.vertexcolor.push(ck.hex);
-        });
-      }
-      for (let v = 0; v < n; v++) {            // sides
-        const v2 = (v + 1) % n;
-        m.i.push(base + v, base + v2);
-        m.j.push(base + v2, base + n + v2);
-        m.k.push(base + n + v, base + n + v);
-      }
-      for (let v = 1; v < n - 1; v++) {        // caps
-        m.i.push(base, base + n);
-        m.j.push(base + v, base + n + v);
-        m.k.push(base + v + 1, base + n + v + 1);
-      }
-      if (ci === hotChunk) {                   // outline just that chunk
-        [ck.lo, ck.hi].forEach((z) => {
-          ring.forEach((pt) => { outline.x.push(pt[0]); outline.y.push(pt[1]); outline.z.push(z); });
-          outline.x.push(ring[0][0]); outline.y.push(ring[0][1]); outline.z.push(z);
-          outline.x.push(null); outline.y.push(null); outline.z.push(null);
-        });
-      }
-    });
-  });
-
-  return { dim, hot, outline };
-};
-
-const View3D = ({
-  colorData,
-  points,
-  crosshair,
-  viewMode,
-  handlePointClick,
-  theme,
-  names,
-  adjectives,
-  savedColors = {},
-  lockedNouns,
-  lockedAdjectives,
-  tetheringPinId,
-  filterPt,
-}) => {
-  const isDark = theme === "dark";
-  const baseTraces = useMemo(() => {
-    const traces = [];
-    const filteredPoints = points.filter(filterPt);
-    traces.push({
-      type: "scatter3d",
-      mode: "markers",
-      x: filteredPoints.map((p) => p.a),
-      y: filteredPoints.map((p) => p.b),
-      z: filteredPoints.map((p) => p.L),
-      text: filteredPoints.map((p) => {
-        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-        const name =
-          `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
-          "Unnamed";
-        return `<b>${name}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`;
-      }),
-      hovertemplate: "%{text}<extra></extra>",
-      customdata: filteredPoints.map((p) => {
-        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-        const name =
-          `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
-          "Unnamed";
-        return [
-          p.L,
-          p.C,
-          p.H,
-          { anchorId: nounId, adjId: p.lStr, fullName: name },
-        ];
-      }),
-      marker: {
-        size: 4,
-        color: filteredPoints.map((p) => p.color),
-        opacity: 0.8,
-        line: { width: 0 },
-      },
-    });
-    const gridLockedNodes = points
-      .filter((p) => !p.isCustomAnchor && filterPt(p))
-      .filter((p) => {
-        return (
-          !p.isPin &&
-          lockedNouns[p.parentNounId || `${p.cStr}-${p.hStr}`] &&
-          lockedAdjectives[p.lStr]
-        );
-      })
-      .map((p) => {
-        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-        return {
-          ...p,
-          displayName:
-            `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
-            "Unnamed",
-        };
-      });
-    const customLockedNodes = Object.values(savedColors)
-      .filter((sc) => sc.type === "anchor" && filterPt(sc))
-      .map((p) => {
-        const displayName =
-          `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
-          p.id ||
-          "Custom Anchor";
-        return {
-          ...p,
-          a: p.C * Math.sin((p.H * Math.PI) / 180),
-          b: p.C * Math.cos((p.H * Math.PI) / 180),
-          displayName,
-        };
-      });
-    const lockedNodes = [...gridLockedNodes, ...customLockedNodes];
-    Object.values(savedColors)
-      .filter((sc) => {
-        if (sc.type !== "nounColumn") return false;
-        let H = Math.atan2(sc.a, sc.b) * (180 / Math.PI);
-        if (H < 0) H += 360;
-        return filterPt({
-          L: (sc.minL + sc.maxL) / 2,
-          C: Math.sqrt(sc.a * sc.a + sc.b * sc.b),
-          H,
-        });
-      })
-      .forEach((nc) => {
-        const ncName = `${nc.nameOverride || names[nc.id] || "Custom Noun"}`;
-        traces.push({
-          type: "scatter3d",
-          mode: "lines",
-          x: [nc.a, nc.a],
-          y: [nc.b, nc.b],
-          z: [nc.minL, nc.maxL],
-          line: {
-            color: isDark ? "rgba(242, 232, 223, 0)" : "rgba(1, 13, 0, 0)",
-            width: 0,
-          },
-          hoverinfo: "text",
-          text: [
-            `<b>[Range] ${ncName}</b><br>L: ${nc.minL.toFixed(2)} - ${nc.maxL.toFixed(2)}`,
-            `<b>[Range] ${ncName}</b><br>L: ${nc.minL.toFixed(2)} - ${nc.maxL.toFixed(2)}`,
-          ],
-        });
-      });
-    const pinNodes = Object.values(savedColors)
-      .filter((sc) => sc.type === "pin" && filterPt(sc))
-      .map((p) => {
-        const displayName =
-          (`${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
-          "Unnamed Pin").toUpperCase();
-        return {
-          ...p,
-          a: p.C * Math.sin((p.H * Math.PI) / 180),
-          b: p.C * Math.cos((p.H * Math.PI) / 180),
-          displayName,
-        };
-      });
-    traces.push({
-      type: "scatter3d",
-      mode: "markers",
-      x: lockedNodes.map((p) => p.a),
-      y: lockedNodes.map((p) => p.b),
-      z: lockedNodes.map((p) => p.L),
-      text: lockedNodes.map(
-        (p) =>
-          `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
-      ),
-      hovertemplate: "%{text}<extra></extra>",
-      customdata: lockedNodes.map((p) => [
-        p.L,
-        p.C,
-        p.H,
-        { anchorId: p.anchorId || p.id, adjId: p.adjId },
-      ]),
-      marker: {
-        symbol: "square",
-        size: 6,
-        color: lockedNodes.map((p) => p.color),
-        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
-      },
-    });
-    traces.push({
-      type: "scatter3d",
-      mode: "markers",
-      x: pinNodes.map((p) => p.a),
-      y: pinNodes.map((p) => p.b),
-      z: pinNodes.map((p) => p.L),
-      text: pinNodes.map(
-        (p) =>
-          `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
-      ),
-      hovertemplate: "%{text}<extra></extra>",
-      customdata: pinNodes.map((p) => [p.L, p.C, p.H, { pinId: p.id }]),
-      marker: {
-        symbol: "x",
-        size: 6,
-        color: pinNodes.map((p) => p.color),
-        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
-      },
-    });
-    const commercialNodes = [];
-    if (colorData) {
-      Object.keys(colorData).forEach((brand) => {
-        colorData[brand].forEach((c) => {
-          if (filterPt(c)) {
-            commercialNodes.push({
-              ...c,
-              a: c.C * Math.sin((c.H * Math.PI) / 180),
-              b: c.C * Math.cos((c.H * Math.PI) / 180),
-              color: new Color("oklch", [c.L, c.C, c.H])
-                .to("srgb")
-                .toString({ format: "hex" }),
-              displayName: `${brand} - ${c.name}`,
-            });
-          }
-        });
-      });
-    }
-    if (commercialNodes.length > 0) {
-      const jitteredCommercial = applyJitter(
-        commercialNodes,
-        "a",
-        "b",
-        "L",
-        0.006,
-      );
-      traces.push({
-        type: "scatter3d",
-        mode: "markers",
-        x: jitteredCommercial.map((p) => p._jX),
-        y: jitteredCommercial.map((p) => p._jY),
-        z: jitteredCommercial.map((p) => p._jZ),
-        text: jitteredCommercial.map(
-          (p) =>
-            `<b>[Commercial] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
-        ),
-        hovertemplate: "%{text}<extra></extra>",
-        customdata: jitteredCommercial.map((p) => [
-          p.L,
-          p.C,
-          p.H,
-          { brand: p.brand, originalIndex: p.originalIndex },
-        ]),
-        marker: {
-          symbol: "diamond",
-          size: 6,
-          color: jitteredCommercial.map((p) => p.color),
-          line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
-        },
-      });
-    }
-    if (viewMode === "bins") {
-      const bins = buildBinPrisms(points.filter(filterPt), crosshair);
-      if (bins) {
-        if (bins.dim.x.length) {
-          traces.push({
-            type: "mesh3d",
-            ...bins.dim,
-            opacity: 0.22,
-            hoverinfo: "skip",
-            showscale: false,
-            flatshading: true,
-            lighting: { ambient: 1, diffuse: 0, specular: 0 },
-          });
-        }
-        if (bins.hot.x.length) {
-          traces.push({
-            type: "mesh3d",
-            ...bins.hot,
-            opacity: 0.85,
-            hoverinfo: "skip",
-            showscale: false,
-            flatshading: true,
-            lighting: { ambient: 1, diffuse: 0, specular: 0 },
-          });
-        }
-        if (bins.outline.x.length) {
-          traces.push({
-            type: "scatter3d",
-            mode: "lines",
-            x: bins.outline.x, y: bins.outline.y, z: bins.outline.z,
-            line: { color: isDark ? "#F2E8DF" : "#010D00", width: 4 },
-            hoverinfo: "skip",
-            showlegend: false,
-          });
-        }
-      }
-    }
-
-    // The sRGB gamut as one smooth, semi-transparent solid behind the points.
-    // Built once and reused; it does not depend on where the cursor is.
-    if (viewMode === "dots") {
-      if (!GAMUT_SOLID) GAMUT_SOLID = buildGamutSolid(16);
-      const solid = clipSolidToFilter(GAMUT_SOLID, filterPt);
-      if (solid.i.length) traces.push({
-        type: "mesh3d",
-        ...solid,
-        opacity: 0.25,
-        // Fallback fill if a Plotly build ignores vertexcolor, so the solid
-        // still reads as a solid rather than a wireframe.
-        color: "#9aa0a6",
-        hoverinfo: "skip",
-        showscale: false,
-        flatshading: false,
-        lighting: { ambient: 1, diffuse: 0, specular: 0, roughness: 1 },
-      });
-    }
-
-    return traces;
-  }, [
-    viewMode,
-    crosshair,
-    crosshair?.rawL,
-    filterPt,
-    points,
-    isDark,
-    names,
-    adjectives,
-    savedColors,
-    lockedNouns,
-    lockedAdjectives,
-    colorData,
-    filterPt,
-  ]);
-  const data = useMemo(() => {
-    return [
-      ...baseTraces,
-      {
-        type: "scatter3d",
-        mode: "lines",
-        x: crosshair?.snapTarget ? [crosshair.a, crosshair.snapTarget.a] : [],
-        y: crosshair?.snapTarget ? [crosshair.b, crosshair.snapTarget.b] : [],
-        z: crosshair?.snapTarget
-          ? [crosshair.rawL, crosshair.snapTarget.L]
-          : [],
-        line: {
-          color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
-          width: 2,
-          dash: "dot",
-        },
-        hoverinfo: "skip",
-      },
-      {
-        type: "scatter3d",
-        mode: "markers",
-        x: [crosshair?.a],
-        y: [crosshair?.b],
-        z: [crosshair?.rawL],
-        text: [
-          `<b>Cursor</b><br>L: ${crosshair?.rawL?.toFixed(3)} C: ${crosshair?.rawC?.toFixed(3)} H: ${crosshair?.rawH?.toFixed(1)}\xB0`,
-        ],
-        hovertemplate: "%{text}<extra></extra>",
-        marker: {
-          symbol: "cross",
-          size: 8,
-          color: isDark ? "#F2E8DF" : "#010D00",
-          line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
-        },
-        hoverinfo: "skip",
-      },
-    ];
-  }, [baseTraces, crosshair, isDark]);
-  const layout = useMemo(
-    () => ({
-      uirevision: "true",
-      paper_bgcolor: "rgba(0,0,0,0)",
-      margin: { l: 0, r: 0, b: 0, t: 0 },
-      scene: {
-        xaxis: {
-          title: { text: "a" },
-          range: [-0.4, 0.4],
-          backgroundcolor: isDark ? "#052212" : "#F2E8DF",
-          gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
-          zerolinecolor: isDark
-            ? "rgba(177,188,131,0.25)"
-            : "rgba(43,64,50,0.15)",
-          showspikes: false,
-          titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
-          tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
-        },
-        yaxis: {
-          title: { text: "b" },
-          range: [-0.4, 0.4],
-          backgroundcolor: isDark ? "#052212" : "#F2E8DF",
-          gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
-          zerolinecolor: isDark
-            ? "rgba(177,188,131,0.25)"
-            : "rgba(43,64,50,0.15)",
-          showspikes: false,
-          titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
-          tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
-        },
-        zaxis: {
-          title: { text: "L" },
-          range: [0, 1],
-          backgroundcolor: isDark ? "#052212" : "#F2E8DF",
-          gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
-          zerolinecolor: isDark
-            ? "rgba(177,188,131,0.25)"
-            : "rgba(43,64,50,0.15)",
-          showspikes: false,
-          titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
-          tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
-        },
-        // Lightness spans 0..1 while a and b span 0.8, so on the default cube
-        // the solid looks stretched upward. Half-height flattens it out.
-        aspectmode: "manual",
-        aspectratio: { x: 1, y: 1, z: 0.5 },
-        camera: { eye: { x: 1.5, y: 1.5, z: 0.5 } },
-      },
-      showlegend: false,
-    }),
-    [isDark],
-  );
-  return React.createElement(
-    "div",
-    { className: "relative w-full h-full" },
-    React.createElement(PlotlyChart, {
-      data,
-      layout,
-      onPointClick: handlePointClick,
-      theme,
-    }),
-  );
-};
 // ─── Explore: OkLCH colour-space viewer ──────────────────────────────────────
 // One 3D view and three 2D sections (L, C, H) of the anchors' cells. Each
 // anchor owns the region of colour space that is nearer to it than to any
@@ -2779,9 +2096,16 @@ function createSpaceEngine(opts) {
   overlay.add(ghostDots);
 
   // ── Orbit camera ─────────────────────────────────────────────────────────
-  const orb = { theta: 0.75, phi: 1.12, r: 14, tx: 0, ty: 0, tz: 0 };
-  const applyOrbit = () => {
-    orb.phi = Math.max(0.12, Math.min(Math.PI - 0.12, orb.phi));
+  // The pivot (t) follows the cursor; a right-drag pan adds an offset (o) that
+  // clears as soon as the cursor moves, so the cursor is always back in view.
+  const orb = { theta: 0.75, phi: 1.12, r: 14, tx: 0, ty: 0, tz: 0, ox: 0, oy: 0, oz: 0 };
+  const goal = new THREE.Vector3();
+  let camSnap = true, lastFrame = 0;
+  const setGoal = () => {
+    goal.set(marker.position.x + orb.ox, marker.position.y + orb.oy, marker.position.z + orb.oz);
+    requestRender();
+  };
+  const placeCamera = () => {
     const sp = Math.sin(orb.phi);
     camera.position.set(orb.tx + orb.r * sp * Math.cos(orb.theta), orb.ty + orb.r * Math.cos(orb.phi), orb.tz + orb.r * sp * Math.sin(orb.theta));
     camera.lookAt(orb.tx, orb.ty, orb.tz);
@@ -2789,6 +2113,9 @@ function createSpaceEngine(opts) {
     const m3 = new THREE.Matrix3().setFromMatrix4(camera.matrixWorldInverse);
     shared.uL1.value.set(8, 16, 6).normalize().applyMatrix3(m3).normalize();
     shared.uL2.value.set(-6, -3, -5).normalize().applyMatrix3(m3).normalize();
+  };
+  const applyOrbit = () => {
+    orb.phi = Math.max(0.12, Math.min(Math.PI - 0.12, orb.phi));
     requestRender();
   };
 
@@ -2797,10 +2124,20 @@ function createSpaceEngine(opts) {
   const frame = () => {
     rafId = 0;
     if (disposed) return;
+    // Ease the pivot toward the cursor (snaps on first draw).
+    const dx = goal.x - orb.tx, dy = goal.y - orb.ty, dz = goal.z - orb.tz;
+    const now = performance.now(), dt = Math.min(200, now - (lastFrame || now));
+    lastFrame = now;
+    const far = dx * dx + dy * dy + dz * dz > 1e-8;
+    const k = camSnap ? 1 : 1 - Math.exp(-dt / 80);   // time-based, so slow machines settle as fast
+    orb.tx += dx * k; orb.ty += dy * k; orb.tz += dz * k;
+    camSnap = false;
+    placeCamera();
     renderer.clear();
     renderer.render(scene, camera);
     renderer.clearDepth();
     renderer.render(overlay, camera);
+    if (far) requestRender(); else lastFrame = 0;
   };
   function requestRender() { if (!rafId && !disposed) rafId = requestAnimationFrame(frame); }
 
@@ -2814,7 +2151,7 @@ function createSpaceEngine(opts) {
   };
 
   // ── Cells ────────────────────────────────────────────────────────────────
-  const inflR = (i, r) => dotR[i] + (r - dotR[i]) * S.fill;
+  const inflR = (i, r) => (r > dotR[i] ? dotR[i] + (r - dotR[i]) * S.fill : dotR[i]);
   const buildCells = () => {
     const token = ++buildToken;
     ready = false;
@@ -3045,6 +2382,7 @@ function createSpaceEngine(opts) {
     cursorWorld.set(w[0], w[1], w[2]);
     const prev = selIdx;
     selIdx = ready && N ? grid.nearest(w[0], w[1], w[2]) : -1;
+    orb.ox = orb.oy = orb.oz = 0;
     placeMarker();
     updatePlanes();
     return prev !== selIdx;
@@ -3053,6 +2391,7 @@ function createSpaceEngine(opts) {
     const k = S.sep, c = selIdx >= 0 ? [px[selIdx], py[selIdx], pz[selIdx]] : [0, 0, 0];
     marker.position.set(cursorWorld.x + c[0] * k, cursorWorld.y + c[1] * k, cursorWorld.z + c[2] * k);
     marker.scale.setScalar(orb.r / 14);
+    setGoal();
   };
   const updatePlanes = () => {
     const [L, C, H] = S.cursor, R = AMAX * CW, y = (L - LC) * LW, y0 = -LC * LW, y1 = (1 - LC) * LW, n = PN;
@@ -3097,7 +2436,7 @@ function createSpaceEngine(opts) {
   }
 
   // ── Picking ──────────────────────────────────────────────────────────────
-  const rayDir = new THREE.Vector3(), tmpV = new THREE.Vector3(), projM = new THREE.Matrix4();
+  const rayDir = new THREE.Vector3(), projM = new THREE.Matrix4();
   const pick3D = (clientX, clientY) => {
     const rc = glCanvas.getBoundingClientRect();
     const nx = ((clientX - rc.left) / rc.width) * 2 - 1, ny = -((clientY - rc.top) / rc.height) * 2 + 1;
@@ -3147,7 +2486,8 @@ function createSpaceEngine(opts) {
     const pan = (dx, dy) => {
       const s = orb.r * 0.0016, right = new THREE.Vector3(), up = new THREE.Vector3();
       camera.matrixWorld.extractBasis(right, up, new THREE.Vector3());
-      orb.tx -= (right.x * dx - up.x * dy) * s; orb.ty -= (right.y * dx - up.y * dy) * s; orb.tz -= (right.z * dx - up.z * dy) * s;
+      orb.ox -= (right.x * dx - up.x * dy) * s; orb.oy -= (right.y * dx - up.y * dy) * s; orb.oz -= (right.z * dx - up.z * dy) * s;
+      setGoal(); camSnap = true;
     };
     on(glCanvas, "contextmenu", (e) => e.preventDefault());
     on(glCanvas, "pointerdown", (e) => {
@@ -3207,10 +2547,19 @@ function createSpaceEngine(opts) {
   const SV = {
     l: { cv: views.l, def: { x0: -AMAX, x1: AMAX, y0: -AMAX, y1: AMAX }, iso: true },
     c: { cv: views.c, def: { x0: -Math.PI * AMAX, x1: Math.PI * AMAX, y0: -0.05, y1: LW / CW + 0.05 }, iso: true },
-    h: { cv: views.h, def: { x0: 0, x1: AMAX, y0: 0, y1: 1 }, iso: false },
+    // H section at true proportions (chroma across, lightness up, same scale as 3D)
+    h: { cv: views.h, def: { x0: -0.02, x1: AMAX + 0.02, y0: -0.03, y1: LW / CW + 0.03 }, iso: true },
+  };
+  // Show the whole default box, whatever the panel's shape.
+  const fitContain = (v) => {
+    const d = v.def, W = v.cv.width, H = v.cv.height;
+    const s = Math.max((d.x1 - d.x0) / W, (d.y1 - d.y0) / H), cx = (d.x0 + d.x1) / 2, cy = (d.y0 + d.y1) / 2;
+    v.dom = { x0: cx - (s * W) / 2, x1: cx + (s * W) / 2, y0: cy - (s * H) / 2, y1: cy + (s * H) / 2 };
+    v.user = false;
   };
   const fitIso = (v) => {
     if (!v.iso) return;
+    if (!v.user) { fitContain(v); return; }
     const d = v.dom, sx = (d.x1 - d.x0) / v.cv.width, cy = (d.y0 + d.y1) / 2;
     d.y0 = cy - (sx * v.cv.height) / 2; d.y1 = cy + (sx * v.cv.height) / 2;
   };
@@ -3221,7 +2570,7 @@ function createSpaceEngine(opts) {
     v.ctx = v.cv.getContext("2d");
     v.img = v.ctx.createImageData(W, H);
     v.ids = new Int32Array(W * H); v.dim = new Float32Array(W * H);
-    if (!v.dom) v.dom = { ...v.def };
+    if (!v.dom) v.user = false;
     fitIso(v);
     return true;
   };
@@ -3230,6 +2579,29 @@ function createSpaceEngine(opts) {
   const py2v = (v, y) => v.dom.y1 - (y / v.cv.height) * (v.dom.y1 - v.dom.y0);
   const u2px = (v, u) => ((u - v.dom.x0) / (v.dom.x1 - v.dom.x0)) * v.cv.width;
   const v2py = (v, w) => ((v.dom.y1 - w) / (v.dom.y1 - v.dom.y0)) * v.cv.height;
+
+  const cursorInView = (k) => {
+    const [L, C, H] = S.cursor, hr = (H * Math.PI) / 180;
+    if (k === "l") return [C * Math.sin(hr), C * Math.cos(hr)];
+    if (k === "c") return [((H - 180) * Math.PI / 180) * C, (L * LW) / CW];
+    return [C, (L * LW) / CW];
+  };
+  // Pan a section just enough to keep the cursor inside it (with a margin).
+  let dragView = null;
+  const followCursor = (k) => {
+    const v = SV[k];
+    if (!v.dom || k === dragView) return false;
+    const [u, w] = cursorInView(k), d = v.dom;
+    const mx = (d.x1 - d.x0) * 0.06, my = (d.y1 - d.y0) * 0.06;
+    let sx = 0, sy = 0;
+    if (u < d.x0 + mx) sx = u - (d.x0 + mx); else if (u > d.x1 - mx) sx = u - (d.x1 - mx);
+    if (w < d.y0 + my) sy = w - (d.y0 + my); else if (w > d.y1 - my) sy = w - (d.y1 - my);
+    if (!sx && !sy) return false;
+    d.x0 += sx; d.x1 += sx; d.y0 += sy; d.y1 += sy;
+    v.user = true;
+    return true;
+  };
+  const followAll = () => ["l", "c", "h"].forEach(followCursor);
 
   // Which cell (if any) covers a world point at the current inflation.
   const cellAt = (x, y, z) => {
@@ -3255,7 +2627,8 @@ function createSpaceEngine(opts) {
       out[0] = p[0]; out[1] = p[1]; out[2] = p[2]; return true;
     },
     // H section: chroma → right, lightness → up, at the cursor's hue
-    h: (c, L, out) => {
+    h: (c, w, out) => {
+      const L = (w * CW) / LW;
       if (c < 0 || L < 0 || L > 1) return false;
       const p = spaceToWorld(L, c, S.cursor[2]);
       out[0] = p[0]; out[1] = p[1]; out[2] = p[2]; return true;
@@ -3268,7 +2641,7 @@ function createSpaceEngine(opts) {
     for (let y = y0; y < y1; y += step)
       for (let x = 0; x < W; x += step) {
         let id = -1, dm = 0;
-        if (mapping[k](px2u(v, x + step / 2), py2v(v, y + step / 2), P)) {
+        if (S.fill >= 0.001 && mapping[k](px2u(v, x + step / 2), py2v(v, y + step / 2), P)) {
           id = cellAt(P[0], P[1], P[2]);
           if (id >= 0) { const [L, C, Hh] = spaceWorldToLCH(P[0], P[1], P[2]); dm = inRangeLCH(L, C, Hh) ? 1 : 0; }
         }
@@ -3317,16 +2690,62 @@ function createSpaceEngine(opts) {
     path(); ctx.fillStyle = fill; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = fgCss(); ctx.stroke();
     ctx.restore();
   };
+  // At zero inflation every anchor whose dot touches the section plane is drawn
+  // as a small round dot (screen-sized, so it reads the same in every view).
+  const drawDots = (k) => {
+    const v = SV[k], ctx = v.ctx, [L, C, Hh] = S.cursor, out = [];
+    v.dots = out;
+    if (S.fill >= 0.001 || !ready) return;
+    const hr = (Hh * Math.PI) / 180, sh = Math.sin(hr), ch = Math.cos(hr), yPl = (L - LC) * LW;
+    for (let i = 0; i < N; i++) {
+      const X = px[i], Y = py[i], Z = pz[i], r = dotR[i];
+      let u, w;
+      if (k === "l") {
+        if (Math.abs(Y - yPl) > r) continue;
+        u = X / CW; w = -Z / CW;
+      } else if (k === "c") {
+        if (C < 0.002 || Math.abs(Math.hypot(X, Z) - C * CW) > r) continue;
+        const lch = spaceWorldToLCH(X, Y, Z);
+        u = ((lch[2] - 180) * Math.PI / 180) * C; w = (lch[0] * LW) / CW;
+      } else {
+        const along = X * sh - Z * ch, perp = X * ch + Z * sh;
+        if (Math.abs(perp) > r || along < -r) continue;
+        u = Math.max(0, along) / CW; w = ((Y / LW + LC) * LW) / CW;
+      }
+      const x = u2px(v, u), y = v2py(v, w);
+      if (x < -6 || y < -6 || x > v.cv.width + 6 || y > v.cv.height + 6) continue;
+      out.push([x, y, i]);
+    }
+    const empty = S.dark ? "rgba(0,0,0,0.6)" : "rgba(255,255,255,0.85)";
+    for (const [x, y, i] of out) {
+      const lch = spaceWorldToLCH(px[i], py[i], pz[i]), on = inRangeLCH(lch[0], lch[1], lch[2]);
+      ctx.save();
+      ctx.globalAlpha = on ? 1 : 0.35;
+      ctx.beginPath(); ctx.arc(x, y, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = `rgb(${toByte(cols[i * 3])},${toByte(cols[i * 3 + 1])},${toByte(cols[i * 3 + 2])})`;
+      ctx.fill();
+      ctx.lineWidth = i === selIdx ? 2 : 1.25;
+      ctx.strokeStyle = i === selIdx ? fgCss() : empty;
+      ctx.stroke();
+      ctx.restore();
+    }
+  };
+  const dotAt = (k, x, y) => {
+    let best = -1, bd = 49;
+    for (const [dx, dy, i] of SV[k].dots || []) { const d = (dx - x) ** 2 + (dy - y) ** 2; if (d < bd) { bd = d; best = i; } }
+    return best;
+  };
   const drawGuides = (k) => {
     const v = SV[k], ctx = v.ctx, W = v.cv.width, H = v.cv.height, [L, C, Hh] = S.cursor, G = S.guide;
     const hr = (Hh * Math.PI) / 180, TOL = 0.012;
+    drawDots(k);
     // markers lying on this section
     S.markers.forEach((m, i) => {
       if (!mVis || !mVis[i]) return;
       let u, w;
       if (k === "l") { if (Math.abs(m.L - L) > TOL) return; const h = (m.H * Math.PI) / 180; u = m.C * Math.sin(h); w = m.C * Math.cos(h); }
       else if (k === "c") { if (Math.abs(m.C - C) > TOL || C < 0.002) return; u = ((m.H - 180) * Math.PI / 180) * C; w = (m.L * LW) / CW; }
-      else { const dh = ((m.H - Hh) * Math.PI) / 180; if (Math.abs(m.C * Math.sin(dh)) > TOL || Math.cos(dh) < 0) return; u = m.C * Math.cos(dh); w = m.L; }
+      else { const dh = ((m.H - Hh) * Math.PI) / 180; if (Math.abs(m.C * Math.sin(dh)) > TOL || Math.cos(dh) < 0) return; u = m.C * Math.cos(dh); w = (m.L * LW) / CW; }
       markerShape(ctx, u2px(v, u), v2py(v, w), m.hex, m.kind === "brand");
     });
     if (k === "l") {
@@ -3343,7 +2762,7 @@ function createSpaceEngine(opts) {
       line(ctx, G.h, [[X, yt], [X, yb]]);
       dot(ctx, X, Y, fgCss());
     } else {
-      const X = u2px(v, C), Y = v2py(v, L), x0 = u2px(v, 0), x1 = u2px(v, AMAX), y0 = v2py(v, 0), y1 = v2py(v, 1);
+      const X = u2px(v, C), Y = v2py(v, (L * LW) / CW), x0 = u2px(v, 0), x1 = u2px(v, AMAX), y0 = v2py(v, 0), y1 = v2py(v, LW / CW);
       line(ctx, G.h, [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]], true);
       line(ctx, G.l, [[0, Y], [W, Y]]);
       line(ctx, G.c, [[X, 0], [X, H]]);
@@ -3387,7 +2806,7 @@ function createSpaceEngine(opts) {
   const setFromView = {
     l: (u, w) => { const C = clamp(Math.hypot(u, w), 0, 0.4); let H = (Math.atan2(u, w) * 180) / Math.PI; if (H < 0) H += 360; return [S.cursor[0], C, C < 1e-4 ? S.cursor[2] : H]; },
     c: (s, w) => { const C = S.cursor[1]; const H = C > 0.002 ? clamp(180 + ((s / C) * 180) / Math.PI, 0, 360) : S.cursor[2]; return [clamp((w * CW) / LW, 0, 1), C, H]; },
-    h: (c, L) => [clamp(L, 0, 1), clamp(c, 0, 0.4), S.cursor[2]],
+    h: (c, w) => [clamp((w * CW) / LW, 0, 1), clamp(c, 0, 0.4), S.cursor[2]],
   };
   // Rounded to the sidebar sliders' own steps so the app shows tidy values.
   const moveCursor = (lch) => {
@@ -3402,11 +2821,13 @@ function createSpaceEngine(opts) {
     const zoom = (x, y, f) => {
       const u = px2u(v, x), w = py2v(v, y), d = v.dom;
       d.x0 = u + (d.x0 - u) * f; d.x1 = u + (d.x1 - u) * f; d.y0 = w + (d.y0 - w) * f; d.y1 = w + (d.y1 - w) * f;
-      fitIso(v); scheduleSections();
+      v.user = true;
+      fitIso(v); followCursor(k); scheduleSections();
     };
     const panV = (dx, dy) => {
       const d = v.dom, su = (d.x1 - d.x0) / cv.width, sv = (d.y1 - d.y0) / cv.height;
-      d.x0 -= dx * su; d.x1 -= dx * su; d.y0 += dy * sv; d.y1 += dy * sv; scheduleSections();
+      d.x0 -= dx * su; d.x1 -= dx * su; d.y0 += dy * sv; d.y1 += dy * sv; v.user = true;
+      followCursor(k); scheduleSections();
     };
     on(cv, "contextmenu", (e) => e.preventDefault());
     on(cv, "pointerdown", (e) => {
@@ -3416,13 +2837,14 @@ function createSpaceEngine(opts) {
       if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }; mode = "pinch"; return; }
       mode = e.button === 1 || e.button === 2 || e.shiftKey ? "pan" : "cursor";
       last = rel(e);
+      if (mode === "cursor") dragView = k;
       if (mode === "cursor") moveCursor(setFromView[k](px2u(v, last[0]), py2v(v, last[1])));
     });
     on(cv, "pointermove", (e) => {
       if (!ptrs.has(e.pointerId)) {
         if (e.pointerType === "mouse") {
           const p = rel(e), P = [0, 0, 0];
-          const id = mapping[k](px2u(v, p[0]), py2v(v, p[1]), P) ? cellAt(P[0], P[1], P[2]) : -1;
+          const id = S.fill < 0.001 ? dotAt(k, p[0], p[1]) : mapping[k](px2u(v, p[0]), py2v(v, p[1]), P) ? cellAt(P[0], P[1], P[2]) : -1;
           onHover(id >= 0 ? { item: S.anchors[id], x: e.clientX, y: e.clientY } : null);
         }
         return;
@@ -3436,7 +2858,11 @@ function createSpaceEngine(opts) {
       if (mode === "pan") { panV(p[0] - last[0], p[1] - last[1]); last = p; }
       else if (mode === "cursor") moveCursor(setFromView[k](px2u(v, p[0]), py2v(v, p[1])));
     });
-    const up = (e) => { ptrs.delete(e.pointerId); if (!ptrs.size || mode === "pinch") mode = null; };
+    const up = (e) => {
+      ptrs.delete(e.pointerId);
+      if (!ptrs.size || mode === "pinch") mode = null;
+      if (!ptrs.size && dragView === k) { dragView = null; if (followCursor(k)) scheduleSections(); }
+    };
     on(cv, "pointerup", up);
     on(cv, "pointercancel", up);
     on(cv, "pointerleave", () => onHover(null));
@@ -3447,6 +2873,7 @@ function createSpaceEngine(opts) {
     if (!glCanvas.parentElement || glCanvas.parentElement.clientWidth === 0) return;   // hidden tab
     let changed = false;
     Object.values(SV).forEach((v) => { if (sizeView(v)) { fitIso(v); changed = true; } });
+    if (changed) followAll();
     if (changed) scheduleSections();
     resize();
   });
@@ -3475,6 +2902,7 @@ function createSpaceEngine(opts) {
       if (Math.abs(l0 - L) < 1e-6 && Math.abs(c0 - C) < 1e-6 && Math.abs(h0 - H) < 1e-6) return;
       S.cursor = [L, C, H];
       const changedCell = updateCursor();
+      followAll();
       const sliced = S.range.hl !== null || S.range.hc !== null || S.range.hh !== null;
       if (sliced) { rebuild(); rebuildActive(); }
       else { if (changedCell) rebuildActive(); updateDotVisibility(); scheduleSections(); }
@@ -3504,8 +2932,8 @@ function createSpaceEngine(opts) {
       axis.material.color.copy(fgc);
       requestRender(); scheduleSections();
     },
-    resetView(k) { const v = SV[k]; v.dom = { ...v.def }; fitIso(v); scheduleSections(); },
-    resetCamera() { Object.assign(orb, { theta: 0.75, phi: 1.12, r: 14, tx: 0, ty: 0, tz: 0 }); placeMarker(); applyOrbit(); },
+    resetView(k) { const v = SV[k]; fitContain(v); followCursor(k); scheduleSections(); },
+    resetCamera() { Object.assign(orb, { theta: 0.75, phi: 1.12, r: 14, ox: 0, oy: 0, oz: 0 }); placeMarker(); applyOrbit(); },
     resize,
     dispose() {
       disposed = true; buildToken++;
@@ -3525,16 +2953,14 @@ function createSpaceEngine(opts) {
   return api;
 }
 
-// Display name for an Explore point, same rules as the old 3D view.
-const spacePointLabel = (p, names, adjectives) => {
-  const adj = p.adjOverride || adjectives[p.adjId || p.lStr] || "";
+// Display name for an Explore point: its own override, else its anchor's name.
+const spacePointLabel = (p, names) => {
   const noun =
     p.nameOverride ||
     (p.parentNounId && names[p.parentNounId]) ||
     (p.anchorId && names[p.anchorId]) ||
-    names[`${p.cStr}-${p.hStr}`] ||
     "";
-  return `${adj} ${noun}`.trim() || "Unnamed";
+  return String(noun).trim() || "Unnamed";
 };
 const SPACE_LOOK_KEY = "color-samificator-space-look";
 const SPACE_PLANE_COLORS = {
@@ -3631,7 +3057,6 @@ const ViewSpaceInner = ({
   points,
   colorData,
   names,
-  adjectives,
   theme,
   scrubL,
   scrubC,
@@ -3669,22 +3094,22 @@ const ViewSpaceInner = ({
       const key = `${p.L.toFixed(4)}|${p.C.toFixed(4)}|${p.C < 1e-4 ? 0 : p.H.toFixed(3)}`;
       if (seen.has(key)) return; // two anchors on one spot would share a cell
       seen.add(key);
-      const label = spacePointLabel(p, names || {}, adjectives || {});
-      const nounId = p.parentNounId || p.anchorId || `${p.cStr}-${p.hStr}`;
+      const label = spacePointLabel(p, names || {});
+      const nounId = p.parentNounId || p.anchorId;
       out.push({
         L: p.L, C: p.C, H: p.H, hex: spaceHexFor(p.color, p.L, p.C, p.H), label, kind: "anchor",
-        pick: [p.L, p.C, p.H, { anchorId: nounId, adjId: p.lStr, fullName: label }],
+        pick: [p.L, p.C, p.H, { anchorId: nounId, fullName: label }],
       });
     });
     return out;
-  }, [points, names, adjectives]);
+  }, [points, names]);
   const markers = useMemo(() => {
     const out = [];
     (points || []).forEach((p) => {
       if (!p.isPin) return;
       out.push({ L: p.L, C: p.C, H: p.H, hex: spaceHexFor(p.color, p.L, p.C, p.H), kind: "pin",
         label: (() => {
-          const n = spacePointLabel(p, names || {}, adjectives || {});
+          const n = spacePointLabel(p, names || {});
           return `Pin · ${n !== "Unnamed" ? n : p.erpCode || p.pinId || "unnamed"}`;
         })(),
         pick: [p.L, p.C, p.H, { pinId: p.pinId }] });
@@ -3702,7 +3127,7 @@ const ViewSpaceInner = ({
       });
     }
     return out;
-  }, [points, colorData, names, adjectives]);
+  }, [points, colorData, names]);
 
   // Engine lifetime: one WebGL context per mount, released on unmount.
   useEffect(() => {
@@ -3783,7 +3208,7 @@ const ViewSpaceInner = ({
   const sections = [
     { id: "l", title: "L section", color: planeCol.l, value: `L ${fmtL(scrubL)}`, ref: lRef, axes: ["a −", "a → · b ↑", "a +"] },
     { id: "c", title: "C section", color: planeCol.c, value: `C ${fmtC(scrubC)}`, ref: cRef, axes: ["0°", "hue (true length) →", "360°"] },
-    { id: "h", title: "H section", color: planeCol.h, value: `H ${fmtH(scrubH)}`, ref: hRef, axes: ["C 0", "chroma → · L ↑", "0.34"] },
+    { id: "h", title: "H section", color: planeCol.h, value: `H ${fmtH(scrubH)}`, ref: hRef, axes: ["C 0", "chroma → · L ↑", "true scale"] },
   ];
   const overlayCard = "bg-white/90 dark:bg-neutral-900/90 backdrop-blur border border-slate-200 dark:border-neutral-800 rounded-xl shadow-sm";
 
@@ -3955,11 +3380,6 @@ const ViewSpace = React.memo(ViewSpaceInner, (prev, next) => !prev.active && !ne
 // ─── Anchors: add, rename, move and delete the named points ─────────────────
 // Distances are OkLab ΔE ×100 (so 1.0 ≈ a just-noticeable step).
 const ANCHOR_CLOSE_DE = 1;
-const anchorDE = (p, q) => {
-  const ha = (p.H * Math.PI) / 180, hb = (q.H * Math.PI) / 180;
-  const da = p.C * Math.cos(ha) - q.C * Math.cos(hb), db = p.C * Math.sin(ha) - q.C * Math.sin(hb);
-  return Math.sqrt((p.L - q.L) ** 2 + da * da + db * db) * 100;
-};
 // Rows carry their OkLab a/b, so pair distances need no trigonometry.
 const anchorRowDE = (p, q) => {
   const dL = p.L - q.L, da = p.oa - q.oa, db = p.ob - q.ob;
@@ -4225,7 +3645,7 @@ const ViewAnchors = ({
     setNotice(`Deleted ${ids.length} anchor${ids.length === 1 ? "" : "s"}`);
   };
   const addAtCursor = () => {
-    const id = `anchor-${Date.now().toString(36)}`, h = (cursor.H * Math.PI) / 180;
+    const id = `custom-noun-${Date.now().toString(36)}`, h = (cursor.H * Math.PI) / 180;
     setSavedColors((prev) => ({
       ...prev,
       [id]: { id, type: "nounColumn", nameOverride: "", C: cursor.C, H: cursor.H, minL: cursor.L, maxL: cursor.L,
@@ -4436,1427 +3856,34 @@ const ViewAnchors = ({
   );
 };
 
-const ViewVertical = ({
-  colorData,
-  points,
-  crosshair,
-  handlePointClick,
-  theme,
-  names,
-  adjectives,
-  savedColors = {},
-  lockedNouns,
-  lockedAdjectives,
-  viewMode,
-  tetheringPinId,
-  swatchLayout,
-  swatchZoom,
-  viewportFilter,
-  viewportSearchQuery,
-  viewportTagFilter,
-  filterPt,
-  filterL,
-  filterC,
-  filterH,
-  groupSettings,
-}) => {
-  const isDark = theme === "dark";
-  const [showText, setShowText] = useState(false);
-  const handleRelayout = (e) => {
-    if (e["xaxis.range[0]"] !== void 0 && e["xaxis.range[1]"] !== void 0) {
-      setShowText(e["xaxis.range[1]"] - e["xaxis.range[0]"] < 0.15);
-    } else if (e["xaxis.autorange"]) {
-      setShowText(false);
-    }
-  };
-  const targetH = crosshair?.rawH || 0;
-  const filterFn = useCallback(
-    (p, isCommercial = false) => {
-      if (filterPt && !filterPt(p)) return false;
-      if (p.C === 0) return true;
-      const allowedHueDiff = filterH !== void 0 ? Math.max(5, filterH) : 5;
-      if (
-        p.isPin ||
-        p.isCustomAnchor ||
-        p.type === "pin" ||
-        p.type === "anchor" ||
-        p.url !== void 0 ||
-        p.hex !== void 0 ||
-        isCommercial
-      ) {
-        let hDiff = Math.abs(p.H - targetH);
-        hDiff = Math.min(hDiff, 360 - hDiff);
-        return hDiff <= allowedHueDiff;
-      }
-      return true;
-    },
-    [targetH, filterPt, filterH],
-  );
-  const swatchItems = useMemo(() => {
-    if (viewMode !== "swatches") return [];
-    const res = [];
-    points
-      .filter((p) => !p.isPin && filterFn(p))
-      .forEach((p) => {
-        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-        res.push({
-          ...p,
-          type: "grid",
-          displayName:
-            `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
-            "Unnamed",
-          hex: p.color,
-        });
-      });
-    Object.values(savedColors).forEach((sc) => {
-      if (filterFn(sc)) {
-        if (sc.type === "anchor") {
-          res.push({
-            ...sc,
-            displayName:
-              `${sc.adjOverride || adjectives[sc.adjId] || ""} ${sc.nameOverride || names[sc.anchorId] || ""}`.trim() ||
-              sc.id,
-            hex: sc.srgbHex || sc.color,
-          });
-        } else if (sc.type === "pin") {
-          res.push({
-            ...sc,
-            displayName: sc.id || "Pin",
-            hex: sc.srgbHex || sc.color,
-          });
-        }
-      }
-    });
-    if (colorData) {
-      Object.keys(colorData).forEach((brand) => {
-        colorData[brand].forEach((c) => {
-          if (filterFn(c, true)) {
-            res.push({
-              ...c,
-              type: "commercial",
-              displayName: `${brand} - ${c.name}`,
-              hex: new Color("oklch", [c.L, c.C, c.H])
-                .to("srgb")
-                .toString({ format: "hex" }),
-            });
-          }
-        });
-      });
-    }
-    return res;
-  }, [
-    points,
-    savedColors,
-    colorData,
-    lockedNouns,
-    lockedAdjectives,
-    viewMode,
-    names,
-    adjectives,
-    filterFn,
-  ]);
-  const finalSwatchItems = useMemo(() => {
-    if (viewMode !== "swatches") return [];
-    return swatchItems.map((item) => {
-      if (item.type === "pin") {
-        const { displayAdj, displayName } = getInheritedPinNames(
-          item,
-          savedColors,
-          names,
-          adjectives,
-        );
-        return {
-          ...item,
-          displayName: `${displayAdj} ${displayName}`.trim() || item.id,
-        };
-      }
-      return item;
-    });
-  }, [swatchItems, viewMode, savedColors, names, adjectives]);
-  const baseTraces = useMemo(() => {
-    if (viewMode === "swatches") return [];
-    const filtered = points.filter((p) => !p.isPin && filterFn(p));
-    const filteredBurnt = Object.values(savedColors).filter(
-      (p) => p.type === "pin" && filterFn(p),
-    );
-    const traces = [];
-    traces.push({
-      type: "scatter",
-      mode: viewMode === "bins" ? (showText ? "text" : "markers") : "markers",
-      x: filtered.map((p) => p.C),
-      y: filtered.map((p) => p.L),
-      text: filtered.map((p) => {
-        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-        const adj = adjectives[p.lStr] || "";
-        const noun = names[nounId] || "";
-        const fullName = `${adj} ${noun}`.trim() || "Unnamed";
-        const binText =
-          adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`;
-        return viewMode === "bins"
-          ? binText
-          : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`;
-      }),
-      textposition: "middle center",
-      textfont: {
-        size: 12,
-        family: "Inter, sans-serif",
-        color: filtered.map((p) => (p.L > 0.55 ? "#010D00" : "#F2E8DF")),
-      },
-      hovertemplate:
-        viewMode === "bins"
-          ? "<b>%{customdata[3].fullName}</b><br>L: %{y:.3f} C: %{x:.3f}<extra></extra>"
-          : "%{text}<extra></extra>",
-      customdata: filtered.map((p) => {
-        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-        const fullName =
-          `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
-          "Unnamed";
-        return [p.L, p.C, p.H, { anchorId: nounId, adjId: p.lStr, fullName }];
-      }),
-      marker: {
-        size: 10,
-        color: filtered.map((p) => p.color),
-        opacity: viewMode === "bins" ? (showText ? 0 : 0.3) : 0.8,
-        line: {
-          width: 0.5,
-          color: isDark ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.2)",
-        },
-      },
-    });
-    const gridLockedNodes = filtered
-      .filter(
-        (p) =>
-          !p.isCustomAnchor &&
-          lockedNouns[p.parentNounId || `${p.cStr}-${p.hStr}`] &&
-          lockedAdjectives[p.lStr],
-      )
-      .map((p) => {
-        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-        return {
-          ...p,
-          displayName:
-            `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
-            "Unnamed",
-        };
-      });
-    const customLockedNodes = Object.values(savedColors)
-      .filter((sc) => sc.type === "anchor" && filterFn(sc))
-      .map((p) => {
-        const displayName =
-          `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
-          p.id ||
-          "Custom Anchor";
-        return { ...p, displayName };
-      });
-    const lockedNodes = [...gridLockedNodes, ...customLockedNodes];
-    const pinNodes = filteredBurnt.map((p) => {
-      const displayName =
-        `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
-        "Unnamed Pin";
-      return { ...p, displayName };
-    });
-    traces.push({
-      type: "scatter",
-      mode: "markers",
-      x: lockedNodes.map((p) => p.C),
-      y: lockedNodes.map((p) => p.L),
-      text: lockedNodes.map(
-        (p) =>
-          `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
-      ),
-      hovertemplate: "%{text}<extra></extra>",
-      customdata: lockedNodes.map((p) => [
-        p.L,
-        p.C,
-        p.H,
-        { anchorId: p.anchorId || p.id, adjId: p.adjId },
-      ]),
-      marker: {
-        symbol: "square",
-        size: 10,
-        color: lockedNodes.map((p) => p.color),
-        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
-      },
-    });
-    traces.push({
-      type: "scatter",
-      mode: "markers",
-      x: pinNodes.map((p) => p.C),
-      y: pinNodes.map((p) => p.L),
-      text: pinNodes.map(
-        (p) =>
-          `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
-      ),
-      hovertemplate: "%{text}<extra></extra>",
-      customdata: pinNodes.map((p) => [p.L, p.C, p.H, { pinId: p.id }]),
-      marker: {
-        symbol: "x",
-        size: 12,
-        color: pinNodes.map((p) => p.color),
-        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
-      },
-    });
-    const commercialNodes = [];
-    if (colorData) {
-      Object.keys(colorData).forEach((brand) => {
-        colorData[brand].forEach((c) => {
-          if (filterFn(c, true)) {
-            commercialNodes.push({
-              ...c,
-              color: new Color("oklch", [c.L, c.C, c.H])
-                .to("srgb")
-                .toString({ format: "hex" }),
-              displayName: `${brand} - ${c.name}`,
-            });
-          }
-        });
-      });
-    }
-    if (commercialNodes.length > 0) {
-      const jitteredCommercial = applyJitter(
-        commercialNodes,
-        "C",
-        "L",
-        null,
-        0.006,
-      );
-      traces.push({
-        type: "scatter",
-        mode: "markers",
-        x: jitteredCommercial.map((p) => p._jX),
-        y: jitteredCommercial.map((p) => p._jY),
-        text: jitteredCommercial.map(
-          (p) =>
-            `<b>[Commercial] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
-        ),
-        hovertemplate: "%{text}<extra></extra>",
-        customdata: jitteredCommercial.map((p) => [
-          p.L,
-          p.C,
-          p.H,
-          { brand: p.brand, originalIndex: p.originalIndex },
-        ]),
-        marker: {
-          symbol: "triangle-up",
-          size: 10,
-          color: jitteredCommercial.map((p) => p.color),
-          line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
-        },
-      });
-    }
-    return traces;
-  }, [
-    points,
-    isDark,
-    names,
-    adjectives,
-    savedColors,
-    lockedNouns,
-    lockedAdjectives,
-    viewMode,
-    showText,
-    targetH,
-    colorData,
-    filterFn,
-  ]);
-  const data = useMemo(() => {
-    if (viewMode === "swatches") return [];
-    const traces = [...baseTraces];
-    traces.push({
-      type: "scatter",
-      mode: "lines",
-      x: crosshair?.snapTarget ? [crosshair.rawC, crosshair.snapTarget.C] : [],
-      y: crosshair?.snapTarget ? [crosshair.rawL, crosshair.snapTarget.L] : [],
-      line: {
-        color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
-        width: 2,
-        dash: "dot",
-      },
-      hoverinfo: "skip",
-    });
-    traces.push({
-      type: "scatter",
-      mode: "markers",
-      x: [crosshair?.rawC],
-      y: [crosshair?.rawL],
-      text: [
-        `<b>Cursor</b><br>L: ${crosshair?.rawL?.toFixed(3)} C: ${crosshair?.rawC?.toFixed(3)} H: ${crosshair?.rawH?.toFixed(1)}\xB0`,
-      ],
-      hovertemplate: "%{text}<extra></extra>",
-      marker: {
-        symbol: "cross",
-        size: 12,
-        color: isDark ? "#F2E8DF" : "#010D00",
-        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
-      },
-      hoverinfo: "skip",
-    });
-    if (tetheringPinId && savedColors[tetheringPinId]) {
-      const p = savedColors[tetheringPinId];
-      traces.push({
-        type: "scatter",
-        mode: "lines",
-        x: [p.C, crosshair?.rawC],
-        y: [p.L, crosshair?.rawL],
-        line: { color: "#f59e0b", width: 2, dash: "dash" },
-        hoverinfo: "skip",
-      });
-    }
-    return traces;
-  }, [baseTraces, crosshair, isDark, viewMode, tetheringPinId, savedColors]);
-  const voronoiContent = useMemo(() => {
-    if (viewMode !== "bins") return { cells: [], mask: null };
-    try {
-      const filterFnSlice = (p) => {
-        if (p.C === 0) return true;
-        const cStepForH = Math.max(1, Math.round(p.C / 0.02));
-        const nH = 6 * cStepForH;
-        const stepH = 360 / nH;
-        const closestH = Math.round(targetH / stepH) * stepH;
-        const h1 = closestH % 360;
-        const h2 = (closestH + 360) % 360;
-        return Math.abs(p.H - h1) < 0.1 || Math.abs(p.H - h2) < 0.1;
-      };
-      const slicePoints = points.filter((p) => !p.isPin && filterFnSlice(p));
-      if (slicePoints.length === 0) return { cells: [], mask: null };
-      const allVoronoiPoints = [...slicePoints];
-      const isMobile = window.innerWidth < 768;
-      const lStep = isMobile ? 0.05 : 0.01;
-      const boundaryPoints = [];
-      for (let l = 0; l <= 1; l += lStep) {
-        let low = 0,
-          high = 0.4;
-        while (high - low > 0.001) {
-          let mid = (low + high) / 2;
-          if (new Color("oklch", [l, mid, targetH]).inGamut("srgb")) {
-            low = mid;
-          } else {
-            high = mid;
-          }
-        }
-        const maxC = Math.min(low, 0.4);
-        boundaryPoints.push([maxC, l]);
-        allVoronoiPoints.push({ C: maxC + 0.005, L: l, isDummy: true });
-        allVoronoiPoints.push({ C: maxC + 0.02, L: l, isDummy: true });
-      }
-      const cStep = isMobile ? 0.05 : 0.01;
-      for (let c = 0; c <= 0.45; c += cStep) {
-        allVoronoiPoints.push({ C: c, L: -0.01, isDummy: true });
-        allVoronoiPoints.push({ C: c, L: 1.01, isDummy: true });
-      }
-      const scaleX = 1;
-      const scaleY = 0.3;
-      const delaunay = d3.Delaunay.from(
-        allVoronoiPoints.map((p) => [p.C * scaleX, p.L * scaleY]),
-      );
-      const voronoi = delaunay.voronoi([
-        -0.1 * scaleX,
-        -0.1 * scaleY,
-        0.5 * scaleX,
-        1.15 * scaleY,
-      ]);
-      const cells = [];
-      allVoronoiPoints.forEach((p, i) => {
-        if (p.isDummy) return;
-        const path = voronoi.renderCell(i);
-        if (path) {
-          const pts = [];
-          path.replace(/([ML])([^,]+),([^MLZ]+)/g, (match, cmd, x, y) => {
-            pts.push([parseFloat(x), parseFloat(y)]);
-            return match;
-          });
-          if (pts.length > 2) {
-            const unscaledPts = pts.map((pt) => [
-              pt[0] / scaleX,
-              pt[1] / scaleY,
-            ]);
-            const unscaledPath =
-              "M" + unscaledPts.map((pt) => pt.join(",")).join("L") + "Z";
-            cells.push({ path: unscaledPath, color: p.color, p });
-          }
-        }
-      });
-      const outerSquare = [
-        [-0.5, -0.5],
-        [1, -0.5],
-        [1, 1.5],
-        [-0.5, 1.5],
-        [-0.5, -0.5],
-      ];
-      const innerBoundary = [[0, 1.2], ...boundaryPoints.reverse(), [0, -0.2]];
-      const maskPath =
-        "M" +
-        outerSquare.map((p) => p.join(",")).join("L") +
-        "Z M" +
-        innerBoundary.map((p) => p.join(",")).join("L") +
-        "Z";
-      return { cells, mask: maskPath };
-    } catch (e) {
-      console.error("Voronoi error:", e);
-      return { cells: [], mask: null };
-    }
-  }, [points, targetH, viewMode]);
-  const layout = useMemo(() => {
-    const shapes = [];
-    if (groupSettings) {
-      const gC = isDark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)";
-      // Neutral C line
-      if (groupSettings.neutralC) {
-        shapes.push({
-          type: "line",
-          x0: groupSettings.neutralC,
-          x1: groupSettings.neutralC,
-          y0: -0.05,
-          y1: 1.05,
-          line: { color: gC, width: 1, dash: "dot" },
-        });
-      }
-      // Vivid C line
-      if (groupSettings.vividC) {
-        shapes.push({
-          type: "line",
-          x0: groupSettings.vividC,
-          x1: groupSettings.vividC,
-          y0: -0.05,
-          y1: 1.05,
-          line: { color: gC, width: 1, dash: "dot" },
-        });
-      }
-      // Light L line (for non-neutrals)
-      if (groupSettings.lightL && groupSettings.neutralC) {
-        shapes.push({
-          type: "line",
-          x0: groupSettings.neutralC,
-          x1: 0.4,
-          y0: groupSettings.lightL,
-          y1: groupSettings.lightL,
-          line: { color: gC, width: 1, dash: "dot" },
-        });
-      }
-      // Neutrals maxL lines
-      if (groupSettings.neutrals && groupSettings.neutralC) {
-        groupSettings.neutrals.forEach(n => {
-          shapes.push({
-            type: "line",
-            x0: 0,
-            x1: groupSettings.neutralC,
-            y0: n.maxL,
-            y1: n.maxL,
-            line: { color: gC, width: 1, dash: "dot" },
-          });
-        });
-      }
-    } else {
-      shapes.push({
-        type: "line",
-        x0: 0,
-        x1: 0.3,
-        y0: 0.5,
-        y1: 0.5,
-        line: { color: isDark ? "#F2E8DF" : "#2B4032", width: 1, dash: "dot" },
-      });
-    }
 
-    if (viewMode === "bins" && voronoiContent.cells.length > 0) {
-      voronoiContent.cells.forEach((cell) => {
-        if (filterPt && !filterPt(cell.p)) return;
-        shapes.push({
-          type: "path",
-          path: cell.path,
-          fillcolor: cell.color,
-          line: {
-            width: 1.5,
-            color: isDark ? "rgba(0,0,0,0.1)" : "rgba(255,255,255,0.4)",
-          },
-          layer: "below",
-        });
-      });
-      if (voronoiContent.mask) {
-        shapes.push({
-          type: "path",
-          path: voronoiContent.mask,
-          fillcolor: isDark ? "#052212" : "#F2E8DF",
-          line: { width: 0 },
-          layer: "below",
-          fillrule: "evenodd",
-        });
-      }
-    }
-    return {
-      uirevision: "true",
-      paper_bgcolor: "rgba(0,0,0,0)",
-      plot_bgcolor: "rgba(0,0,0,0)",
-      dragmode: "pan",
-      xaxis: {
-        title: "Chroma",
-        range: [0, 0.4],
-        showgrid: viewMode !== "bins",
-        zeroline: viewMode !== "bins",
-        gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
-        titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
-        tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
-      },
-      yaxis: {
-        title: "Lightness",
-        range: [0, 1.05],
-        showgrid: viewMode !== "bins",
-        zeroline: viewMode !== "bins",
-        gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
-        titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
-        tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
-      },
-      margin: { l: 50, r: 20, b: 50, t: 20 },
-      shapes,
-      showlegend: false,
-      // Dots mode gets the matching OKLCH plane behind the points.
-      images:
-        viewMode === "dots"
-          ? [
-              {
-                source: oklchPlaneDataUri("cl", crosshair?.rawH !== undefined ? crosshair.rawH : 0, {
-                  xMax: 0.4,
-                  yMax: 1.05,
-                }),
-                xref: "x",
-                yref: "y",
-                x: 0,
-                y: 1.05,
-                sizex: 0.4,
-                sizey: 1.05,
-                sizing: "stretch",
-                layer: "below",
-                opacity: 0.25,
-              },
-            ].filter((im) => !!im.source)
-          : [],
-    };
-  }, [isDark, viewMode, voronoiContent, filterPt, groupSettings, crosshair?.rawH]);
-  const handleBgClick = (cValue, lValue) => {
-    handlePointClick([
-      Math.max(0, Math.min(1, lValue)),
-      Math.max(0, Math.min(0.4, cValue)),
-      crosshair?.rawH,
-    ]);
-  };
-  if (viewMode === "swatches") {
-    return React.createElement(ViewportSwatches, {
-      items: finalSwatchItems,
-      layout: swatchLayout,
-      swatchZoom,
-      dim1: "L",
-      dim2: "C",
-      dim1Labels: (v) => `L: ${Number(v).toFixed(3)}`,
-      dim2Labels: (v) => `C: ${Number(v).toFixed(2)}`,
-      handlePointClick,
-      viewportSearchQuery,
-      viewportTagFilter,
-      crosshair,
-    });
-  }
-  return React.createElement(PlotlyChart, {
-    data,
-    layout,
-    onPointClick: handlePointClick,
-    onBgClick: handleBgClick,
-    onRelayout: handleRelayout,
-    theme,
-  });
+// ─── Colour names ───────────────────────────────────────────────────────────
+// One rule everywhere: a colour's own name override, else the name of the pin
+// it is tethered to, else the name of the nearest anchor (the cell it sits in
+// in Explore). Returned upper-case; "" when nothing names it.
+const UNNAMED_RE = /^unnamed( noun)?$/i;
+const cleanName = (v) => {
+  const s = String(v || "").trim();
+  return UNNAMED_RE.test(s) ? "" : s;
 };
-const ViewChromaRings = ({
-  colorData,
-  points,
-  crosshair,
-  handlePointClick,
-  theme,
-  names,
-  adjectives,
-  savedColors = {},
-  lockedNouns,
-  lockedAdjectives,
-  viewMode,
-  tetheringPinId,
-  swatchLayout,
-  swatchZoom,
-  viewportFilter,
-  viewportSearchQuery,
-  viewportTagFilter,
-  filterPt,
-  filterL,
-  filterC,
-  filterH,
-  groupSettings,
-}) => {
-  const isDark = theme === "dark";
-  const [showText, setShowText] = useState(false);
-  const handleRelayout = (e) => {
-    if (e["xaxis.range[0]"] !== void 0 && e["xaxis.range[1]"] !== void 0) {
-      setShowText(e["xaxis.range[1]"] - e["xaxis.range[0]"] < 120);
-    } else if (e["xaxis.autorange"]) {
-      setShowText(false);
-    }
-  };
-  const targetC = crosshair?.rawC || 0;
-  const filterFn = useCallback(
-    (p, isCommercial = false) => {
-      if (filterPt && !filterPt(p)) return false;
-      if (p.C === 0 && targetC === 0) return true;
-      if (
-        p.isPin ||
-        p.isCustomAnchor ||
-        p.type === "pin" ||
-        p.type === "anchor" ||
-        p.url !== void 0 ||
-        p.hex !== void 0 ||
-        isCommercial
-      ) {
-        return Math.abs(p.C - targetC) <= Math.max(0.02, filterC);
-      }
-      return true;
-    },
-    [targetC, filterPt, filterC],
-  );
-  const swatchItems = useMemo(() => {
-    if (viewMode !== "swatches") return [];
-    const res = [];
-    points
-      .filter((p) => !p.isPin && filterFn(p))
-      .forEach((p) => {
-        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-        res.push({
-          ...p,
-          type: "grid",
-          displayName:
-            `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
-            "Unnamed",
-          hex: p.color,
-        });
-      });
-    Object.values(savedColors).forEach((sc) => {
-      if (filterFn(sc)) {
-        if (sc.type === "anchor") {
-          res.push({
-            ...sc,
-            displayName:
-              `${sc.adjOverride || adjectives[sc.adjId] || ""} ${sc.nameOverride || names[sc.anchorId] || ""}`.trim() ||
-              sc.id,
-            hex: sc.srgbHex || sc.color,
-          });
-        } else if (sc.type === "pin") {
-          res.push({
-            ...sc,
-            displayName: sc.id || "Pin",
-            hex: sc.srgbHex || sc.color,
-          });
-        }
-      }
-    });
-    if (colorData) {
-      Object.keys(colorData).forEach((brand) => {
-        colorData[brand].forEach((c) => {
-          if (filterFn(c, true)) {
-            res.push({
-              ...c,
-              type: "commercial",
-              displayName: `${brand} - ${c.name}`,
-              hex: new Color("oklch", [c.L, c.C, c.H])
-                .to("srgb")
-                .toString({ format: "hex" }),
-            });
-          }
-        });
-      });
-    }
-    return res;
-  }, [
-    points,
-    savedColors,
-    colorData,
-    lockedNouns,
-    lockedAdjectives,
-    viewMode,
-    names,
-    adjectives,
-    targetC,
-  ]);
-  const finalSwatchItems = useMemo(() => {
-    if (viewMode !== "swatches") return [];
-    return swatchItems.map((item) => {
-      if (item.type === "pin") {
-        const { displayAdj, displayName } = getInheritedPinNames(
-          item,
-          savedColors,
-          names,
-          adjectives,
-        );
-        return {
-          ...item,
-          displayName: `${displayAdj} ${displayName}`.trim() || item.id,
-        };
-      }
-      return item;
-    });
-  }, [swatchItems, viewMode, savedColors, names, adjectives]);
-  const baseTraces = useMemo(() => {
-    if (viewMode === "swatches") return [];
-    const filtered = points.filter((p) => !p.isPin && filterFn(p));
-    const filteredBurnt = Object.values(savedColors).filter(
-      (p) => p.type === "pin" && filterFn(p),
-    );
-    const traces = [];
-    traces.push({
-      type: "scatter",
-      mode: viewMode === "bins" ? (showText ? "text" : "markers") : "markers",
-      x: filtered.map((p) => p.H),
-      y: filtered.map((p) => p.L),
-      text: filtered.map((p) => {
-        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-        const adj = adjectives[p.lStr] || "";
-        const noun = names[nounId] || "";
-        const fullName = `${adj} ${noun}`.trim() || "Unnamed";
-        const binText =
-          adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`;
-        return viewMode === "bins"
-          ? binText
-          : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`;
-      }),
-      textposition: "middle center",
-      textfont: {
-        size: 12,
-        family: "Inter, sans-serif",
-        color: filtered.map((p) => (p.L > 0.55 ? "#010D00" : "#F2E8DF")),
-      },
-      hovertemplate:
-        viewMode === "bins"
-          ? "<b>%{customdata[3].fullName}</b><br>L: %{y:.3f} H: %{x:.1f}\xB0<extra></extra>"
-          : "%{text}<extra></extra>",
-      customdata: filtered.map((p) => {
-        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-        const fullName =
-          `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
-          "Unnamed";
-        return [p.L, p.C, p.H, { anchorId: nounId, adjId: p.lStr, fullName }];
-      }),
-      marker: {
-        size: 10,
-        color: filtered.map((p) => p.color),
-        opacity: viewMode === "bins" ? (showText ? 0 : 0.3) : 0.8,
-        line: {
-          width: 0.5,
-          color: isDark ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.2)",
-        },
-      },
-    });
-    const gridLockedNodes = filtered
-      .filter(
-        (p) =>
-          !p.isCustomAnchor &&
-          lockedNouns[p.parentNounId || `${p.cStr}-${p.hStr}`] &&
-          lockedAdjectives[p.lStr],
-      )
-      .map((p) => {
-        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-        return {
-          ...p,
-          displayName:
-            `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
-            "Unnamed",
-        };
-      });
-    const customLockedNodes = Object.values(savedColors)
-      .filter((sc) => sc.type === "anchor" && filterFn(sc))
-      .map((p) => {
-        const displayName =
-          `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
-          p.id ||
-          "Custom Anchor";
-        return { ...p, displayName };
-      });
-    const lockedNodes = [...gridLockedNodes, ...customLockedNodes];
-    const pinNodes = filteredBurnt.map((p) => {
-      const displayName =
-        `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
-        "Unnamed Pin";
-      return { ...p, displayName };
-    });
-    traces.push({
-      type: "scatter",
-      mode: "markers",
-      x: lockedNodes.map((p) => p.H),
-      y: lockedNodes.map((p) => p.L),
-      text: lockedNodes.map(
-        (p) =>
-          `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
-      ),
-      hovertemplate: "%{text}<extra></extra>",
-      customdata: lockedNodes.map((p) => [
-        p.L,
-        p.C,
-        p.H,
-        { anchorId: p.anchorId || p.id, adjId: p.adjId },
-      ]),
-      marker: {
-        symbol: "square",
-        size: 10,
-        color: lockedNodes.map((p) => p.color),
-        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
-      },
-    });
-    traces.push({
-      type: "scatter",
-      mode: "markers",
-      x: pinNodes.map((p) => p.H),
-      y: pinNodes.map((p) => p.L),
-      text: pinNodes.map(
-        (p) =>
-          `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
-      ),
-      hovertemplate: "%{text}<extra></extra>",
-      customdata: pinNodes.map((p) => [p.L, p.C, p.H, { pinId: p.id }]),
-      marker: {
-        symbol: "x",
-        size: 12,
-        color: pinNodes.map((p) => p.color),
-        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
-      },
-    });
-    const commercialNodes = [];
-    if (colorData) {
-      Object.keys(colorData).forEach((brand) => {
-        colorData[brand].forEach((c) => {
-          if (filterFn(c, true)) {
-            commercialNodes.push({
-              ...c,
-              color: new Color("oklch", [c.L, c.C, c.H])
-                .to("srgb")
-                .toString({ format: "hex" }),
-              displayName: `${brand} - ${c.name}`,
-            });
-          }
-        });
-      });
-    }
-    if (commercialNodes.length > 0) {
-      traces.push({
-        type: "scatter",
-        mode: "markers",
-        x: commercialNodes.map((p) => p.H),
-        y: commercialNodes.map((p) => p.L),
-        text: commercialNodes.map(
-          (p) =>
-            `<b>[Commercial] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
-        ),
-        hovertemplate: "%{text}<extra></extra>",
-        customdata: commercialNodes.map((p) => [
-          p.L,
-          p.C,
-          p.H,
-          { brand: p.brand, originalIndex: p.originalIndex },
-        ]),
-        marker: {
-          symbol: "triangle-up",
-          size: 10,
-          color: commercialNodes.map((p) => p.color),
-          line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
-        },
-      });
-    }
-    return traces;
-  }, [
-    points,
-    isDark,
-    names,
-    adjectives,
-    savedColors,
-    lockedNouns,
-    lockedAdjectives,
-    viewMode,
-    showText,
-    targetC,
-    colorData,
-    filterFn,
-  ]);
-  const data = useMemo(() => {
-    if (viewMode === "swatches") return [];
-    const traces = [...baseTraces];
-    traces.push({
-      type: "scatter",
-      mode: "lines",
-      x: crosshair?.snapTarget ? [crosshair.rawH, crosshair.snapTarget.H] : [],
-      y: crosshair?.snapTarget ? [crosshair.rawL, crosshair.snapTarget.L] : [],
-      line: {
-        color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
-        width: 2,
-        dash: "dot",
-      },
-      hoverinfo: "skip",
-    });
-    traces.push({
-      type: "scatter",
-      mode: "markers",
-      x: [crosshair?.rawH],
-      y: [crosshair?.rawL],
-      text: [
-        `<b>Cursor</b><br>L: ${crosshair?.rawL?.toFixed(3)} C: ${crosshair?.rawC?.toFixed(3)} H: ${crosshair?.rawH?.toFixed(1)}\xB0`,
-      ],
-      hovertemplate: "%{text}<extra></extra>",
-      marker: {
-        symbol: "cross",
-        size: 12,
-        color: isDark ? "#F2E8DF" : "#010D00",
-        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
-      },
-      hoverinfo: "skip",
-    });
-    if (tetheringPinId && savedColors[tetheringPinId]) {
-      const p = savedColors[tetheringPinId];
-      traces.push({
-        type: "scatter",
-        mode: "lines",
-        x: [p.H, crosshair?.rawH],
-        y: [p.L, crosshair?.rawL],
-        line: { color: "#f59e0b", width: 2, dash: "dash" },
-        hoverinfo: "none",
-      });
-    }
-    return traces;
-  }, [baseTraces, crosshair, isDark, viewMode, tetheringPinId, savedColors]);
-  const voronoiContent = useMemo(() => {
-    if (viewMode !== "bins") return { cells: [] };
-    try {
-      const gridC = Math.round(targetC / 0.02) * 0.02;
-      const slicePoints = points.filter(
-        (p) => !p.isPin && p.C > 0 && Math.abs(p.C - gridC) <= 0.001,
-      );
-      if (slicePoints.length === 0) return { cells: [] };
-      const allVoronoiPoints = [...slicePoints];
-      const isMobile = window.innerWidth < 768;
-      const lStep = isMobile ? 0.04 : 0.02;
-      const hStep = isMobile ? 10 : 5;
-      for (let l = -0.05; l <= 1.05; l += lStep) {
-        for (let h = 0; h < 360; h += hStep) {
-          if (l < 0 || l > 1) {
-            allVoronoiPoints.push({ H: h, L: l, isDummy: true });
-            continue;
-          }
-          const cColor = new Color("oklch", [l, gridC, h]);
-          if (!cColor.inGamut("srgb")) {
-            allVoronoiPoints.push({ H: h, L: l, isDummy: true });
-          }
-        }
-      }
-      const scaleX = 1;
-      const scaleY = 360;
-      const paddedVoronoi = [];
-      allVoronoiPoints.forEach((p) => {
-        paddedVoronoi.push({ ...p, H: p.H - 360 });
-        paddedVoronoi.push(p);
-        paddedVoronoi.push({ ...p, H: p.H + 360 });
-      });
-      const delaunay = d3.Delaunay.from(
-        paddedVoronoi.map((p) => [p.H * scaleX, p.L * scaleY]),
-      );
-      const voronoi = delaunay.voronoi([
-        -360 * scaleX,
-        -0.1 * scaleY,
-        720 * scaleX,
-        1.15 * scaleY,
-      ]);
-      const cells = [];
-      allVoronoiPoints.forEach((p, i) => {
-        if (p.isDummy) return;
-        const path = voronoi.renderCell(3 * i + 1);
-        if (path) {
-          const pts = [];
-          path.replace(/([ML])([^,]+),([^MLZ]+)/g, (match, cmd, x, y) => {
-            pts.push([parseFloat(x), parseFloat(y)]);
-            return match;
-          });
-          if (pts.length > 2) {
-            const unscaledPts = pts.map((pt) => [
-              pt[0] / scaleX,
-              pt[1] / scaleY,
-            ]);
-            const unscaledPath =
-              "M" + unscaledPts.map((pt) => pt.join(",")).join("L") + "Z";
-            cells.push({ path: unscaledPath, color: p.color, p });
-          }
-        }
-      });
-      return { cells };
-    } catch (e) {
-      console.error("Voronoi error:", e);
-      return { cells: [] };
-    }
-  }, [points, targetC, viewMode]);
-  const layout = useMemo(() => {
-    const shapes = [];
-    if (groupSettings) {
-      const gC = isDark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)";
-      shapes.push({
-        type: "line",
-        x0: 0,
-        x1: 360,
-        y0: groupSettings.lightL || 0.5,
-        y1: groupSettings.lightL || 0.5,
-        line: { color: gC, width: 1, dash: "dot" },
-      });
-      if (groupSettings.hues) {
-        hueBoundaries(groupSettings.hues).forEach((edge) => {
-          shapes.push({
-            type: "line",
-            x0: edge,
-            x1: edge,
-            y0: 0,
-            y1: 1.05,
-            line: { color: gC, width: 1, dash: "dot" },
-          });
-        });
-      }
-    } else {
-      shapes.push({
-        type: "line",
-        x0: 0,
-        x1: 360,
-        y0: 0.5,
-        y1: 0.5,
-        line: { color: isDark ? "#F2E8DF" : "#2B4032", width: 1, dash: "dot" },
-      });
-    }
-
-    if (viewMode === "bins" && voronoiContent.cells.length > 0) {
-      voronoiContent.cells.forEach((cell) => {
-        if (filterPt && !filterPt(cell.p)) return;
-        shapes.push({
-          type: "path",
-          path: cell.path,
-          fillcolor: cell.color,
-          line: {
-            width: 1.5,
-            color: isDark ? "rgba(0,0,0,0.1)" : "rgba(255,255,255,0.4)",
-          },
-          layer: "below",
-        });
-      });
-    }
-    return {
-      uirevision: "true",
-      paper_bgcolor: "rgba(0,0,0,0)",
-      plot_bgcolor: "rgba(0,0,0,0)",
-      dragmode: "pan",
-      xaxis: {
-        title: "Hue Angle (\xB0)",
-        range: [0, 360],
-        showgrid: viewMode !== "bins",
-        zeroline: viewMode !== "bins",
-        gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
-        titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
-        tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
-        tickmode: "linear",
-        dtick: 30,
-      },
-      yaxis: {
-        title: "Lightness",
-        range: [0, 1.05],
-        showgrid: viewMode !== "bins",
-        zeroline: viewMode !== "bins",
-        gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
-        titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
-        tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
-      },
-      margin: { l: 50, r: 20, b: 50, t: 20 },
-      shapes,
-      showlegend: false,
-      // Dots mode gets the matching OKLCH plane behind the points.
-      images:
-        viewMode === "dots"
-          ? [
-              {
-                source: oklchPlaneDataUri("hl", crosshair?.rawC !== undefined ? crosshair.rawC : 0.12, {
-                  xMax: 360,
-                  yMax: 1.05,
-                }),
-                xref: "x",
-                yref: "y",
-                x: 0,
-                y: 1.05,
-                sizex: 360,
-                sizey: 1.05,
-                sizing: "stretch",
-                layer: "below",
-                opacity: 0.25,
-              },
-            ].filter((im) => !!im.source)
-          : [],
-    };
-  }, [isDark, viewMode, voronoiContent, filterPt, groupSettings, crosshair?.rawC]);
-  const handleBgClick = (hValue, lValue) => {
-    handlePointClick([
-      Math.max(0, Math.min(1, lValue)),
-      crosshair?.rawC || 0,
-      Math.max(0, Math.min(360, hValue)),
-    ]);
-  };
-  if (viewMode === "swatches") {
-    return React.createElement(ViewportSwatches, {
-      items: finalSwatchItems,
-      layout: swatchLayout,
-      swatchZoom,
-      dim1: "L",
-      dim2: "H",
-      dim1Labels: (v) => `L: ${Number(v).toFixed(3)}`,
-      dim2Labels: (v) => `H: ${Number(v).toFixed(0)}\xB0`,
-      handlePointClick,
-      viewportSearchQuery,
-      viewportTagFilter,
-      crosshair,
-    });
+function getInheritedPinNames(sc, savedColors = {}, names = {}, depth = 0) {
+  if (!sc) return { displayName: "", source: "anchor", sourceId: "" };
+  const own = cleanName(sc.nameOverride);
+  const parent = sc.parentPinId && depth < 20 ? savedColors[sc.parentPinId] : null;
+  if (parent) {
+    const p = getInheritedPinNames(parent, savedColors, names, depth + 1);
+    return { displayName: (own || p.displayName).toUpperCase(), source: "pin", sourceId: parent.id };
   }
-  return React.createElement(PlotlyChart, {
-    data,
-    layout,
-    onPointClick: handlePointClick,
-    onBgClick: handleBgClick,
-    onRelayout: handleRelayout,
-    theme,
-  });
-};
-const PIN_NAME_CANDS = new WeakMap();
-const pinNameCandidates = (savedColors, names) => {
-  let byNames = PIN_NAME_CANDS.get(savedColors);
-  if (!byNames) { byNames = new WeakMap(); PIN_NAME_CANDS.set(savedColors, byNames); }
-  let hit = byNames.get(names);
-  if (hit) return hit;
-  const saved = [], dict = [];
-  Object.values(savedColors).forEach((other) => {
-    if (other.type === "nounColumn" || other.type === "anchor") {
-      const oName = (other.nameOverride || names[other.id] || names[other.anchorId] || "").trim();
-      if (!oName || oName.toLowerCase() === "unnamed" || oName.toLowerCase() === "unnamed noun") return;
-      const oA = other.a !== undefined ? other.a : (other.C || 0) * Math.sin(((other.H || 0) * Math.PI) / 180);
-      const oB = other.b !== undefined ? other.b : (other.C || 0) * Math.cos(((other.H || 0) * Math.PI) / 180);
-      const minL = other.type === "anchor" ? other.L : (other.minL !== undefined ? other.minL : 0);
-      const maxL = other.type === "anchor" ? other.L : (other.maxL !== undefined ? other.maxL : 1);
-      saved.push({ oName, oA, oB, minL, maxL, id: other.id, type: other.type });
-    }
-  });
-  Object.entries(names).forEach(([k, val]) => {
-    if (!val || typeof val !== "string") return;
-    const cleanVal = val.trim();
-    if (!cleanVal || cleanVal.toLowerCase() === "unnamed" || cleanVal.toLowerCase() === "unnamed noun") return;
-    if (String(k).startsWith("commercial-")) return;
-    const parts = k.split("-");
-    let nC = 0, nH = 0, nMidL = 0.5;
-    if (parts.length === 2 && !isNaN(parseInt(parts[0], 10)) && !isNaN(parseInt(parts[1], 10))) {
-      nC = parseInt(parts[0], 10) / 100;
-      nH = parseInt(parts[1], 10);
-    } else if (parts.length === 3 && !isNaN(parseInt(parts[1], 10)) && !isNaN(parseInt(parts[2], 10))) {
-      const pref = parts[0];
-      nC = parseInt(parts[1], 10) / 100;
-      nH = parseInt(parts[2], 10);
-      if (pref === "UL") nMidL = 0.975;
-      else if (pref === "L") nMidL = 0.725;
-      else if (pref === "D") nMidL = 0.35;
-      else if (pref === "UD") nMidL = 0.1;
-    } else {
-      return;
-    }
-    dict.push({ cleanVal, k, nMidL, nA: nC * Math.cos((nH * Math.PI) / 180), nB: nC * Math.sin((nH * Math.PI) / 180) });
-  });
-  hit = { saved, dict };
-  byNames.set(names, hit);
-  return hit;
-};
-function getInheritedPinNames(
-  sc,
-  savedColors = {},
-  names = {},
-  adjectives = {},
-  colorData = {},
-) {
-  if (!sc) return { displayAdj: "", displayName: "", source: "anchor", sourceId: "" };
-
-  if (sc.parentPinId && savedColors[sc.parentPinId]) {
-    const parent = savedColors[sc.parentPinId];
-    const parentRes = getInheritedPinNames(
-      parent,
-      savedColors,
-      names,
-      adjectives,
-      colorData,
-    );
-    let finalAdj = (sc.adjOverride || parentRes.displayAdj || "").trim();
-    let finalName = (sc.nameOverride || parentRes.displayName || "").trim();
-    if (finalAdj.toLowerCase() === "unnamed" || finalAdj.toLowerCase() === "unnamed adj") finalAdj = "";
-    if (finalName.toLowerCase() === "unnamed" || finalName.toLowerCase() === "unnamed noun") finalName = "";
-    return {
-      displayAdj: finalAdj.toUpperCase(),
-      displayName: finalName.toUpperCase(),
-      source: "pin",
-      sourceId: parent.id,
-    };
-  }
-
-  let source = sc.parentPinId ? "pin" : "anchor";
-  let sourceId = sc.parentPinId || sc.anchorId || sc.nounId || sc.id || "";
-
-  // 1. Check user explicit overrides
-  let inheritedAdj = sc.adjOverride ? sc.adjOverride.trim() : "";
-  let inheritedName = sc.nameOverride ? sc.nameOverride.trim() : "";
-
-  // 2. Check direct dictionary matches by IDs if name is not set
-  if (!inheritedName) {
-    const checkDict = (id) => {
-      if (!id || String(id).startsWith("commercial-")) return "";
-      const val = names[id];
-      if (val && typeof val === "string" && val.trim() && val.trim().toLowerCase() !== "unnamed" && val.trim().toLowerCase() !== "unnamed noun") {
-        return val.trim();
-      }
-      return "";
-    };
-
-    if (sc.anchorId && savedColors[sc.anchorId]) {
-      const nc = savedColors[sc.anchorId];
-      inheritedName = nc.nameOverride || checkDict(nc.id) || checkDict(nc.anchorId);
-      source = nc.type || "anchor";
-      sourceId = nc.id || nc.anchorId;
-    } else if (sc.nounId && savedColors[sc.nounId]) {
-      const nc = savedColors[sc.nounId];
-      inheritedName = nc.nameOverride || checkDict(nc.id) || checkDict(nc.anchorId);
-      source = nc.type || "anchor";
-      sourceId = nc.id || nc.anchorId;
-    }
-
-    if (!inheritedName) {
-      inheritedName = checkDict(sc.anchorId) || checkDict(sc.nounId) || checkDict(sc.id);
-    }
-  }
-
-  // 3. Parametric coordinate lookup from C and H
-  const scC = sc.C !== undefined ? sc.C : (sc.c !== undefined ? sc.c : null);
-  const scH = sc.H !== undefined ? sc.H : (sc.h !== undefined ? sc.h : null);
-  const scL = sc.L !== undefined ? sc.L : (sc.l !== undefined ? sc.l : null);
-
-  if (!inheritedName && scC !== null && scH !== null) {
-    const cStr = Math.round(scC * 100).toString().padStart(2, "0");
-    const hStr = Math.round(scH).toString().padStart(3, "0");
-    const baseNounId = `${cStr}-${hStr}`;
-    let prefix = "L";
-    if (scL !== null) {
-      if (scL >= 0.95) prefix = "UL";
-      else if (scL >= 0.5) prefix = "L";
-      else if (scL >= 0.2) prefix = "D";
-      else prefix = "UD";
-    }
-    const prefNounId = `${prefix}-${baseNounId}`;
-    if (names[prefNounId] && names[prefNounId].trim() && names[prefNounId].trim().toLowerCase() !== "unnamed" && names[prefNounId].trim().toLowerCase() !== "unnamed noun") {
-      inheritedName = names[prefNounId].trim();
-      sourceId = prefNounId;
-    } else if (names[baseNounId] && names[baseNounId].trim() && names[baseNounId].trim().toLowerCase() !== "unnamed" && names[baseNounId].trim().toLowerCase() !== "unnamed noun") {
-      inheritedName = names[baseNounId].trim();
-      sourceId = baseNounId;
-    }
-  }
-
-  // 4. Spatial nearest-neighbor search across savedColors (nounColumns/anchors) and names dictionary
-  if (!inheritedName && scC !== null && scH !== null) {
-    let scA = sc.a;
-    let scB = sc.b;
-    if (scA === undefined || scB === undefined) {
-      // App convention: a = C*sin(H), b = C*cos(H). Using the standard
-      // formulas here put the pin in the wrong quadrant relative to the
-      // anchors it is being compared against.
-      scA = scC * Math.sin((scH * Math.PI) / 180);
-      scB = scC * Math.cos((scH * Math.PI) / 180);
-    }
-
-    let minDist = Infinity;
-    let bestNoun = "";
-    let bestSourceId = sourceId;
-    let bestSourceType = source;
-
-    // Candidates depend only on savedColors + names, so they are listed once
-    // and reused for every pin (was a full pass over both, per pin, per render).
-    const cands = pinNameCandidates(savedColors, names);
-    for (const o of cands.saved) {
-      const dL = scL === null ? 0 : scL < o.minL ? o.minL - scL : scL > o.maxL ? scL - o.maxL : 0;
-      const d = Math.pow(scA - o.oA, 2) + Math.pow(scB - o.oB, 2) + dL * dL;
-      if (d < minDist) {
-        minDist = d;
-        bestNoun = o.oName;
-        bestSourceId = o.id;
-        bestSourceType = o.type;
-      }
-    }
-    for (const o of cands.dict) {
-      const dL = scL !== null ? (scL - o.nMidL) : 0;
-      const d = Math.pow(scA - o.nA, 2) + Math.pow(scB - o.nB, 2) + Math.pow(dL * 0.4, 2);
-      if (d < minDist) {
-        minDist = d;
-        bestNoun = o.cleanVal;
-        bestSourceId = o.k;
-        bestSourceType = "anchor";
-      }
-    }
-    if (bestNoun) {
-      inheritedName = bestNoun;
-      sourceId = bestSourceId;
-      source = bestSourceType;
-    }
-  }
-
-  // 5. Resolve Adjective
-  if (!inheritedAdj) {
-    if (sc.adjId && adjectives[sc.adjId] && adjectives[sc.adjId].trim()) {
-      inheritedAdj = adjectives[sc.adjId].trim();
-    } else if (scL !== null) {
-      const lStr = getLStr(scL);
-      if (adjectives[lStr] && adjectives[lStr].trim()) {
-        inheritedAdj = adjectives[lStr].trim();
-      } else {
-        let closestLDist = Infinity;
-        let bestLAdj = "";
-        Object.entries(adjectives).forEach(([k, v]) => {
-          if (!v || typeof v !== "string" || !v.trim()) return;
-          const numL = parseFloat(k);
-          if (!isNaN(numL)) {
-            const diff = Math.abs(numL - scL);
-            if (diff < closestLDist) {
-              closestLDist = diff;
-              bestLAdj = v.trim();
-            }
-          }
-        });
-        if (bestLAdj) inheritedAdj = bestLAdj;
-      }
-    }
-  }
-
-  // Sanitize
-  if (inheritedName.toLowerCase() === "unnamed" || inheritedName.toLowerCase() === "unnamed noun") {
-    inheritedName = "";
-  }
-  if (inheritedAdj.toLowerCase() === "unnamed" || inheritedAdj.toLowerCase() === "unnamed adj") {
-    inheritedAdj = "";
-  }
-
-  return {
-    displayAdj: inheritedAdj.toUpperCase(),
-    displayName: inheritedName.toUpperCase(),
-    source,
-    sourceId,
-  };
+  if (own) return { displayName: own.toUpperCase(), source: sc.type || "pin", sourceId: sc.id || "" };
+  const an = findNearestAnchor(Number(sc.L), Number(sc.C), Number(sc.H), savedColors);
+  if (!an) return { displayName: "", source: "anchor", sourceId: "" };
+  return { displayName: cleanName(anchorNameOf(an, names)).toUpperCase(), source: an.sc.type, sourceId: an.nameKey };
 }
 
-// --- Same-noun / same-adjective resolution ---------------------------------
-// Both filters answer one question: does this colour carry the same assigned
-// name as the cursor? The assignment comes from anchors.csv — names[] for
-// nouns (keyed by column), adjectives[] for lightness levels. Comparing the
-// resolved *name* rather than the ID means one name spread across several
-// columns or several lightness levels groups together, and a colour sitting
-// between two anchors still falls under the nearest one.
-
-// Every entity that carries a noun becomes a column candidate. An anchor pins
-// a single sample, but the noun it holds belongs to the whole C/H column, so
-// it stays a candidate at every lightness. A nounColumn keeps its own L range.
+// --- Same-anchor filtering --------------------------------------------------
+// "Same anchor" asks one question: is this colour named by the same anchor as
+// the cursor? Names are compared rather than ids, so two anchors that share a
+// name group together.
 // ─── Anchors are points ─────────────────────────────────────────────────────
 // An anchor names one colour. Any other colour takes the name of the anchor
 // nearest to it in OkLab (straight-line distance over L, a, b), which is the
@@ -5883,8 +3910,7 @@ const anchorPointsOf = (savedColors) => {
     const h = (H * Math.PI) / 180;
     const nameKey =
       sc.type === "anchor"
-        ? sc.anchorId ||
-          `custom-${Math.round(C * 100).toString().padStart(2, "0")}-${Math.round(H).toString().padStart(3, "0")}-${sc.adjId || getLStr(sc.L)}`
+        ? sc.anchorId || sc.id
         : sc.id;
     list.push({ id: sc.id, nameKey, sc, minL, maxL, a: C * Math.sin(h), b: C * Math.cos(h) });
   });
@@ -5912,7 +3938,7 @@ const anchorNameOf = (an, names) =>
   String((names && names[an.nameKey]) || (names && names[an.id]) || an.sc.nameOverride || "").trim();
 // CSV headers in any case or spacing ("NOUN", "noun", "Oklch L") map onto the
 // names the importer reads, so a file exported elsewhere still loads its names.
-const CSV_CANONICAL_KEYS = "AdjId AdjOverride Adj_ID Adjective Adjective_Override Anchor AnchorId Anchor_ID Brand BrandName Brand_Name CIE_A CIE_B CIE_L DoorProfile Door_Profile ERP_Code HEX ID Illuminant Image LAB_L Lab_A Lab_B Lab_L Locked Material Measurement_Date Measurement_Device Measurement_Method Name Note Noun NounOverride Noun_Override OKLCH_C OKLCH_H OKLCH_L Observer Original_Index Parent ParentId ParentPinId Parent_ID Parent_Pin_ID PinId Pin_ID Profile RGB_B RGB_G RGB_R Sheen Spectral TactileTexture Tactile_Texture Tags Type URL VisualPattern VisualTexture Visual_Pattern Visual_Texture".split(" ");
+const CSV_CANONICAL_KEYS = "Adjective Anchor AnchorId Anchor_ID Brand BrandName Brand_Name CIE_A CIE_B CIE_L DoorProfile Door_Profile ERP_Code HEX ID Illuminant Image LAB_L Lab_A Lab_B Lab_L Material Measurement_Date Measurement_Device Measurement_Method Name Note Noun NounOverride Noun_Override OKLCH_C OKLCH_H OKLCH_L Observer Original_Index Parent ParentId ParentPinId Parent_ID Parent_Pin_ID PinId Pin_ID Profile RGB_B RGB_G RGB_R Sheen Spectral TactileTexture Tactile_Texture Tags Type URL VisualPattern VisualTexture Visual_Pattern Visual_Texture".split(" ");
 const CSV_KEY_LOOKUP = (() => {
   const m = {};
   CSV_CANONICAL_KEYS.forEach((k) => { const n = k.toLowerCase().replace(/[\s_-]+/g, ""); if (!m[n]) m[n] = k; });
@@ -5941,152 +3967,36 @@ const normalizeCsvRow = (row) => {
   return out || row;
 };
 
-const getNounColumns = (gridData, savedColors) => {
-  const cols = [];
-  const push = (id, a, b, minL, maxL, nameOverride) => {
-    if (id === undefined || id === null) return;
-    if (!isFinite(a) || !isFinite(b)) return;
-    cols.push({ id, a, b, minL, maxL, nameOverride });
-  };
-
-  (gridData?.baseAnchors || []).forEach((ba) => {
-    const a = ba.a !== undefined ? ba.a : ba.C * Math.sin((ba.H * Math.PI) / 180);
-    const b = ba.b !== undefined ? ba.b : ba.C * Math.cos((ba.H * Math.PI) / 180);
-    const id = ba.parentNounId || `${ba.cStr}-${ba.hStr}`;
-    push(id, a, b, -Infinity, Infinity, ba.nameOverride);
-  });
-
-  Object.values(savedColors || {}).forEach((sc) => {
-    if (sc.type === "nounColumn") {
-      const a = sc.a !== undefined ? sc.a : sc.C * Math.sin((sc.H * Math.PI) / 180);
-      const b = sc.b !== undefined ? sc.b : sc.C * Math.cos((sc.H * Math.PI) / 180);
-      push(
-        sc.id,
-        a,
-        b,
-        sc.minL !== undefined && sc.minL !== null ? sc.minL : -Infinity,
-        sc.maxL !== undefined && sc.maxL !== null ? sc.maxL : Infinity,
-        sc.nameOverride,
-      );
-    } else if (sc.type === "anchor") {
-      const a = sc.a !== undefined ? sc.a : sc.C * Math.sin((sc.H * Math.PI) / 180);
-      const b = sc.b !== undefined ? sc.b : sc.C * Math.cos((sc.H * Math.PI) / 180);
-      const adjId = sc.adjId || getLStr(sc.L);
-      const id =
-        sc.anchorId ||
-        `custom-${Math.round(sc.C * 100).toString().padStart(2, "0")}-${Math.round(sc.H).toString().padStart(3, "0")}-${adjId}`;
-      push(id, a, b, sc.L, sc.L, sc.nameOverride);
-    }
-  });
-
-  return cols;
-};
 
 // Which noun column does this colour fall under? Nearest column in the a/b
 // plane, preferring columns whose lightness range actually contains it.
-const resolveNounKey = (L, C, H, columns, namesObj) => {
-  const normH = isNaN(H) || H === undefined ? 0 : ((H % 360) + 360) % 360;
-  const a = C * Math.sin((normH * Math.PI) / 180);
-  const b = C * Math.cos((normH * Math.PI) / 180);
-
-  // Nearest anchor in OkLab; a range column counts from its nearest point.
-  let best = null;
-  let bestDist = Infinity;
-  columns.forEach((col) => {
-    const dL = L < col.minL ? col.minL - L : L > col.maxL ? L - col.maxL : 0;
-    const d = dL * dL + Math.pow(a - col.a, 2) + Math.pow(b - col.b, 2);
-    if (d < bestDist) {
-      bestDist = d;
-      best = col;
-    }
-  });
-
-  if (!best) {
-    const cStr = Math.round(C * 100).toString().padStart(2, "0");
-    const hStr = Math.round(normH).toString().padStart(3, "0");
-    return `id:${cStr}-${hStr}`;
-  }
-
-  const name = String(
-    (namesObj && namesObj[best.id]) || best.nameOverride || "",
-  ).trim();
-  return name ? `name:${name.toLowerCase()}` : `id:${best.id}`;
+// Which anchor names this colour? The nearest one in OkLab.
+const resolveNounKey = (L, C, H, savedColors, namesObj) => {
+  const an = findNearestAnchor(L, C, H, savedColors);
+  if (!an) return "id:none";
+  const name = cleanName(anchorNameOf(an, namesObj));
+  return name ? `name:${name.toLowerCase()}` : `id:${an.id}`;
 };
 
-// Which adjective level does this colour fall under? The exact lightness
-// bucket if anchors.csv named it, otherwise the nearest named level.
-const resolveAdjectiveKey = (L, adjectivesObj) => {
-  // Without any named adjectives there is nothing to split colours by.
-  if (!adjectivesObj || !Object.values(adjectivesObj).some((v) => String(v || "").trim())) return "any";
-  const lStr = getLStr(L);
-  const exact = adjectivesObj && adjectivesObj[lStr];
-  if (exact && String(exact).trim()) {
-    return `name:${String(exact).trim().toLowerCase()}`;
-  }
-
-  let bestName = null;
-  let bestDist = Infinity;
-  Object.entries(adjectivesObj || {}).forEach(([key, value]) => {
-    const label = String(value || "").trim();
-    if (!label) return;
-    const levelL = Number(key) / 100;
-    if (!isFinite(levelL)) return;
-    const d = Math.abs(levelL - L);
-    if (d < bestDist) {
-      bestDist = d;
-      bestName = label;
-    }
-  });
-
-  return bestName ? `name:${bestName.toLowerCase()}` : `id:${lStr}`;
-};
 
 // Bundles the cursor's keys with the column list so a filter pass resolves
 // the cursor once and then only does per-item work.
-const getSameGroupContext = (
-  L,
-  C,
-  H,
-  gridData,
+const getSameGroupContext = (L, C, H, savedColors, namesObj) => ({
   savedColors,
   namesObj,
-  adjectivesObj,
-) => {
-  const columns = getNounColumns(gridData, savedColors);
-  return {
-    columns,
-    namesObj,
-    adjectivesObj,
-    nounKey: resolveNounKey(L, C, H, columns, namesObj),
-    adjectiveKey: resolveAdjectiveKey(L, adjectivesObj),
-  };
-};
+  nounKey: resolveNounKey(L, C, H, savedColors, namesObj),
+});
 
-const matchesSameAdjective = (ctx, L) =>
-  resolveAdjectiveKey(L, ctx.adjectivesObj) === ctx.adjectiveKey;
 
 const matchesSameNoun = (ctx, L, C, H) =>
-  resolveNounKey(L, C, H, ctx.columns, ctx.namesObj) === ctx.nounKey;
+  resolveNounKey(L, C, H, ctx.savedColors, ctx.namesObj) === ctx.nounKey;
 
-// A nounColumn spans a lightness range, so it counts as sharing the cursor's
-// adjective if any part of that range lands on the same level.
-const nounColumnMatchesSameAdjective = (ctx, sc) => {
-  const minL = sc.minL !== undefined && sc.minL !== null ? sc.minL : sc.L;
-  const maxL = sc.maxL !== undefined && sc.maxL !== null ? sc.maxL : sc.L;
-  if (minL === undefined || maxL === undefined) return false;
-  if (Math.abs(maxL - minL) < 1e-9) return matchesSameAdjective(ctx, minL);
-  for (let L = minL; L <= maxL + 1e-9; L += 0.02) {
-    if (matchesSameAdjective(ctx, L)) return true;
-  }
-  return matchesSameAdjective(ctx, maxL);
-};
 // Every view grew its own row of sort buttons — eleven of them in the commercial
 // DB. One control, one shape: pick a field, flip the direction. Views differ
 // only in the fields they pass in.
 // --- Global filter model ---------------------------------------------------
 // Every filter is one row: a field, an operator, a value. Rows stack with AND.
-// The "same noun", "same adjective", "color match" and "exact material match"
-// behaviours are not separate mechanisms any more — they are presets that push
+// The "same anchor", "color match" and "exact material match" behaviours are not separate mechanisms any more — they are presets that push
 // ordinary rows into this same stack, so they can be inspected and removed like
 // anything else.
 
@@ -6099,8 +4009,7 @@ const FILTER_FIELDS = [
   { id: "visualTexture", label: "Visual pattern", type: "select", get: (it) => it.visualTexture || "" },
   { id: "tactileTexture", label: "Tactile texture", type: "select", get: (it) => it.tactileTexture || "" },
   { id: "tag", label: "Tag", type: "select", multi: true, get: (it) => (it.tags || []).join(", ") },
-  { id: "noun", label: "Noun", type: "text", get: (it, ctx) => (ctx ? nounNameOf(it, ctx) : "") },
-  { id: "adjective", label: "Adjective", type: "text", get: (it, ctx) => (ctx ? adjNameOf(it, ctx) : "") },
+  { id: "noun", label: "Anchor", type: "text", get: (it, ctx) => (ctx ? nounNameOf(it, ctx) : "") },
   { id: "L", label: "Lightness", type: "number", get: (it) => it.L },
   { id: "C", label: "Chroma", type: "number", get: (it) => it.C },
   { id: "H", label: "Hue", type: "number", get: (it) => it.H },
@@ -6120,11 +4029,7 @@ const FILTER_FIELDS = [
 ];
 
 const nounNameOf = (item, ctx) => {
-  const key = resolveNounKey(item.L, item.C, item.H, ctx.columns, ctx.namesObj);
-  return key.indexOf("name:") === 0 ? key.slice(5) : "";
-};
-const adjNameOf = (item, ctx) => {
-  const key = resolveAdjectiveKey(item.L, ctx.adjectivesObj);
+  const key = resolveNounKey(item.L, item.C, item.H, ctx.savedColors, ctx.namesObj);
   return key.indexOf("name:") === 0 ? key.slice(5) : "";
 };
 
@@ -6161,14 +4066,10 @@ const evalFilterRow = (item, row, ctx) => {
 
   // A dynamic row tracks the cursor: the comparison target is whatever the
   // cursor resolves to at this moment, not a value captured when it was added.
-  if (row.dynamic && (row.field === "noun" || row.field === "adjective")) {
+  if (row.dynamic && row.field === "noun") {
     if (!ctx) return true;
-    const target = row.field === "noun" ? ctx.nounKey : ctx.adjectiveKey;
-    const mine =
-      row.field === "noun"
-        ? resolveNounKey(item.L, item.C, item.H, ctx.columns, ctx.namesObj)
-        : resolveAdjectiveKey(item.L, ctx.adjectivesObj);
-    return row.op === "is_not" ? mine !== target : mine === target;
+    const mine = resolveNounKey(item.L, item.C, item.H, ctx.savedColors, ctx.namesObj);
+    return row.op === "is_not" ? mine !== ctx.nounKey : mine === ctx.nounKey;
   }
 
   const raw = field.get(item, ctx);
@@ -6239,7 +4140,7 @@ const applyGlobalFilters = (items, rows, ctx, mode, scope) => {
 
 const cursorValueFor = (fieldId, ctx) => {
   if (!ctx) return "cursor";
-  const key = fieldId === "noun" ? ctx.nounKey : ctx.adjectiveKey;
+  const key = ctx.nounKey;
   return key && key.indexOf("name:") === 0 ? key.slice(5) : "cursor";
 };
 
@@ -6775,146 +4676,9 @@ const SwatchLegend = ({ className = "" }) => {
   );
 };
 
-// --- OKLCH colour wheel background ----------------------------------------
-// A continuous a/b slice at a given lightness, drawn once to a canvas and
-// cached per lightness. Out-of-gamut pixels fade out so the disc ends softly
-// rather than at a hard clipped edge.
-const OKLCH_WHEEL_CACHE = new Map();
 
-// Shared converter: OKLCH coords -> linear sRGB plus how far out of gamut.
-const oklchToLinearRGB = (L, a, b) => {
-  const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
-  const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
-  const s_ = L - 0.0894841775 * a - 1.291485548 * b;
-  const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
-  return [
-    4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3,
-    -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3,
-    -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3,
-  ];
-};
-const srgbByte = (v) => {
-  v = Math.min(1, Math.max(0, v));
-  return Math.round((v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055) * 255);
-};
-const gamutOvershoot = (lin) => {
-  let over = 0;
-  for (let k = 0; k < 3; k++) {
-    if (lin[k] < 0) over = Math.max(over, -lin[k]);
-    else if (lin[k] > 1) over = Math.max(over, lin[k] - 1);
-  }
-  return over;
-};
 
-// Renders whichever plane a view actually plots:
-//   "ab" — the wheel, at a fixed lightness
-//   "cl" — chroma x lightness, at a fixed hue
-//   "hl" — hue angle x lightness, at a fixed chroma
-const oklchPlaneDataUri = (plane, fixed, opts = {}) => {
-  const size = opts.size || 256;
-  const xMax = opts.xMax !== undefined ? opts.xMax : 0.4;
-  const yMax = opts.yMax !== undefined ? opts.yMax : 1.05;
-  const extent = opts.extent !== undefined ? opts.extent : 0.3;
-  const key = `${plane}|${Math.round(fixed * 100)}|${size}|${xMax}|${yMax}|${extent}`;
-  if (OKLCH_WHEEL_CACHE.has(key)) return OKLCH_WHEEL_CACHE.get(key);
-  let uri = null;
-  try {
-    const cv = document.createElement("canvas");
-    cv.width = cv.height = size;
-    const ctx = cv.getContext("2d");
-    const img = ctx.createImageData(size, size);
-    const d = img.data;
-    for (let py = 0; py < size; py++) {
-      for (let px = 0; px < size; px++) {
-        const i = (py * size + px) * 4;
-        // The app's axes are a = C*sin(H), b = C*cos(H) — the standard OKLab
-        // a/b swapped. oklchToLinearRGB takes standard a/b, so the pair is
-        // swapped on the way in or the wheel comes out mirrored (green where
-        // purple belongs).
-        let L, aApp, bApp;
-        if (plane === "ab") {
-          L = fixed;
-          aApp = -extent + (px / (size - 1)) * extent * 2;
-          bApp = extent - (py / (size - 1)) * extent * 2;
-        } else if (plane === "cl") {
-          const C = (px / (size - 1)) * xMax;
-          const rad = (fixed * Math.PI) / 180;
-          L = yMax - (py / (size - 1)) * yMax;
-          aApp = C * Math.sin(rad);
-          bApp = C * Math.cos(rad);
-        } else {
-          const Hdeg = (px / (size - 1)) * 360;
-          const rad = (Hdeg * Math.PI) / 180;
-          L = yMax - (py / (size - 1)) * yMax;
-          aApp = fixed * Math.sin(rad);
-          bApp = fixed * Math.cos(rad);
-        }
-        const lin = oklchToLinearRGB(L, bApp, aApp);
-        const over = gamutOvershoot(lin);
-        d[i] = srgbByte(lin[0]);
-        d[i + 1] = srgbByte(lin[1]);
-        d[i + 2] = srgbByte(lin[2]);
-        d[i + 3] = over <= 0 ? 255 : Math.max(0, 255 * (1 - over * 14));
-      }
-    }
-    ctx.putImageData(img, 0, 0);
-    uri = cv.toDataURL("image/png");
-  } catch (e) {
-    uri = null;
-  }
-  OKLCH_WHEEL_CACHE.set(key, uri);
-  return uri;
-};
 
-const oklchWheelDataUri = (L, extent = 0.3, size = 256) => {
-  const key = `${Math.round(L * 100)}|${extent}|${size}`;
-  if (OKLCH_WHEEL_CACHE.has(key)) return OKLCH_WHEEL_CACHE.get(key);
-  let uri = null;
-  try {
-    const cv = document.createElement("canvas");
-    cv.width = cv.height = size;
-    const ctx = cv.getContext("2d");
-    const img = ctx.createImageData(size, size);
-    const d = img.data;
-    for (let py = 0; py < size; py++) {
-      // canvas y grows downward; the b axis grows upward
-      const b = extent - (py / (size - 1)) * extent * 2;
-      for (let px = 0; px < size; px++) {
-        const a = -extent + (px / (size - 1)) * extent * 2;
-        const i = (py * size + px) * 4;
-        // same axis swap as above
-        const l_ = L + 0.3963377774 * b + 0.2158037573 * a;
-        const m_ = L - 0.1055613458 * b - 0.0638541728 * a;
-        const s_ = L - 0.0894841775 * b - 1.291485548 * a;
-        const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
-        const lin = [
-          4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3,
-          -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3,
-          -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3,
-        ];
-        // How far outside sRGB this pixel sits, used to feather the edge.
-        let over = 0;
-        for (let k = 0; k < 3; k++) {
-          if (lin[k] < 0) over = Math.max(over, -lin[k]);
-          else if (lin[k] > 1) over = Math.max(over, lin[k] - 1);
-        }
-        const alpha = over <= 0 ? 255 : Math.max(0, 255 * (1 - over * 14));
-        for (let k = 0; k < 3; k++) {
-          let v = Math.min(1, Math.max(0, lin[k]));
-          v = v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
-          d[i + k] = Math.round(v * 255);
-        }
-        d[i + 3] = alpha;
-      }
-    }
-    ctx.putImageData(img, 0, 0);
-    uri = cv.toDataURL("image/png");
-  } catch (e) {
-    uri = null;
-  }
-  OKLCH_WHEEL_CACHE.set(key, uri);
-  return uri;
-};
 
 // --- Cross-reference between two suppliers ---------------------------------
 // "Which of my Tafisa colours could I get from Uniboard instead?" For every
@@ -8219,1713 +5983,6 @@ ${item.erpCode}`,
       ),
   );
 };
-const ViewTopDown = ({
-  colorData,
-  points,
-  baseAnchors,
-  crosshair,
-  handlePointClick,
-  theme,
-  names,
-  adjectives,
-  savedColors = {},
-  lockedNouns,
-  lockedAdjectives,
-  viewMode,
-  tetheringPinId,
-  swatchLayout,
-  swatchZoom,
-  viewportSearchQuery,
-  viewportTagFilter,
-  filterPt,
-  filterL,
-  filterC,
-  filterH,
-  groupSettings,
-}) => {
-  const isDark = theme === "dark";
-  const [showText, setShowText] = useState(false);
-  const handleRelayout = (e) => {
-    if (e["xaxis.range[0]"] !== void 0 && e["xaxis.range[1]"] !== void 0) {
-      setShowText(e["xaxis.range[1]"] - e["xaxis.range[0]"] < 0.25);
-    } else if (e["xaxis.autorange"]) {
-      setShowText(false);
-    }
-  };
-  const filterFn = useCallback(
-    (p, isCommercial = false) => {
-      if (filterPt && !filterPt(p)) return false;
-      const targetL2 = crosshair?.rawL || 0;
-      if (
-        p.isPin ||
-        p.isCustomAnchor ||
-        p.type === "pin" ||
-        p.type === "anchor" ||
-        p.url !== void 0 ||
-        p.hex !== void 0 ||
-        isCommercial
-      ) {
-        return Math.abs(p.L - targetL2) <= Math.max(0.02, filterL);
-      }
-      return true;
-    },
-    [crosshair, filterPt, filterL],
-  );
-  const validAnchors = useMemo(() => {
-    if (!crosshair) return [];
-    return baseAnchors
-      .map((p) => {
-        const targetL2 = p.L !== void 0 && p.L !== null ? p.L : crosshair.rawL;
-        const minL = p.minL !== void 0 ? p.minL : -0.01;
-        const maxL = p.maxL !== void 0 ? p.maxL : 1.01;
-        const inRange = targetL2 >= minL - 0.001 && targetL2 <= maxL + 0.001;
-        const c = new Color("oklch", [targetL2, p.C, p.H]);
-        const isSpecificAnchor =
-          (Math.abs(p.C - 0.04) < 0.001 && Math.abs(p.H - 90) < 0.1) ||
-          (Math.abs(p.C - 0.12) < 0.001 && Math.abs(p.H - 90) < 0.1);
-        if ((c.inGamut("srgb") || p.C === 0 || isSpecificAnchor) && inRange) {
-          return {
-            ...p,
-            L: targetL2,
-            color: c
-              .clone()
-              .toGamut({ space: "srgb" })
-              .toString({ format: "hex" }),
-            inSrgb: true,
-            isValid: true,
-          };
-        }
-        return { isValid: false };
-      })
-      .filter((p) => p.isValid && !p.isPin);
-  }, [baseAnchors, crosshair?.rawL, filterPt]);
-  const swatchItems = useMemo(() => {
-    if (viewMode !== "swatches") return [];
-    const res = [];
-    validAnchors.filter((p) => filterPt ? filterPt(p) : true).forEach((p) => {
-      const lStr = getLStr(p.L);
-      const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-      res.push({
-        ...p,
-        type: "grid",
-        displayName:
-          `${adjectives[lStr] || ""} ${names[nounId] || ""}`.trim() ||
-          "Unnamed",
-        hex: p.color,
-      });
-    });
-    Object.values(savedColors).forEach((sc) => {
-      if (filterFn(sc)) {
-        if (sc.type === "anchor") {
-          res.push({
-            ...sc,
-            displayName:
-              `${sc.adjOverride || adjectives[sc.adjId] || ""} ${sc.nameOverride || names[sc.anchorId] || ""}`.trim() ||
-              sc.id,
-            hex: sc.srgbHex || sc.color,
-          });
-        } else if (sc.type === "pin") {
-          res.push({
-            ...sc,
-            displayName: sc.id || "Pin",
-            hex: sc.srgbHex || sc.color,
-          });
-        }
-      }
-    });
-    if (colorData) {
-      Object.keys(colorData).forEach((brand) => {
-        colorData[brand].forEach((c) => {
-          if (filterFn(c, true)) {
-            res.push({
-              ...c,
-              type: "commercial",
-              displayName: `${brand} - ${c.name}`,
-              hex: new Color("oklch", [c.L, c.C, c.H])
-                .to("srgb")
-                .toString({ format: "hex" }),
-            });
-          }
-        });
-      });
-    }
-    return res;
-  }, [
-    validAnchors,
-    savedColors,
-    colorData,
-    lockedNouns,
-    lockedAdjectives,
-    viewMode,
-    names,
-    adjectives,
-    filterFn,
-  ]);
-  const finalSwatchItems = useMemo(() => {
-    if (viewMode !== "swatches") return [];
-    return swatchItems.map((item) => {
-      if (item.type === "pin") {
-        const { displayAdj, displayName } = getInheritedPinNames(
-          item,
-          savedColors,
-          names,
-          adjectives,
-        );
-        return {
-          ...item,
-          displayName: `${displayAdj} ${displayName}`.trim() || item.id,
-        };
-      }
-      return item;
-    });
-  }, [swatchItems, viewMode, savedColors, names, adjectives]);
-  const baseTraces = useMemo(() => {
-    if (viewMode === "swatches") return [];
-    const traces = [];
-    const displayAnchors = validAnchors.filter((p) => filterPt ? filterPt(p) : true);
-    traces.push({
-      type: "scatter",
-      mode: viewMode === "bins" ? (showText ? "text" : "markers") : "markers",
-      x: displayAnchors.map((p) => p.a),
-      y: displayAnchors.map((p) => p.b),
-      text: displayAnchors.map((p) => {
-        const lStr = getLStr(p.L);
-        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-        const adj = adjectives[lStr] || "";
-        const noun = names[nounId] || "";
-        const fullName = `${adj} ${noun}`.trim() || "Unnamed";
-        const binText =
-          adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`;
-        return viewMode === "bins"
-          ? p.C === 0
-            ? `<b>${adj}</b>`
-            : binText
-          : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`;
-      }),
-      textposition: "middle center",
-      textfont: {
-        size: 12,
-        family: "Inter, sans-serif",
-        color: displayAnchors.map((p) => (p.L > 0.55 ? "#010D00" : "#F2E8DF")),
-      },
-      hovertemplate:
-        viewMode === "bins"
-          ? "<b>%{customdata[3].fullName}</b><br>C: %{customdata[1]:.3f} H: %{customdata[2]:.1f}\xB0<extra></extra>"
-          : "%{text}<extra></extra>",
-      customdata: displayAnchors.map((p) => {
-        const lStr = getLStr(p.L);
-        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-        const fullName =
-          `${adjectives[lStr] || ""} ${names[nounId] || ""}`.trim() ||
-          "Unnamed";
-        return [p.L, p.C, p.H, { anchorId: nounId, adjId: lStr, fullName }];
-      }),
-      marker: {
-        size: 14,
-        color: displayAnchors.map((p) => p.color),
-        opacity: viewMode === "bins" ? (showText ? 0 : 0.3) : 1,
-        line: {
-          width: 0.5,
-          color: isDark ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.2)",
-        },
-      },
-    });
-    const gridLockedNodes = baseAnchors
-      .filter((p) => !p.isCustomAnchor)
-      .map((p) => ({
-        ...p,
-        L: crosshair?.rawL || 0,
-        lStr: getLStr(crosshair?.rawL || 0),
-      }))
-      .filter((p) => {
-        return (
-          !p.isPin &&
-          lockedNouns[p.parentNounId || `${p.cStr}-${p.hStr}`] &&
-          lockedAdjectives[p.lStr] &&
-          (filterPt ? filterPt(p) : true)
-        );
-      })
-      .map((p) => {
-        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-        const c = new Color("oklch", [p.L, p.C, p.H]);
-        const nodeColor =
-          c.inGamut("srgb") || p.C === 0
-            ? c.clone().toGamut({ space: "srgb" }).toString({ format: "hex" })
-            : "#010D00";
-        return {
-          ...p,
-          displayName:
-            `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
-            "Unnamed",
-          color: nodeColor,
-        };
-      });
-    const customLockedNodes = Object.values(savedColors)
-      .filter((sc) => sc.type === "anchor" && filterFn(sc))
-      .map((p) => {
-        const displayName =
-          `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
-          p.id ||
-          "Custom Anchor";
-        return {
-          ...p,
-          a: p.C * Math.sin((p.H * Math.PI) / 180),
-          b: p.C * Math.cos((p.H * Math.PI) / 180),
-          displayName,
-          color: p.color,
-        };
-      });
-    const lockedNodes = [...gridLockedNodes, ...customLockedNodes];
-    const pinNodes = Object.values(savedColors)
-      .filter((sc) => sc.type === "pin" && filterFn(sc))
-      .map((p) => {
-        const { displayAdj, displayName } = getInheritedPinNames(
-          p,
-          savedColors,
-          names,
-          adjectives,
-        );
-        return { ...p, displayAdj, displayName };
-      });
-    traces.push({
-      type: "scatter",
-      mode: "markers",
-      x: lockedNodes.map((p) => p.a),
-      y: lockedNodes.map((p) => p.b),
-      text: lockedNodes.map(
-        (p) =>
-          `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
-      ),
-      hovertemplate: "%{text}<extra></extra>",
-      customdata: lockedNodes.map((p) => [
-        p.L,
-        p.C,
-        p.H,
-        { anchorId: p.anchorId || p.id, adjId: p.adjId },
-      ]),
-      marker: {
-        symbol: "square",
-        size: 10,
-        color: lockedNodes.map((p) => p.color),
-        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
-      },
-    });
-    traces.push({
-      type: "scatter",
-      mode: "markers",
-      x: pinNodes.map((p) => p.a),
-      y: pinNodes.map((p) => p.b),
-      text: pinNodes.map(
-        (p) =>
-          `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
-      ),
-      hovertemplate: "%{text}<extra></extra>",
-      customdata: pinNodes.map((p) => [p.L, p.C, p.H, { pinId: p.id }]),
-      marker: {
-        symbol: "x",
-        size: 12,
-        color: pinNodes.map((p) => p.color),
-        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
-      },
-    });
-    const commercialNodes = [];
-    if (colorData) {
-      Object.keys(colorData).forEach((brand) => {
-        colorData[brand].forEach((c) => {
-          if (filterFn(c, true)) {
-            commercialNodes.push({
-              ...c,
-              a: c.C * Math.sin((c.H * Math.PI) / 180),
-              b: c.C * Math.cos((c.H * Math.PI) / 180),
-              color: new Color("oklch", [c.L, c.C, c.H])
-                .to("srgb")
-                .toString({ format: "hex" }),
-              displayName: `${brand} - ${c.name}`,
-            });
-          }
-        });
-      });
-    }
-    if (commercialNodes.length > 0) {
-      const jitteredCommercial = applyJitter(
-        commercialNodes,
-        "a",
-        "b",
-        null,
-        0.006,
-      );
-      traces.push({
-        type: "scatter",
-        mode: "markers",
-        x: jitteredCommercial.map((p) => p._jX),
-        y: jitteredCommercial.map((p) => p._jY),
-        text: jitteredCommercial.map(
-          (p) =>
-            `<b>[Commercial] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
-        ),
-        hovertemplate: "%{text}<extra></extra>",
-        customdata: jitteredCommercial.map((p) => [
-          p.L,
-          p.C,
-          p.H,
-          { brand: p.brand, originalIndex: p.originalIndex },
-        ]),
-        marker: {
-          symbol: "triangle-up",
-          size: 10,
-          color: jitteredCommercial.map((p) => p.color),
-          line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
-        },
-      });
-    }
-    return traces;
-  }, [
-    validAnchors,
-    baseAnchors,
-    crosshair,
-    isDark,
-    names,
-    adjectives,
-    savedColors,
-    lockedNouns,
-    lockedAdjectives,
-    viewMode,
-    showText,
-    colorData,
-    filterFn,
-    filterPt,
-  ]);
-  const data = useMemo(() => {
-    if (viewMode === "swatches") return [];
-    const traces = [...baseTraces];
-    traces.push({
-      type: "scatter",
-      mode: "lines",
-      x:
-        crosshair?.snapTarget || crosshair?.activePullType
-          ? [crosshair.a, crosshair.snapTarget?.a || crosshair.gravityA]
-          : [],
-      y:
-        crosshair?.snapTarget || crosshair?.activePullType
-          ? [crosshair.b, crosshair.snapTarget?.b || crosshair.gravityB]
-          : [],
-      line: {
-        color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
-        width: 2,
-        dash: "dot",
-      },
-      hoverinfo: "skip",
-    });
-    traces.push({
-      type: "scatter",
-      mode: "markers",
-      x: [crosshair?.a],
-      y: [crosshair?.b],
-      text: [
-        `<b>Cursor ${crosshair?.activePullType ? `(Tethered to ${crosshair.activePullType})` : ""}</b><br>L: ${crosshair?.rawL?.toFixed(3)} C: ${crosshair?.rawC?.toFixed(3)} H: ${crosshair?.rawH?.toFixed(1)}\xB0`,
-      ],
-      hovertemplate: "%{text}<extra></extra>",
-      marker: {
-        symbol: "cross",
-        size: 12,
-        color: isDark ? "#F2E8DF" : "#2B4032",
-        opacity: 0.8,
-        line: { color: isDark ? "#F2E8DF" : "#2B4032", width: 2 },
-      },
-      hoverinfo: "skip",
-    });
-    if (tetheringPinId && savedColors[tetheringPinId]) {
-      const p = savedColors[tetheringPinId];
-      traces.push({
-        type: "scatter",
-        mode: "lines",
-        x: [p.a, crosshair?.a],
-        y: [p.b, crosshair?.b],
-        line: { color: "#f59e0b", width: 2, dash: "dash" },
-        hoverinfo: "skip",
-      });
-    }
-    return traces;
-  }, [baseTraces, crosshair, isDark, viewMode, tetheringPinId, savedColors]);
-  const layout = useMemo(() => {
-    const shapes = [];
-    if (viewMode === "bins") {
-      if (validAnchors.length > 0) {
-        try {
-          const allVoronoiPoints = [...validAnchors];
-          const isMobile = window.innerWidth < 768;
-          const angleStep = isMobile ? 10 : 2;
-          const boundaryPoints = [];
-          for (let angle = 0; angle < 360; angle += angleStep) {
-            let low = 0,
-              high = 0.4;
-            while (high - low > 0.001) {
-              let mid = (low + high) / 2;
-              if (
-                new Color("oklch", [crosshair?.rawL || 0, mid, angle]).inGamut(
-                  "srgb",
-                )
-              ) {
-                low = mid;
-              } else {
-                high = mid;
-              }
-            }
-            const maxC = Math.min(low, 0.3);
-            const rad = (angle * Math.PI) / 180;
-            boundaryPoints.push([maxC * Math.sin(rad), maxC * Math.cos(rad)]);
-            allVoronoiPoints.push({
-              a: (maxC + 0.005) * Math.sin(rad),
-              b: (maxC + 0.005) * Math.cos(rad),
-              isDummy: true,
-            });
-            allVoronoiPoints.push({
-              a: (maxC + 0.02) * Math.sin(rad),
-              b: (maxC + 0.02) * Math.cos(rad),
-              isDummy: true,
-            });
-          }
-          const delaunay = d3.Delaunay.from(
-            allVoronoiPoints.map((p) => [p.a, p.b]),
-          );
-          const voronoi = delaunay.voronoi([-0.4, -0.4, 0.4, 0.4]);
-          allVoronoiPoints.forEach((p, i) => {
-            if (p.isDummy) return;
-            if (filterPt && !filterPt(p)) return;
-            const path = voronoi.renderCell(i);
-            if (path) {
-              const pts = [];
-              path.replace(/([ML])([^,]+),([^MLZ]+)/g, (match, cmd, x, y) => {
-                pts.push([parseFloat(x), parseFloat(y)]);
-                return match;
-              });
-              if (pts.length > 2) {
-                const unscaledPath =
-                  "M" + pts.map((pt) => pt.join(",")).join("L") + "Z";
-                shapes.push({
-                  type: "path",
-                  path: unscaledPath,
-                  fillcolor: p.color,
-                  line: {
-                    width: 1.5,
-                    color: isDark ? "rgba(0,0,0,0.1)" : "rgba(255,255,255,0.4)",
-                  },
-                  layer: "below",
-                });
-              }
-            }
-          });
-          const outerSquare = [
-            [-0.5, -0.5],
-            [0.5, -0.5],
-            [0.5, 0.5],
-            [-0.5, 0.5],
-            [-0.5, -0.5],
-          ];
-          const innerBoundary = [...boundaryPoints];
-          const maskPath =
-            "M" +
-            outerSquare.map((p) => p.join(",")).join("L") +
-            "Z M" +
-            innerBoundary.map((p) => p.join(",")).join("L") +
-            "Z";
-          shapes.push({
-            type: "path",
-            path: maskPath,
-            fillcolor: isDark ? "#052212" : "#F2E8DF",
-            line: { width: 0 },
-            layer: "below",
-          });
-        } catch (e) {
-          console.error("Voronoi error:", e);
-        }
-      }
-    } else {
-      for (let c = 0.02; c <= 0.34; c += 0.02) {
-        shapes.push({
-          type: "circle",
-          xref: "x",
-          yref: "y",
-          x0: -c,
-          y0: -c,
-          x1: c,
-          y1: c,
-          line: {
-            color: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.05)",
-            width: 1,
-            dash: "dot",
-          },
-        });
-      }
-    }
-    
-    if (groupSettings) {
-      const gC = isDark ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.25)";
-      if (groupSettings.neutralC) {
-        shapes.push({
-          type: "circle",
-          xref: "x",
-          yref: "y",
-          x0: -groupSettings.neutralC,
-          y0: -groupSettings.neutralC,
-          x1: groupSettings.neutralC,
-          y1: groupSettings.neutralC,
-          line: { color: gC, width: 1.5, dash: "dot" },
-        });
-      }
-      if (groupSettings.vividC) {
-        shapes.push({
-          type: "circle",
-          xref: "x",
-          yref: "y",
-          x0: -groupSettings.vividC,
-          y0: -groupSettings.vividC,
-          x1: groupSettings.vividC,
-          y1: groupSettings.vividC,
-          line: { color: gC, width: 1.5, dash: "dot" },
-        });
-      }
-      if (groupSettings.hues && groupSettings.neutralC) {
-        hueBoundaries(groupSettings.hues).forEach((edge) => {
-          const rad = (edge * Math.PI) / 180;
-          shapes.push({
-             type: "line",
-             x0: groupSettings.neutralC * Math.sin(rad),
-             y0: groupSettings.neutralC * Math.cos(rad),
-             x1: 0.4 * Math.sin(rad),
-             y1: 0.4 * Math.cos(rad),
-             line: { color: gC, width: 1.5, dash: "dot" },
-          });
-        });
-      }
-    }
-
-    return {
-      uirevision: "true",
-      paper_bgcolor: "rgba(0,0,0,0)",
-      plot_bgcolor: "rgba(0,0,0,0)",
-      dragmode: "pan",
-      xaxis: {
-        title: "a",
-        range: [-0.3, 0.3],
-        showgrid: viewMode !== "bins",
-        zeroline: viewMode !== "bins",
-        gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
-        scaleanchor: "y",
-        titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
-        tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
-      },
-      yaxis: {
-        title: "b",
-        range: [-0.3, 0.3],
-        showgrid: viewMode !== "bins",
-        zeroline: viewMode !== "bins",
-        gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
-        titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
-        tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
-      },
-      margin: { l: 50, r: 50, b: 50, t: 50 },
-      showlegend: false,
-      shapes,
-      // Dots mode gets the colour wheel behind the points, at the lightness
-      // currently under the cursor.
-      images:
-        viewMode === "dots"
-          ? [
-              {
-                source: oklchWheelDataUri(
-                  crosshair?.rawL !== undefined ? crosshair.rawL : 0.65,
-                  0.3,
-                ),
-                xref: "x",
-                yref: "y",
-                x: -0.3,
-                y: 0.3,
-                sizex: 0.6,
-                sizey: 0.6,
-                sizing: "stretch",
-                layer: "below",
-                opacity: 0.25,
-              },
-            ].filter((im) => !!im.source)
-          : [],
-    };
-  }, [isDark, viewMode, validAnchors, crosshair?.rawL, filterPt, groupSettings]);
-  const handleBgClick = (a, b) => {
-    const C = Math.min(0.4, Math.sqrt(a * a + b * b));
-    let H = Math.atan2(a, b) * (180 / Math.PI);
-    if (H < 0) H += 360;
-    handlePointClick([crosshair?.rawL, C, H]);
-  };
-  if (viewMode === "swatches") {
-    return React.createElement(ViewportSwatches, {
-      items: finalSwatchItems,
-      layout: swatchLayout,
-      swatchZoom,
-      dim1: "C",
-      dim2: "H",
-      dim1Labels: (v) => `C: ${Number(v).toFixed(2)}`,
-      dim2Labels: (v) => `H: ${Number(v).toFixed(0)}\xB0`,
-      handlePointClick,
-      viewportSearchQuery,
-      viewportTagFilter,
-      crosshair,
-    });
-  }
-  return React.createElement(PlotlyChart, {
-    data,
-    layout,
-    onPointClick: handlePointClick,
-    onBgClick: handleBgClick,
-    onRelayout: handleRelayout,
-    theme,
-  });
-};
-const ViewPalette = ({
-  baseAnchors,
-  points = [],
-  handlePointClick,
-  names,
-  setNames,
-  adjectives,
-  setAdjectives,
-  dictNotes,
-  lockedNouns,
-  lockedAdjectives,
-  savedColors = {},
-  setSavedColors,
-  dictTags,
-  onVisualize,
-}) => {
-  const [sortBy, setSortBy] = useState("ring");
-  const [sortAsc, setSortAsc] = useState(true);
-  const [tagFilter, setTagFilter] = useState("");
-  const [searchTerm, setSearchTerm] = useState("");
-  const [isAdding, setIsAdding] = useState(false);
-  const [fullscreenImage, setFullscreenImage] = useState(null);
-  const [editForm, setEditForm] = useState({
-    name: "",
-    C: 0.1,
-    H: 180,
-    minL: 0.2,
-    maxL: 0.8,
-    notes: "",
-  });
-  const handleAddCustomNoun = () => {
-    const name = editForm.name.trim();
-    const C = parseFloat(editForm.C);
-    const H = parseFloat(editForm.H);
-    let minL = parseFloat(editForm.minL);
-    let maxL = parseFloat(editForm.maxL);
-    if (isNaN(C) || isNaN(H) || isNaN(minL) || isNaN(maxL)) {
-      return;
-    }
-    if (minL > maxL) {
-      const temp = minL;
-      minL = maxL;
-      maxL = temp;
-    }
-    const id = editForm.id || `custom-noun-${crypto.randomUUID()}`;
-    setSavedColors((prev) => ({
-      ...prev,
-      [id]: {
-        id,
-        type: "nounColumn",
-        nameOverride: name,
-        C,
-        H,
-        minL,
-        maxL,
-        a: C * Math.sin((H * Math.PI) / 180),
-        b: C * Math.cos((H * Math.PI) / 180),
-        notes: editForm.notes || "",
-      },
-    }));
-    if (setNames && name) {
-      setNames({ ...names, [id]: name });
-    } else if (name) {
-      Object.assign(names, { [id]: name });
-    }
-    setIsAdding(false);
-    setEditForm({
-      id: null,
-      name: "",
-      C: 0.1,
-      H: 180,
-      minL: 0.2,
-      maxL: 0.8,
-      notes: "",
-    });
-  };
-  const handleDeleteCustomNoun = (id, e) => {
-    e.stopPropagation();
-    setSavedColors((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      Object.values(next).forEach((sc) => {
-        if (sc.type === "anchor" && sc.anchorId === id && sc.isCustomAnchor) {
-          delete next[sc.id];
-        } else if (sc.type === "pin" && sc.anchorId === id) {
-          sc.anchorId = null;
-        } else if (sc.type === "pin" && sc.parentPinId === id) {
-          sc.parentPinId = null;
-        }
-      });
-      return next;
-    });
-  };
-  const handleEditCustomNoun = (item, e) => {
-    e.stopPropagation();
-    setEditForm({
-      id: item.id,
-      name: item.name || "",
-      C: item.C,
-      H: item.H,
-      minL: item.minL,
-      maxL: item.maxL,
-      notes: item.notes || "",
-    });
-    setIsAdding(true);
-  };
-  const flatItems = useMemo(() => {
-    const items = [];
-    Object.values(savedColors).forEach((sc) => {
-      if (sc.type === "nounColumn") {
-        const midL = (sc.minL + sc.maxL) / 2;
-        const cStr = Math.round(sc.C * 100)
-          .toString()
-          .padStart(2, "0");
-        const hStr = Math.round(sc.H).toString().padStart(3, "0");
-        let count = 0;
-        points.forEach((p) => {
-          if (
-            p.parentNounId === sc.id ||
-            (Math.abs(p.C - sc.C) < 0.01 &&
-              Math.abs(p.H - sc.H) < 0.01 &&
-              p.L >= sc.minL &&
-              p.L <= sc.maxL &&
-              !p.isPin)
-          ) {
-            count++;
-          }
-        });
-        items.push({
-          ...sc,
-          L: midL,
-          C: sc.C,
-          H: sc.H,
-          color: new Color("oklch", [midL, sc.C, sc.H])
-            .toGamut({ space: "srgb" })
-            .toString({ format: "hex" }),
-          id: sc.id,
-          fullCode: `NOUN-C${cStr}-H${hStr}`,
-          layer: "Custom Range",
-          count,
-          cStr,
-          hStr,
-          tags: dictTags[sc.id] || [],
-          name: names[sc.id] || sc.nameOverride,
-          note: dictNotes[sc.id] || sc.notes,
-          adj: `L ${sc.minL.toFixed(2)} - ${sc.maxL.toFixed(2)}`,
-          isCustomNoun: true,
-        });
-      }
-    });
-    return items;
-  }, [dictTags, names, dictNotes, adjectives, savedColors, points]);
-  const rings = useMemo(() => {
-    const r = {};
-    flatItems.forEach((i) => {
-      if (!r[i.cStr]) r[i.cStr] = [];
-      r[i.cStr].push(i);
-    });
-    return r;
-  }, [flatItems]);
-  const allTags = useMemo(
-    () => Array.from(new Set(flatItems.flatMap((item) => item.tags))).sort(),
-    [flatItems],
-  );
-  const filterFn = (item) => {
-    const matchesTag = !tagFilter || item.tags.includes(tagFilter);
-    const qWords = searchTerm.toLowerCase().trim().split(/\s+/).filter(Boolean);
-    const matchesSearch =
-      qWords.length === 0 ||
-      qWords.every(
-        (w) =>
-          (item.name && item.name.toLowerCase().includes(w)) ||
-          (item.note && item.note.toLowerCase().includes(w)) ||
-          (item.adj && item.adj.toLowerCase().includes(w)) ||
-          (item.fullCode && item.fullCode.toLowerCase().includes(w)),
-      );
-    return matchesTag && matchesSearch;
-  };
-  const filteredItems = useMemo(
-    () => flatItems.filter(filterFn),
-    [flatItems, tagFilter, searchTerm],
-  );
-  const renderSingleSwatch = (item) => {
-    if (!item) return null;
-    const dupNoun = getGlobalDuplicate(
-      names,
-      adjectives,
-      item.id,
-      names[item.id],
-      savedColors,
-    );
-    return React.createElement(
-      "div",
-      {
-        key: item.id,
-        className:
-          "flex flex-col items-center gap-1.5 bg-white dark:bg-neutral-900 p-2.5 rounded-lg border border-slate-200 dark:border-neutral-800 shadow-sm w-24 flex-shrink-0 relative group transition-colors",
-      },
-      React.createElement(
-        "div",
-        { className: "absolute -top-2 -right-2 flex gap-1 z-30" },
-        React.createElement(
-          "button",
-          {
-            onClick: (e) => handleEditCustomNoun(item, e),
-            className:
-              "bg-sky-500 hover:bg-sky-600 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-sm",
-            title: "Edit Noun Column",
-          },
-          React.createElement(Icon, { name: "edit-2", className: "w-3 h-3" }),
-        ),
-        React.createElement(
-          "button",
-          {
-            onClick: (e) => handleDeleteCustomNoun(item.id, e),
-            className:
-              "bg-red-500 hover:bg-red-600 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-sm",
-            title: "Delete Noun Column",
-          },
-          React.createElement(Icon, { name: "trash", className: "w-3 h-3" }),
-        ),
-      ),
-      React.createElement(
-        "div",
-        {
-          className:
-            "text-[10px] font-mono text-sky-600 dark:text-sky-400 font-bold mb-1 tracking-wider",
-        },
-        item.fullCode,
-      ),
-      React.createElement(
-        "div",
-        {
-          className:
-            "w-full text-[8px] font-bold uppercase tracking-wider bg-transparent text-center text-slate-500 dark:text-neutral-400 truncate",
-          title: item.adj,
-        },
-        item.adj,
-      ),
-      React.createElement("input", {
-        type: "text",
-        className: `w-full text-[11px] font-bold uppercase tracking-wider bg-transparent border-b border-slate-200 dark:border-neutral-700 text-center focus:outline-none placeholder:opacity-30 pb-0.5 disabled:opacity-50 ${dupNoun ? "!text-red-500 !border-red-500" : "text-slate-800 dark:text-neutral-200 focus:border-sky-500"}`,
-        placeholder: "Unnamed Noun",
-        value: names[item.id] || "",
-        onChange: (e) => setNames({ ...names, [item.id]: e.target.value }),
-        disabled: lockedNouns[item.id],
-        title: dupNoun ? `Conflict: ${dupNoun}` : "",
-      }),
-      React.createElement(
-        "div",
-        {
-          onClick: () =>
-            handlePointClick([item.L, item.C, item.H], item.spectral, {
-              brand: item.brand,
-              originalIndex: item.originalIndex,
-            }),
-          className:
-            "relative w-14 h-14 rounded shadow-sm cursor-pointer overflow-hidden border border-slate-200 dark:border-neutral-700 hover:ring-2 hover:ring-sky-500 transition-all flex-shrink-0 group/swatch",
-          style: {
-            backgroundColor: item.color,
-          },
-        },
-        React.createElement(SwatchTreatment, { item, size: 56 }),
-        (item.image || item.note?.startsWith("http")) &&
-          React.createElement("div", {
-            className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
-            style: {
-              backgroundImage: `url(${item.image || item.note})`,
-              opacity: SWATCH_PHOTO_OPACITY,
-              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-              maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-            },
-          }),
-        !new Color("oklch", [item.L, item.C, item.H]).inGamut("srgb") &&
-          React.createElement("div", {
-            className: "absolute inset-0 pointer-events-none",
-            style: {
-              backgroundImage:
-                "repeating-linear-gradient(45deg, rgba(0,0,0,0.2), rgba(0,0,0,0.2) 5px, rgba(255,255,255,0.2) 5px, rgba(255,255,255,0.2) 10px)",
-            },
-          }),
-        React.createElement(
-          "div",
-          {
-            className:
-              "absolute inset-0 flex items-center justify-center gap-2 bg-black/60 opacity-0 group-hover/swatch:opacity-100 transition-opacity z-20 backdrop-blur-sm rounded",
-          },
-          (item.image || item.note?.startsWith("http")) &&
-            React.createElement(
-              "button",
-              {
-                onClick: (e) => {
-                  e.stopPropagation();
-                  setFullscreenImage(item.image || item.note);
-                },
-                className: "text-white hover:text-sky-300 p-1",
-              },
-              React.createElement(Icon, { name: "eye", className: "w-5 h-5" }),
-            ),
-        ),
-        React.createElement(
-          "div",
-          {
-            className:
-              "absolute top-1 right-1 px-1 py-0.5 rounded-sm text-[9px] font-black font-mono leading-none z-10",
-            style: {
-              color: item.L > 0.65 ? "#010D00" : "#F2E8DF",
-              backgroundColor:
-                item.L > 0.65
-                  ? "rgba(242, 232, 223, 0.7)"
-                  : "rgba(1, 13, 0, 0.5)",
-            },
-            title: "Occurrences",
-          },
-          item.count,
-        ),
-        React.createElement(
-          "button",
-          {
-            onClick: (e) => {
-              e.stopPropagation();
-              onVisualize("noun", item.id, names[item.id] || item.id);
-            },
-            className:
-              "absolute bottom-1 right-1 opacity-0 group-hover/swatch:opacity-100 bg-black/50 hover:bg-black/70 text-white p-1 rounded transition-opacity z-30",
-            title: "Visualize all instances",
-          },
-          React.createElement(Icon, { name: "eye", className: "w-3 h-3" }),
-        ),
-      ),
-      React.createElement("input", {
-        type: "text",
-        className:
-          "w-full text-[9px] bg-transparent text-center text-slate-500 dark:text-neutral-400 italic focus:outline-none disabled:opacity-80 cursor-default",
-        placeholder: "No Notes",
-        value: dictNotes[item.id] || "",
-        title: dictNotes[item.id] || "",
-        disabled: true,
-      }),
-      React.createElement(
-        "div",
-        {
-          className:
-            "text-[8px] font-mono text-slate-400 dark:text-neutral-500 mt-0.5 flex flex-col items-center",
-        },
-        React.createElement(
-          "div",
-          null,
-          "L: ",
-          item.minL.toFixed(2),
-          "-",
-          item.maxL.toFixed(2),
-        ),
-        React.createElement("div", null, "C:", item.C.toFixed(2)),
-        React.createElement("div", null, "H:", item.H.toFixed(1), "\xB0"),
-      ),
-      item.tags.length > 0 &&
-        React.createElement(
-          "div",
-          {
-            className:
-              "absolute top-0 left-0 w-full p-1 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none flex flex-wrap gap-1 justify-center z-20 backdrop-blur-sm bg-white/50 dark:bg-black/50 rounded-t-lg",
-          },
-          item.tags.map((t) =>
-            React.createElement(
-              "span",
-              {
-                key: t,
-                className:
-                  "bg-sky-500 text-white px-1 rounded text-[7px] font-bold uppercase",
-              },
-              t,
-            ),
-          ),
-        ),
-    );
-  };
-  // Plain render helper, not a component: defining a component inside render
-  // gives it a new type each pass, so React remounted every header button.
-  let content;
-  if (sortBy === "ring") {
-    content = Object.keys(rings)
-      .sort((a, b) => parseInt(a) - parseInt(b))
-      .map((r) => {
-        const ringItems = filteredItems.filter((i) => i.cStr === r);
-        if (ringItems.length === 0) return null;
-        const byHue = {};
-        ringItems.forEach((i) => {
-          if (!byHue[i.hStr]) byHue[i.hStr] = [];
-          byHue[i.hStr].push(i);
-        });
-        return React.createElement(
-          "div",
-          { key: r, className: "mb-8 last:mb-0" },
-          React.createElement(
-            "div",
-            { className: "flex items-center gap-4 mb-4" },
-            React.createElement(
-              "span",
-              {
-                className:
-                  "text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400",
-              },
-              r === "00"
-                ? "Neutral Spine"
-                : `Chroma Ring (C:${(parseInt(r) / 100).toFixed(2)})`,
-              React.createElement(
-                "span",
-                {
-                  className:
-                    "ml-2 px-1.5 py-0.5 bg-slate-100 dark:bg-neutral-800 rounded text-sky-500 font-mono text-[9px]",
-                },
-                ringItems.length,
-                " Nouns",
-              ),
-            ),
-            React.createElement("div", {
-              className: "flex-1 h-px bg-slate-200 dark:bg-neutral-800",
-            }),
-          ),
-          React.createElement(
-            "div",
-            { className: "flex flex-wrap gap-x-8 gap-y-6" },
-            Object.keys(byHue)
-              .sort((a, b) => parseInt(a) - parseInt(b))
-              .map((h) => {
-                return React.createElement(
-                  "div",
-                  {
-                    key: h,
-                    className:
-                      "flex flex-col items-center gap-2 bg-white dark:bg-neutral-900 p-3 rounded-xl border border-slate-200 dark:border-neutral-800 shadow-sm",
-                  },
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "text-[10px] font-mono text-slate-400 dark:text-neutral-500 font-bold mb-1 bg-slate-100 dark:bg-neutral-800 px-2 py-0.5 rounded-full",
-                    },
-                    "Hue: ",
-                    parseInt(h),
-                    "\xB0",
-                  ),
-                  React.createElement(
-                    "div",
-                    { className: "flex gap-4 flex-wrap justify-center" },
-                    byHue[h].map(renderSingleSwatch),
-                  ),
-                );
-              }),
-          ),
-        );
-      });
-  } else {
-    const sortedItems = [...filteredItems].sort((a, b) => {
-      let valA, valB;
-      switch (sortBy) {
-        case "name":
-          valA = (names[a.id] || "").toLowerCase();
-          valB = (names[b.id] || "").toLowerCase();
-          if (valA === valB) return a.H - b.H;
-          return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
-        case "count":
-          valA = a.count;
-          valB = b.count;
-          break;
-        case "layer":
-          valA = a.L;
-          valB = b.L;
-          break;
-        case "tag":
-          valA = a.tags.join(", ");
-          valB = b.tags.join(", ");
-          if (valA === valB) return a.H - b.H;
-          return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
-        case "hue":
-        default:
-          valA = a.H;
-          valB = b.H;
-          break;
-      }
-      if (valA === valB) return a.C - b.C;
-      return sortAsc ? (valA < valB ? -1 : 1) : valB < valA ? -1 : 1;
-    });
-    content = React.createElement(
-      "div",
-      { className: "flex flex-wrap gap-4" },
-      sortedItems.map(renderSingleSwatch),
-    );
-  }
-  return React.createElement(
-    "div",
-    { className: "h-full flex flex-col overflow-hidden pt-2 relative" },
-    React.createElement(
-      "div",
-      {
-        className:
-          "flex flex-wrap items-center gap-2 px-4 pb-4 mb-4 border-b border-slate-200 dark:border-neutral-800 flex-shrink-0",
-      },
-      React.createElement(
-        "div",
-        { className: "relative flex-1 min-w-[200px] max-w-xs" },
-        React.createElement(Icon, {
-          name: "search",
-          className:
-            "absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400",
-        }),
-        React.createElement("input", {
-          type: "text",
-          placeholder: "Search nouns, ranges...",
-          value: searchTerm,
-          onChange: (e) => setSearchTerm(e.target.value),
-          className:
-            "w-full bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-300 text-[10px] font-bold uppercase tracking-wider rounded-lg pl-9 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-sky-500/50 transition-all",
-        }),
-        searchTerm &&
-          React.createElement(
-            "button",
-            {
-              onClick: () => setSearchTerm(""),
-              className:
-                "absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-neutral-200",
-            },
-            React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
-          ),
-      ),
-      React.createElement(
-        "span",
-        {
-          className:
-            "text-[10px] font-bold text-slate-400 dark:text-neutral-500 uppercase mr-2 flex items-center gap-1.5",
-        },
-        React.createElement(Icon, {
-          name: "arrow-down-up",
-          className: "w-3.5 h-3.5",
-        }),
-        " Sort By:",
-      ),
-      React.createElement(SortControl, {
-        fields: [
-          { field: "ring", label: "Chroma rings" },
-          { field: "hue", label: "Hue angle" },
-          { field: "count", label: "Occurrences" },
-          { field: "name", label: "Name" },
-          { field: "tag", label: "Tags" },
-        ],
-        sortBy,
-        setSortBy,
-        sortAsc,
-        setSortAsc,
-      }),
-      allTags.length > 0 &&
-        React.createElement(
-          "div",
-          { className: "ml-4 flex items-center gap-2" },
-          React.createElement(Icon, {
-            name: "filter",
-            className: "w-3.5 h-3.5 text-slate-400",
-          }),
-          React.createElement(
-            "select",
-            {
-              value: tagFilter,
-              onChange: (e) => setTagFilter(e.target.value),
-              className:
-                "bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-300 text-[9px] font-bold uppercase tracking-wider rounded px-2 py-1 outline-none cursor-pointer",
-            },
-            React.createElement("option", { value: "" }, "All Tags"),
-            allTags.map((t) =>
-              React.createElement("option", { key: t, value: t }, t),
-            ),
-          ),
-        ),
-      React.createElement(
-        "div",
-        { className: "ml-auto flex items-center gap-2" },
-        React.createElement(
-          "button",
-          {
-            onClick: () => setIsAdding(!isAdding),
-            className:
-              "px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded text-[10px] items-center gap-1.5 flex font-bold uppercase tracking-wider transition-colors",
-          },
-          React.createElement(Icon, {
-            name: isAdding ? "x" : "plus",
-            className: "w-3.5 h-3.5",
-          }),
-          isAdding ? "Cancel" : "Add Noun",
-        ),
-        React.createElement(
-          "span",
-          {
-            className:
-              "px-2 py-1 bg-sky-500/10 text-sky-500 rounded text-[10px] font-black uppercase tracking-widest border border-sky-500/20",
-          },
-          "Total: ",
-          filteredItems.length,
-          " Nouns",
-        ),
-      ),
-    ),
-    React.createElement(
-      "div",
-      { className: "flex-1 overflow-y-auto custom-scrollbar px-4 pb-10" },
-      isAdding &&
-        React.createElement(
-          "div",
-          {
-            className:
-              "flex flex-col gap-3 bg-slate-50 dark:bg-neutral-800/80 p-4 rounded-xl border border-slate-200 dark:border-neutral-700 shadow-sm w-full mb-6",
-          },
-          React.createElement(
-            "span",
-            {
-              className:
-                "text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1",
-            },
-            "Create Custom Noun Column",
-          ),
-          React.createElement(
-            "div",
-            { className: "flex gap-3" },
-            React.createElement("input", {
-              type: "text",
-              placeholder: "Noun Name (Optional)",
-              className:
-                "flex-1 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-3 py-2 text-xs focus:ring-2 focus:ring-sky-500 outline-none",
-              value: editForm.name,
-              onChange: (e) =>
-                setEditForm({ ...editForm, name: e.target.value }),
-            }),
-          ),
-          React.createElement(
-            "div",
-            { className: "flex gap-4" },
-            React.createElement(
-              "div",
-              { className: "flex flex-col flex-1" },
-              React.createElement(
-                "span",
-                {
-                  className:
-                    "text-[9px] uppercase font-bold text-slate-500 dark:text-neutral-400 mb-1",
-                },
-                "Chroma",
-              ),
-              React.createElement("input", {
-                type: "number",
-                step: "0.01",
-                min: "0",
-                max: "0.4",
-                className:
-                  "bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs focus:ring-1 outline-none font-mono",
-                value: editForm.C,
-                onChange: (e) =>
-                  setEditForm({ ...editForm, C: e.target.value }),
-              }),
-            ),
-            React.createElement(
-              "div",
-              { className: "flex flex-col flex-1" },
-              React.createElement(
-                "span",
-                {
-                  className:
-                    "text-[9px] uppercase font-bold text-slate-500 dark:text-neutral-400 mb-1",
-                },
-                "Hue (0-360)",
-              ),
-              React.createElement("input", {
-                type: "number",
-                step: "1",
-                min: "0",
-                max: "360",
-                className:
-                  "bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs focus:ring-1 outline-none font-mono",
-                value: editForm.H,
-                onChange: (e) =>
-                  setEditForm({ ...editForm, H: e.target.value }),
-              }),
-            ),
-            React.createElement(
-              "div",
-              { className: "flex flex-col flex-1" },
-              React.createElement(
-                "span",
-                {
-                  className:
-                    "text-[9px] uppercase font-bold text-slate-500 dark:text-neutral-400 mb-1",
-                },
-                "Min Lightness (0-1)",
-              ),
-              React.createElement("input", {
-                type: "number",
-                step: "0.01",
-                min: "0",
-                max: "1",
-                className:
-                  "bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs focus:ring-1 outline-none font-mono",
-                value: editForm.minL,
-                onChange: (e) =>
-                  setEditForm({ ...editForm, minL: e.target.value }),
-              }),
-            ),
-            React.createElement(
-              "div",
-              { className: "flex flex-col flex-1" },
-              React.createElement(
-                "span",
-                {
-                  className:
-                    "text-[9px] uppercase font-bold text-slate-500 dark:text-neutral-400 mb-1",
-                },
-                "Max Lightness (0-1)",
-              ),
-              React.createElement("input", {
-                type: "number",
-                step: "0.01",
-                min: "0",
-                max: "1",
-                className:
-                  "bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs focus:ring-1 outline-none font-mono",
-                value: editForm.maxL,
-                onChange: (e) =>
-                  setEditForm({ ...editForm, maxL: e.target.value }),
-              }),
-            ),
-          ),
-          React.createElement("textarea", {
-            placeholder: "Notes for this column...",
-            className:
-              "bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-3 py-2 text-xs focus:ring-1 outline-none h-16 w-full resize-none font-mono",
-            value: editForm.notes,
-            onChange: (e) =>
-              setEditForm({ ...editForm, notes: e.target.value }),
-          }),
-          React.createElement(
-            "button",
-            {
-              onClick: handleAddCustomNoun,
-              className:
-                "w-full py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded font-bold uppercase tracking-wider text-xs transition-colors mt-2 shadow-sm",
-            },
-            "Save Custom Noun",
-          ),
-        ),
-      content,
-    ),
-    fullscreenImage &&
-      ReactDOM.createPortal(
-        React.createElement(
-          "div",
-          {
-            className:
-              "fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4 cursor-pointer",
-            onClick: () => setFullscreenImage(null),
-          },
-          React.createElement("img", {
-            src: fullscreenImage,
-            alt: "Fullscreen Match",
-            className:
-              "max-w-full max-h-full object-contain rounded shadow-2xl",
-            onClick: (e) => e.stopPropagation(),
-          }),
-          React.createElement(
-            "button",
-            {
-              className:
-                "absolute top-4 right-4 text-white/70 hover:text-white bg-black/50 hover:bg-black/80 rounded-full w-12 h-12 flex items-center justify-center transition-colors",
-              onClick: () => setFullscreenImage(null),
-            },
-            React.createElement(Icon, { name: "x", className: "w-6 h-6" }),
-          ),
-        ),
-        document.body,
-      ),
-  );
-};
-const ViewAdjectives = ({
-  points,
-  names,
-  adjectives,
-  setAdjectives,
-  handlePointClick,
-  crosshair,
-  savedColors = {},
-  lockedAdjectives,
-  onVisualize,
-}) => {
-  const [sortBy, setSortBy] = useState("lightness");
-  const [sortAsc, setSortAsc] = useState(false);
-  const [searchTerm, setSearchTerm] = useState("");
-  const sortedSteps = useMemo(() => {
-    const counts = {};
-    points.forEach((p) => {
-      if (!p.isPin) counts[p.lStr] = (counts[p.lStr] || 0) + 1;
-    });
-    const steps = points.filter((p) => p.C === 0);
-    const unique = [];
-    const seen = new Set();
-    steps.forEach((p) => {
-      if (!seen.has(p.lStr)) {
-        seen.add(p.lStr);
-        unique.push({ ...p, occurrences: counts[p.lStr] || 0 });
-      }
-    });
-    let filtered = unique;
-    if (searchTerm.trim()) {
-      const qWords = searchTerm
-        .toLowerCase()
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean);
-      filtered = filtered.filter((item) => {
-        const itemAdj = (adjectives[item.lStr] || "").toLowerCase();
-        return qWords.every((w) => itemAdj.includes(w));
-      });
-    }
-    return filtered.sort((a, b) => {
-      let valA, valB;
-      switch (sortBy) {
-        case "adjective":
-          valA = (adjectives[a.lStr] || "").toLowerCase();
-          valB = (adjectives[b.lStr] || "").toLowerCase();
-          if (valA === valB) return b.L - a.L;
-          return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
-        case "count":
-          valA = a.occurrences;
-          valB = b.occurrences;
-          break;
-        case "lightness":
-        default:
-          valA = a.L;
-          valB = b.L;
-          break;
-      }
-      if (valA === valB) return b.L - a.L;
-      return sortAsc ? (valA < valB ? -1 : 1) : valB < valA ? -1 : 1;
-    });
-  }, [points, adjectives, sortBy, sortAsc, searchTerm]);
-  // Plain render helper, not a component: defining a component inside render
-  // gives it a new type each pass, so React remounted every header button.
-  return React.createElement(
-    "div",
-    { className: "h-full flex flex-col overflow-hidden pt-2" },
-    React.createElement(
-      "div",
-      {
-        className:
-          "flex flex-wrap justify-between items-center gap-4 px-4 pb-4 mb-4 border-b border-slate-200 dark:border-neutral-800 flex-shrink-0",
-      },
-      React.createElement(
-        "div",
-        { className: "flex flex-wrap items-center gap-2" },
-        React.createElement(
-          "div",
-          { className: "relative flex-1 min-w-[200px] max-w-xs mr-4" },
-          React.createElement(Icon, {
-            name: "search",
-            className:
-              "absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400",
-          }),
-          React.createElement("input", {
-            type: "text",
-            placeholder: "Search adjectives...",
-            value: searchTerm,
-            onChange: (e) => setSearchTerm(e.target.value),
-            className:
-              "w-full bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-300 text-[10px] font-bold uppercase tracking-wider rounded-lg pl-9 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-sky-500/50 transition-all",
-          }),
-          searchTerm &&
-            React.createElement(
-              "button",
-              {
-                onClick: () => setSearchTerm(""),
-                className:
-                  "absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-neutral-200",
-              },
-              React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
-            ),
-        ),
-        React.createElement(
-          "span",
-          {
-            className:
-              "text-[10px] font-bold text-slate-400 dark:text-neutral-500 uppercase mr-2 flex items-center gap-1.5",
-          },
-          React.createElement(Icon, {
-            name: "arrow-down-up",
-            className: "w-3.5 h-3.5",
-          }),
-          " Sort By:",
-        ),
-        React.createElement(SortControl, {
-          fields: [
-            { field: "lightness", label: "Lightness" },
-            { field: "count", label: "Occurrences" },
-            { field: "adjective", label: "Adjective name" },
-          ],
-          sortBy,
-          setSortBy,
-          sortAsc,
-          setSortAsc,
-        }),
-      ),
-      React.createElement(
-        "div",
-        { className: "ml-auto flex items-center gap-2" },
-        React.createElement(
-          "span",
-          {
-            className:
-              "px-2 py-1 bg-sky-500/10 text-sky-500 rounded text-[10px] font-black uppercase tracking-widest border border-sky-500/20",
-          },
-          "Total: ",
-          sortedSteps.length,
-          " Adjectives",
-        ),
-      ),
-    ),
-    React.createElement(
-      "div",
-      { className: "flex-1 overflow-y-auto custom-scrollbar px-4 pb-10" },
-      React.createElement(
-        "div",
-        {
-          className:
-            "grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-6",
-        },
-        sortedSteps.map((item) => {
-          const dynamicC = crosshair?.activePullType
-            ? crosshair.gravityC
-            : crosshair?.rawC || 0;
-          const dynamicH = crosshair?.activePullType
-            ? crosshair.gravityH
-            : crosshair?.rawH || 0;
-          const c = new Color("oklch", [item.L, dynamicC, dynamicH]);
-          const hexColor = c
-            .clone()
-            .toGamut({ space: "srgb" })
-            .toString({ format: "hex" });
-          const dupAdj = getGlobalDuplicate(
-            names,
-            adjectives,
-            item.lStr,
-            adjectives[item.lStr],
-            savedColors,
-          );
-          return React.createElement(
-            "div",
-            {
-              key: item.lStr,
-              className:
-                "flex flex-col items-center gap-2 bg-white dark:bg-neutral-900 p-3 rounded-xl border border-slate-200 dark:border-neutral-800 shadow-sm hover:border-sky-500/50 transition-all",
-            },
-            React.createElement(
-              "div",
-              {
-                onClick: () => handlePointClick([item.L, dynamicC, dynamicH]),
-                className:
-                  "relative w-16 h-16 rounded-lg shadow-sm cursor-pointer overflow-hidden border border-slate-200 dark:border-neutral-700 hover:ring-2 hover:ring-sky-500 transition-all flex-shrink-0 group/swatch",
-                style: { backgroundColor: hexColor },
-              },
-              !c.inGamut("srgb") &&
-                React.createElement("div", {
-                  className: "absolute inset-0 pointer-events-none",
-                  style: {
-                    backgroundImage:
-                      "repeating-linear-gradient(45deg, rgba(0,0,0,0.2), rgba(0,0,0,0.2) 5px, rgba(255,255,255,0.2) 5px, rgba(255,255,255,0.2) 10px)",
-                  },
-                }),
-              React.createElement(
-                "div",
-                {
-                  className:
-                    "absolute top-1 right-1 px-1 py-0.5 rounded-sm text-[9px] font-black font-mono leading-none z-10",
-                  style: {
-                    color: item.L > 0.65 ? "#010D00" : "#F2E8DF",
-                    backgroundColor:
-                      item.L > 0.65
-                        ? "rgba(242, 232, 223, 0.7)"
-                        : "rgba(1, 13, 0, 0.5)",
-                  },
-                },
-                item.occurrences,
-              ),
-              React.createElement(
-                "button",
-                {
-                  onClick: (e) => {
-                    e.stopPropagation();
-                    onVisualize(
-                      "adjective",
-                      item.lStr,
-                      adjectives[item.lStr] || `L=${item.lStr}`,
-                    );
-                  },
-                  className:
-                    "absolute bottom-1 right-1 opacity-0 group-hover/swatch:opacity-100 bg-black/50 hover:bg-black/70 text-white p-1 rounded transition-opacity z-30",
-                  title: "Visualize all instances",
-                },
-                React.createElement(Icon, {
-                  name: "eye",
-                  className: "w-3 h-3",
-                }),
-              ),
-            ),
-            React.createElement("input", {
-              type: "text",
-              className: `w-full text-[11px] font-bold uppercase tracking-wider bg-transparent border-b border-slate-200 dark:border-neutral-700 text-center focus:outline-none placeholder:opacity-30 pb-0.5 mt-1 disabled:opacity-50 ${dupAdj ? "!text-red-500 !border-red-500" : "text-slate-800 dark:text-neutral-200 focus:border-sky-500"}`,
-              placeholder: "Adjective",
-              value: adjectives[item.lStr] || "",
-              onChange: (e) =>
-                setAdjectives({ ...adjectives, [item.lStr]: e.target.value }),
-              disabled: lockedAdjectives[item.lStr],
-              title: dupAdj ? `Conflict: ${dupAdj}` : "",
-            }),
-            React.createElement(
-              "div",
-              {
-                className:
-                  "text-[8px] font-mono text-slate-400 dark:text-neutral-500 mt-0.5 flex flex-col items-center gap-0.5",
-              },
-              React.createElement(
-                "div",
-                null,
-                "L:",
-                item.L.toFixed(2),
-                " C:",
-                dynamicC.toFixed(2),
-              ),
-              React.createElement(
-                "div",
-                null,
-                "H:",
-                dynamicH.toFixed(1),
-                "\xB0",
-              ),
-            ),
-          );
-        }),
-      ),
-    ),
-  );
-};
 // Wraps a view so it skips re-rendering when only callback identities changed
 // (the parent recreates them on every render). Callbacks still reach the
 // latest version through a ref, so nothing goes stale.
@@ -9975,7 +6032,6 @@ const ViewPinsInner = ({
   globalFilterMode,
   sameGroupContext,
   names,
-  adjectives,
   dictNotes,
   savedColors = {},
   setSavedColors,
@@ -10005,7 +6061,6 @@ const ViewPinsInner = ({
   const [editForm, setEditForm] = useState({
     id: "",
     noun: "",
-    adj: "",
     notes: "",
     erpCode: "",
     L: 0.5,
@@ -10039,13 +6094,11 @@ const ViewPinsInner = ({
         b,
         erpCode: editForm.erpCode || "",
         anchorId: "",
-        adjId: "",
         color: new Color("oklch", [L, C, H])
           .clone()
           .toGamut({ space: "srgb" })
           .toString({ format: "hex" }),
         nameOverride: editForm.noun || "",
-        adjOverride: editForm.adj || "",
         notes: editForm.notes || "",
       },
     }));
@@ -10053,7 +6106,6 @@ const ViewPinsInner = ({
     setEditForm({
       id: "",
       noun: "",
-      adj: "",
       notes: "",
       erpCode: "",
       L: 0.5,
@@ -10085,23 +6137,16 @@ const ViewPinsInner = ({
     return Object.values(savedColors)
       .filter((sc) => sc.type === "pin")
       .map((sc) => {
-        const { displayAdj, displayName } = getInheritedPinNames(
-          sc,
-          savedColors,
-          names,
-          adjectives,
-        );
+        const { displayName } = getInheritedPinNames(sc, savedColors, names);
         return {
           ...sc,
-          displayAdj: (displayAdj || "Unnamed").trim(),
           displayName: (displayName || "Unnamed").trim(),
-          isAdjOverridden: !!sc.adjOverride,
           isNameOverridden: !!sc.nameOverride,
           displayNotes: sc.notes || dictNotes[sc.anchorId] || "",
           tags: dictTags[sc.id] || [],
         };
       });
-  }, [savedColors, names, adjectives, dictNotes, dictTags]);
+  }, [savedColors, names, dictNotes, dictTags]);
 
   // The global filter bar has to reach the catalog too; pins were previously
   // the only surface it never touched. Pins are not DB rows, so this runs in
@@ -10147,7 +6192,6 @@ const ViewPinsInner = ({
         qWords.every(
           (w) =>
             item.displayName.toLowerCase().includes(w) ||
-            item.displayAdj.toLowerCase().includes(w) ||
             item.displayNotes.toLowerCase().includes(w) ||
             item.erpCode.toLowerCase().includes(w),
         ),
@@ -10503,21 +6547,12 @@ const ViewPinsInner = ({
               { className: "flex gap-3" },
               React.createElement("input", {
                 type: "text",
-                placeholder: "Overridden Noun",
+                placeholder: "Name (optional; otherwise the nearest anchor's)",
                 className:
                   "flex-1 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs focus:ring-1 outline-none",
                 value: editForm.noun,
                 onChange: (e) =>
                   setEditForm({ ...editForm, noun: e.target.value }),
-              }),
-              React.createElement("input", {
-                type: "text",
-                placeholder: "Overridden Adjective",
-                className:
-                  "flex-1 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs focus:ring-1 outline-none",
-                value: editForm.adj,
-                onChange: (e) =>
-                  setEditForm({ ...editForm, adj: e.target.value }),
               }),
             ),
             React.createElement(
@@ -10626,7 +6661,7 @@ const ViewPinsInner = ({
               items: sortedItems.map((item) => ({
                 ...item,
                 type: "pin",
-                displayName: `${item.displayAdj} ${item.displayName}`.trim() || item.id,
+                displayName: item.displayName || item.id,
                 hex: lchDisplayHex(item.L, item.C, item.H),
               })),
               layout: catalogView === "matrix" ? "matrix" : "gallery",
@@ -10727,15 +6762,6 @@ const ViewPinsInner = ({
                     "text-[10px] font-mono text-sky-600 dark:text-sky-400 font-bold mb-1 tracking-wider",
                 },
                 item.erpCode,
-              ),
-              React.createElement(
-                "div",
-                {
-                  className:
-                    "w-full text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400 truncate",
-                  title: item.displayAdj,
-                },
-                item.displayAdj,
               ),
               React.createElement(
                 "div",
@@ -12008,7 +8034,6 @@ const processCSVData = (
   currentColorData,
   currentSavedColors,
   currentNames = {},
-  currentAdjs = {},
   currentNotes = {},
   currentTags = {},
   currentGroupSettings = null,
@@ -12020,7 +8045,6 @@ const processCSVData = (
   const newColorData = currentColorData ? { ...currentColorData } : {};
   const newSavedColors = currentSavedColors ? { ...currentSavedColors } : {};
   const newNames = currentNames ? { ...currentNames } : {};
-  const newAdjs = currentAdjs ? { ...currentAdjs } : {};
   const newNotes = currentNotes ? { ...currentNotes } : {};
   const newTags = currentTags ? { ...currentTags } : {};
   const newSavedPalettes = currentSavedPalettes ? currentSavedPalettes.slice() : [];
@@ -12376,14 +8400,8 @@ const processCSVData = (
 
       const a = pC * Math.sin((pH * Math.PI) / 180);
       const b = pC * Math.cos((pH * Math.PI) / 180);
-      const cStr = Math.round(pC * 100)
-        .toString()
-        .padStart(2, "0");
-      const hStr = Math.round(pH).toString().padStart(3, "0");
-      const defaultAnchorId = `${cStr}-${hStr}`;
-      const explicitAnchorId =
+      const anchorId =
         row.Anchor_ID || row.AnchorId || row.anchorId || (row.Anchor ? String(row.Anchor) : null);
-      const anchorId = explicitAnchorId || defaultAnchorId;
       const parentPinId =
         row.Parent_Pin_ID ||
         row.ParentPinId ||
@@ -12392,8 +8410,6 @@ const processCSVData = (
         row.ParentId ||
         row.Parent ||
         null;
-      const adjId =
-        row.Adj_ID || row.AdjId || row.adjId || getLStr(pL);
       const brand =
         row.Brand || row.brand || row.Brand_Name || row.BrandName || undefined;
       const originalIndex =
@@ -12415,8 +8431,6 @@ const processCSVData = (
         // pins the name down, so re-importing never freezes stale names.
         nameOverride:
           row.Noun_Override || row.NounOverride || row.nameOverride || "",
-        adjOverride:
-          row.Adjective_Override || row.AdjOverride || row.adjOverride || "",
         notes: row.Note || "",
         erpCode: row.ERP_Code || getExactErpCode(pL, pC, pC === 0 ? 0 : pH),
         sheen: (row.Sheen || row.sheen || "").trim(),
@@ -12424,7 +8438,6 @@ const processCSVData = (
         visualTexture: (row.Visual_Pattern || row.VisualPattern || row.Visual_Texture || row.VisualTexture || row.visualTexture || "").trim(),
         tactileTexture: (row.Tactile_Texture || row.TactileTexture || row.tactileTexture || "").trim(),
         material: (row.Material || row.material || "").trim(),
-        adjId,
         anchorId,
         parentPinId: parentPinId || null,
         brand: brand || undefined,
@@ -12509,7 +8522,7 @@ const processCSVData = (
       const id =
         row.ID ||
         (pL !== null
-          ? `anchor-${Math.round(C * 100).toString().padStart(2, "0")}-${Math.round(H).toString().padStart(3, "0")}-${getLStr(pL)}`
+          ? `anchor-${Math.round(C * 100).toString().padStart(2, "0")}-${Math.round(H).toString().padStart(3, "0")}-${Math.round(pL * 100)}`
           : `noun-${crypto.randomUUID()}`);
       if (targetType === "NOUN_COLUMN") {
         const parts = (row.OKLCH_L || "").split("-");
@@ -12546,59 +8559,20 @@ const processCSVData = (
           newTags[id] = row.Tags.split(",")
             .map((t) => t.trim())
             .filter(Boolean);
-        let lStr = null;
-        if (row.Adjective !== void 0 && row.Adjective !== "") {
-          if (pL !== null) {
-            lStr = getLStr(pL);
-          } else if (row.ERP_Code && row.ERP_Code.length >= 2) {
-            lStr = row.ERP_Code.substring(0, 2);
-          }
-          if (lStr) newAdjs[lStr] = row.Adjective;
-        }
         if (pL !== null && pC !== null && pH !== null) {
-          const adjId = lStr || getLStr(pL);
-          const a = pC * Math.sin((pH * Math.PI) / 180);
-          const b = pC * Math.cos((pH * Math.PI) / 180);
           newSavedColors[id] = {
             id,
-            type: "anchor",
-            L: pL,
+            type: "nounColumn",
+            nameOverride: row.Noun || "",
             C: pC,
             H: pH,
-            a,
-            b,
-            erpCode: row.ERP_Code || getExactErpCode(pL, pC, pH),
-            adjId,
-            anchorId: id,
-            isCustomAnchor: true,
-            locked: String(row.Locked).toUpperCase() !== "FALSE",
-            nameOverride: row.Noun || "",
-            adjOverride: row.Adjective || "",
+            minL: pL,
+            maxL: pL,
+            a: pC * Math.sin((pH * Math.PI) / 180),
+            b: pC * Math.cos((pH * Math.PI) / 180),
             notes: row.Note || "",
-            color:
-              row.HEX ||
-              new Color("oklch", [pL, pC, pH])
-                .clone()
-                .toGamut({ space: "srgb" })
-                .toString({ format: "hex" }),
           };
         }
-      }
-    } else if (targetType === "ADJECTIVE") {
-      if (row.Adjective !== void 0 && row.Adjective !== "") {
-        const lStr =
-          (row.ID && row.ID.trim()) ||
-          (row.OKLCH_L &&
-            typeof row.OKLCH_L === "string" &&
-            row.OKLCH_L.trim()) ||
-          (pL !== null ? getLStr(pL) : null) ||
-          (row.ERP_Code && row.ERP_Code.length >= 2
-            ? row.ERP_Code.substring(0, 2)
-            : null);
-        // anchors.csv writes these IDs unpadded ("0", "2", "8"), but getLStr
-        // produces two-digit keys ("00", "02", "08"), so the darkest five
-        // levels never matched on lookup.
-        if (lStr) newAdjs[lStr.trim().padStart(2, "0")] = row.Adjective;
       }
     }
   });
@@ -12606,7 +8580,6 @@ const processCSVData = (
     newColorData,
     newSavedColors,
     newNames,
-    newAdjs,
     newNotes,
     newTags,
     colorsAdded,
@@ -13083,7 +9056,6 @@ const App = () => {
   const [filterL, setFilterL] = useState(1);
   const [filterC, setFilterC] = useState(0.4);
   const [filterH, setFilterH] = useState(180);
-  const [filterSameAdjective, setFilterSameAdjective] = useState(false);
   const [filterSameNoun, setFilterSameNoun] = useState(false);
   // One stack of filter rows for the whole app, not per tab.
   // Verified colours only on load — the old default, now expressed as an
@@ -13148,7 +9120,6 @@ const App = () => {
   const updateColorData = (newData) => {
     setColorData(newData);
   };
-  const gridData = useMemo(() => generateGridData(), []);
   const initialState = useMemo(() => {
     const el = document.getElementById("color-samificator-state");
     let parsed = {};
@@ -13179,39 +9150,9 @@ const App = () => {
     if (!parsed.savedColors) parsed.savedColors = {};
     if (!parsed.names) parsed.names = {};
     if (!parsed.dictNotes) parsed.dictNotes = {};
-    if (!parsed.savedColors["__migrated_grid_nouns"]) {
-      const newColors = { ...parsed.savedColors };
-      gridData.baseAnchors.forEach((a) => {
-        const addN = (ref, pref, minL, maxL) => {
-          if (!ref) return;
-          const oldId = `${pref}-${a.cStr}-${a.hStr}`;
-          if (!newColors[oldId]) {
-            newColors[oldId] = {
-              id: oldId,
-              type: "nounColumn",
-              nameOverride: parsed.names[oldId] || "",
-              C: a.C,
-              H: a.H,
-              minL,
-              maxL,
-              a: a.C * Math.sin((a.H * Math.PI) / 180),
-              b: a.C * Math.cos((a.H * Math.PI) / 180),
-              notes: parsed.dictNotes[oldId] || "",
-            };
-          }
-        };
-        addN(a.ultraLightRef, "UL", 0.95, 1);
-        addN(a.lightRef, "L", 0.5, 0.95);
-        addN(a.darkRef, "D", 0.2, 0.5);
-        addN(a.ultraDarkRef, "UD", 0, 0.2);
-      });
-      newColors["__migrated_grid_nouns"] = { type: "system", migrated: true };
-      parsed.savedColors = newColors;
-    }
     return parsed;
-  }, [gridData.baseAnchors]);
+  }, []);
   const [names, setNames] = useState(initialState?.names || {});
-  const [adjectives, setAdjectives] = useState(initialState?.adjectives || {});
   const [dictNotes, setDictNotes] = useState(initialState?.dictNotes || {});
   const [dictTags, setDictTags] = useState(initialState?.dictTags || {});
   const globalTags = useMemo(() => {
@@ -13256,20 +9197,6 @@ const App = () => {
       setSavedColors(next);
     }
   }, [savedColors]);
-  const lockedNouns = useMemo(() => {
-    const res = {};
-    Object.values(savedColors).forEach((sc) => {
-      if (sc.type === "anchor" && sc.locked !== false) res[sc.anchorId] = true;
-    });
-    return res;
-  }, [savedColors]);
-  const lockedAdjectives = useMemo(() => {
-    const res = {};
-    Object.values(savedColors).forEach((sc) => {
-      if (sc.type === "anchor" && sc.locked !== false) res[sc.adjId] = true;
-    });
-    return res;
-  }, [savedColors]);
 
   const getPaletteItemInfo = useCallback(
     (item) => {
@@ -13299,26 +9226,9 @@ const App = () => {
       }
 
       const targetObj = pin || item;
-      const inherited = getInheritedPinNames(
-        targetObj,
-        savedColors,
-        names,
-        adjectives,
-        colorData,
-      );
-      let adj = (inherited.displayAdj || "").trim();
-      let noun = (inherited.displayName || "").trim();
-
-      if (adj.toUpperCase() === "UNNAMED" || adj.toUpperCase() === "UNNAMED ADJ") adj = "";
-      if (
-        noun.toUpperCase() === "UNNAMED" ||
-        noun.toUpperCase() === "UNNAMED NOUN"
-      ) {
-        noun = "";
-      }
-
-      const derivedName = `${adj} ${noun}`.trim();
-      const displayName = (derivedName || noun || adj || (cleanErp ? `#${cleanErp}` : "\u2014")).toUpperCase();
+      const inherited = getInheritedPinNames(targetObj, savedColors, names);
+      const noun = inherited.displayName;
+      const displayName = (noun || (cleanErp ? `#${cleanErp}` : "\u2014")).toUpperCase();
 
       let image = item.image;
       let sheen = item.sheen;
@@ -13377,7 +9287,7 @@ const App = () => {
         doorProfile,
       };
     },
-    [savedColors, adjectives, names, colorData],
+    [savedColors, names, colorData],
   );
 
   const [groupSettings, setGroupSettings] = useState(
@@ -13418,7 +9328,6 @@ const App = () => {
         C: sc.C,
         H: sc.H,
         erpCode: sc.erpCode,
-        adjId: sc.adjId,
         nounId: sc.anchorId,
         pinId: sc.id,
         brand: sc.brand,
@@ -13579,7 +9488,6 @@ const App = () => {
       }
     });
     let currentNames = {};
-    let currentAdjs = {};
     let currentNotes = initialState?.dictNotes || {};
     let currentTags = initialState?.dictTags || {};
     let currentSavedPalettes = savedPalettes || [];
@@ -13711,7 +9619,6 @@ const App = () => {
             currentColorData,
             currentSavedColors,
             currentNames,
-            currentAdjs,
             currentNotes,
             currentTags,
             currentGroupSettings,
@@ -13720,7 +9627,6 @@ const App = () => {
           currentColorData = processed.newColorData;
           currentSavedColors = processed.newSavedColors;
           currentNames = processed.newNames;
-          currentAdjs = processed.newAdjs;
           currentNotes = processed.newNotes;
           currentTags = processed.newTags;
           if (processed.newGroupSettings)
@@ -13739,7 +9645,6 @@ const App = () => {
     }
     setSavedColors(currentSavedColors);
     setNames(currentNames);
-    setAdjectives(currentAdjs);
     setDictNotes(currentNotes);
     setDictTags(currentTags);
     setGroupSettings(currentGroupSettings);
@@ -13832,23 +9737,15 @@ const App = () => {
     commercial: false,
     brands: {},
   });
-  // Noun/adjective rows in the global stack need the same resolution context
+  // Anchor-name rows in the global stack need the same resolution context
   // the labels use; the viewport memos previously had no access to one.
   const viewportGroupContext = useMemo(() => {
     try {
-      return getSameGroupContext(
-        scrubL,
-        scrubC,
-        scrubH,
-        gridData,
-        savedColors,
-        names,
-        adjectives,
-      );
+      return getSameGroupContext(scrubL, scrubC, scrubH, savedColors, names);
     } catch (e) {
       return null;
     }
-  }, [scrubL, scrubC, scrubH, gridData, savedColors, names, adjectives]);
+  }, [scrubL, scrubC, scrubH, savedColors, names]);
   // Viewport filter rows that apply here, and whether any of them (or the
   // same-group toggles) depend on the cursor. Only then must the filtered lists
   // be rebuilt as the cursor moves; otherwise a drag rebuilt every list and,
@@ -13858,11 +9755,8 @@ const App = () => {
     [globalFilters],
   );
   const viewportCursorDep =
-    filterSameAdjective ||
     filterSameNoun ||
-    viewportRows.some(
-      (r) => r.dynamic || r.field === "deltaE" || r.field === "noun" || r.field === "adjective",
-    );
+    viewportRows.some((r) => r.dynamic || r.field === "deltaE" || r.field === "noun");
   const viewportCursorKey = viewportCursorDep ? `${scrubL}|${scrubC}|${scrubH}` : "";
   const viewportCtxDep = viewportCursorDep ? viewportGroupContext : null;
   const filteredColorData = useMemo(() => {
@@ -13870,16 +9764,8 @@ const App = () => {
     const isDb = activeTab === "db";
 
     let sameGroup = null;
-    if (filterSameAdjective || filterSameNoun) {
-      sameGroup = getSameGroupContext(
-        scrubL,
-        scrubC,
-        scrubH,
-        gridData,
-        savedColors,
-        names,
-        adjectives,
-      );
+    if (filterSameNoun) {
+      sameGroup = getSameGroupContext(scrubL, scrubC, scrubH, savedColors, names);
     }
 
     const filtered = {};
@@ -13887,7 +9773,7 @@ const App = () => {
       const isVisible = isDb ? viewportVisibility.brands[brand] !== false : viewportVisibility.brands[brand] === true;
       if (isVisible) {
         let list = colorData[brand];
-        if ((filterSameAdjective || filterSameNoun) && sameGroup) {
+        if (filterSameNoun && sameGroup) {
           list = list.filter((c) => {
             let itemL, itemC, itemH;
             if (c.L !== undefined && c.L !== null && !isNaN(c.L)) {
@@ -13913,9 +9799,6 @@ const App = () => {
               } catch (e) {
                 return false;
               }
-            }
-            if (filterSameAdjective && !matchesSameAdjective(sameGroup, itemL)) {
-              return false;
             }
             if (filterSameNoun && !matchesSameNoun(sameGroup, itemL, itemC, itemH)) {
               return false;
@@ -13952,14 +9835,11 @@ const App = () => {
     return filtered;
   }, [
     colorData,
-    gridData,
     viewportVisibility,
-    filterSameAdjective,
     filterSameNoun,
     savedColors,
     viewportCursorKey,
     names,
-    adjectives,
     activeTab,
     viewportRows,
     globalFilterMode,
@@ -13994,12 +9874,10 @@ const App = () => {
   const [showHelpPanel, setShowHelpPanel] = useState(false);
   const [showDatabaseManager, setShowDatabaseManager] = useState(false);
   const [showFileManager, setShowFileManager] = useState(false);
-  const [visualizeData, setVisualizeData] = useState(null);
   const [history, setHistory] = useState({
     list: [
       {
         names: initialState?.names || {},
-        adjectives: initialState?.adjectives || {},
         dictNotes: initialState?.dictNotes || {},
         dictTags: initialState?.dictTags || {},
         savedColors: initialState?.savedColors || {},
@@ -14017,7 +9895,6 @@ const App = () => {
     () =>
       JSON.stringify({
         names,
-        adjectives,
         dictNotes,
         dictTags,
         savedColors,
@@ -14029,7 +9906,6 @@ const App = () => {
       }),
     [
       names,
-      adjectives,
       dictNotes,
       dictTags,
       savedColors,
@@ -14071,7 +9947,6 @@ const App = () => {
         const newIndex = prev.index - 1;
         const prevState = prev.list[newIndex];
         setNames(prevState.names);
-        setAdjectives(prevState.adjectives);
         setDictNotes(prevState.dictNotes);
         setDictTags(prevState.dictTags);
         setSavedColors(prevState.savedColors);
@@ -14093,7 +9968,6 @@ const App = () => {
         const newIndex = prev.index + 1;
         const nextState = prev.list[newIndex];
         setNames(nextState.names);
-        setAdjectives(nextState.adjectives);
         setDictNotes(nextState.dictNotes);
         setDictTags(nextState.dictTags);
         setSavedColors(nextState.savedColors);
@@ -14168,13 +10042,11 @@ const App = () => {
           }
       return best;
     };
-    if (!gridData) return { points: [], baseAnchors: [], savedColors: {} };
-    let points = [...gridData.allPoints];
-    points.forEach(indexPoint);
-    let baseAnchors = [...gridData.baseAnchors];
+    let points = [];
+    let baseAnchors = [];
     const filteredSavedColors = { ...savedColors };
     Object.values(filteredSavedColors).forEach((sc) => {
-      const adjId = sc.adjId || getLStr(sc.L);
+      const lStr = getLStr(sc.L);
       const anchorId =
         sc.anchorId ||
         `custom-${Math.round(sc.C * 100)
@@ -14182,7 +10054,7 @@ const App = () => {
           .padStart(
             2,
             "0",
-          )}-${Math.round(sc.H).toString().padStart(3, "0")}-${adjId}`;
+          )}-${Math.round(sc.H).toString().padStart(3, "0")}-${lStr}`;
       if (sc.type === "pin" || sc.type === "anchor") {
         const pt = {
           L: sc.L,
@@ -14190,7 +10062,7 @@ const App = () => {
           H: sc.H,
           a: sc.a,
           b: sc.b,
-          lStr: adjId,
+          lStr,
           cStr: anchorId ? anchorId.split("-")[1] : "",
           hStr: anchorId ? anchorId.split("-")[2] : "",
           erpCode: sc.erpCode,
@@ -14200,10 +10072,8 @@ const App = () => {
           delta: 0,
           isPin: sc.type === "pin",
           pinId: sc.type === "pin" ? sc.id : void 0,
-          adjOverride: sc.adjOverride,
           nameOverride: sc.nameOverride,
           anchorId,
-          adjId,
           isCustomAnchor: sc.type === "anchor",
           image: sc.image || (sc.notes?.startsWith("http") ? sc.notes : undefined),
           brand: sc.brand,
@@ -14225,16 +10095,13 @@ const App = () => {
           maxL: sc.L,
           color: sc.color,
           anchorId,
-          adjId,
           nameOverride: sc.nameOverride,
-          adjOverride: sc.adjOverride,
           isCustomAnchor: sc.type === "anchor",
         });
       } else if (sc.type === "nounColumn") {
         const dL = 0.02;
         if (sc.minL === sc.maxL && sc.minL !== null) {
           const L = sc.minL;
-          const gh = lchGamutHex(L, sc.C, sc.H);
           const existingIdx = findNear(L, sc.C, sc.H);
           if (existingIdx >= 0) {
             points[existingIdx] = {
@@ -14242,7 +10109,7 @@ const App = () => {
               parentNounId: sc.id,
               isCustomNounGenerated: true,
             };
-          } else if (gh.inGamut) {
+          } else {
             indexPoint({ L, C: sc.C, H: sc.H }, points.length);
             points.push({
               L,
@@ -14261,7 +10128,7 @@ const App = () => {
                   2,
                   "0",
                 )}-H${Math.round(sc.H).toString().padStart(3, "0")}`,
-              color: gh.hex,
+              color: lchDisplayHex(L, sc.C, sc.H),
               opacity: 1,
               ring: 0,
               delta: 0,
@@ -14336,19 +10203,10 @@ const App = () => {
         }
       }
     });
-    if (filterSameAdjective || filterSameNoun) {
-      const sameGroup = getSameGroupContext(
-        scrubL,
-        scrubC,
-        scrubH,
-        gridData,
-        savedColors,
-        names,
-        adjectives,
-      );
+    if (filterSameNoun) {
+      const sameGroup = getSameGroupContext(scrubL, scrubC, scrubH, savedColors, names);
 
       points = points.filter((p) => {
-        if (filterSameAdjective && !matchesSameAdjective(sameGroup, p.L)) return false;
         if (filterSameNoun && !matchesSameNoun(sameGroup, p.L, p.C, p.H)) return false;
         return true;
       });
@@ -14356,18 +10214,14 @@ const App = () => {
       Object.keys(filteredSavedColors).forEach((k) => {
         const sc = filteredSavedColors[k];
         if (sc.type === "nounColumn") {
-          if (filterSameAdjective && !nounColumnMatchesSameAdjective(sameGroup, sc)) {
-            delete filteredSavedColors[k];
-          } else if (
+          if (
             filterSameNoun &&
             !matchesSameNoun(sameGroup, sc.minL !== undefined ? sc.minL : sc.L, sc.C, sc.H)
           ) {
             delete filteredSavedColors[k];
           }
         } else {
-          if (filterSameAdjective && !matchesSameAdjective(sameGroup, sc.L)) {
-            delete filteredSavedColors[k];
-          } else if (filterSameNoun && !matchesSameNoun(sameGroup, sc.L, sc.C, sc.H)) {
+          if (filterSameNoun && !matchesSameNoun(sameGroup, sc.L, sc.C, sc.H)) {
             delete filteredSavedColors[k];
           }
         }
@@ -14375,13 +10229,6 @@ const App = () => {
 
       baseAnchors = baseAnchors.filter((ba) => {
         const minL = ba.minL !== undefined ? ba.minL : (ba.L !== undefined ? ba.L : 0);
-        const maxL = ba.maxL !== undefined ? ba.maxL : (ba.L !== undefined ? ba.L : 1);
-        if (
-          filterSameAdjective &&
-          !nounColumnMatchesSameAdjective(sameGroup, { minL, maxL, L: ba.L })
-        ) {
-          return false;
-        }
         if (filterSameNoun && !matchesSameNoun(sameGroup, minL, ba.C, ba.H)) return false;
         return true;
       });
@@ -14422,15 +10269,17 @@ const App = () => {
         }
         if (q) {
           const qWords = q.split(/\s+/).filter(Boolean);
-          const name = (names[nounId] || "").toLowerCase();
-          const adj = (adjectives[p.lStr] || "").toLowerCase();
+          const name = (
+            p.isPin
+              ? getInheritedPinNames(savedColors[p.pinId] || p, savedColors, names).displayName
+              : names[nounId] || ""
+          ).toLowerCase();
           const note = (dictNotes[nounId] || "").toLowerCase();
           const erp = p.erpCode.toLowerCase();
           if (
             !qWords.every(
               (w) =>
                 name.includes(w) ||
-                adj.includes(w) ||
                 note.includes(w) ||
                 erp.includes(w),
             )
@@ -14456,14 +10305,9 @@ const App = () => {
         if (q) {
           const qWords = q.split(/\s+/).filter(Boolean);
           const name = (
-            sc.nameOverride ||
-            names[sc.anchorId] ||
-            ""
-          ).toLowerCase();
-          const adj = (
-            sc.adjOverride ||
-            adjectives[sc.adjId] ||
-            ""
+            sc.type === "pin"
+              ? getInheritedPinNames(sc, savedColors, names).displayName
+              : sc.nameOverride || names[sc.id] || names[sc.anchorId] || ""
           ).toLowerCase();
           const note = (sc.notes || dictNotes[sc.anchorId] || "").toLowerCase();
           const erp = (sc.erpCode || "").toLowerCase();
@@ -14471,7 +10315,6 @@ const App = () => {
             !qWords.every(
               (w) =>
                 name.includes(w) ||
-                adj.includes(w) ||
                 note.includes(w) ||
                 erp.includes(w),
             )
@@ -14500,7 +10343,7 @@ const App = () => {
       );
     }
     if (viewportRows.length) {
-      // Grid points expose name/noun/adjective and L/C/H; \u0394E is measured
+      // Points expose their name and L/C/H; \u0394E is measured
       // against the cursor so the same rows work here as in the list.
       const decorate = (p) => {
         const name =
@@ -14545,16 +10388,13 @@ const App = () => {
     }
     return { points, baseAnchors, savedColors: filteredSavedColors };
   }, [
-    gridData,
     viewportVisibility,
     viewportTagFilter,
     viewportSearchQuery,
     savedColors,
     dictTags,
     names,
-    adjectives,
     dictNotes,
-    filterSameAdjective,
     filterSameNoun,
     viewportCursorKey,
     viewportRows,
@@ -14577,7 +10417,6 @@ const App = () => {
     setScrubCommercial(commercialData);
   };
   const crosshair = useMemo(() => {
-    if (!gridData) return null;
     const a = scrubC * Math.sin((scrubH * Math.PI) / 180);
     const b = scrubC * Math.cos((scrubH * Math.PI) / 180);
     let closestSaved = null,
@@ -14694,49 +10533,15 @@ const App = () => {
     ) {
       if (closestGridPt.isPin) {
         activeSavedColor = savedColors[closestGridPt.pinId];
-      } else {
-        const aId = `${closestGridPt.cStr}-${closestGridPt.hStr}`;
-        const anchorLock = Object.values(savedColors).find(
-          (sc) =>
-            sc.type === "anchor" &&
-            sc.anchorId === aId &&
-            sc.adjId === closestGridPt.lStr,
-        );
-        if (anchorLock) activeSavedColor = anchorLock;
       }
     }
-    let nearestAdjId, nearestAnchorId;
     const effectiveL = activePullType ? gravityL : scrubL;
     const effectiveC = activePullType ? gravityC : scrubC;
     const effectiveH = activePullType ? gravityH : scrubH;
-    const effectiveA = activePullType ? gravityA : a;
-    const effectiveB = activePullType ? gravityB : b;
-    if (closestGridPt && closestGridPt.isPin && minGridDist < 0.001) {
-      nearestAdjId = closestGridPt.adjId;
-      nearestAnchorId = closestGridPt.anchorId;
-    } else {
-      nearestAdjId = getLStr(effectiveL);
-      // Anchors are points: the cursor takes the name of the nearest one in
-      // OkLab, the same rule that draws the cells in Explore.
-      const nearAnchor = findNearestAnchor(effectiveL, effectiveC, effectiveH, savedColors);
-      if (nearAnchor) {
-        nearestAnchorId = nearAnchor.nameKey;
-      } else {
-        const cStr = Math.round(effectiveC * 100).toString().padStart(2, "0");
-        const hStr = Math.round(effectiveH).toString().padStart(3, "0");
-        const baseId = `${cStr}-${hStr}`;
-        const prefix =
-          effectiveL >= 0.95
-            ? "UL"
-            : effectiveL >= 0.5
-            ? "L"
-            : effectiveL >= 0.2
-            ? "D"
-            : "UD";
-        const prefId = `${prefix}-${baseId}`;
-        nearestAnchorId = names[prefId] ? prefId : (names[baseId] ? baseId : prefId);
-      }
-    }
+    // Anchors are points: the cursor takes the name of the nearest one in
+    // OkLab, the same rule that draws the cells in Explore.
+    const nearAnchor = findNearestAnchor(effectiveL, effectiveC, effectiveH, savedColors);
+    const nearestAnchorId = nearAnchor ? nearAnchor.nameKey : null;
     const exactErpCode = getExactErpCode(scrubL, scrubC, scrubH);
     const activeErpCode = exactErpCode;
     let validatedCommercial = null;
@@ -14770,7 +10575,6 @@ const App = () => {
       isGridSnapped,
       closestGridPt,
       activeErpCode,
-      nearestAdjId,
       nearestAnchorId,
       snapDist: minGridDist,
       snapTarget: closestGridPt,
@@ -14778,7 +10582,6 @@ const App = () => {
       activeCommercial: validatedCommercial,
     };
   }, [
-    gridData,
     filteredViewData.points,
     filteredViewData.baseAnchors,
     scrubL,
@@ -14864,7 +10667,6 @@ const App = () => {
         exactSavedColor,
         isGridSnapped,
         closestGridPt,
-        nearestAdjId,
         nearestAnchorId,
       } = crosshair;
       let clickedItem = null;
@@ -14877,7 +10679,6 @@ const App = () => {
           clickedItem = {
             type: "anchor",
             anchorId: nearestAnchorId,
-            adjId: nearestAdjId,
             erpCode: closestGridPt.erpCode,
           };
         }
@@ -14889,7 +10690,6 @@ const App = () => {
             ...prev[tetheringPinId],
             parentPinId: clickedItem.type === "pin" ? clickedItem.id : null,
             anchorId: clickedItem.anchorId || clickedItem.id,
-            adjId: clickedItem.adjId,
           },
         }));
         setTetheringPinId(null);
@@ -14897,341 +10697,46 @@ const App = () => {
       }
     }
   };
-  const handleVisualize = (type, id, displayName) => {
-    let items = [];
-    if (type === "adjective") {
-      items = filteredViewData.points
-        .filter((p) => p.lStr === id)
-        .map((p) => {
-          const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-          return {
-            ...p,
-            displayName:
-              `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
-              (p.erpCode ? `#${p.erpCode}` : "\u2014"),
-            erpCode: p.erpCode,
-          };
-        });
-    } else if (type === "noun") {
-      const sc = savedColors[id];
-      if (sc && sc.type === "nounColumn") {
-        items = filteredViewData.points
-          .filter((p) => {
-            return (
-              p.parentNounId === sc.id ||
-              (Math.abs(p.C - sc.C) < 0.01 &&
-                Math.abs(p.H - sc.H) < 0.01 &&
-                p.L >= sc.minL &&
-                p.L <= sc.maxL &&
-                !p.isPin)
-            );
-          })
-          .map((p) => {
-            return {
-              ...p,
-              displayName:
-                `${adjectives[p.lStr] || ""} ${names[id] || sc.nameOverride || ""}`.trim() ||
-                (p.erpCode ? `#${p.erpCode}` : "\u2014"),
-              erpCode: p.erpCode,
-            };
-          });
-      } else {
-        items = filteredViewData.points
-          .filter((p) => {
-            const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-            return nounId === id;
-          })
-          .map((p) => {
-            const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
-            return {
-              ...p,
-              displayName:
-                `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
-                (p.erpCode ? `#${p.erpCode}` : "\u2014"),
-              erpCode: p.erpCode,
-            };
-          });
-      }
-    }
-    setVisualizeData({ title: `Visualizing ${displayName}`, items });
-  };
   const tabs = useMemo(
     () => [
       { id: "db", label: "Commercial DB" },
       { id: "pins", label: "Catalog (pinned colors)" },
-      { id: "top", label: "Light layers" },
-      { id: "chroma", label: "Chroma rings" },
-      { id: "slice", label: "Hue slices" },
       { id: "3d", label: "Color space" },
       { id: "anchors", label: "Anchors" },
       { id: "groups", label: "Color groups" },
-      { id: "adjectives", label: "Adjectives" },
-      { id: "palette", label: "Nouns" },
     ],
     [],
   );
   const searchResults = useMemo(() => {
-    if (!searchQuery.trim() || !gridData) return [];
+    if (!searchQuery.trim()) return [];
     const q = searchQuery.toLowerCase().trim();
     const results = [];
-    const seenCodes = new Set();
+    const qWords = q.split(/\s+/).filter(Boolean);
     Object.values(savedColors).forEach((sc) => {
-      const adj = (
-        sc.type === "nounColumn"
-          ? `L ${sc.minL} - ${sc.maxL}`
-          : sc.adjOverride || adjectives[sc.adjId] || ""
-      ).toLowerCase();
-      const name = (
-        sc.type === "nounColumn"
-          ? names[sc.id] || sc.nameOverride || ""
-          : sc.nameOverride || names[sc.anchorId] || ""
-      ).toLowerCase();
-      const fullName = `${adj} ${name}`.trim();
-      const note = (
-        sc.notes ||
-        (sc.type === "nounColumn"
-          ? dictNotes[sc.id]
-          : dictNotes[sc.anchorId]) ||
-        ""
-      ).toLowerCase();
-      const code = (sc.erpCode || "").toLowerCase();
-      const tagsStr = (dictTags[sc.id] || dictTags[sc.anchorId] || [])
-        .join(" ")
-        .toLowerCase();
-      const qWords = q.split(/\s+/).filter(Boolean);
-      const isMatch =
-        qWords.length === 0 ||
-        qWords.every(
-          (w) =>
-            adj.includes(w) ||
-            name.includes(w) ||
-            fullName.includes(w) ||
-            note.includes(w) ||
-            code.includes(w) ||
-            tagsStr.includes(w),
-        );
-      if (isMatch) {
-        let dn = "Unnamed";
-        if (sc.type === "nounColumn") {
-          dn = `[Grid Area] ${names[sc.id] || sc.nameOverride || "Unnamed Column"}`;
-        } else {
-          dn =
-            `${sc.adjOverride || adjectives[sc.adjId] || ""} ${sc.nameOverride || names[sc.anchorId] || ""}`.trim() ||
-            "Unnamed";
-        }
-        const t =
-          sc.type === "pin"
-            ? "Pin"
-            : sc.type === "nounColumn"
-              ? "Noun Column"
-              : "Locked Anchor";
-        const n =
-          sc.type === "nounColumn"
-            ? sc.notes || dictNotes[sc.id] || ""
-            : sc.notes || dictNotes[sc.anchorId] || "";
-        const realL = sc.type === "nounColumn" ? (sc.minL + sc.maxL) / 2 : sc.L;
-        results.push({
-          key: `saved-${sc.id}`,
-          L: realL,
-          C: sc.C,
-          H: sc.H,
-          color: sc.color || lchDisplayHex(realL, sc.C || 0, sc.H || 0),
-          displayName: dn,
-          erpCode: sc.erpCode,
-          type: t,
-          note: n,
-        });
-        if (sc.erpCode) seenCodes.add(sc.erpCode);
-      }
+      if (!sc || (sc.type !== "pin" && sc.type !== "nounColumn" && sc.type !== "anchor")) return;
+      if (results.length >= 100) return;
+      const isPin = sc.type === "pin";
+      const key = sc.type === "anchor" ? sc.anchorId || sc.id : sc.id;
+      const name = isPin
+        ? getInheritedPinNames(sc, savedColors, names).displayName
+        : cleanName(names[key] || sc.nameOverride);
+      const note = sc.notes || dictNotes[key] || "";
+      const tagsStr = (dictTags[sc.id] || dictTags[key] || []).join(" ");
+      const hay = `${name} ${note} ${sc.erpCode || ""} ${tagsStr}`.toLowerCase();
+      if (!qWords.every((w) => hay.includes(w))) return;
+      const L = sc.type === "nounColumn" ? (sc.minL + sc.maxL) / 2 : sc.L;
+      results.push({
+        key: `saved-${sc.id}`,
+        L,
+        C: sc.C,
+        H: sc.H,
+        color: sc.color || lchDisplayHex(L, sc.C || 0, sc.H || 0),
+        displayName: name || "Unnamed",
+        erpCode: sc.erpCode,
+        type: isPin ? "Pin" : "Anchor",
+        note,
+      });
     });
-    for (const pt of filteredViewData.points) {
-      if (results.length >= 100) break;
-      if (seenCodes.has(pt.erpCode)) continue;
-      const nounId = pt.parentNounId || `${pt.cStr}-${pt.hStr}`;
-      const adjStr = (adjectives[pt.lStr] || "").toLowerCase();
-      const nameStr = (names[nounId] || "").toLowerCase();
-      const fullNameStr = `${adjStr} ${nameStr}`.trim();
-      const noteStr = (dictNotes[nounId] || "").toLowerCase();
-      const codeStr = pt.erpCode.toLowerCase();
-      const tagsStr = (dictTags[nounId] || []).join(" ").toLowerCase();
-      const qWords = q.split(/\s+/).filter(Boolean);
-      const hasDictMatch =
-        qWords.length === 0 ||
-        qWords.every(
-          (w) =>
-            (adjStr && adjStr.includes(w)) ||
-            (nameStr && nameStr.includes(w)) ||
-            (fullNameStr && fullNameStr.includes(w)) ||
-            (noteStr && noteStr.includes(w)) ||
-            (tagsStr && tagsStr.includes(w)),
-        );
-      const isCodeSearch = q.length >= 2 && !isNaN(q) && codeStr.includes(q);
-      if (hasDictMatch || isCodeSearch) {
-        const validPtColor = lchDisplayHex(pt.L, pt.C, pt.H);
-        results.push({
-          key: `pt-${pt.erpCode}`,
-          L: pt.L,
-          C: pt.C,
-          H: pt.H,
-          color: validPtColor,
-          displayName:
-            `${adjectives[pt.lStr] || ""} ${names[nounId] || ""}`.trim() ||
-            "Unnamed",
-          erpCode: pt.erpCode,
-          type: "Coordinate",
-          note: dictNotes[nounId] || "",
-        });
-        seenCodes.add(pt.erpCode);
-      }
-    }
-    for (const [adjId, adjName] of Object.entries(adjectives)) {
-      if (results.length >= 100) break;
-      const adjStr = (adjName || "").toLowerCase();
-      const idStr = adjId.toLowerCase();
-      const qWords = q.split(/\s+/).filter(Boolean);
-      if (
-        qWords.length === 0 ||
-        qWords.every((w) => adjStr.includes(w) || idStr.includes(w))
-      ) {
-        let alreadyAdded = false;
-        for (const r of results) {
-          if (r.key === `adj-${adjId}`) {
-            alreadyAdded = true;
-            break;
-          }
-        }
-        if (!alreadyAdded) {
-          let lVal = 0.5;
-          if (adjId.includes("-"))
-            lVal = parseFloat(adjId.split("-")[1]) || 0.5;
-          else if (!isNaN(parseFloat(adjId))) lVal = parseFloat(adjId) / 100;
-          results.push({
-            key: `adj-${adjId}`,
-            L: lVal,
-            C: 0,
-            H: 0,
-            color: lchDisplayHex(lVal, 0, 0),
-            displayName: `${adjName} [Adjective]`.trim(),
-            erpCode: "",
-            type: "Adjective Definition",
-            note: "",
-          });
-        }
-      }
-    }
-    for (const [nId, nName] of Object.entries(names)) {
-      if (results.length >= 200) break;
-      const nameStr = (nName || "").toLowerCase();
-      const idStr = nId.toLowerCase();
-      const noteStr = (dictNotes[nId] || "").toLowerCase();
-      const tagsStr = (dictTags[nId] || []).join(" ").toLowerCase();
-      let cVal = 0.1,
-        hVal = 180,
-        baseL = 0.5;
-      let sc = savedColors[nId];
-      if (sc) {
-        cVal = sc.C;
-        hVal = sc.H;
-        baseL = sc.type === "nounColumn" ? (sc.minL + sc.maxL) / 2 : sc.L;
-      } else {
-        const parts = nId.split("-");
-        if (parts.length >= 3) {
-          const rawC = parts[parts.length - 2].replace("C", "");
-          const rawH = parts[parts.length - 1].replace("H", "");
-          cVal = parseFloat(rawC) / 100;
-          hVal = parseFloat(rawH);
-          if (parts[0] === "UL") baseL = 0.96;
-          else if (parts[0] === "L") baseL = 0.65;
-          else if (parts[0] === "D") baseL = 0.35;
-          else if (parts[0] === "UD") baseL = 0.15;
-          else if (parts[0] === "ALL" || cVal === 0) {
-            cVal = 0;
-            hVal = 0;
-          }
-          if (isNaN(cVal)) cVal = 0.1;
-          if (isNaN(hVal)) hVal = 180;
-        }
-      }
-      for (const [adjId, adjName] of Object.entries(adjectives)) {
-        if (results.length >= 200) break;
-        const comboName = `${adjName} ${nName}`.trim().toLowerCase();
-        const qWords2 = q.split(/\s+/).filter(Boolean);
-        if (
-          qWords2.length === 0 ||
-          qWords2.every((w) => comboName.includes(w))
-        ) {
-          let lVal = baseL;
-          if (adjId.includes("-"))
-            lVal = parseFloat(adjId.split("-")[1]) || baseL;
-          else if (!isNaN(parseFloat(adjId))) lVal = parseFloat(adjId) / 100;
-          if (sc) {
-            if (sc.type !== "nounColumn") continue;
-            if (lVal < sc.minL - 0.001 || lVal > sc.maxL + 0.001) continue;
-          }
-          const inferredC = new Color("oklch", [lVal, cVal, hVal]);
-          if (cVal > 0 && !inferredC.inGamut("srgb", { epsilon: 0.01 }))
-            continue;
-          const validColor = inferredC
-            .clone()
-            .toGamut({ space: "srgb" })
-            .toString({ format: "hex" });
-          results.push({
-            key: `combo-${adjId}-${nId}`,
-            L: lVal,
-            C: cVal,
-            H: hVal,
-            color: validColor,
-            displayName: `${adjName} ${nName}`.trim(),
-            erpCode: `NOUN-C${Math.round(cVal * 100)
-              .toString()
-              .padStart(
-                2,
-                "0",
-              )}-H${Math.round(hVal).toString().padStart(3, "0")}`,
-            type: "Coordinate",
-            note: dictNotes[nId] || "",
-          });
-        }
-      }
-      const qWords = q.split(/\s+/).filter(Boolean);
-      const nounMatch =
-        qWords.length === 0 ||
-        qWords.every(
-          (w) =>
-            nameStr.includes(w) ||
-            idStr.includes(w) ||
-            noteStr.includes(w) ||
-            tagsStr.includes(w),
-        );
-      if (nounMatch) {
-        let sc2 = savedColors[nId];
-        let alreadyAdded = false;
-        for (const r of results) {
-          if (r.key === `noun-${nId}` || (sc2 && r.key === `saved-${sc2.id}`)) {
-            alreadyAdded = true;
-            break;
-          }
-        }
-        if (!alreadyAdded && !sc2) {
-          const inferredC = new Color("oklch", [baseL, cVal, hVal]);
-          const validColor = inferredC
-            .clone()
-            .toGamut({ space: "srgb" })
-            .toString({ format: "hex" });
-          results.push({
-            key: `noun-${nId}`,
-            L: baseL,
-            C: cVal,
-            H: hVal,
-            color: validColor,
-            displayName: nName.trim() || nId,
-            erpCode: "",
-            type: "Noun Definition",
-            note: dictNotes[nId] || "",
-          });
-        }
-      }
-    }
     if (colorData) {
       for (const [brandKey, list] of Object.entries(colorData)) {
         if (results.length >= 200) break;
@@ -15312,15 +10817,13 @@ const App = () => {
     return results;
   }, [
     searchQuery,
-    gridData,
     names,
-    adjectives,
     dictNotes,
     savedColors,
     dictTags,
     colorData,
   ]);
-  if (!gridData || !crosshair)
+  if (!crosshair)
     return React.createElement(
       "div",
       {
@@ -15329,64 +10832,40 @@ const App = () => {
       },
       "Initializing Studio...",
     );
-  const toggleAnchorLock = () => {
-    if (!crosshair) return;
-    const anchorId = crosshair.nearestAnchorId;
-    const adjId = crosshair.nearestAdjId;
-    const existingAnchorLock = Object.values(savedColors).find(
-      (sc) =>
-        sc.type === "anchor" && sc.anchorId === anchorId && sc.adjId === adjId,
-    );
-    if (existingAnchorLock) {
-      if (existingAnchorLock.isCustomAnchor) {
-        setSavedColors((prev) => {
-          const next = { ...prev };
-          next[existingAnchorLock.id] = {
-            ...next[existingAnchorLock.id],
-            locked: existingAnchorLock.locked === false ? true : false,
-          };
-          return next;
-        });
-      } else {
-        setSavedColors((prev) => {
-          const next = { ...prev };
-          delete next[existingAnchorLock.id];
-          return next;
-        });
-      }
-    } else {
-      const newId = `${anchorId}-${adjId}`;
-      let ptToLock = crosshair.closestGridPt;
-      if (ptToLock && ptToLock.isPin) {
-        const cStr = anchorId.split("-")[1];
-        const hStr = anchorId.split("-")[2];
-        ptToLock =
-          filteredViewData.points.find(
-            (p) => p.lStr === adjId && p.cStr === cStr && p.hStr === hStr,
-          ) || ptToLock;
-      }
-      if (ptToLock) {
-        setSavedColors((prev) => ({
-          ...prev,
-          [newId]: {
-            id: newId,
-            type: "anchor",
-            L: ptToLock.L,
-            C: ptToLock.C,
-            H: ptToLock.H,
-            a: ptToLock.a,
-            b: ptToLock.b,
-            erpCode: ptToLock.erpCode,
-            adjId,
-            anchorId,
-            nameOverride: "",
-            adjOverride: "",
-            notes: "",
-            color: ptToLock.color,
-          },
-        }));
-      }
+  // Card button: add an anchor at the cursor, or remove the one it sits on.
+  const toggleAnchorHere = () => {
+    const an = findNearestAnchor(scrubL, scrubC, scrubH, savedColors);
+    if (an && an.dist < 0.0005) {
+      setSavedColors((prev) => {
+        const next = { ...prev };
+        delete next[an.id];
+        return next;
+      });
+      setNames((prev) => {
+        if (!(an.nameKey in prev)) return prev;
+        const next = { ...prev };
+        delete next[an.nameKey];
+        return next;
+      });
+      return;
     }
+    const id = `custom-noun-${Date.now().toString(36)}`;
+    const h = (scrubH * Math.PI) / 180;
+    setSavedColors((prev) => ({
+      ...prev,
+      [id]: {
+        id,
+        type: "nounColumn",
+        nameOverride: "",
+        C: scrubC,
+        H: scrubH,
+        minL: scrubL,
+        maxL: scrubL,
+        a: scrubC * Math.sin(h),
+        b: scrubC * Math.cos(h),
+        notes: "",
+      },
+    }));
   };
   const togglePin = () => {
     if (!crosshair) return;
@@ -15428,13 +10907,11 @@ const App = () => {
           a: crosshair.a,
           b: crosshair.b,
           erpCode: getExactErpCode(scrubL, scrubC, scrubH),
-          adjId: crosshair.nearestAdjId,
           anchorId: crosshair.nearestAnchorId,
           parentPinId: crosshair.closestGridPt?.isPin
             ? crosshair.closestGridPt.pinId
             : null,
           nameOverride: "",
-          adjOverride: "",
           notes: "",
           color: new Color("oklch", [scrubL, scrubC, scrubH])
             .clone()
@@ -15463,26 +10940,6 @@ const App = () => {
       },
     }));
   };
-  const onAdjChange = (val) => {
-    if (crosshair?.activeSavedColor?.type === "pin")
-      updateSavedColor("adjOverride", val);
-    else {
-      setAdjectives({ ...adjectives, [crosshair?.nearestAdjId]: val });
-      if (
-        crosshair?.nearestAnchorId &&
-        savedColors[crosshair.nearestAnchorId] &&
-        savedColors[crosshair.nearestAnchorId].type === "anchor"
-      ) {
-        setSavedColors((prev) => ({
-          ...prev,
-          [crosshair.nearestAnchorId]: {
-            ...prev[crosshair.nearestAnchorId],
-            adjOverride: val,
-          },
-        }));
-      }
-    }
-  };
   const onNameChange = (val) => {
     if (crosshair?.activeSavedColor?.type === "pin") {
       updateSavedColor("nameOverride", val);
@@ -15497,38 +10954,6 @@ const App = () => {
         setSavedColors((prev) => ({
           ...prev,
           [id]: { ...prev[id], nameOverride: val },
-        }));
-      }
-      if (val && !savedColors[id] && !id.startsWith("custom-")) {
-        let minL = 0,
-          maxL = 1;
-        if (id.startsWith("UL")) {
-          minL = 0.95;
-          maxL = 1;
-        } else if (id.startsWith("L")) {
-          minL = 0.5;
-          maxL = 0.95;
-        } else if (id.startsWith("D")) {
-          minL = 0.2;
-          maxL = 0.5;
-        } else if (id.startsWith("UD")) {
-          minL = 0;
-          maxL = 0.2;
-        }
-        setSavedColors((prev) => ({
-          ...prev,
-          [id]: {
-            id,
-            type: "nounColumn",
-            nameOverride: val,
-            C: crosshair.gravityC,
-            H: crosshair.gravityH,
-            minL,
-            maxL,
-            a: crosshair.gravityA,
-            b: crosshair.gravityB,
-            notes: dictNotes[id] || "",
-          },
         }));
       }
     }
@@ -15560,7 +10985,6 @@ const App = () => {
       const filename = `The ColorSAMIficator ${ts}.html`;
       const stateData = {
         names,
-        adjectives,
         dictNotes,
         dictTags,
         savedColors,
@@ -15732,9 +11156,12 @@ const App = () => {
             Noun: nounName,
             Note: sc.notes || dictNotes[sc.id] || "",
             Tags: (dictTags[sc.id] || []).join(","),
+            // A point anchor writes its lightness; a legacy range writes "min-max".
             OKLCH_L:
               sc.minL !== undefined && sc.maxL !== undefined
-                ? `${sc.minL}-${sc.maxL}`
+                ? sc.minL === sc.maxL
+                  ? sc.minL
+                  : `${sc.minL}-${sc.maxL}`
                 : sc.L !== undefined
                   ? sc.L
                   : "",
@@ -15746,12 +11173,10 @@ const App = () => {
           if (sc.anchorId) exportedAnchorIds.add(sc.anchorId);
           const extra = getExtraColorValues(sc.L, sc.C, sc.H, sc.color || sc.hex);
           const anchorNoun = sc.nameOverride || names[sc.anchorId] || names[sc.id] || "";
-          const anchorAdj = sc.adjOverride || adjectives[sc.adjId] || adjectives[sc.id] || "";
           anchorsCsv.push({
             Type: "ANCHOR",
             ID: sc.id || sc.anchorId || "",
             Noun: anchorNoun,
-            Adjective: anchorAdj,
             Note: sc.notes || dictNotes[sc.id] || dictNotes[sc.anchorId] || "",
             Tags: (dictTags[sc.id] || dictTags[sc.anchorId] || []).join(","),
             OKLCH_L: sc.L !== undefined ? sc.L : "",
@@ -15766,92 +11191,29 @@ const App = () => {
                     .toGamut({ space: "srgb" })
                     .toString({ format: "hex" })
                 : ""),
-            Locked: sc.locked !== false ? "TRUE" : "FALSE",
             ERP_Code: sc.erpCode || "",
           });
         }
-      });
-
-      Object.keys(names).forEach((id) => {
-        if (exportedAnchorIds.has(id)) return;
-        const name = names[id];
-        if (!name) return;
-        const nc = savedColors[id];
-        if (nc && nc.type === "nounColumn") {
-          anchorsCsv.push({
-            Type: "NOUN",
-            ID: id,
-            Noun: name,
-            Note: dictNotes[id] || "",
-            Tags: (dictTags[id] || []).join(","),
-            OKLCH_L: `${nc.minL}-${nc.maxL}`,
-            OKLCH_C: nc.C,
-            OKLCH_H: nc.H,
-          });
-        } else {
-          const parts = id.split("-");
-          let cVal = "";
-          let hVal = "";
-          let lVal = "";
-          if (parts.length === 2) {
-            cVal = (parseInt(parts[0], 10) / 100).toString();
-            hVal = parseInt(parts[1], 10).toString();
-          } else if (parts.length === 3) {
-            if (parts[0] === "UL") lVal = "0.95-1";
-            else if (parts[0] === "L") lVal = "0.5-0.95";
-            else if (parts[0] === "D") lVal = "0.2-0.5";
-            else if (parts[0] === "UD") lVal = "0-0.2";
-            cVal = (parseInt(parts[1], 10) / 100).toString();
-            hVal = parseInt(parts[2], 10).toString();
-          }
-          anchorsCsv.push({
-            Type: "NOUN",
-            ID: id,
-            Noun: name,
-            Note: dictNotes[id] || "",
-            Tags: (dictTags[id] || []).join(","),
-            OKLCH_L: lVal,
-            OKLCH_C: cVal,
-            OKLCH_H: hVal,
-          });
-        }
-      });
-
-      Object.keys(adjectives).forEach((adjId) => {
-        anchorsCsv.push({
-          Type: "ADJECTIVE",
-          ID: adjId,
-          Adjective: adjectives[adjId] || "",
-          OKLCH_L: adjId,
-        });
       });
 
       Object.values(savedColors)
         .filter((sc) => sc.type === "pin")
         .forEach((sc) => {
           const extra = getExtraColorValues(sc.L, sc.C, sc.H, sc.hex);
-          const pinNames = getInheritedPinNames(
-            sc,
-            savedColors,
-            names,
-            adjectives,
-            colorData,
-          );
+          const pinNames = getInheritedPinNames(sc, savedColors, names);
           pinsCsv.push({
             Type: "PIN",
             ID: sc.id || "",
             Parent_Pin_ID: sc.parentPinId || "",
-            Anchor_ID: sc.anchorId || pinNames.sourceId || "",
-            Adj_ID: sc.adjId || "",
+            // The anchor that names this pin now (for reading; naming is live).
+            Anchor_ID: (findNearestAnchor(sc.L, sc.C, sc.H, savedColors) || {}).nameKey || "",
             Brand: sc.brand || "",
             Original_Index: sc.originalIndex !== undefined ? sc.originalIndex : "",
             Image: sc.image || "",
-            // Noun/Adjective are the resolved names, for reading only — they
-            // are not re-imported. Overrides round-trip in their own columns.
+            // Noun is the resolved name, for reading only — it is not
+            // re-imported. An override round-trips in its own column.
             Noun: sc.nameOverride || pinNames.displayName || "",
-            Adjective: sc.adjOverride || pinNames.displayAdj || "",
             Noun_Override: sc.nameOverride || "",
-            Adjective_Override: sc.adjOverride || "",
             Note: sc.notes || "",
             Tags: (dictTags[sc.id] || []).join(","),
             OKLCH_L: sc.L,
@@ -15928,7 +11290,6 @@ const App = () => {
           ID: "",
           Parent_Pin_ID: "",
           Anchor_ID: "",
-          Adj_ID: "",
           Brand: "",
           Original_Index: "",
           Image: "",
@@ -15936,7 +11297,6 @@ const App = () => {
           Adjective: "",
           Note: "",
           Tags: "",
-          Locked: "",
           HEX: "",
           OKLCH_L: "",
           OKLCH_C: "",
@@ -16058,10 +11418,6 @@ const App = () => {
       return files;
   };
   const handleSystemExport = async () => {
-    if (!gridData) {
-      alert("Missing gridData!");
-      return;
-    }
     try {
       const files = buildExportFiles();
       const zip = new JSZip();
@@ -16093,7 +11449,7 @@ const App = () => {
     }
     if (
       !window.confirm(
-        "Replace the colors, nouns, adjectives and palettes in this session with what is currently in the repo? Anything unsynced will be lost.",
+        "Replace the colors, anchors and palettes in this session with what is currently in the repo? Anything unsynced will be lost.",
       )
     ) {
       return;
@@ -16113,7 +11469,6 @@ const App = () => {
       let cColorData = {};
       let cSaved = {};
       let cNames = {};
-      let cAdjs = {};
       let cNotes = {};
       let cTags = {};
       let cGroups = defaultGroupSettings;
@@ -16130,7 +11485,6 @@ const App = () => {
           cColorData,
           cSaved,
           cNames,
-          cAdjs,
           cNotes,
           cTags,
           cGroups,
@@ -16139,7 +11493,6 @@ const App = () => {
         cColorData = processed.newColorData;
         cSaved = processed.newSavedColors;
         cNames = processed.newNames;
-        cAdjs = processed.newAdjs;
         cNotes = processed.newNotes;
         cTags = processed.newTags;
         cGroups = processed.newGroupSettings || cGroups;
@@ -16149,7 +11502,6 @@ const App = () => {
       setColorData(Object.keys(cColorData).length > 0 ? cColorData : null);
       setSavedColors(cSaved);
       setNames(cNames);
-      setAdjectives(cAdjs);
       setDictNotes(cNotes);
       setDictTags(cTags);
       setGroupSettings(cGroups);
@@ -16168,10 +11520,6 @@ const App = () => {
     const cfg = override || githubConfig;
     if (!cfg.token || !cfg.owner || !cfg.repo) {
       setShowGithubModal(true);
-      return;
-    }
-    if (!gridData) {
-      alert("Missing gridData!");
       return;
     }
     setSyncStatus({ state: "running", message: "Checking access...", log: [] });
@@ -16225,7 +11573,6 @@ const App = () => {
         colorData,
         savedColors,
         names,
-        adjectives,
         dictNotes,
         dictTags,
         groupSettings,
@@ -16235,7 +11582,6 @@ const App = () => {
         setGroupSettings(processed.newGroupSettings);
       }
       setNames(processed.newNames);
-      setAdjectives(processed.newAdjs);
       setDictNotes(processed.newNotes);
       setSavedColors(processed.newSavedColors);
       setDictTags(processed.newTags);
@@ -16273,7 +11619,6 @@ const App = () => {
       C: scrubC,
       H: scrubH,
       erpCode: crosshair.activeErpCode,
-      adjId: crosshair.nearestAdjId,
       nounId: crosshair.nearestAnchorId,
       pinId,
       image: imageSrc,
@@ -16351,7 +11696,6 @@ const App = () => {
               C: scrubC,
               H: scrubH,
               erpCode: crosshair.activeErpCode,
-              adjId: crosshair.nearestAdjId,
               nounId: crosshair.nearestAnchorId,
               pinId,
               image: imageSrc,
@@ -16665,7 +12009,6 @@ const App = () => {
         C: targetC,
         H: hue,
         erpCode: null,
-        adjId: null,
         nounId: null,
         pinId: null,
         image: null,
@@ -16708,129 +12051,65 @@ const App = () => {
   }
   const labValues = `${labCoords[0].toFixed(1)}, ${labCoords[1].toFixed(1)}, ${labCoords[2].toFixed(1)}`;
   const colorGroup = getColorGroup(scrubL, scrubC, scrubH, groupSettings);
-  const isOutOfGamut = !activeColorObj.inGamut("srgb");
+  const isOutOfGamut = !activeColorObj.inGamut("srgb", { epsilon: 0.001 });
   const crosshairHex = activeColorObj
     .clone()
     .toGamut({ space: "srgb" })
     .toString({ format: "hex" })
     .toUpperCase();
-  const getInheritedData = (sc) => {
+  // The card's name: a pin by its own rules (override, tethered parent,
+  // nearest anchor); anything else by the nearest anchor.
+  const getInheritedData = (sc, depth = 0) => {
     if (!sc) return null;
-    if (!sc.parentPinId || !savedColors[sc.parentPinId]) {
-      const cb = getInheritedPinNames(
-        sc,
-        savedColors,
-        names,
-        adjectives,
-        colorData,
-      );
-      const parsedAdj = cb.displayAdj === "Unnamed" ? "" : cb.displayAdj;
-      const parsedName = cb.displayName === "Unnamed" ? "" : cb.displayName;
+    const parent = sc.parentPinId && depth < 20 ? savedColors[sc.parentPinId] : null;
+    if (parent) {
+      const parentData = getInheritedData(parent, depth + 1);
       return {
-        adj: parsedAdj,
-        name: parsedName,
-        notes: sc.notes || dictNotes[cb.sourceId] || "",
-        source: cb.source,
-        sourceId: cb.sourceId,
+        name: cleanName(parent.nameOverride) || parentData.name,
+        notes: parent.notes || parentData.notes,
+        source: "pin",
+        sourceId: parent.id,
       };
     }
-    const parent = savedColors[sc.parentPinId];
-    const parentData = getInheritedData(parent);
+    const cb = getInheritedPinNames(sc, savedColors, names);
     return {
-      adj: parent.adjOverride || parentData.adj,
-      name: parent.nameOverride || parentData.name,
-      notes: parent.notes || parentData.notes,
-      source: "pin",
-      sourceId: parent.id,
+      name: cb.displayName,
+      notes: sc.notes || dictNotes[cb.sourceId] || "",
+      source: cb.source,
+      sourceId: cb.sourceId,
     };
   };
   // Plain IIFE, not useMemo: this sits after an early return, so a hook
   // here would break hook ordering.
   const activeData = (() => {
-    if (!crosshair?.activeSavedColor) {
-      if (crosshair?.closestGridPt?.isPin) {
-        const pinSc = savedColors[crosshair.closestGridPt.pinId];
-        const inherited2 = getInheritedData(pinSc);
-        return {
-          adj: pinSc.adjOverride || inherited2.adj,
-          name: pinSc.nameOverride || inherited2.name,
-          notes: pinSc.notes || inherited2.notes,
-          inherited: inherited2,
-        };
-      }
-      let activeNoun =
-        names[crosshair?.nearestAnchorId] ||
-        savedColors[crosshair?.nearestAnchorId]?.nameOverride ||
-        "";
-      let activeAdj = adjectives[crosshair?.nearestAdjId] || "";
-      if (!activeNoun || activeNoun === "Unnamed" || activeNoun === "Unnamed Noun" || !activeAdj) {
-        const derived = getInheritedPinNames(
-          {
-            L: crosshair?.rawL,
-            C: crosshair?.rawC,
-            H: crosshair?.rawH,
-            a: crosshair?.a,
-            b: crosshair?.b,
-            anchorId: crosshair?.nearestAnchorId,
-            adjId: crosshair?.nearestAdjId,
-          },
-          savedColors,
-          names,
-          adjectives,
-          colorData,
-        );
-        if (!activeNoun || activeNoun === "Unnamed" || activeNoun === "Unnamed Noun") {
-          activeNoun = derived.displayName;
-        }
-        if (!activeAdj) {
-          activeAdj = derived.displayAdj;
-        }
-      }
+    const pinSc =
+      crosshair?.activeSavedColor?.type === "pin"
+        ? crosshair.activeSavedColor
+        : !crosshair?.activeSavedColor && crosshair?.closestGridPt?.isPin
+          ? savedColors[crosshair.closestGridPt.pinId]
+          : null;
+    if (pinSc) {
+      const inherited = getInheritedData(pinSc);
       return {
-        adj: activeAdj,
-        name: activeNoun,
-        notes: dictNotes[crosshair?.nearestAnchorId] || "",
+        name: cleanName(pinSc.nameOverride) || inherited.name,
+        notes: pinSc.notes || inherited.notes,
+        inherited,
       };
     }
-    const sc = crosshair.activeSavedColor;
-    if (sc.type === "anchor") {
-      return {
-        adj: adjectives[sc.adjId] || "",
-        name: names[sc.anchorId] || "",
-        notes: dictNotes[sc.anchorId] || "",
-      };
-    } else if (sc.type === "nounColumn") {
-      return {
-        adj:
-          adjectives[crosshair?.nearestAdjId] ||
-          adjectives[getLStr(crosshair?.rawL)] ||
-          "",
-        name: names[sc.id] || sc.nameOverride,
-        notes: dictNotes[sc.id] || sc.notes,
-      };
-    }
-    const inherited = getInheritedData(sc);
+    const id = crosshair?.nearestAnchorId;
+    const sc = id ? savedColors[id] : null;
     return {
-      adj: sc.adjOverride || inherited.adj,
-      name: sc.nameOverride || inherited.name,
-      notes: sc.notes || inherited.notes,
-      inherited,
+      name: cleanName(names[id] || (sc && sc.nameOverride)),
+      notes: dictNotes[id] || (sc && sc.notes) || "",
     };
   })();
-  const activeAdj = activeData.adj;
   const activeName = activeData.name;
   const activeNotes = activeData.notes;
   const isPinned = crosshair?.exactSavedColor?.type === "pin";
-  const isAnchorLocked = crosshair
-    ? lockedAdjectives[crosshair.nearestAdjId] &&
-      lockedNouns[crosshair.nearestAnchorId]
-    : false;
-  const isInputDisabled =
-    crosshair?.activeSavedColor?.type === "anchor" ||
-    (!crosshair?.activeSavedColor &&
-      crosshair &&
-      lockedAdjectives[crosshair.nearestAdjId] &&
-      lockedNouns[crosshair.nearestAnchorId]);
+  const isAnchorHere = (() => {
+    const an = findNearestAnchor(scrubL, scrubC, scrubH, savedColors);
+    return !!an && an.dist < 0.0005;
+  })();
   const activeCommercial = crosshair?.activeCommercial;
   const activeItemId = activeCommercial
     ? `commercial-${activeCommercial.brand}-${activeCommercial.originalIndex}`
@@ -16901,8 +12180,7 @@ const App = () => {
       }));
     }
   };
-  const adjInputClass = `name-input w-full bg-transparent text-center text-xs font-bold uppercase tracking-[0.2em] focus:outline-none drop-shadow-md pointer-events-auto ${getGlobalDuplicate(names, adjectives, crosshair?.activeSavedColor?.type === "pin" ? crosshair.activeSavedColor.id : crosshair?.nearestAdjId, activeAdj, savedColors, crosshair?.activeSavedColor?.type === "pin" ? !!crosshair.activeSavedColor.adjOverride : true, crosshair?.activeSavedColor?.type === "pin" ? crosshair?.nearestAdjId : null) ? "!text-red-500" : isPinned && !crosshair?.exactSavedColor.adjOverride ? "opacity-40 italic" : ""}`;
-  const nounInputClass = `name-input w-full bg-transparent text-center text-2xl font-black uppercase tracking-widest focus:outline-none drop-shadow-md -mt-1 pointer-events-auto ${getGlobalDuplicate(names, adjectives, crosshair?.activeSavedColor?.type === "pin" ? crosshair.activeSavedColor.id : crosshair?.nearestAnchorId, activeName, savedColors, crosshair?.activeSavedColor?.type === "pin" ? !!crosshair.activeSavedColor.nameOverride : true, crosshair?.activeSavedColor?.type === "pin" ? crosshair?.nearestAnchorId : null) ? "!text-red-500" : isPinned && !crosshair?.exactSavedColor.nameOverride ? "opacity-40 italic" : ""}`;
+  const nounInputClass = `name-input w-full bg-transparent text-center text-2xl font-black uppercase tracking-widest focus:outline-none drop-shadow-md -mt-1 pointer-events-auto ${getGlobalDuplicate(names, crosshair?.activeSavedColor?.type === "pin" ? crosshair.activeSavedColor.id : crosshair?.nearestAnchorId, activeName, savedColors, crosshair?.activeSavedColor?.type === "pin" ? !!crosshair.activeSavedColor.nameOverride : true, crosshair?.activeSavedColor?.type === "pin" ? crosshair?.nearestAnchorId : null) ? "!text-red-500" : isPinned && !crosshair?.exactSavedColor.nameOverride ? "opacity-40 italic" : ""}`;
   let deltaEOK = null;
   let deltaE2000 = null;
   if (compSlotA && compSlotB) {
@@ -16918,10 +12196,6 @@ const App = () => {
     setActiveTab,
     names,
     setNames,
-    adjectives,
-    setAdjectives,
-    filterSameAdjective,
-    setFilterSameAdjective,
     filterSameNoun,
     setFilterSameNoun,
     dictNotes,
@@ -17047,8 +12321,6 @@ const App = () => {
     colorData,
     filteredColorData,
     updateColorData,
-    visualizeData,
-    setVisualizeData,
     history,
     isUndoing,
     currentStateStr,
@@ -17056,14 +12328,10 @@ const App = () => {
     handleRedo,
     canUndo,
     canRedo,
-    lockedNouns,
-    lockedAdjectives,
     filteredViewData,
     handleUpdate,
     handlePointClick,
-    handleVisualize,
     crosshair,
-    gridData,
     isLight,
     activeColorObj,
     labValues,
@@ -17071,17 +12339,14 @@ const App = () => {
     isOutOfGamut,
     crosshairHex,
     activeData,
-    activeAdj,
     activeName,
     activeNotes,
     isPinned,
-    isAnchorLocked,
-    isInputDisabled,
+    isAnchorHere,
     activeItemId,
     activeTags,
     addTag,
     removeTag,
-    adjInputClass,
     nounInputClass,
     deltaEOK,
     deltaE2000,
@@ -17113,10 +12378,9 @@ const App = () => {
     loadPalette,
     deleteSavedPalette,
     replaceInPalette,
-    onAdjChange,
     onNameChange,
     onNotesChange,
-    toggleAnchorLock,
+    toggleAnchorHere,
     togglePin,
     updateSavedColor,
     spectral,
@@ -17136,9 +12400,7 @@ const DatabaseManager = ({
   swatchZoom,
   handlePointClick,
   crosshair,
-  setFilterSameAdjective,
   setFilterSameNoun,
-  filterSameAdjective,
   filterSameNoun,
   globalFilters,
   setGlobalFilters,
@@ -17202,9 +12464,7 @@ const DatabaseManager = ({
         "div",
         { className: "flex-1 overflow-hidden" },
         React.createElement(ViewDatabase, {
-                setFilterSameAdjective,
                 setFilterSameNoun,
-                filterSameAdjective,
                 filterSameNoun,
                 globalFilters,
                 setGlobalFilters,
@@ -17316,9 +12576,7 @@ const DB_SORT_FIELDS = [
 ];
 
 const ViewDatabase = ({
-  setFilterSameAdjective,
   setFilterSameNoun,
-  filterSameAdjective,
   filterSameNoun,
   globalFilters,
   setGlobalFilters,
@@ -18483,15 +13741,9 @@ const ViewDatabase = ({
               label: tagFilter,
               onClear: () => setTagFilter && setTagFilter(""),
             },
-            filterSameAdjective && {
-              key: "adj",
-              label: "Same adjective",
-              onClear: () =>
-                setFilterSameAdjective && setFilterSameAdjective(false),
-            },
             filterSameNoun && {
               key: "noun",
-              label: "Same noun",
+              label: "Same anchor",
               onClear: () => setFilterSameNoun && setFilterSameNoun(false),
             },
             ...Object.keys(columnFilters || {}).map((col) => ({
@@ -18518,7 +13770,6 @@ const ViewDatabase = ({
           onClearAll: () => {
             setBrandFilter("");
             setColumnFilters({});
-            if (setFilterSameAdjective) setFilterSameAdjective(false);
             if (setFilterSameNoun) setFilterSameNoun(false);
             if (setSearchTerm) setSearchTerm("");
             if (setTagFilter) setTagFilter("");
@@ -20133,10 +15384,6 @@ const AppUI = ({
   setActiveTab,
   names,
   setNames,
-  adjectives,
-  setAdjectives,
-  filterSameAdjective,
-  setFilterSameAdjective,
   filterSameNoun,
   setFilterSameNoun,
   dictNotes,
@@ -20262,8 +15509,6 @@ const AppUI = ({
   colorData,
   filteredColorData,
   updateColorData,
-  visualizeData,
-  setVisualizeData,
   history,
   isUndoing,
   currentStateStr,
@@ -20271,14 +15516,10 @@ const AppUI = ({
   handleRedo,
   canUndo,
   canRedo,
-  lockedNouns,
-  lockedAdjectives,
   filteredViewData,
   handleUpdate,
   handlePointClick,
-  handleVisualize,
   crosshair,
-  gridData,
   isLight,
   activeColorObj,
   labValues,
@@ -20286,17 +15527,14 @@ const AppUI = ({
   isOutOfGamut,
   crosshairHex,
   activeData,
-  activeAdj,
   activeName,
   activeNotes,
   isPinned,
-  isAnchorLocked,
-  isInputDisabled,
+  isAnchorHere,
   activeItemId,
   activeTags,
   addTag,
   removeTag,
-  adjInputClass,
   nounInputClass,
   deltaEOK,
   deltaE2000,
@@ -20328,10 +15566,9 @@ const AppUI = ({
   loadPalette,
   deleteSavedPalette,
   replaceInPalette,
-  onAdjChange,
   onNameChange,
   onNotesChange,
-  toggleAnchorLock,
+  toggleAnchorHere,
   togglePin,
   updateSavedColor,
   spectral,
@@ -20348,23 +15585,15 @@ const AppUI = ({
   const [mobilePanelsOpen, setMobilePanelsOpen] = useState(false);
   const [headerExpanded, setHeaderExpanded] = useState(false);
   const [showFilterBuilder, setShowFilterBuilder] = useState(false);
-  // Resolved once here so the noun/adjective filter rows and the presets all
+  // Resolved once here so the anchor filter rows and the presets all
   // agree with the labels shown beside the toggles.
   const sameGroupContext = useMemo(() => {
     try {
-      return getSameGroupContext(
-        scrubL,
-        scrubC,
-        scrubH,
-        null,
-        savedColors,
-        names,
-        adjectives,
-      );
+      return getSameGroupContext(scrubL, scrubC, scrubH, savedColors, names);
     } catch (e) {
       return null;
     }
-  }, [scrubL, scrubC, scrubH, savedColors, names, adjectives]);
+  }, [scrubL, scrubC, scrubH, savedColors, names]);
   // Values already present in the loaded data, so select-type rows offer real
   // choices instead of asking you to type a brand exactly right.
   const filterOptionsFor = useCallback(
@@ -20485,38 +15714,21 @@ const AppUI = ({
     const pretty = (k) =>
       k && k.indexOf("name:") === 0 ? k.slice(5).toUpperCase() : k === "any" ? "" : "unnamed";
     try {
-      const ctx = getSameGroupContext(
-        scrubL,
-        scrubC,
-        scrubH,
-        null,
-        savedColors,
-        names,
-        adjectives,
-      );
-      return { noun: pretty(ctx.nounKey), adj: pretty(ctx.adjectiveKey) };
+      const ctx = getSameGroupContext(scrubL, scrubC, scrubH, savedColors, names);
+      return { noun: pretty(ctx.nounKey) };
     } catch (e) {
-      return { noun: "", adj: "" };
+      return { noun: "" };
     }
-  }, [scrubL, scrubC, scrubH, savedColors, names, adjectives]);
+  }, [scrubL, scrubC, scrubH, savedColors, names]);
   const filterPresets = useMemo(
     () => [
       {
         id: "same-noun",
-        label: "Same noun",
-        hint: "Colors carrying the cursor's noun",
+        label: "Same anchor",
+        hint: "Colors named by the same anchor as the cursor",
         apply: () =>
           setGlobalFilters((rows) =>
             mergeFilterRows(rows, [newFilterRow("noun", "is", "", "", true)]),
-          ),
-      },
-      {
-        id: "same-adj",
-        label: "Same adjective",
-        hint: "Colors at the cursor's adjective level",
-        apply: () =>
-          setGlobalFilters((rows) =>
-            mergeFilterRows(rows, [newFilterRow("adjective", "is", "", "", true)]),
           ),
       },
       {
@@ -20531,20 +15743,19 @@ const AppUI = ({
       {
         id: "color-match",
         label: "Color match",
-        hint: "Within \u0394E 2 of the cursor, sharing its noun and adjective",
+        hint: "Within \u0394E 2 of the cursor, named by the same anchor",
         apply: () =>
           setGlobalFilters((rows) =>
             mergeFilterRows(rows, [
               newFilterRow("deltaE", "lte", "2"),
               newFilterRow("noun", "is", "", "", true),
-              newFilterRow("adjective", "is", "", "", true),
             ]),
           ),
       },
       {
         id: "exact-material",
         label: "Exact material match",
-        hint: "Same material, sheen, profile, visual pattern and tactile texture as the selected color, plus its noun and adjective",
+        hint: "Same material, sheen, profile, visual pattern and tactile texture as the selected color, named by the same anchor",
         apply: () => {
           const sel =
             crosshair &&
@@ -20577,7 +15788,6 @@ const AppUI = ({
                 ? [newFilterRow("tactileTexture", "is", sel.tactileTexture)]
                 : []),
               newFilterRow("noun", "is", "", "", true),
-              newFilterRow("adjective", "is", "", "", true),
             ]),
           );
         },
@@ -21175,7 +16385,7 @@ const AppUI = ({
               className:
                 "block text-[10px] uppercase tracking-widest text-slate-400 truncate",
             },
-            sameGroupLabels.adj || "Anchor",
+            "Anchor",
           ),
           React.createElement(
             "span",
@@ -21257,24 +16467,8 @@ const AppUI = ({
                       "Out of sRGB Gamut",
                     ),
                 ),
-                (getGlobalDuplicate(
-                  names,
-                  adjectives,
-                  crosshair?.activeSavedColor?.type === "pin"
-                    ? crosshair.activeSavedColor.id
-                    : crosshair?.nearestAdjId,
-                  activeAdj,
-                  savedColors,
-                  crosshair?.activeSavedColor?.type === "pin"
-                    ? !!crosshair.activeSavedColor.adjOverride
-                    : true,
-                  crosshair?.activeSavedColor?.type === "pin"
-                    ? crosshair?.nearestAdjId
-                    : null,
-                ) ||
-                  getGlobalDuplicate(
+                getGlobalDuplicate(
                     names,
-                    adjectives,
                     crosshair?.activeSavedColor?.type === "pin"
                       ? crosshair.activeSavedColor.id
                       : crosshair?.nearestAnchorId,
@@ -21286,7 +16480,7 @@ const AppUI = ({
                     crosshair?.activeSavedColor?.type === "pin"
                       ? crosshair?.nearestAnchorId
                       : null,
-                  )) &&
+                  ) &&
                   React.createElement(
                     "div",
                     {
@@ -21308,14 +16502,14 @@ const AppUI = ({
                   React.createElement(
                     "button",
                     {
-                      onClick: toggleAnchorLock,
-                      className: `p-1.5 rounded-lg transition-colors ${isAnchorLocked ? "opacity-100" : "opacity-60 hover:opacity-100"}`,
-                      title: isAnchorLocked
-                        ? "Unlock Grid Anchor"
-                        : "Lock Grid Anchor",
+                      onClick: toggleAnchorHere,
+                      className: `p-1.5 rounded-lg transition-colors ${isAnchorHere ? "opacity-100" : "opacity-60 hover:opacity-100"}`,
+                      title: isAnchorHere
+                        ? "Remove the anchor here"
+                        : "Add an anchor here",
                     },
                     React.createElement(Icon, {
-                      name: isAnchorLocked ? "lock" : "unlock",
+                      name: "anchor",
                       className: "w-3.5 h-3.5 drop-shadow-sm",
                     }),
                   ),
@@ -21365,39 +16559,6 @@ const AppUI = ({
                       "absolute inset-0 flex flex-col items-center justify-center p-6 mt-1 z-20 pointer-events-none",
                     style: { color: isLight ? "#010D00" : "#F2E8DF" },
                   },
-                  (activeAdj || Object.keys(adjectives || {}).length > 0) &&
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "relative w-full flex justify-center items-center group/adj",
-                    },
-                    React.createElement("input", {
-                      type: "text",
-                      value: activeAdj,
-                      onChange: (e) => onAdjChange(e.target.value),
-                      placeholder: "Adjective",
-                      className: adjInputClass,
-                      disabled:
-                        isInputDisabled ||
-                        (crosshair?.activeSavedColor?.type !== "pin" &&
-                          lockedAdjectives[crosshair?.nearestAdjId]),
-                    }),
-                    crosshair?.activeSavedColor?.type === "pin" &&
-                      crosshair.activeSavedColor.adjOverride &&
-                      React.createElement(
-                        "button",
-                        {
-                          onClick: () => updateSavedColor("adjOverride", ""),
-                          className: `absolute right-0 opacity-0 group-hover/adj:opacity-100 transition-opacity p-1 rounded-full pointer-events-auto ${isLight ? "hover:bg-black/10" : "hover:bg-white/10"}`,
-                          title: "Revert to inherited adjective",
-                        },
-                        React.createElement(Icon, {
-                          name: "rotate-ccw",
-                          className: "w-3 h-3",
-                        }),
-                      ),
-                  ),
                   React.createElement(
                     "div",
                     {
@@ -21410,10 +16571,6 @@ const AppUI = ({
                       onChange: (e) => onNameChange(e.target.value),
                       placeholder: "Unnamed",
                       className: nounInputClass,
-                      disabled:
-                        isInputDisabled ||
-                        (crosshair?.activeSavedColor?.type !== "pin" &&
-                          lockedNouns[crosshair?.nearestAnchorId]),
                     }),
                     crosshair?.activeSavedColor?.type === "pin" &&
                       crosshair.activeSavedColor.nameOverride &&
@@ -21422,7 +16579,7 @@ const AppUI = ({
                         {
                           onClick: () => updateSavedColor("nameOverride", ""),
                           className: `absolute right-0 opacity-0 group-hover/noun:opacity-100 transition-opacity p-1 rounded-full pointer-events-auto ${isLight ? "hover:bg-black/10" : "hover:bg-white/10"}`,
-                          title: "Revert to inherited noun",
+                          title: "Revert to the inherited name",
                         },
                         React.createElement(Icon, {
                           name: "rotate-ccw",
@@ -21663,7 +16820,6 @@ const AppUI = ({
                   activeSavedColor: crosshair.activeSavedColor,
                 },
                 colorData,
-                filterSameAdjective,
                 filterSameNoun,
                 globalFilters,
                 setGlobalFilters,
@@ -21672,8 +16828,6 @@ const AppUI = ({
                 globalSortAsc,
                 sameGroupContext,
                 names,
-                adjectives,
-                gridData,
                 savedColors,
                 onSelectColor: handlePointClick,
               }),
@@ -22200,14 +17354,9 @@ const AppUI = ({
                                 C: scrubC,
                                 H: scrubH,
                                 erpCode: crosshair?.activeErpCode || "",
-                                adjId: crosshair?.activeSavedColor
-                                  ? crosshair.activeSavedColor.adjId
-                                  : crosshair?.nearestAdjId,
                                 nounId: crosshair?.activeSavedColor
                                   ? crosshair.activeSavedColor.anchorId
                                   : crosshair?.nearestAnchorId,
-                                adjOverride:
-                                  crosshair?.activeSavedColor?.adjOverride,
                                 nameOverride:
                                   crosshair?.activeSavedColor?.nameOverride,
                                 type: crosshair?.activeSavedColor?.type,
@@ -22362,14 +17511,9 @@ const AppUI = ({
                                 C: scrubC,
                                 H: scrubH,
                                 erpCode: crosshair?.activeErpCode || "",
-                                adjId: crosshair?.activeSavedColor
-                                  ? crosshair.activeSavedColor.adjId
-                                  : crosshair?.nearestAdjId,
                                 nounId: crosshair?.activeSavedColor
                                   ? crosshair.activeSavedColor.anchorId
                                   : crosshair?.nearestAnchorId,
-                                adjOverride:
-                                  crosshair?.activeSavedColor?.adjOverride,
                                 nameOverride:
                                   crosshair?.activeSavedColor?.nameOverride,
                                 type: crosshair?.activeSavedColor?.type,
@@ -22607,7 +17751,6 @@ const AppUI = ({
                           onClick: () => removeTag(tag),
                           className:
                             "hover:text-red-500 transition-colors ml-0.5",
-                          disabled: isInputDisabled,
                         },
                         React.createElement(Icon, {
                           name: "x",
@@ -22631,7 +17774,6 @@ const AppUI = ({
                     {
                       className:
                         "w-full bg-slate-50 dark:bg-neutral-800/50 border border-slate-200 dark:border-neutral-700/50 rounded-lg p-2.5 text-[10px] uppercase font-bold tracking-wider focus:outline-none focus:border-sky-500 text-slate-900 dark:text-white transition-colors appearance-none cursor-pointer",
-                      disabled: isInputDisabled,
                       onChange: (e) => {
                         if (e.target.value) {
                           addTag(e.target.value);
@@ -22653,7 +17795,6 @@ const AppUI = ({
                     placeholder: "Or type new tag & press Enter...",
                     className:
                       "w-full bg-slate-50 dark:bg-neutral-800/50 border border-slate-200 dark:border-neutral-700/50 rounded-lg p-2.5 text-[10px] uppercase font-bold tracking-wider focus:outline-none focus:border-sky-500 text-slate-900 dark:text-white transition-colors",
-                    disabled: isInputDisabled,
                     onKeyDown: (e) => {
                       if (e.key === "Enter" && e.target.value.trim()) {
                         addTag(e.target.value.trim());
@@ -22699,7 +17840,6 @@ const AppUI = ({
                   placeholder: "Add notes...",
                   value: activeNotes,
                   onChange: (e) => onNotesChange(e.target.value),
-                  disabled: isInputDisabled,
                 }),
               ),
             ),
@@ -23164,9 +18304,7 @@ const AppUI = ({
                 className: "w-full h-full"
               },
               React.createElement(ViewDatabase, {
-                setFilterSameAdjective,
                 setFilterSameNoun,
-                filterSameAdjective,
                 filterSameNoun,
                 globalFilters,
                 setGlobalFilters,
@@ -23211,7 +18349,6 @@ const AppUI = ({
                 points: filteredViewData.points,
                 colorData: filteredColorData,
                 names,
-                adjectives,
                 theme,
                 scrubL,
                 scrubC,
@@ -23256,12 +18393,11 @@ const AppUI = ({
                 // Only rows that follow the cursor need its context; passing it
                 // otherwise re-rendered the whole catalog on every cursor move.
                 sameGroupContext: (globalFilters || []).some(
-                  (r) => (!r.scope || r.scope === "viewport") && (r.dynamic || r.field === "noun" || r.field === "adjective"),
+                  (r) => (!r.scope || r.scope === "viewport") && (r.dynamic || r.field === "noun"),
                 )
                   ? sameGroupContext
                   : null,
                 names,
-                adjectives,
                 dictNotes,
                 savedColors,
                 setSavedColors,
@@ -23302,14 +18438,8 @@ const AppUI = ({
           .clone()
           .toGamut({ space: "srgb" })
           .toString({ format: "hex" });
-        const nA =
-          compSlotA.type === "pin"
-            ? `${compSlotA.adjOverride || adjectives[compSlotA.adjId] || ""} ${compSlotA.nameOverride || names[compSlotA.nounId] || ""}`.trim()
-            : `${adjectives[compSlotA.adjId] || ""} ${names[compSlotA.nounId] || ""}`.trim();
-        const nB =
-          compSlotB.type === "pin"
-            ? `${compSlotB.adjOverride || adjectives[compSlotB.adjId] || ""} ${compSlotB.nameOverride || names[compSlotB.nounId] || ""}`.trim()
-            : `${adjectives[compSlotB.adjId] || ""} ${names[compSlotB.nounId] || ""}`.trim();
+        const nA = getInheritedPinNames(compSlotA, savedColors, names).displayName;
+        const nB = getInheritedPinNames(compSlotB, savedColors, names).displayName;
         const displayA =
           nA || (compSlotA.erpCode ? `#${compSlotA.erpCode}` : "\u2014");
         const displayB =
@@ -23897,111 +19027,6 @@ const AppUI = ({
           }),
         ),
       ),
-    visualizeData &&
-      React.createElement(
-        "div",
-        {
-          className:
-            "fixed inset-0 z-[100] flex animate-in fade-in duration-300 bg-neutral-950/60 backdrop-blur-xl items-center justify-center p-8",
-        },
-        React.createElement(
-          "div",
-          {
-            className:
-              "bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col overflow-hidden border border-slate-200 dark:border-neutral-800",
-          },
-          React.createElement(
-            "div",
-            {
-              className:
-                "flex items-center justify-between p-6 border-b border-slate-200 dark:border-neutral-800",
-            },
-            React.createElement(
-              "h2",
-              {
-                className:
-                  "text-2xl font-black uppercase tracking-tight text-slate-900 dark:text-white",
-              },
-              visualizeData.title,
-            ),
-            React.createElement(
-              "button",
-              {
-                onClick: () => setVisualizeData(null),
-                className:
-                  "p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-full hover:bg-slate-100 dark:hover:bg-neutral-800 transition-colors",
-              },
-              React.createElement(Icon, { name: "x", className: "w-6 h-6" }),
-            ),
-          ),
-          React.createElement(
-            "div",
-            { className: "flex-1 overflow-y-auto p-6 custom-scrollbar" },
-            React.createElement(
-              "div",
-              {
-                className:
-                  "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4",
-              },
-              visualizeData.items.map((item, i) => {
-                const c = new Color("oklch", [item.L, item.C, item.H]);
-                const hex = c
-                  .clone()
-                  .toGamut({ space: "srgb" })
-                  .toString({ format: "hex" })
-                  .toUpperCase();
-                return React.createElement(
-                  "div",
-                  {
-                    key: i,
-                    className: "flex flex-col gap-2 group cursor-pointer",
-                    onClick: () => {
-                      handleUpdate([item.L, item.C, item.H]);
-                      setVisualizeData(null);
-                    },
-                  },
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "w-full aspect-square rounded-xl shadow-sm border border-slate-200 dark:border-neutral-800 relative overflow-hidden transition-transform group-hover:scale-105",
-                      style: { backgroundColor: hex },
-                    },
-                    !c.inGamut("srgb") &&
-                      React.createElement("div", {
-                        className: "absolute inset-0 pointer-events-none",
-                        style: {
-                          backgroundImage:
-                            "repeating-linear-gradient(45deg, rgba(0,0,0,0.2), rgba(0,0,0,0.2) 5px, rgba(255,255,255,0.2) 5px, rgba(255,255,255,0.2) 10px)",
-                        },
-                      }),
-                  ),
-                  React.createElement(
-                    "div",
-                    { className: "flex flex-col" },
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "text-[10px] font-bold uppercase tracking-wider truncate text-slate-900 dark:text-white",
-                      },
-                      item.displayName,
-                    ),
-                    React.createElement(
-                      "div",
-                      {
-                        className:
-                          "text-[9px] font-mono mt-0.5 text-slate-500 dark:text-neutral-400",
-                      },
-                      item.erpCode,
-                    ),
-                  ),
-                );
-              }),
-            ),
-          ),
-        ),
-      ),
     showFullscreenPreview &&
       !showCompareFullscreen &&
       (() => {
@@ -24077,8 +19102,6 @@ const AppUI = ({
                 className:
                   "text-6xl font-black mb-4 tracking-tight uppercase drop-shadow-md",
               },
-              activeAdj,
-              " ",
               activeName,
             ),
             React.createElement(
@@ -24467,7 +19490,7 @@ const AppUI = ({
                     React.createElement(
                       "p",
                       { className: "text-sm leading-relaxed opacity-80" },
-                      "Colors are named using an Adjective (based on Lightness) and a Noun (based on Hue and Chroma). You can override these names for specific pins.",
+                      "Every color takes the name of the nearest anchor in OkLab, the same cells you see in Explore. Add, rename and move anchors in the Anchors tab; a pin can override its name.",
                     ),
                   ),
                 ),
@@ -24701,9 +19724,7 @@ const AppUI = ({
         swatchZoom,
         handlePointClick,
         crosshair,
-        setFilterSameAdjective,
         setFilterSameNoun,
-        filterSameAdjective,
         filterSameNoun,
         globalFilters,
         setGlobalFilters,
