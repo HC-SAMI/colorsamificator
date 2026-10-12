@@ -1928,24 +1928,46 @@ const spaceMakeGrid = (px, py, pz, n) => {
 
 function createSpaceEngine(opts) {
   const THREE = window.THREE;
-  const { glCanvas, views, onCursor, onHover, onPick, onStatus } = opts;
+  const { onCursor, onHover, onPick, onStatus } = opts;
+  // Four fixed on-page canvases (one per slot). Any view can be shown in any
+  // of them: the 3D renders offscreen and is copied into its slot, so views
+  // can swap places without touching WebGL.
+  const slot = { ...opts.canvases };            // view key ("3d", "l", "c", "h") → canvas
+  const slotCanvases = Object.values(slot);
+  const glCanvas = document.createElement("canvas");
+  const viewOf = (el) => Object.keys(slot).find((k) => slot[k] === el);
+  const FONT = "Inter, ui-sans-serif, system-ui, sans-serif";
+  const CARD_W = 0.14, CARD_H = CARD_W * 1.3;   // swatch card, world units (square swatch + label strip)
+  const SLAB = 0.18;                            // sections show anchors this close to the plane (world units)
+  const NAME_PX = 46;                           // names appear once neighbours are this far apart on screen
+  const CARD_NAME_PX = 34;                      // …or a swatch card is this wide
+  // …and only once the view is zoomed in this far (CSS px per world unit;
+  // the default 3D view is ~75, a default section ~32)
+  const NAME_ZOOM_3D = 150, NAME_ZOOM_2D = 85;
   const CW = SPACE_CW, LW = SPACE_LW, LC = SPACE_LC, AMAX = SPACE_AMAX;
   let TPL = spaceTemplate(28, 18), NV = TPL.count;
 
   // ── State ────────────────────────────────────────────────────────────────
   const S = {
     anchors: [], markers: [],
-    cursor: [0.65, 0.12, 0], range: { hl: null, hc: null, hh: null },
+    modes: { "3d": "cells", l: "bins", c: "bins", h: "bins" },
+    cursor: [0.65, 0.12, 0],
+    // per view: visible range around the cursor (half-widths; null = all) and opacity
+    // Half-widths around the cursor (null = everything). A section's own axis
+    // (L for the L section, C for C, H for H) is its depth: how far above and
+    // below its plane colours are projected onto it (0 = only the plane).
+    ranges: { "3d": { hl: null, hc: null, hh: null }, l: { hl: null, hc: null, hh: null, depth: 0 }, c: { hl: null, hc: null, hh: null, depth: 0 }, h: { hl: null, hc: null, hh: null, depth: 0 } },
+    alpha: { l: 1, c: 1, h: 1 },
     fill: 0.5, sep: 0, opacity: 1,
     dark: false, fg: [0.1, 0.1, 0.1], bg: [1, 1, 1],
     guide: { l: "#b7791f", c: "#0e7490", h: "#be185d" },
   };
-  let N = 0, px, py, pz, cols, rCell, meanR, maxR, dotR, grid = null, ready = false, buildToken = 0;
+  let N = 0, px, py, pz, cols, rCell, meanR, maxR, dotR, nnW, grid = null, ready = false, buildToken = 0;
   let selIdx = -1, disposed = false, anchorSig = null, markerSig = null;
 
   // ── Renderer ─────────────────────────────────────────────────────────────
   const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true, alpha: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setPixelRatio(1);   // the slot canvas is sized in device pixels already
   renderer.setClearColor(0x000000, 0);
   renderer.autoClear = false;
   const scene = new THREE.Scene(), overlay = new THREE.Scene();
@@ -2095,6 +2117,77 @@ function createSpaceEngine(opts) {
   ghostDots.renderOrder = -1;
   overlay.add(ghostDots);
 
+  // Swatch cards: a square of the anchor's colour over a label strip, always
+  // facing the camera. Far away the strip takes the colour too, so the space
+  // reads as a cloud; close up it turns to paper and carries the name.
+  const cardGeo = new THREE.InstancedBufferGeometry();
+  cardGeo.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0], 3));
+  cardGeo.setIndex([0, 1, 2, 2, 1, 3]);
+  const cardMat = new THREE.ShaderMaterial({
+    vertexShader: `attribute vec3 iPos; attribute vec3 iColor; attribute float iVis; attribute float iSel;
+      uniform float uSep, uW, uH, uViewH;
+      varying vec2 vUv; varying vec3 vColor; varying float vPx; varying float vSel;
+      void main() {
+        vec4 mv = viewMatrix * vec4(iPos * uSep, 1.0);
+        vec2 c = position.xy;
+        mv.xy += vec2((c.x - 0.5) * uW, uW * 0.5 - (1.0 - c.y) * uH);
+        gl_Position = iVis < 0.5 ? vec4(2.0, 2.0, 2.0, 1.0) : projectionMatrix * mv;
+        vUv = vec2(c.x, (1.0 - c.y) * uH / uW);
+        vColor = iColor; vSel = iSel;
+        vPx = uW * projectionMatrix[1][1] * uViewH * 0.5 / max(-mv.z, 0.001);
+      }`,
+    fragmentShader: `precision highp float;
+      varying vec2 vUv; varying vec3 vColor; varying float vPx; varying float vSel;
+      uniform vec3 uPaper, uEdge; uniform float uH, uW, uAlpha;
+      void main() {
+        vec3 paper = mix(vColor, uPaper, smoothstep(10.0, 34.0, vPx));
+        vec3 c = vUv.y < 1.0 ? vColor : paper;
+        float e = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, uH / uW - vUv.y)) * vPx;
+        if (vSel > 0.5 && e < 2.0) c = uEdge;
+        else if (e < 0.8 && vPx > 12.0) c = mix(c, uEdge, 0.3);
+        gl_FragColor = vec4(c, vSel > 0.5 ? 1.0 : uAlpha);
+      }`,
+    transparent: true, depthWrite: true,
+    uniforms: { uSep: shared.uSep, uW: { value: CARD_W }, uH: { value: CARD_H }, uViewH: { value: 800 }, uAlpha: { value: 1 },
+      uPaper: { value: new THREE.Color(1, 1, 1) }, uEdge: { value: new THREE.Color(0, 0, 0) } },
+  });
+  const cards = new THREE.Mesh(cardGeo, cardMat);
+  cards.frustumCulled = false;
+  cards.visible = false;
+  scene.add(cards);
+  let cVis = null, cSel = null;
+  const setCardGeometry = () => {
+    const pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
+    cVis = new Float32Array(N).fill(1); cSel = new Float32Array(N);
+    for (let i = 0; i < N; i++) { pos[i * 3] = px[i]; pos[i * 3 + 1] = py[i]; pos[i * 3 + 2] = pz[i]; col.set(cols.subarray(i * 3, i * 3 + 3), i * 3); }
+    if (cardGeo.attributes.iPos) cardGeo.dispose();   // release the previous GPU buffers
+    cardGeo.setAttribute("iPos", new THREE.InstancedBufferAttribute(pos, 3));
+    cardGeo.setAttribute("iColor", new THREE.InstancedBufferAttribute(col, 3));
+    cardGeo.setAttribute("iVis", new THREE.InstancedBufferAttribute(cVis, 1));
+    cardGeo.setAttribute("iSel", new THREE.InstancedBufferAttribute(cSel, 1));
+    cardGeo.instanceCount = N;
+    updateCardState();
+  };
+  const updateCardState = () => {
+    if (!cVis || cVis.length !== N) return;
+    for (let i = 0; i < N; i++) {
+      const a = S.anchors[i];
+      cVis[i] = !a || i === selIdx || inRangeLCH(a.L, a.C, a.H) ? 1 : 0;
+      cSel[i] = i === selIdx ? 1 : 0;
+    }
+    cardGeo.attributes.iVis.needsUpdate = true;
+    cardGeo.attributes.iSel.needsUpdate = true;
+    requestRender();
+  };
+  const cardsOn = () => S.modes["3d"] === "swatches";
+  const applyMode3D = () => {
+    const sw = cardsOn();
+    cards.visible = sw && ready;
+    mesh.visible = !sw;
+    if (sw) activeMesh.visible = activeRim.visible = false;
+    requestRender();
+  };
+
   // ── Orbit camera ─────────────────────────────────────────────────────────
   // The pivot (t) follows the cursor; a right-drag pan adds an offset (o) that
   // clears as soon as the cursor moves, so the cursor is always back in view.
@@ -2137,14 +2230,25 @@ function createSpaceEngine(opts) {
     renderer.render(scene, camera);
     renderer.clearDepth();
     renderer.render(overlay, camera);
+    const cv = slot["3d"];
+    if (cv && cv.width === glCanvas.width && cv.height === glCanvas.height) {
+      const ctx = cv.getContext("2d");
+      ctx.clearRect(0, 0, cv.width, cv.height);
+      ctx.drawImage(glCanvas, 0, 0);
+      drawLabels3D(ctx);
+    } else resize();
     if (far) requestRender(); else lastFrame = 0;
   };
   function requestRender() { if (!rafId && !disposed) rafId = requestAnimationFrame(frame); }
 
+  const DPR = () => Math.min(window.devicePixelRatio || 1, 2);
   const resize = () => {
-    const el = glCanvas.parentElement;
-    const w = Math.max(10, el.clientWidth), h = Math.max(10, el.clientHeight);
+    const cv = slot["3d"];
+    if (!cv || cv.clientWidth === 0) return;
+    const w = Math.max(10, Math.round(cv.clientWidth * DPR())), h = Math.max(10, Math.round(cv.clientHeight * DPR()));
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
     renderer.setSize(w, h, false);
+    cardMat.uniforms.uViewH.value = h;
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     requestRender();
@@ -2167,7 +2271,7 @@ function createSpaceEngine(opts) {
     grid = spaceMakeGrid(px, py, pz, N);
     TPL = N > 1800 ? spaceTemplate(14, 9) : N > 700 ? spaceTemplate(20, 12) : spaceTemplate(28, 18);
     NV = TPL.count;
-    rCell = new Float32Array(N * NV); meanR = new Float32Array(N); maxR = new Float32Array(N); dotR = new Float32Array(N);
+    rCell = new Float32Array(N * NV); meanR = new Float32Array(N); maxR = new Float32Array(N); dotR = new Float32Array(N); nnW = new Float32Array(N);
     selIdx = -1;
     if (!N) { ready = true; onStatus({ phase: "empty" }); rebuild(); rebuildActive(); return; }
     const D = TPL.dirs;
@@ -2178,7 +2282,8 @@ function createSpaceEngine(opts) {
       for (; i < N && performance.now() - t0 < 14; i++) {
         const X = px[i], Y = py[i], Z = pz[i];
         let near = grid.within(X, Y, Z, 1.2, i);
-        dotR[i] = Math.max(0.035, Math.min(0.1, (near.length ? Math.sqrt(near[0][0]) : 1) * 0.45));
+        nnW[i] = near.length ? Math.sqrt(near[0][0]) : 1.2;
+        dotR[i] = Math.max(0.035, Math.min(0.1, nnW[i] * 0.45));
         const radii = rCell.subarray(i * NV, (i + 1) * NV);
         // Distance to the nearest bisector plane along direction v, starting from cap r0
         const voronoi = (v, cand, r0) => {
@@ -2220,15 +2325,17 @@ function createSpaceEngine(opts) {
       ready = true;
       onStatus({ phase: "ready" });
       updateCursor();
+      setCardGeometry();
       rebuild();
       rebuildActive();
+      applyMode3D();
     };
     onStatus({ phase: "building", progress: 0 });
     setTimeout(step, 0);
   };
 
   const constraints = () => {
-    const cons = [], [lc, cc, hc] = S.cursor, { hl, hc: dc, hh } = S.range;
+    const cons = [], [lc, cc, hc] = S.cursor, { hl, hc: dc, hh } = S.ranges["3d"];
     if (hl !== null) {
       const lo = (lc - hl - LC) * LW, hi = (lc + hl - LC) * LW;
       cons.push((x, y) => lo - y, (x, y) => y - hi);
@@ -2251,11 +2358,15 @@ function createSpaceEngine(opts) {
     }
     return cons;
   };
-  const inRangeLCH = (L, C, H) => {
-    const [lc, cc, hc] = S.cursor, { hl, hc: dc, hh } = S.range;
-    return (hl === null || Math.abs(L - lc) <= hl) && (dc === null || Math.abs(C - cc) <= dc) &&
-      (hh === null || C < 0.004 || spaceHueDist(H, hc) <= hh);
+  // In a section, its own axis is the depth (handled by the projection), so
+  // only the other two filter.
+  const inRangeLCH = (L, C, H, k = "3d") => {
+    const [lc, cc, hc] = S.cursor, { hl, hc: dc, hh } = S.ranges[k];
+    return (hl === null || k === "l" || Math.abs(L - lc) <= hl) && (dc === null || k === "c" || Math.abs(C - cc) <= dc) &&
+      (hh === null || k === "h" || C < 0.004 || spaceHueDist(H, hc) <= hh);
   };
+  const DEPTH_ALL = { l: 1, c: 0.4, h: 180 };
+  const depthOf = (k) => (S.ranges[k].depth === null ? DEPTH_ALL[k] : S.ranges[k].depth);
 
   // A cell after inflation and slicing: null (sliced away), "whole" (untouched
   // template, written straight into the buffers) or a clipped mesh.
@@ -2345,7 +2456,7 @@ function createSpaceEngine(opts) {
   function rebuildActive() {
     let m = ready && selIdx >= 0 ? cellMesh(selIdx, constraints()) : null;
     if (m === "whole") m = wholeMesh(selIdx);
-    activeMesh.visible = activeRim.visible = !!m;
+    activeMesh.visible = activeRim.visible = !!m && !cardsOn();
     if (m) {
       const nv = m.K.length, ni = m.T.length;
       if (nv > aCapV || ni > aCapI) {
@@ -2428,23 +2539,24 @@ function createSpaceEngine(opts) {
   };
   function updateDotVisibility() {
     if (!mVis) return;
-    const M = S.markers, { hl, hc, hh } = S.range;
+    const M = S.markers, { hl, hc, hh } = S.ranges["3d"];
     if (hl === null && hc === null && hh === null) { if (mVisAll) return; mVis.fill(1); mVisAll = true; }
     else { mVisAll = false; for (let i = 0; i < M.length; i++) mVis[i] = inRangeLCH(M[i].L, M[i].C, M[i].H) ? 1 : 0; }
     dotGeo.attributes.aVis.needsUpdate = true;
+    updateCardState();
     requestRender();
   }
 
   // ── Picking ──────────────────────────────────────────────────────────────
   const rayDir = new THREE.Vector3(), projM = new THREE.Matrix4();
   const pick3D = (clientX, clientY) => {
-    const rc = glCanvas.getBoundingClientRect();
+    const rc = slot["3d"].getBoundingClientRect();
+    projM.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     const nx = ((clientX - rc.left) / rc.width) * 2 - 1, ny = -((clientY - rc.top) / rc.height) * 2 + 1;
     // markers first: nearest projected dot within 7px
     let best = null, bd = 49;
     const k = 1 + S.sep;
     if (mVis && markerPos) {
-      projM.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
       const e = projM.elements, hw = rc.width / 2, hh = rc.height / 2;
       for (let i = 0, n = S.markers.length; i < n; i++) {
         if (!mVis[i]) continue;
@@ -2460,6 +2572,20 @@ function createSpaceEngine(opts) {
     }
     if (best) return best;
     if (!ready || !N) return null;
+    if (cardsOn()) {
+      const e = projM.elements, hw = rc.width / 2, hh = rc.height / 2, fy = camera.projectionMatrix.elements[5];
+      let bz = 1e9, bi = -1;
+      for (let i = 0; i < N; i++) {
+        if (!cVis || !cVis[i]) continue;
+        const x = px[i] * k, y = py[i] * k, z = pz[i] * k, w = e[3] * x + e[7] * y + e[11] * z + e[15];
+        if (w <= 0.001) continue;
+        const sx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w) * hw + hw, sy = hh - ((e[1] * x + e[5] * y + e[9] * z + e[13]) / w) * hh;
+        const cw = (CARD_W * fy * hh) / w, mx = clientX - rc.left, my = clientY - rc.top;
+        if (mx < sx - cw / 2 || mx > sx + cw / 2 || my < sy - cw / 2 || my > sy - cw / 2 + cw * 1.3) continue;
+        if (w < bz) { bz = w; bi = i; }
+      }
+      return bi >= 0 ? S.anchors[bi] : null;
+    }
     const ro = camera.position;
     rayDir.set(nx, ny, 0.5).unproject(camera).sub(ro).normalize();
     let bt = 1e9, bi = -1;
@@ -2480,6 +2606,7 @@ function createSpaceEngine(opts) {
   // ── 3D pointer controls ──────────────────────────────────────────────────
   const listeners = [];
   const on = (el, ev, fn, o) => { el.addEventListener(ev, fn, o); listeners.push([el, ev, fn, o]); };
+  const handlers = { "3d": {}, l: {}, c: {}, h: {} };   // view → event → handler
   {
     const ptrs = new Map();
     let mode = null, lx = 0, ly = 0, pinch = null, down = null;
@@ -2489,9 +2616,9 @@ function createSpaceEngine(opts) {
       orb.ox -= (right.x * dx - up.x * dy) * s; orb.oy -= (right.y * dx - up.y * dy) * s; orb.oz -= (right.z * dx - up.z * dy) * s;
       setGoal(); camSnap = true;
     };
-    on(glCanvas, "contextmenu", (e) => e.preventDefault());
-    on(glCanvas, "pointerdown", (e) => {
-      glCanvas.setPointerCapture(e.pointerId);
+    handlers["3d"]["contextmenu"] = ((e) => e.preventDefault());
+    handlers["3d"]["pointerdown"] = ((e) => {
+      e.currentTarget.setPointerCapture(e.pointerId);
       ptrs.set(e.pointerId, [e.clientX, e.clientY]);
       onHover(null);
       if (ptrs.size === 2) {
@@ -2503,7 +2630,7 @@ function createSpaceEngine(opts) {
       lx = e.clientX; ly = e.clientY;
       down = { x: e.clientX, y: e.clientY, t: performance.now() };
     });
-    on(glCanvas, "pointermove", (e) => {
+    handlers["3d"]["pointermove"] = ((e) => {
       if (!ptrs.has(e.pointerId)) {
         if (e.pointerType === "mouse") {
           const hit = pick3D(e.clientX, e.clientY);
@@ -2514,7 +2641,7 @@ function createSpaceEngine(opts) {
       ptrs.set(e.pointerId, [e.clientX, e.clientY]);
       if (mode === "pinch" && ptrs.size === 2) {
         const [a, b] = [...ptrs.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]), m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-        orb.r = Math.max(3, Math.min(40, orb.r * (pinch.d / d)));
+        orb.r = Math.max(0.6, Math.min(40, orb.r * (pinch.d / d)));
         pan(m[0] - pinch.m[0], m[1] - pinch.m[1]);
         pinch = { d, m }; placeMarker(); applyOrbit(); return;
       }
@@ -2533,22 +2660,22 @@ function createSpaceEngine(opts) {
       down = null;
       if (!ptrs.size) mode = null;
     };
-    on(glCanvas, "pointerup", up);
-    on(glCanvas, "pointercancel", up);
-    on(glCanvas, "pointerleave", () => onHover(null));
-    on(glCanvas, "wheel", (e) => {
+    handlers["3d"]["pointerup"] = (up);
+    handlers["3d"]["pointercancel"] = (up);
+    handlers["3d"]["pointerleave"] = (() => onHover(null));
+    handlers["3d"]["wheel"] = ((e) => {
       e.preventDefault();
-      orb.r = Math.max(3, Math.min(40, orb.r * Math.exp(e.deltaY * 0.0012)));
+      orb.r = Math.max(0.6, Math.min(40, orb.r * Math.exp(e.deltaY * 0.0012)));   // close enough to read names
       placeMarker(); applyOrbit();
-    }, { passive: false });
+    });
   }
 
   // ── 2D sections ──────────────────────────────────────────────────────────
   const SV = {
-    l: { cv: views.l, def: { x0: -AMAX, x1: AMAX, y0: -AMAX, y1: AMAX }, iso: true },
-    c: { cv: views.c, def: { x0: -Math.PI * AMAX, x1: Math.PI * AMAX, y0: -0.05, y1: LW / CW + 0.05 }, iso: true },
+    l: { cv: slot.l, def: { x0: -AMAX, x1: AMAX, y0: -AMAX, y1: AMAX }, iso: true },
+    c: { cv: slot.c, def: { x0: -Math.PI * AMAX, x1: Math.PI * AMAX, y0: -0.05, y1: LW / CW + 0.05 }, iso: true },
     // H section at true proportions (chroma across, lightness up, same scale as 3D)
-    h: { cv: views.h, def: { x0: -0.02, x1: AMAX + 0.02, y0: -0.03, y1: LW / CW + 0.03 }, iso: true },
+    h: { cv: slot.h, def: { x0: -0.02, x1: AMAX + 0.02, y0: -0.03, y1: LW / CW + 0.03 }, iso: true },
   };
   // Show the whole default box, whatever the panel's shape.
   const fitContain = (v) => {
@@ -2603,47 +2730,69 @@ function createSpaceEngine(opts) {
   };
   const followAll = () => ["l", "c", "h"].forEach(followCursor);
 
-  // Which cell (if any) covers a world point at the current inflation.
-  const cellAt = (x, y, z) => {
-    if (!ready || !N) return -1;
-    const i = grid.nearest(x, y, z);
-    if (S.fill >= 0.999) return spaceInGamut(x, y, z) ? i : -1;
-    const dx = x - px[i], dy = y - py[i], dz = z - pz[i], dist = Math.sqrt(dx * dx + dy * dy + dz * dz), r0 = dotR[i];
-    if (dist <= r0) return i;
-    if (S.fill < 0.001) return -1;
-    const k = (r0 + (dist - r0) / S.fill) / dist;
-    const qx = px[i] + dx * k, qy = py[i] + dy * k, qz = pz[i] + dz * k;
-    if (!spaceInGamut(qx, qy, qz)) return -1;
-    return grid.nearest(qx, qy, qz) === i ? i : -1;
+  // A section pixel moved `off` along the view's own axis (L, C or degrees of
+  // hue), keeping its place in the view: the straight-on projection.
+  const mappingAt = (k, u, w, off, out) => {
+    const [Lc, Cc, Hc] = S.cursor;
+    if (k === "l") {
+      const L = Lc + off;
+      if (L < 0 || L > 1) return false;
+      out[0] = u * CW; out[1] = (L - LC) * LW; out[2] = -w * CW; return true;
+    }
+    const L = (w * CW) / LW;
+    if (L < 0 || L > 1) return false;
+    let C, h;   // written straight into `out` (this runs per pixel and depth step)
+    if (k === "c") {
+      C = Cc + off;
+      if (C < 0 || Cc < 0.002 || Math.abs(u) > Math.PI * Cc) return false;
+      h = u / Cc + Math.PI;
+    } else {
+      if (u < 0) return false;
+      C = u; h = ((Hc + off) * Math.PI) / 180;
+    }
+    out[0] = C * Math.sin(h) * CW; out[1] = (L - LC) * LW; out[2] = -C * Math.cos(h) * CW; return true;
   };
-  const mapping = {
-    // L section: a → right, b → up, at the cursor's lightness
-    l: (u, w, out) => { out[0] = u * CW; out[1] = (S.cursor[0] - LC) * LW; out[2] = -w * CW; return true; },
-    // C section: the cylinder at the cursor's chroma, unrolled at true size (seam at 0°/360°)
-    c: (s, w, out) => {
-      const C = S.cursor[1], L = (w * CW) / LW;
-      if (L < 0 || L > 1 || C < 0.002 || Math.abs(s) > Math.PI * C) return false;
-      const p = spaceToWorld(L, C, 180 + ((s / C) * 180) / Math.PI);
-      out[0] = p[0]; out[1] = p[1]; out[2] = p[2]; return true;
-    },
-    // H section: chroma → right, lightness → up, at the cursor's hue
-    h: (c, w, out) => {
-      const L = (w * CW) / LW;
-      if (c < 0 || L < 0 || L > 1) return false;
-      const p = spaceToWorld(L, c, S.cursor[2]);
-      out[0] = p[0]; out[1] = p[1]; out[2] = p[2]; return true;
-    },
+  const MAX_C = 0.33;   // no sRGB colour has more chroma
+  // The bin a section pixel shows: the cell on the plane, or else the nearest
+  // layer within the view's depth. Returns [id, depth fraction].
+  const binHit = [0, 0];
+  const binAt = (k, u, w, P) => {
+    binHit[0] = -1; binHit[1] = 0;
+    if (mappingAt(k, u, w, 0, P) && spaceInGamut(P[0], P[1], P[2])) { binHit[0] = grid.nearest(P[0], P[1], P[2]); return binHit; }
+    const D = depthOf(k);
+    if (D <= 0) return binHit;
+    if ((k === "l" && Math.hypot(u, w) > MAX_C) || (k === "h" && u > MAX_C)) return binHit;
+    const n = Math.min(40, Math.ceil(D / ({ l: 0.01, c: 0.006, h: 1.5 })[k])), st = D / n;
+    for (let j = 1; j <= n; j++)
+      for (let sgn = 1; sgn >= -1; sgn -= 2) {
+        if (k === "c" && S.cursor[1] + sgn * j * st > MAX_C) continue;
+        if (mappingAt(k, u, w, sgn * j * st, P) && spaceInGamut(P[0], P[1], P[2])) {
+          // close in on the gamut's edge between the last step and this one,
+          // so the projected outline is smooth rather than stepped
+          let lo = (j - 1) * st, hi = j * st;
+          for (let q = 0; q < 6; q++) {
+            const mid = (lo + hi) / 2;
+            if (mappingAt(k, u, w, sgn * mid, P) && spaceInGamut(P[0], P[1], P[2])) hi = mid; else lo = mid;
+          }
+          mappingAt(k, u, w, sgn * hi, P);
+          binHit[0] = grid.nearest(P[0], P[1], P[2]); binHit[1] = hi / D; return binHit;
+        }
+      }
+    return binHit;
   };
   const toByte = (c) => Math.round(Math.max(0, Math.min(1, c)) * 255);
-  // Classify pixels of rows [y0, y1) at the given block size.
+  // Classify pixels of rows [y0, y1) at the given block size. `dim` holds how
+  // strongly each pixel shows its cell: 1 on the plane, fading with depth, low
+  // when the other ranges filter it out.
   const sampleRows = (k, step, y0, y1) => {
     const v = SV[k], W = v.cv.width, H = v.cv.height, ids = v.ids, dim = v.dim, P = [0, 0, 0];
     for (let y = y0; y < y1; y += step)
       for (let x = 0; x < W; x += step) {
         let id = -1, dm = 0;
-        if (S.fill >= 0.001 && mapping[k](px2u(v, x + step / 2), py2v(v, y + step / 2), P)) {
-          id = cellAt(P[0], P[1], P[2]);
-          if (id >= 0) { const [L, C, Hh] = spaceWorldToLCH(P[0], P[1], P[2]); dm = inRangeLCH(L, C, Hh) ? 1 : 0; }
+        if (S.modes[k] === "bins" && ready && N) {
+          const hit = binAt(k, px2u(v, x + step / 2), py2v(v, y + step / 2), P);
+          id = hit[0];
+          if (id >= 0) { const [L, C, Hh] = spaceWorldToLCH(P[0], P[1], P[2]); dm = (inRangeLCH(L, C, Hh, k) ? 1 : 0.3) * (1 - 0.45 * hit[1]); }
         }
         for (let yy = y; yy < Math.min(y + step, H); yy++)
           for (let xx = x; xx < Math.min(x + step, W); xx++) { ids[yy * W + xx] = id; dim[yy * W + xx] = dm; }
@@ -2651,7 +2800,7 @@ function createSpaceEngine(opts) {
   };
   // Turn classified pixels into colours, then draw the plane guides on top.
   const present = (k) => {
-    const v = SV[k], W = v.cv.width, H = v.cv.height, d = v.img.data, ids = v.ids, dim = v.dim;
+    const v = SV[k], W = v.cv.width, H = v.cv.height, d = v.img.data, ids = v.ids, dim = v.dim, al = S.alpha[k];
     const bg = S.bg, empty = S.dark ? [bg[0] * 0.75, bg[1] * 0.75, bg[2] * 0.75] : [bg[0] * 0.94, bg[1] * 0.94, bg[2] * 0.94];
     for (let i = 0, n = W * H; i < n; i++) {
       const id = ids[i], o = i * 4;
@@ -2659,11 +2808,20 @@ function createSpaceEngine(opts) {
       if (id < 0) { d[o] = toByte(empty[0]); d[o + 1] = toByte(empty[1]); d[o + 2] = toByte(empty[2]); continue; }
       const x = i % W, edge = (x > 0 && ids[i - 1] !== id) || (i >= W && ids[i - W] !== id);
       let r = cols[id * 3], g = cols[id * 3 + 1], b = cols[id * 3 + 2];
-      if (!dim[i]) { r = r * 0.3 + empty[0] * 0.7; g = g * 0.3 + empty[1] * 0.7; b = b * 0.3 + empty[2] * 0.7; }
+      const f = dim[i];
+      if (f < 1) { r = r * f + empty[0] * (1 - f); g = g * f + empty[1] * (1 - f); b = b * f + empty[2] * (1 - f); }
+      if (al < 1 && id !== selIdx) { r = r * al + empty[0] * (1 - al); g = g * al + empty[1] * (1 - al); b = b * al + empty[2] * (1 - al); }
       if (edge) { const e = S.dark ? 0.55 : 0.7; r *= e; g *= e; b *= e; }
       d[o] = toByte(r); d[o + 1] = toByte(g); d[o + 2] = toByte(b);
     }
     v.ctx.putImageData(v.img, 0, 0);
+    if (S.modes[k] === "bins" && N) {
+      const cnt = new Float32Array(N), sx = new Float32Array(N), sy = new Float32Array(N);
+      for (let i = 0, n = W * H; i < n; i++) { const id = ids[i]; if (id >= 0) { cnt[id]++; sx[id] += i % W; sy[id] += (i / W) | 0; } }
+      const bins = [];
+      for (let i = 0; i < N; i++) if (cnt[i] > 0) bins.push([sx[i] / cnt[i], sy[i] / cnt[i], i, cnt[i]]);
+      v.bins = bins;
+    } else v.bins = null;
     drawGuides(k);
   };
   const paint = (k, step) => { sampleRows(k, step, 0, SV[k].cv.height); present(k); };
@@ -2690,62 +2848,248 @@ function createSpaceEngine(opts) {
     path(); ctx.fillStyle = fill; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = fgCss(); ctx.stroke();
     ctx.restore();
   };
-  // At zero inflation every anchor whose dot touches the section plane is drawn
-  // as a small round dot (screen-sized, so it reads the same in every view).
-  const drawDots = (k) => {
-    const v = SV[k], ctx = v.ctx, [L, C, Hh] = S.cursor, out = [];
-    v.dots = out;
-    if (S.fill >= 0.001 || !ready) return;
-    const hr = (Hh * Math.PI) / 180, sh = Math.sin(hr), ch = Math.cos(hr), yPl = (L - LC) * LW;
+  // ── names ──────────────────────────────────────────────────────────────
+  const textW = new Map();
+  const measure = (ctx, t, size) => {
+    const key = size + "|" + t;
+    let w = textW.get(key);
+    if (w === undefined) { ctx.font = `600 ${size}px ${FONT}`; w = ctx.measureText(t).width; if (textW.size > 5000) textW.clear(); textW.set(key, w); }
+    return w;
+  };
+  const nameOf = (i) => {
+    const t = S.anchors[i] && S.anchors[i].label;
+    return t && t !== "Unnamed" ? t.toUpperCase() : "";
+  };
+  // Place names greedily (most important first), skipping any that would
+  // overlap one already placed. `cands`: [x, y, i, size, align] with y the
+  // text's baseline centre.
+  const placeNames = (ctx, cands, max = 220, paint) => {
+    const boxes = [];
+    let n = 0;
+    for (const c of cands) {
+      if (n >= max) break;
+      const t = nameOf(c[2]);
+      if (!t) continue;
+      const size = c[3], w = measure(ctx, t, size), x0 = c[0] - w / 2 - 2, x1 = c[0] + w / 2 + 2, y0 = c[1] - size, y1 = c[1] + 3;
+      if (x1 < 0 || x0 > ctx.canvas.width || y1 < 0 || y0 > ctx.canvas.height) continue;
+      if (boxes.some((b) => b[0] < x1 && b[2] > x0 && b[1] < y1 && b[3] > y0)) continue;
+      boxes.push([x0, y0, x1, y1]);
+      (paint || haloText)(ctx, t, c[0], c[1], size, c[2]);
+      n++;
+    }
+  };
+  const haloText = (ctx, t, x, y, size) => {
+    ctx.save();
+    ctx.font = `600 ${size}px ${FONT}`;
+    ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
+    ctx.lineJoin = "round"; ctx.lineWidth = Math.max(2.5, size * 0.3);
+    ctx.strokeStyle = `rgba(${toByte(S.bg[0])},${toByte(S.bg[1])},${toByte(S.bg[2])},0.85)`;
+    ctx.strokeText(t, x, y);
+    ctx.fillStyle = fgCss();
+    ctx.fillText(t, x, y);
+    ctx.restore();
+  };
+  const contrastText = (ctx, t, x, y, size, i) => {
+    const lum = 0.2126 * cols[i * 3] + 0.7152 * cols[i * 3 + 1] + 0.0722 * cols[i * 3 + 2];
+    ctx.save();
+    ctx.font = `600 ${size}px ${FONT}`;
+    ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
+    ctx.fillStyle = lum > 0.45 ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.92)";
+    ctx.fillText(t, x, y);
+    ctx.restore();
+  };
+  const cssRgb = (i, a = 1) => `rgba(${toByte(cols[i * 3])},${toByte(cols[i * 3 + 1])},${toByte(cols[i * 3 + 2])},${a})`;
+  const paperRgb = () => (S.dark ? [0.13, 0.15, 0.13] : [1, 1, 1]);
+  // A swatch card on a 2D canvas: square swatch centred on (x, y), strip below.
+  const drawCard = (ctx, x, y, w, i, alpha, sel) => {
+    const h = w * 1.3, x0 = x - w / 2, y0 = y - w / 2, t = Math.max(0, Math.min(1, (w - 10) / 24));
+    const p = paperRgb(), mix = (a, b) => a + (b - a) * t;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = `rgb(${toByte(mix(cols[i * 3], p[0]))},${toByte(mix(cols[i * 3 + 1], p[1]))},${toByte(mix(cols[i * 3 + 2], p[2]))})`;
+    ctx.fillRect(x0, y0, w, h);
+    ctx.fillStyle = cssRgb(i);
+    ctx.fillRect(x0, y0, w, w);
+    ctx.lineWidth = sel ? 2 : 1;
+    ctx.strokeStyle = sel ? fgCss() : S.dark ? "rgba(255,255,255,0.18)" : "rgba(0,0,0,0.18)";
+    ctx.strokeRect(x0 + 0.5, y0 + 0.5, w - 1, h - 1);
+    ctx.restore();
+    return [x0, y0, x0 + w, y0 + h];
+  };
+  // The name inside a card's strip, fitted to its width.
+  const cardName = (ctx, i, x, y, w, dpr = 1) => {
+    let t = nameOf(i);
+    if (!t || w < CARD_NAME_PX * dpr) return;
+    const size = Math.max(7, Math.min(14, w * 0.17));
+    while (t.length > 1 && measure(ctx, t, size) > w - 6) t = t.slice(0, -2) + "…";
+    ctx.save();
+    ctx.font = `600 ${size}px ${FONT}`;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillStyle = S.dark ? "rgba(242,232,223,0.95)" : "rgba(1,13,0,0.88)";
+    ctx.fillText(t, x, y + w / 2 + w * 0.15);
+    ctx.restore();
+  };
+
+  // Names in the 3D view — under dots, on bins, in swatch strips — only once
+  // they have room on screen, and never through a nearer anchor.
+  const drawLabels3D = (ctx) => {
+    if (!ready || !N) return;
+    const W = ctx.canvas.width, Hc = ctx.canvas.height, hw = W / 2, hh = Hc / 2;
+    projM.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    const e = projM.elements, fy = camera.projectionMatrix.elements[5], k = 1 + S.sep, sw = cardsOn(), dpr = DPR();
+    const items = [];
     for (let i = 0; i < N; i++) {
-      const X = px[i], Y = py[i], Z = pz[i], r = dotR[i];
-      let u, w;
-      if (k === "l") {
-        if (Math.abs(Y - yPl) > r) continue;
-        u = X / CW; w = -Z / CW;
-      } else if (k === "c") {
-        if (C < 0.002 || Math.abs(Math.hypot(X, Z) - C * CW) > r) continue;
-        const lch = spaceWorldToLCH(X, Y, Z);
+      const a = S.anchors[i];
+      if (i !== selIdx && a && !inRangeLCH(a.L, a.C, a.H)) continue;
+      const x = px[i] * k, y = py[i] * k, z = pz[i] * k, w = e[3] * x + e[7] * y + e[11] * z + e[15];
+      if (w <= 0.05) continue;
+      const sx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w) * hw + hw, sy = hh - ((e[1] * x + e[5] * y + e[9] * z + e[13]) / w) * hh;
+      if (sx < -300 || sy < -300 || sx > W + 300 || sy > Hc + 300) continue;
+      items.push({ i, sx, sy, w, ppw: (fy * hh) / w });
+    }
+    items.sort((p, q) => p.w - q.w);   // nearest first
+    // nearer anchors, bucketed on a coarse screen grid, hide the ones behind
+    const G = 64, occ = new Map();
+    const cellsOf = (x0, y0, x1, y1, fn) => {
+      for (let gx = Math.floor(x0 / G); gx <= Math.floor(x1 / G); gx++)
+        for (let gy = Math.floor(y0 / G); gy <= Math.floor(y1 / G); gy++) fn(gx + "," + gy);
+    };
+    const add = (o) => cellsOf(o[0], o[1], o[2], o[3], (key) => { const l = occ.get(key); if (l) l.push(o); else occ.set(key, [o]); });
+    const hit = (x0, y0, x1, y1, test) => {
+      let found = false;
+      cellsOf(x0, y0, x1, y1, (key) => { if (!found) for (const o of occ.get(key) || []) if (test(o)) { found = true; break; } });
+      return found;
+    };
+    const cands = [], cardsOut = [];
+    for (const it of items) {
+      const { i, sx, sy, ppw } = it;
+      if (sw) {
+        const cw = CARD_W * ppw, x0 = sx - cw / 2, x1 = sx + cw / 2, y0 = sy - cw / 2, y1 = sy + cw * 0.8, st = sy + cw / 2;
+        const hidden = hit(x0, st, x1, y1, (o) => o[0] < x1 && o[2] > x0 && o[1] < y1 && o[3] > st);
+        add([x0, y0, x1, y1]);
+        if (!hidden && cw >= CARD_NAME_PX * dpr) cardsOut.push([i, sx, sy, cw]);
+      } else {
+        const r = inflR(i, meanR[i]) * ppw;
+        const hidden = hit(sx, sy, sx, sy, (o) => (o[4] - sx) ** 2 + (o[5] - sy) ** 2 < (o[6] * 0.85) ** 2);
+        add([sx - r, sy - r, sx + r, sy + r, sx, sy, r]);
+        if (!hidden && ppw >= NAME_ZOOM_3D * dpr && nnW[i] * ppw >= NAME_PX * dpr)
+          cands.push([sx, S.fill < 0.001 ? sy + Math.min(r, 14 * dpr) + 13 * dpr : sy + 4 * dpr, i, 11 * dpr]);
+      }
+    }
+    for (const [i, sx, sy, cw] of cardsOut) cardName(ctx, i, sx, sy, cw, dpr);
+    if (cands.length) {
+      const sel = cands.findIndex((c) => c[2] === selIdx);
+      if (sel > 0) cands.unshift(cands.splice(sel, 1)[0]);
+      placeNames(ctx, cands);
+    }
+  };
+
+  // Anchors on or around a section's plane, in the view's pixels. On the
+  // plane means within SLAB world units of it; the view's depth widens that
+  // along its own axis, and every anchor in it is drawn straight onto the
+  // plane (L section: from above; C: onto the cylinder; H: turned onto the
+  // hue's half-plane at its own chroma). `d` = 0 on the plane … 1 at the
+  // depth's edge, used to fade and stack them.
+  const nearPlane = (k) => {
+    const v = SV[k], [L, C, Hh] = S.cursor, out = [];
+    if (!ready) return out;
+    const hr = (Hh * Math.PI) / 180, sh = Math.sin(hr), ch = Math.cos(hr), yPl = (L - LC) * LW, D = depthOf(k);
+    for (let i = 0; i < N; i++) {
+      const X = px[i], Y = py[i], Z = pz[i], a = S.anchors[i];
+      const lch = a ? [a.L, a.C, a.H] : spaceWorldToLCH(X, Y, Z);
+      let u, w, dw, da;   // dw: world distance from the plane; da: along the view's own axis
+      if (k === "l") { dw = Math.abs(Y - yPl); da = Math.abs(lch[0] - L); u = X / CW; w = -Z / CW; }
+      else if (k === "c") {
+        if (C < 0.002) continue;
+        dw = Math.abs(Math.hypot(X, Z) - C * CW); da = Math.abs(lch[1] - C);
         u = ((lch[2] - 180) * Math.PI / 180) * C; w = (lch[0] * LW) / CW;
       } else {
-        const along = X * sh - Z * ch, perp = X * ch + Z * sh;
-        if (Math.abs(perp) > r || along < -r) continue;
-        u = Math.max(0, along) / CW; w = ((Y / LW + LC) * LW) / CW;
+        const along = X * sh - Z * ch;
+        dw = along < -SLAB ? Infinity : Math.abs(X * ch + Z * sh);
+        da = lch[1] < 0.004 ? 0 : spaceHueDist(lch[2], Hh);
+        u = lch[1]; w = (lch[0] * LW) / CW;
       }
+      const tPlane = dw / SLAB, tDepth = D > 0 ? da / D : Infinity, d = Math.min(tPlane, tDepth);
+      if (d > 1) continue;
       const x = u2px(v, u), y = v2py(v, w);
-      if (x < -6 || y < -6 || x > v.cv.width + 6 || y > v.cv.height + 6) continue;
-      out.push([x, y, i]);
+      if (x < -60 || y < -60 || x > v.cv.width + 60 || y > v.cv.height + 60) continue;
+      out.push({ x, y, i, d, on: i === selIdx || inRangeLCH(lch[0], lch[1], lch[2], k) });
     }
-    const empty = S.dark ? "rgba(0,0,0,0.6)" : "rgba(255,255,255,0.85)";
-    for (const [x, y, i] of out) {
-      const lch = spaceWorldToLCH(px[i], py[i], pz[i]), on = inRangeLCH(lch[0], lch[1], lch[2]);
-      ctx.save();
-      ctx.globalAlpha = on ? 1 : 0.35;
-      ctx.beginPath(); ctx.arc(x, y, 4.5, 0, Math.PI * 2);
-      ctx.fillStyle = `rgb(${toByte(cols[i * 3])},${toByte(cols[i * 3 + 1])},${toByte(cols[i * 3 + 2])})`;
-      ctx.fill();
-      ctx.lineWidth = i === selIdx ? 2 : 1.25;
-      ctx.strokeStyle = i === selIdx ? fgCss() : empty;
-      ctx.stroke();
-      ctx.restore();
+    return out;
+  };
+  // Dots and swatch cards (and their names) for one section.
+  const drawAnchors2D = (k) => {
+    const v = SV[k], ctx = v.ctx, mode = S.modes[k];
+    const ppw = v.cv.width / (v.dom.x1 - v.dom.x0) / CW;   // pixels per world unit
+    v.dots = null; v.cards = null;
+    if (mode === "bins") {
+      if (v.bins && ppw >= NAME_ZOOM_2D) {
+        const cands = v.bins
+          .filter((b) => b[3] > 2200)
+          .sort((a, b) => b[3] - a[3])
+          .map((b) => [b[0], b[1] + 4, b[2], Math.max(9, Math.min(13, Math.sqrt(b[3]) * 0.16)), Math.sqrt(b[3])])
+          .filter((c) => nameOf(c[2]) && measure(ctx, nameOf(c[2]), c[3]) < c[4] * 1.15);
+        placeNames(ctx, cands, 220, contrastText);
+      }
+      return;
+    }
+    const pts = nearPlane(k);
+    if (mode === "dots") {
+      v.dots = pts.map((p) => [p.x, p.y, p.i]);
+      const empty = S.dark ? "rgba(0,0,0,0.6)" : "rgba(255,255,255,0.85)";
+      pts.sort((a, b) => b.d - a.d);
+      for (const p of pts) {
+        ctx.save();
+        ctx.globalAlpha = (p.on ? 1 : 0.35) * (1 - 0.55 * p.d) * (p.i === selIdx ? 1 : S.alpha[k]);
+        ctx.beginPath(); ctx.arc(p.x, p.y, 4.5, 0, Math.PI * 2);
+        ctx.fillStyle = cssRgb(p.i); ctx.fill();
+        ctx.lineWidth = p.i === selIdx ? 2 : 1.25;
+        ctx.strokeStyle = p.i === selIdx ? fgCss() : empty;
+        ctx.stroke();
+        ctx.restore();
+      }
+      const cands = pts
+        .filter((p) => ppw >= NAME_ZOOM_2D && nnW[p.i] * ppw >= NAME_PX)
+        .sort((a, b) => (b.i === selIdx) - (a.i === selIdx) || a.d - b.d)
+        .map((p) => [p.x, p.y + 17, p.i, 10]);
+      placeNames(ctx, cands);
+      return;
+    }
+    // swatch cards, furthest from the plane first so the nearest sit on top
+    const w = Math.max(10, CARD_W * ppw), list = pts.slice().sort((a, b) => b.d - a.d);
+    v.cards = [];
+    for (const p of list) {
+      const r = drawCard(ctx, p.x, p.y, w, p.i, (p.on ? 1 : 0.35) * (1 - 0.5 * p.d) * (p.i === selIdx ? 1 : S.alpha[k]), p.i === selIdx);
+      v.cards.push([...r, p.i]);
+      cardName(ctx, p.i, p.x, p.y, w);
     }
   };
   const dotAt = (k, x, y) => {
+    const v = SV[k];
+    if (v.cards) {
+      for (let q = v.cards.length - 1; q >= 0; q--) { const c = v.cards[q]; if (x >= c[0] && x <= c[2] && y >= c[1] && y <= c[3]) return c[4]; }
+      return -1;
+    }
     let best = -1, bd = 49;
-    for (const [dx, dy, i] of SV[k].dots || []) { const d = (dx - x) ** 2 + (dy - y) ** 2; if (d < bd) { bd = d; best = i; } }
+    for (const [dx, dy, i] of v.dots || []) { const d = (dx - x) ** 2 + (dy - y) ** 2; if (d < bd) { bd = d; best = i; } }
     return best;
   };
   const drawGuides = (k) => {
     const v = SV[k], ctx = v.ctx, W = v.cv.width, H = v.cv.height, [L, C, Hh] = S.cursor, G = S.guide;
     const hr = (Hh * Math.PI) / 180, TOL = 0.012;
-    drawDots(k);
+    drawAnchors2D(k);
     // markers lying on this section
-    S.markers.forEach((m, i) => {
-      if (!mVis || !mVis[i]) return;
+    S.markers.forEach((m) => {
+      if (!inRangeLCH(m.L, m.C, m.H, k)) return;
       let u, w;
-      if (k === "l") { if (Math.abs(m.L - L) > TOL) return; const h = (m.H * Math.PI) / 180; u = m.C * Math.sin(h); w = m.C * Math.cos(h); }
-      else if (k === "c") { if (Math.abs(m.C - C) > TOL || C < 0.002) return; u = ((m.H - 180) * Math.PI / 180) * C; w = (m.L * LW) / CW; }
-      else { const dh = ((m.H - Hh) * Math.PI) / 180; if (Math.abs(m.C * Math.sin(dh)) > TOL || Math.cos(dh) < 0) return; u = m.C * Math.cos(dh); w = (m.L * LW) / CW; }
+      const D = depthOf(k);
+      if (k === "l") { if (Math.abs(m.L - L) > Math.max(TOL, D)) return; const h = (m.H * Math.PI) / 180; u = m.C * Math.sin(h); w = m.C * Math.cos(h); }
+      else if (k === "c") { if (Math.abs(m.C - C) > Math.max(TOL, D) || C < 0.002) return; u = ((m.H - 180) * Math.PI / 180) * C; w = (m.L * LW) / CW; }
+      else {
+        const dh = ((m.H - Hh) * Math.PI) / 180, onPlane = Math.abs(m.C * Math.sin(dh)) <= TOL && Math.cos(dh) >= 0;
+        if (!onPlane && !(m.C < 0.004 || spaceHueDist(m.H, Hh) <= D)) return;
+        u = m.C; w = (m.L * LW) / CW;
+      }
       markerShape(ctx, u2px(v, u), v2py(v, w), m.hex, m.kind === "brand");
     });
     if (k === "l") {
@@ -2815,9 +3159,9 @@ function createSpaceEngine(opts) {
     onCursor(L, C, H);
   };
   Object.keys(SV).forEach((k) => {
-    const v = SV[k], cv = v.cv, ptrs = new Map();
+    const v = SV[k], ptrs = new Map();
     let mode = null, last = null, pinch = null;
-    const rel = (e) => { const r = cv.getBoundingClientRect(); return [((e.clientX - r.left) * cv.width) / r.width, ((e.clientY - r.top) * cv.height) / r.height]; };
+    const rel = (e) => { const r = v.cv.getBoundingClientRect(); return [((e.clientX - r.left) * v.cv.width) / r.width, ((e.clientY - r.top) * v.cv.height) / r.height]; };
     const zoom = (x, y, f) => {
       const u = px2u(v, x), w = py2v(v, y), d = v.dom;
       d.x0 = u + (d.x0 - u) * f; d.x1 = u + (d.x1 - u) * f; d.y0 = w + (d.y0 - w) * f; d.y1 = w + (d.y1 - w) * f;
@@ -2825,13 +3169,13 @@ function createSpaceEngine(opts) {
       fitIso(v); followCursor(k); scheduleSections();
     };
     const panV = (dx, dy) => {
-      const d = v.dom, su = (d.x1 - d.x0) / cv.width, sv = (d.y1 - d.y0) / cv.height;
+      const d = v.dom, su = (d.x1 - d.x0) / v.cv.width, sv = (d.y1 - d.y0) / v.cv.height;
       d.x0 -= dx * su; d.x1 -= dx * su; d.y0 += dy * sv; d.y1 += dy * sv; v.user = true;
       followCursor(k); scheduleSections();
     };
-    on(cv, "contextmenu", (e) => e.preventDefault());
-    on(cv, "pointerdown", (e) => {
-      cv.setPointerCapture(e.pointerId);
+    handlers[k]["contextmenu"] = ((e) => e.preventDefault());
+    handlers[k]["pointerdown"] = ((e) => {
+      e.currentTarget.setPointerCapture(e.pointerId);
       ptrs.set(e.pointerId, rel(e));
       onHover(null);
       if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }; mode = "pinch"; return; }
@@ -2840,11 +3184,11 @@ function createSpaceEngine(opts) {
       if (mode === "cursor") dragView = k;
       if (mode === "cursor") moveCursor(setFromView[k](px2u(v, last[0]), py2v(v, last[1])));
     });
-    on(cv, "pointermove", (e) => {
+    handlers[k]["pointermove"] = ((e) => {
       if (!ptrs.has(e.pointerId)) {
         if (e.pointerType === "mouse") {
           const p = rel(e), P = [0, 0, 0];
-          const id = S.fill < 0.001 ? dotAt(k, p[0], p[1]) : mapping[k](px2u(v, p[0]), py2v(v, p[1]), P) ? cellAt(P[0], P[1], P[2]) : -1;
+          const id = S.modes[k] !== "bins" ? dotAt(k, p[0], p[1]) : ready && N ? binAt(k, px2u(v, p[0]), py2v(v, p[1]), P)[0] : -1;
           onHover(id >= 0 ? { item: S.anchors[id], x: e.clientX, y: e.clientY } : null);
         }
         return;
@@ -2863,22 +3207,26 @@ function createSpaceEngine(opts) {
       if (!ptrs.size || mode === "pinch") mode = null;
       if (!ptrs.size && dragView === k) { dragView = null; if (followCursor(k)) scheduleSections(); }
     };
-    on(cv, "pointerup", up);
-    on(cv, "pointercancel", up);
-    on(cv, "pointerleave", () => onHover(null));
-    on(cv, "wheel", (e) => { e.preventDefault(); const [x, y] = rel(e); zoom(x, y, Math.exp(e.deltaY * 0.0015)); }, { passive: false });
-    on(cv, "dblclick", () => api.resetView(k));
+    handlers[k]["pointerup"] = (up);
+    handlers[k]["pointercancel"] = (up);
+    handlers[k]["pointerleave"] = (() => onHover(null));
+    handlers[k]["wheel"] = ((e) => { e.preventDefault(); const [x, y] = rel(e); zoom(x, y, Math.exp(e.deltaY * 0.0015)); });
+    handlers[k]["dblclick"] = (() => api.resetView(k));
   });
+  ["contextmenu", "pointerdown", "pointermove", "pointerup", "pointercancel", "pointerleave", "wheel", "dblclick"].forEach((ev) =>
+    slotCanvases.forEach((el) =>
+      on(el, ev, (e) => { const k = viewOf(el), f = k && handlers[k][ev]; if (f) f(e); }, ev === "wheel" ? { passive: false } : undefined),
+    ),
+  );
   const ro = new ResizeObserver(() => {
-    if (!glCanvas.parentElement || glCanvas.parentElement.clientWidth === 0) return;   // hidden tab
+    if (!slot["3d"] || slot["3d"].clientWidth === 0) return;   // hidden tab
     let changed = false;
     Object.values(SV).forEach((v) => { if (sizeView(v)) { fitIso(v); changed = true; } });
     if (changed) followAll();
     if (changed) scheduleSections();
     resize();
   });
-  Object.values(SV).forEach((v) => ro.observe(v.cv));
-  ro.observe(glCanvas.parentElement);
+  slotCanvases.forEach((el) => ro.observe(el));
 
   // ── Public API ───────────────────────────────────────────────────────────
   const api = {
@@ -2903,21 +3251,35 @@ function createSpaceEngine(opts) {
       S.cursor = [L, C, H];
       const changedCell = updateCursor();
       followAll();
-      const sliced = S.range.hl !== null || S.range.hc !== null || S.range.hh !== null;
+      const r3 = S.ranges["3d"], sliced = r3.hl !== null || r3.hc !== null || r3.hh !== null;
       if (sliced) { rebuild(); rebuildActive(); }
       else { if (changedCell) rebuildActive(); updateDotVisibility(); scheduleSections(); }
     },
-    setRange(hl, hc, hh) {
-      const r = S.range;
-      if (r.hl === hl && r.hc === hc && r.hh === hh) return;
-      S.range = { hl, hc, hh };
-      rebuild(); rebuildActive();
+    // { view: { hl, hc, hh } } — half-widths around the cursor, null = everything
+    setRanges(map) {
+      let three = false, flat = false;
+      Object.keys(map).forEach((k) => {
+        const a = S.ranges[k], b = map[k];
+        const depth = b.depth === undefined ? (a && a.depth) : b.depth;
+        if (!a || (a.hl === b.hl && a.hc === b.hc && a.hh === b.hh && a.depth === depth)) return;
+        S.ranges[k] = { hl: b.hl, hc: b.hc, hh: b.hh, depth };
+        if (k === "3d") three = true; else flat = true;
+      });
+      if (three) { rebuild(); rebuildActive(); updateDotVisibility(); }
+      if (flat) scheduleSections();
+    },
+    // { view: opacity } for the sections
+    setAlpha(map) {
+      let changed = false;
+      Object.keys(map).forEach((k) => { if (k in S.alpha && S.alpha[k] !== map[k]) { S.alpha[k] = map[k]; changed = true; } });
+      if (changed) scheduleSections();
     },
     setLook({ fill, sep, opacity }) {
       const geoChange = fill !== S.fill;
       S.fill = fill; S.sep = sep; S.opacity = opacity;
       shared.uSep.value = 1 + sep;
       cellMat.uniforms.uAlpha.value = opacity;
+      cardMat.uniforms.uAlpha.value = opacity;
       placeMarker(); updatePlanes();
       if (geoChange) { rebuild(); rebuildActive(); } else requestRender();
     },
@@ -2930,7 +3292,26 @@ function createSpaceEngine(opts) {
       markerMats.forEach((m) => m.color.copy(fgc));
       plL.material.color.set(S.guide.l); plC.material.color.set(S.guide.c); plH.material.color.set(S.guide.h);
       axis.material.color.copy(fgc);
+      const pp = paperRgb();
+      cardMat.uniforms.uPaper.value.setRGB(pp[0], pp[1], pp[2]);
+      cardMat.uniforms.uEdge.value.copy(fgc);
       requestRender(); scheduleSections();
+    },
+    // Per-view look: 3D "cells" (uses the inflation slider) or "swatches";
+    // sections "dots", "bins" or "swatches".
+    setModes(m) {
+      const prev3 = S.modes["3d"];
+      S.modes = { ...S.modes, ...m };
+      if (S.modes["3d"] !== prev3) { applyMode3D(); rebuildActive(); }
+      scheduleSections(); requestRender();
+    },
+    // Which slot canvas shows which view.
+    setLayout(next) {
+      Object.assign(slot, next);
+      ["l", "c", "h"].forEach((k) => { const v = SV[k]; v.cv = slot[k]; v.img = null; v.dom = null; v.user = false; sizeView(v); });
+      followAll();
+      slotCanvases.forEach((el) => (el.style.cursor = viewOf(el) === "3d" ? "grab" : "crosshair"));
+      resize(); scheduleSections(); requestRender();
     },
     resetView(k) { const v = SV[k]; fitContain(v); followCursor(k); scheduleSections(); },
     resetCamera() { Object.assign(orb, { theta: 0.75, phi: 1.12, r: 14, ox: 0, oy: 0, oz: 0 }); placeMarker(); applyOrbit(); },
@@ -2942,11 +3323,12 @@ function createSpaceEngine(opts) {
       listeners.forEach(([el, ev, fn, o]) => el.removeEventListener(ev, fn, o));
       scene.traverse((o) => { o.geometry && o.geometry.dispose(); });
       overlay.traverse((o) => { o.geometry && o.geometry.dispose(); });
-      [cellMat, activeMat, rimMat, dotMat, ghostMat, axis.material, plL.material, plC.material, plH.material, ...markerMats].forEach((m) => m.dispose());
+      [cellMat, activeMat, rimMat, dotMat, ghostMat, cardMat, axis.material, plL.material, plC.material, plH.material, ...markerMats].forEach((m) => m.dispose());
       renderer.dispose();
       renderer.forceContextLoss();
     },
   };
+  slotCanvases.forEach((el) => (el.style.cursor = viewOf(el) === "3d" ? "grab" : "crosshair"));
   resize();
   applyOrbit();
   updatePlanes();
@@ -2989,43 +3371,212 @@ const SpaceSlider = ({ label, value, min, max, step, onChange, format }) =>
     }),
   );
 
-const SpaceSection = ({ id, title, color, value, canvasRef, height, setHeight, axes, onReset, narrow }) =>
+
+// Three looks per viewport. The 3D view's "dots" and "bins" are its inflation
+// slider at 0 and 1; "swatches" swaps the cells for colour cards.
+const SPACE_PRESETS = [
+  { id: "dots", icon: "circle-dot", title: "Dots" },
+  { id: "bins", icon: "hexagon", title: "Bins" },
+  { id: "swatches", icon: "rectangle-vertical", title: "Swatches" },
+];
+const SpacePresets = ({ value, onChange, compact }) =>
   React.createElement(
     "div",
-    { className: narrow ? "shrink-0 w-40 flex flex-col" : "flex flex-col" },
+    { className: "flex items-center rounded-md border border-slate-200 dark:border-neutral-800 overflow-hidden shrink-0", role: "group", "aria-label": "Look" },
+    SPACE_PRESETS.map((p) =>
+      React.createElement(
+        "button",
+        {
+          key: p.id,
+          onClick: () => onChange(p.id),
+          title: p.title,
+          "aria-label": p.title,
+          "aria-pressed": value === p.id,
+          className: `${compact ? "p-1" : "px-2 py-1 gap-1"} flex items-center text-[9px] font-bold uppercase tracking-widest transition-colors ${
+            value === p.id
+              ? "bg-slate-900 text-white"
+              : "text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-neutral-200 dark:hover:bg-neutral-800"
+          }`,
+        },
+        React.createElement(Icon, { name: p.icon, className: "w-3 h-3" }),
+        !compact && p.title,
+      ),
+    ),
+  );
+const SpaceIconButton = ({ icon, title, onClick, active }) =>
+  React.createElement(
+    "button",
+    {
+      onClick, title, "aria-label": title, "aria-pressed": active ? true : undefined,
+      className: `p-1 rounded transition-colors ${active ? "bg-slate-900 text-white" : "text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-neutral-200 dark:hover:bg-neutral-800"}`,
+    },
+    React.createElement(Icon, { name: icon, className: "w-3 h-3" }),
+  );
+
+// A view's own settings: look, (3D) inflation and separation, opacity, the
+// visible range around the cursor, and whether all views share them.
+const SPACE_VIEWS = ["3d", "l", "c", "h"];
+// A section starts on its plane alone (its own axis at 0); everything else
+// starts wide open.
+const spaceViewDefault = (k) => ({ mode: k === "3d" ? "cells" : "bins", fill: 0.5, sep: 0, opacity: 1, tol: { l: k === "l" ? 0 : 1, c: k === "c" ? 0 : 0.4, h: k === "h" ? 0 : 180 } });
+const SPACE_TOL = {
+  l: { label: "Lightness ±", max: 1, step: 0.005, fmt: (x) => x.toFixed(3) },
+  c: { label: "Chroma ±", max: 0.4, step: 0.005, fmt: (x) => x.toFixed(3) },
+  h: { label: "Hue ±", max: 180, step: 1, fmt: (x) => `${x}°` },
+};
+const SpaceSwitch = ({ on, onChange, label }) =>
+  React.createElement(
+    "button",
+    { onClick: () => onChange(!on), role: "switch", "aria-checked": on, className: "flex items-center justify-between gap-2 w-full text-left" },
+    React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400" }, label),
+    React.createElement(
+      "span",
+      { className: `relative inline-block w-7 h-4 rounded-full transition-colors shrink-0 ${on ? "bg-slate-900 dark:bg-neutral-100" : "bg-slate-300 dark:bg-neutral-700"}` },
+      React.createElement("span", { className: `absolute top-0.5 w-3 h-3 rounded-full shadow transition-all ${on ? "left-3.5 bg-white dark:bg-neutral-900" : "left-0.5 bg-white"}` }),
+    ),
+  );
+const tolSlider = (a, v, onPatch, depth) => {
+  const t = SPACE_TOL[a];
+  return React.createElement(SpaceSlider, {
+    key: a, label: t.label, value: v.tol[a], min: 0, max: t.max, step: t.step,
+    format: (x) => (x >= t.max ? "all" : x <= 0 ? (depth ? "plane only" : "cursor only") : t.fmt(x)),
+    onChange: (x) => onPatch({ tol: { [a]: x } }),
+  });
+};
+const SpaceSettings = ({ k, v, preset, sync, onPreset, onPatch, onSync, onReset }) =>
+  React.createElement(
+    "div",
+    { className: "flex flex-col gap-3" },
+    React.createElement(SpacePresets, { value: preset, onChange: onPreset }),
+    k === "3d" &&
+      React.createElement(SpaceSlider, {
+        label: "Inflation", value: v.mode === "swatches" ? 0 : v.fill, min: 0, max: 1, step: 0.01,
+        format: (x) => (v.mode === "swatches" ? "cards" : x < 0.005 ? "dot" : `${Math.round(x * 100)}%`),
+        onChange: (x) => onPatch({ fill: x }),
+      }),
+    k === "3d" &&
+      React.createElement(SpaceSlider, {
+        label: "Separation", value: v.sep, min: 0, max: 2, step: 0.02, format: (x) => x.toFixed(2),
+        onChange: (x) => onPatch({ sep: x }),
+      }),
+    React.createElement(SpaceSlider, {
+      label: "Opacity", value: v.opacity, min: 0.05, max: 1, step: 0.01, format: (x) => `${Math.round(x * 100)}%`,
+      onChange: (x) => onPatch({ opacity: x }),
+    }),
+    // A section's own axis is its depth: 0 shows only what crosses the plane,
+    // more brings in the colours on either side, seen straight on, up to all
+    // of them. The other two narrow what's shown around the cursor.
+    k !== "3d" &&
+      React.createElement(
+        "div",
+        { className: "flex flex-col gap-2 pt-2 border-t border-slate-200 dark:border-neutral-800" },
+        React.createElement("span", { className: "text-[9px] font-bold uppercase tracking-widest text-slate-400" }, "Depth around the plane"),
+        tolSlider(k, v, onPatch, true),
+      ),
     React.createElement(
       "div",
-      { className: "flex items-center justify-between gap-2 mb-1.5" },
+      { className: "flex flex-col gap-3 pt-2 border-t border-slate-200 dark:border-neutral-800" },
+      React.createElement("span", { className: "text-[9px] font-bold uppercase tracking-widest text-slate-400" }, k === "3d" ? "Visible range around the cursor" : "Filter around the cursor"),
+      ["l", "c", "h"].filter((a) => a !== k).map((a) => tolSlider(a, v, onPatch, false)),
+    ),
+    React.createElement(
+      "div",
+      { className: "pt-2 border-t border-slate-200 dark:border-neutral-800 flex flex-col gap-2" },
+      React.createElement(SpaceSwitch, { on: sync, onChange: onSync, label: "Sync all views" }),
+      React.createElement(
+        "span",
+        { className: "text-[10px] leading-snug text-slate-400" },
+        sync ? "Changes here apply to every view." : "Each view keeps its own settings.",
+      ),
+    ),
+    onReset &&
+      React.createElement(
+        "button",
+        {
+          onClick: onReset,
+          className: "flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400 bg-slate-100 dark:bg-neutral-800 hover:bg-slate-200 dark:hover:bg-neutral-700 transition-colors",
+        },
+        React.createElement(Icon, { name: "rotate-ccw", className: "w-3 h-3" }),
+        k === "3d" ? "Reset camera" : "Reset zoom",
+      ),
+  );
+
+// A slot's settings float next to its header, kept inside the window (the
+// bottom slot's would otherwise run off-screen). Outside click or Esc closes.
+const SpacePopover = ({ anchorRef, onClose, children }) => {
+  const boxRef = useRef(null);
+  const [pos, setPos] = useState(null);
+  React.useLayoutEffect(() => {
+    const place = () => {
+      const a = anchorRef.current;
+      if (!a) return;
+      const r = a.getBoundingClientRect(), W = window.innerWidth, Hh = window.innerHeight;
+      const w = Math.min(256, W - 16), h = boxRef.current ? boxRef.current.scrollHeight : 420;
+      const left = Math.max(8, Math.min(r.left, W - w - 8));
+      const maxH = Hh - 16, top = Math.max(8, Math.min(r.bottom + 4, Hh - 8 - Math.min(h, maxH)));
+      setPos({ left, top, width: w, maxHeight: maxH });
+    };
+    place();
+    const id = requestAnimationFrame(place);
+    window.addEventListener("resize", place);
+    return () => { cancelAnimationFrame(id); window.removeEventListener("resize", place); };
+  }, []);
+  useEffect(() => {
+    const down = (e) => {
+      if (boxRef.current && boxRef.current.contains(e.target)) return;
+      if (anchorRef.current && anchorRef.current.contains(e.target)) return;
+      onClose();
+    };
+    const key = (e) => e.key === "Escape" && onClose();
+    document.addEventListener("pointerdown", down, true);
+    document.addEventListener("keydown", key);
+    return () => { document.removeEventListener("pointerdown", down, true); document.removeEventListener("keydown", key); };
+  }, [onClose]);
+  return ReactDOM.createPortal(
+    React.createElement(
+      "div",
+      {
+        ref: boxRef, "data-space-popover": "",
+        style: pos ? { position: "fixed", ...pos } : { position: "fixed", left: -9999, top: 0, width: 256 },
+        className: "z-[60] p-3 overflow-y-auto custom-scrollbar bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-lg",
+      },
+      children,
+    ),
+    document.body,
+  );
+};
+
+// One small viewport: header (name, value, looks, maximize, reset), canvas,
+// resize handle and axis captions. The canvas element never changes; which
+// view it shows does.
+const SpaceSlot = ({ info, canvasRef, height, setHeight, narrow, preset, onPreset, onMaximize, onReset, settingsOpen, onSettings, onCloseSettings, settings }) => {
+  const headRef = useRef(null);
+  return React.createElement(
+    "div",
+    { className: narrow ? "shrink-0 w-44 flex flex-col relative" : "flex flex-col relative" },
+    React.createElement(
+      "div",
+      { ref: headRef, className: "flex items-center justify-between gap-1.5 mb-1.5" },
       React.createElement(
         "div",
         { className: "flex items-center gap-1.5 min-w-0" },
-        React.createElement("span", { className: "w-2 h-2 rounded-full shrink-0", style: { background: color } }),
-        React.createElement(
-          "span",
-          { className: "text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400 truncate" },
-          title,
-        ),
+        React.createElement("span", { className: "w-2 h-2 rounded-full shrink-0", style: { background: info.color } }),
+        React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400 truncate" }, info.title),
+        !narrow && info.value && React.createElement("span", { className: "text-[10px] font-mono text-slate-400 truncate" }, info.value),
       ),
       React.createElement(
         "div",
-        { className: "flex items-center gap-1.5 shrink-0" },
-        !narrow &&
-          React.createElement("span", { className: "text-[10px] font-mono text-slate-400" }, value),
-        React.createElement(
-          "button",
-          {
-            onClick: onReset,
-            title: "Reset zoom",
-            className: "p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-neutral-200 dark:hover:bg-neutral-800 transition-colors",
-          },
-          React.createElement(Icon, { name: "rotate-ccw", className: "w-3 h-3" }),
-        ),
+        { className: "flex items-center gap-0.5 shrink-0" },
+        React.createElement(SpacePresets, { value: preset, onChange: onPreset, compact: true }),
+        React.createElement(SpaceIconButton, { icon: "sliders-horizontal", title: "View settings", onClick: onSettings, active: settingsOpen }),
+        React.createElement(SpaceIconButton, { icon: "maximize-2", title: "Show large", onClick: onMaximize }),
       ),
     ),
+    settingsOpen && React.createElement(SpacePopover, { anchorRef: headRef, onClose: onCloseSettings }, settings),
     React.createElement("canvas", {
       ref: canvasRef,
-      "data-section": id,
-      style: { height: narrow ? 120 : height, width: "100%", display: "block", touchAction: "none", cursor: "crosshair" },
+      "data-slot": info.id,
+      style: { height: narrow ? 130 : height, width: "100%", display: "block", touchAction: "none" },
       className: narrow
         ? "rounded-lg border border-slate-200 dark:border-neutral-800"
         : "rounded-t-lg border border-b-0 border-slate-200 dark:border-neutral-800",
@@ -3048,9 +3599,10 @@ const SpaceSection = ({ id, title, color, value, canvasRef, height, setHeight, a
       React.createElement(
         "div",
         { className: "flex justify-between mt-1 text-[9px] font-mono uppercase tracking-wider text-slate-400" },
-        axes.map((a, i) => React.createElement("span", { key: i }, a)),
+        info.axes.map((a, i) => React.createElement("span", { key: i }, a)),
       ),
   );
+};
 
 const ViewSpaceInner = ({
   active = true,
@@ -3061,14 +3613,15 @@ const ViewSpaceInner = ({
   scrubL,
   scrubC,
   scrubH,
-  filterL,
-  filterC,
-  filterH,
   onCursor,
   handlePointClick,
 }) => {
-  const rootRef = useRef(null), glRef = useRef(null);
-  const lRef = useRef(null), cRef = useRef(null), hRef = useRef(null);
+  const rootRef = useRef(null);
+  // Four fixed canvases: the large one and three small ones. `slots` says which
+  // view each shows; maximizing a small view swaps it with the large one.
+  const bigRef = useRef(null), s1Ref = useRef(null), s2Ref = useRef(null), s3Ref = useRef(null);
+  const slotRefs = [bigRef, s1Ref, s2Ref, s3Ref];
+  const [slots, setSlots] = useState(["3d", "l", "c", "h"]);
   const engineRef = useRef(null);
   const cbRef = useRef({});
   cbRef.current = { onCursor, handlePointClick };
@@ -3076,13 +3629,84 @@ const ViewSpaceInner = ({
   const [status, setStatus] = useState({ phase: "loading" });
   const [hover, setHover] = useState(null);
   const [narrow, setNarrow] = useState(false);
-  const [lookOpen, setLookOpen] = useState(true);
+  // Open beside a desktop-size view; collapsed on a phone, where it would cover it.
+  const [lookOpen, setLookOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 768);
   const [secW, setSecW] = useState(250);
-  const [heights, setHeights] = useState({ l: 230, c: 150, h: 230 });
+  const [heights, setHeights] = useState([0, 230, 150, 230]);
   const [look, setLook] = useState(() => {
-    const d = { fill: 0.5, sep: 0, opacity: 1 };
-    try { return { ...d, ...JSON.parse(localStorage.getItem(SPACE_LOOK_KEY) || "{}") }; } catch (e) { return d; }
+    const d = { v: 2, sync: false, views: {} };
+    SPACE_VIEWS.forEach((k) => (d.views[k] = spaceViewDefault(k)));
+    try {
+      const saved = JSON.parse(localStorage.getItem(SPACE_LOOK_KEY) || "{}");
+      if (saved.views) {
+        SPACE_VIEWS.forEach((k) => {
+          const sv = saved.views[k] || {}, tol = { ...d.views[k].tol, ...(sv.tol || {}) };
+          // before v2 a section's own axis was a plain filter, left wide open
+          if (!(saved.v >= 2) && k !== "3d") tol[k] = 0;
+          d.views[k] = { ...d.views[k], ...sv, tol };
+        });
+        d.sync = !!saved.sync;
+      } else {
+        // earlier format: one 3D look plus a mode per section
+        if (saved.fill !== undefined) d.views["3d"].fill = saved.fill;
+        if (saved.sep !== undefined) d.views["3d"].sep = saved.sep;
+        if (saved.opacity !== undefined) d.views["3d"].opacity = saved.opacity;
+        if (saved.modes) SPACE_VIEWS.forEach((k) => saved.modes[k] && (d.views[k].mode = saved.modes[k]));
+      }
+    } catch (e) {}
+    return d;
   });
+  const [openPanel, setOpenPanel] = useState(null);   // slot index whose settings are open
+  const closePanel = useCallback(() => setOpenPanel(null), []);
+  // The preset a view is showing (3D: from its inflation; null = in between).
+  const presetOf = (k) => {
+    const v = look.views[k];
+    return k !== "3d" ? v.mode : v.mode === "swatches" ? "swatches" : v.fill < 0.005 ? "dots" : v.fill > 0.995 ? "bins" : null;
+  };
+  // Apply a change to one view, or to all of them while synced. A preset maps
+  // onto the 3D view's inflation; the 3D inflation slider maps back onto the
+  // sections' presets at its two ends.
+  const patchView = (k, v, patch) => {
+    const n = { ...v, tol: { ...v.tol, ...(patch.tol || {}) } };
+    if (patch.opacity !== undefined) n.opacity = patch.opacity;
+    if (patch.preset) {
+      if (k === "3d") Object.assign(n, patch.preset === "swatches" ? { mode: "swatches" } : { mode: "cells", fill: patch.preset === "dots" ? 0 : 1 });
+      else n.mode = patch.preset;
+    }
+    if (patch.fill !== undefined) {
+      if (k === "3d") { n.fill = patch.fill; n.mode = "cells"; }
+      else if (patch.fill < 0.005) n.mode = "dots";
+      else if (patch.fill > 0.995) n.mode = "bins";
+    }
+    if (patch.sep !== undefined && k === "3d") n.sep = patch.sep;
+    return n;
+  };
+  const updateView = (k, patch) =>
+    setLook((p) => {
+      const views = { ...p.views };
+      (p.sync ? SPACE_VIEWS : [k]).forEach((key) => (views[key] = patchView(key, views[key], patch)));
+      return { ...p, views };
+    });
+  const setPreset = (k, id) => updateView(k, { preset: id });
+  // Turning sync on copies this view's settings to every view.
+  const setSync = (k, on) =>
+    setLook((p) => {
+      if (!on) return { ...p, sync: false };
+      const src = p.views[k], views = {}, preset = presetOf(k);
+      SPACE_VIEWS.forEach((key) => {
+        views[key] = key === k ? src : patchView(key, p.views[key], { opacity: src.opacity, tol: src.tol, ...(preset ? { preset } : {}) });
+      });
+      return { ...p, v: 2, sync: true, views };
+    });
+  const settingsFor = (k, withReset) =>
+    React.createElement(SpaceSettings, {
+      k, v: look.views[k], preset: presetOf(k), sync: look.sync,
+      onPreset: (id) => setPreset(k, id),
+      onPatch: (patch) => updateView(k, patch),
+      onSync: (on) => setSync(k, on),
+      onReset: withReset ? () => reset(k) : null,
+    });
+  const maximize = (k) => setSlots((s) => { const i = s.indexOf(k), n = s.slice(); [n[0], n[i]] = [n[i], n[0]]; return n; });
   const isDark = theme === "dark";
   const planeCol = SPACE_PLANE_COLORS[isDark ? "dark" : "light"];
 
@@ -3137,8 +3761,7 @@ const ViewSpaceInner = ({
         if (dead) return;
         try {
           engineRef.current = createSpaceEngine({
-            glCanvas: glRef.current,
-            views: { l: lRef.current, c: cRef.current, h: hRef.current },
+            canvases: { "3d": bigRef.current, l: s1Ref.current, c: s2Ref.current, h: s3Ref.current },
             onCursor: (L, C, H) => cbRef.current.onCursor && cbRef.current.onCursor(L, C, H),
             onHover: (h) => setHover(h),
             onPick: (item) => cbRef.current.handlePointClick && cbRef.current.handlePointClick(item.pick),
@@ -3165,16 +3788,35 @@ const ViewSpaceInner = ({
   useEffect(() => { ready && eng && eng.setCursor(scrubL, scrubC, ((scrubH % 360) + 360) % 360); }, [ready, scrubL, scrubC, scrubH, active]);
   useEffect(() => {
     if (!ready || !eng) return;
-    // The tolerance sliders are half-widths; at their maximum they mean "everything".
-    const hl = filterL >= 1 || (scrubL - filterL <= 0 && scrubL + filterL >= 1) ? null : filterL;
-    const hc = filterC >= 0.4 || (scrubC - filterC <= 0 && scrubC + filterC >= 0.4) ? null : filterC;
-    const hh = filterH >= 180 ? null : filterH;
-    eng.setRange(hl, hc, hh);
-  }, [ready, filterL, filterC, filterH, scrubL, scrubC, active]);
+    // The range sliders are half-widths; at their maximum (or when they reach
+    // past both ends) they mean "everything".
+    const map = {};
+    // At 0 a filter keeps a thin band at the cursor rather than nothing.
+    SPACE_VIEWS.forEach((k) => {
+      const t = look.views[k].tol;
+      map[k] = {
+        hl: t.l >= 1 || (scrubL - t.l <= 0 && scrubL + t.l >= 1) ? null : Math.max(t.l, 0.01),
+        hc: t.c >= 0.4 || (scrubC - t.c <= 0 && scrubC + t.c >= 0.4) ? null : Math.max(t.c, 0.006),
+        hh: t.h >= 180 ? null : Math.max(t.h, 1.5),
+      };
+      if (k !== "3d") map[k].depth = t[k] >= SPACE_TOL[k].max ? null : t[k];
+    });
+    eng.setRanges(map);
+  }, [ready, look, scrubL, scrubC, active]);
   useEffect(() => {
-    ready && eng && eng.setLook(look);
+    if (!ready || !eng) return;
+    const v3 = look.views["3d"];
+    eng.setLook({ fill: v3.fill, sep: v3.sep, opacity: v3.opacity });
+    eng.setModes({ "3d": v3.mode, l: look.views.l.mode, c: look.views.c.mode, h: look.views.h.mode });
+    eng.setAlpha({ l: look.views.l.opacity, c: look.views.c.opacity, h: look.views.h.opacity });
     try { localStorage.setItem(SPACE_LOOK_KEY, JSON.stringify(look)); } catch (e) {}
   }, [ready, look, active]);
+  useEffect(() => {
+    if (!ready || !eng) return;
+    const map = {};
+    slots.forEach((k, i) => (map[k] = slotRefs[i].current));
+    eng.setLayout(map);
+  }, [ready, slots, active]);
   useEffect(() => {
     if (!ready || !eng) return;
     // Read the theme's real colours once the app has applied its dark class.
@@ -3193,7 +3835,7 @@ const ViewSpaceInner = ({
     return () => cancelAnimationFrame(id);
   }, [ready, isDark, active]);
 
-  // Narrow containers (phones) stack the sections under the 3D view.
+  // Narrow containers (phones) stack the small views under the large one.
   useEffect(() => {
     const el = rootRef.current;
     if (!el) return undefined;
@@ -3204,18 +3846,21 @@ const ViewSpaceInner = ({
   useEffect(() => { if (narrow) setLookOpen(false); }, [narrow]);
   useEffect(() => { if (!active) setHover(null); }, [active]);
 
-  const fmtL = (v) => v.toFixed(3), fmtC = (v) => v.toFixed(3), fmtH = (v) => `${(((v % 360) + 360) % 360).toFixed(1)}°`;
-  const sections = [
-    { id: "l", title: "L section", color: planeCol.l, value: `L ${fmtL(scrubL)}`, ref: lRef, axes: ["a −", "a → · b ↑", "a +"] },
-    { id: "c", title: "C section", color: planeCol.c, value: `C ${fmtC(scrubC)}`, ref: cRef, axes: ["0°", "hue (true length) →", "360°"] },
-    { id: "h", title: "H section", color: planeCol.h, value: `H ${fmtH(scrubH)}`, ref: hRef, axes: ["C 0", "chroma → · L ↑", "true scale"] },
-  ];
+  const fmtH = (v) => `${(((v % 360) + 360) % 360).toFixed(1)}°`;
+  const INFO = {
+    "3d": { id: "3d", title: "3D", long: "3D view", color: isDark ? "#F2E8DF" : "#2B4032", value: "", axes: ["drag to orbit", "", "scroll to zoom"] },
+    l: { id: "l", title: "L", long: "L section", color: planeCol.l, value: `L ${scrubL.toFixed(3)}`, axes: ["a −", "a → · b ↑", "a +"] },
+    c: { id: "c", title: "C", long: "C section", color: planeCol.c, value: `C ${scrubC.toFixed(3)}`, axes: ["0°", "hue (true length) →", "360°"] },
+    h: { id: "h", title: "H", long: "H section", color: planeCol.h, value: `H ${fmtH(scrubH)}`, axes: ["C 0", "chroma → · L ↑", "true scale"] },
+  };
+  const reset = (k) => engineRef.current && (k === "3d" ? engineRef.current.resetCamera() : engineRef.current.resetView(k));
+  const big = slots[0];
   const overlayCard = "bg-white/90 dark:bg-neutral-900/90 backdrop-blur border border-slate-200 dark:border-neutral-800 rounded-xl shadow-sm";
 
   return React.createElement(
     "div",
     { ref: rootRef, className: `w-full h-full flex ${narrow ? "flex-col-reverse" : "flex-row"} text-slate-900 dark:text-neutral-100 overflow-hidden` },
-    // ── Section views ──
+    // ── small views ──
     React.createElement(
       "div",
       {
@@ -3224,19 +3869,26 @@ const ViewSpaceInner = ({
           : "shrink-0 h-full overflow-y-auto custom-scrollbar p-3 flex flex-col gap-4 border-r border-slate-100 dark:border-neutral-800 relative",
         style: narrow ? undefined : { width: secW },
       },
-      sections.map((s) =>
-        React.createElement(SpaceSection, {
-          key: s.id, id: s.id, title: s.title, color: s.color, value: s.value, canvasRef: s.ref,
-          height: heights[s.id], narrow, axes: s.axes,
-          setHeight: (h) => setHeights((prev) => ({ ...prev, [s.id]: h })),
-          onReset: () => engineRef.current && engineRef.current.resetView(s.id),
+      [1, 2, 3].map((i) =>
+        React.createElement(SpaceSlot, {
+          key: i, info: INFO[slots[i]], canvasRef: slotRefs[i], narrow,
+          height: heights[i],
+          setHeight: (h) => setHeights((prev) => { const n = prev.slice(); n[i] = h; return n; }),
+          preset: presetOf(slots[i]),
+          onPreset: (id) => setPreset(slots[i], id),
+          onMaximize: () => { setOpenPanel(null); maximize(slots[i]); },
+          onReset: () => reset(slots[i]),
+          settingsOpen: openPanel === i,
+          onSettings: () => setOpenPanel(openPanel === i ? null : i),
+          onCloseSettings: closePanel,
+          settings: openPanel === i ? settingsFor(slots[i], true) : null,
         }),
       ),
       !narrow &&
         React.createElement(
           "p",
           { className: "text-[9px] leading-relaxed text-slate-400 uppercase tracking-wider" },
-          "Drag to move the cursor · scroll or pinch to zoom · right-drag to pan · double-click to reset",
+          "Drag to move the cursor · scroll or pinch to zoom (names appear up close) · right-drag to pan · double-click to reset",
         ),
     ),
     // column resize handle
@@ -3248,65 +3900,55 @@ const ViewSpaceInner = ({
         onPointerDown: (e) => {
           const el = e.currentTarget, x0 = e.clientX, w0 = secW;
           el.setPointerCapture(e.pointerId);
-          const mv = (ev) => setSecW(Math.max(190, Math.min(640, w0 + ev.clientX - x0)));
+          const mv = (ev) => setSecW(Math.max(200, Math.min(640, w0 + ev.clientX - x0)));
           const end = () => { el.removeEventListener("pointermove", mv); el.removeEventListener("pointerup", end); };
           el.addEventListener("pointermove", mv);
           el.addEventListener("pointerup", end);
         },
       }),
-    // ── 3D view ──
+    // ── large view ──
     React.createElement(
       "div",
       { className: "relative flex-1 min-w-0 min-h-0" },
       React.createElement("canvas", {
-        ref: glRef,
+        ref: bigRef,
+        "data-slot": "big",
         className: "absolute inset-0 w-full h-full",
-        style: { touchAction: "none", cursor: "grab" },
+        style: { touchAction: "none" },
       }),
-      // appearance controls
+      // the large view's settings
       React.createElement(
         "div",
-        { className: `absolute top-3 left-3 z-10 ${overlayCard} ${lookOpen ? "w-56 p-3" : "p-1"}` },
+        { className: `absolute top-3 left-3 z-10 ${overlayCard} ${lookOpen ? "w-64 p-3 max-h-[calc(100%-4.5rem)] overflow-y-auto custom-scrollbar" : "p-1"}` },
         React.createElement(
           "button",
           {
             onClick: () => setLookOpen(!lookOpen),
-            className: `flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400 hover:text-slate-800 dark:hover:text-white ${lookOpen ? "w-full mb-3" : "p-1.5"}`,
-            title: lookOpen ? "Hide appearance" : "Appearance",
+            className: `flex items-center gap-2 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400 hover:text-slate-800 dark:hover:text-white ${lookOpen ? "w-full mb-3" : "p-1.5"}`,
+            title: lookOpen ? "Hide settings" : `${INFO[big].long} settings`,
           },
           React.createElement(Icon, { name: "sliders-horizontal", className: "w-3.5 h-3.5" }),
-          lookOpen && "Appearance",
+          lookOpen && `${INFO[big].long} settings`,
+          lookOpen && look.sync && React.createElement("span", { className: "ml-1 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-neutral-800 text-[8px]" }, "synced"),
           lookOpen && React.createElement("span", { className: "ml-auto" }, React.createElement(Icon, { name: "chevron-up", className: "w-3 h-3" })),
         ),
-        lookOpen &&
+        lookOpen && settingsFor(big, true),
+      ),
+      // the large view's own bar: its name, looks, reset, and back to 3D
+      React.createElement(
+        "div",
+        { className: `absolute top-3 right-3 z-10 flex items-center gap-2 px-2 py-1.5 ${overlayCard}` },
+        big !== "3d" &&
           React.createElement(
-            "div",
-            { className: "flex flex-col gap-3" },
-            React.createElement(SpaceSlider, {
-              label: "Inflation", value: look.fill, min: 0, max: 1, step: 0.01,
-              format: (v) => (v < 0.005 ? "dot" : `${Math.round(v * 100)}%`),
-              onChange: (v) => setLook((p) => ({ ...p, fill: v })),
-            }),
-            React.createElement(SpaceSlider, {
-              label: "Separation", value: look.sep, min: 0, max: 2, step: 0.02,
-              format: (v) => v.toFixed(2),
-              onChange: (v) => setLook((p) => ({ ...p, sep: v })),
-            }),
-            React.createElement(SpaceSlider, {
-              label: "Opacity", value: look.opacity, min: 0.05, max: 1, step: 0.01,
-              format: (v) => `${Math.round(v * 100)}%`,
-              onChange: (v) => setLook((p) => ({ ...p, opacity: v })),
-            }),
-            React.createElement(
-              "button",
-              {
-                onClick: () => engineRef.current && engineRef.current.resetCamera(),
-                className: "mt-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400 bg-slate-100 dark:bg-neutral-800 hover:bg-slate-200 dark:hover:bg-neutral-700 transition-colors",
-              },
-              React.createElement(Icon, { name: "rotate-ccw", className: "w-3 h-3" }),
-              "Reset camera",
-            ),
+            "span",
+            { className: "flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400" },
+            React.createElement("span", { className: "w-2 h-2 rounded-full", style: { background: INFO[big].color } }),
+            INFO[big].long,
+            React.createElement("span", { className: "font-mono font-normal text-slate-400" }, INFO[big].value),
           ),
+        React.createElement(SpacePresets, { value: presetOf(big), onChange: (id) => setPreset(big, id), compact: narrow }),
+        big !== "3d" && React.createElement(SpaceIconButton, { icon: "rotate-ccw", title: "Reset zoom", onClick: () => reset(big) }),
+        big !== "3d" && React.createElement(SpaceIconButton, { icon: "minimize-2", title: "Back to the 3D view", onClick: () => maximize("3d") }),
       ),
       // plane legend
       React.createElement(
@@ -9054,9 +9696,6 @@ const App = () => {
     if (alias) setActiveTab(alias);
   }, [activeTab]);
   const [colorData, setColorData] = useState(null);
-  const [filterL, setFilterL] = useState(1);
-  const [filterC, setFilterC] = useState(0.4);
-  const [filterH, setFilterH] = useState(180);
   const [filterSameNoun, setFilterSameNoun] = useState(false);
   // One stack of filter rows for the whole app, not per tab.
   // Verified colours only on load — the old default, now expressed as an
@@ -9094,30 +9733,6 @@ const App = () => {
     }
   }, [scrubL, scrubC, scrubH, scrubCommercial, colorData]);
 
-  useEffect(() => {
-    switch (activeTab) {
-      case "top":
-        setFilterL(0.01);
-        setFilterC(0.4);
-        setFilterH(180);
-        break;
-      case "chroma":
-        setFilterL(1);
-        setFilterC(0.01);
-        setFilterH(180);
-        break;
-      case "slice":
-        setFilterL(1);
-        setFilterC(0.4);
-        setFilterH(5);
-        break;
-      default:
-        setFilterL(1);
-        setFilterC(0.4);
-        setFilterH(180);
-        break;
-    }
-  }, [activeTab]);
   const updateColorData = (newData) => {
     setColorData(newData);
   };
@@ -10597,16 +11212,6 @@ const App = () => {
     colorData,
     names,
   ]);
-  const filterPt = useCallback(
-    (p) => {
-      const lDiff = Math.abs(p.L - scrubL);
-      const cDiff = Math.abs(p.C - scrubC);
-      let hDiff = Math.abs(p.H - scrubH);
-      hDiff = Math.min(hDiff, 360 - hDiff);
-      return lDiff <= filterL && cDiff <= filterC && hDiff <= filterH;
-    },
-    [scrubL, scrubC, scrubH, filterL, filterC, filterH],
-  );
   const handlePointClick = (pt, spectralData = null, commercialData = null) => {
     const coords = Array.isArray(pt) ? pt.slice(0, 3) : pt;
     let explicitCommercial = commercialData;
@@ -12244,13 +12849,6 @@ const App = () => {
     setSwatchZoom,
     viewportTagFilter,
     setViewportTagFilter,
-    filterL,
-    setFilterL,
-    filterC,
-    setFilterC,
-    filterH,
-    setFilterH,
-    filterPt,
     scrubL,
     setScrubL,
     scrubC,
@@ -12596,7 +13194,6 @@ const ViewDatabase = ({
   setSearchTerm,
   tagFilter,
   setTagFilter,
-  filterPt,
   selectedIds,
   setSelectedIds,
   handleBatchTag,
@@ -12649,7 +13246,6 @@ const ViewDatabase = ({
         const idx = fullIndex[brand] && fullIndex[brand].has(c)
           ? fullIndex[brand].get(c)
           : filteredIdx;
-        if (filterPt && !filterPt(c)) return;
         let L = c.L;
         let C = c.C;
         let H = c.H;
@@ -12703,7 +13299,7 @@ const ViewDatabase = ({
       });
     });
     return items;
-  }, [colorData, dataForUpdates, filterPt]);
+  }, [colorData, dataForUpdates]);
   const allBrands = useMemo(
     () => Array.from(new Set(allDbItems.map((i) => i.brand))).sort(),
     [allDbItems],
@@ -15432,13 +16028,6 @@ const AppUI = ({
   setSwatchZoom,
   viewportTagFilter,
   setViewportTagFilter,
-  filterL,
-  setFilterL,
-  filterC,
-  setFilterC,
-  filterH,
-  setFilterH,
-  filterPt,
   scrubL,
   setScrubL,
   scrubC,
@@ -16067,101 +16656,6 @@ const AppUI = ({
       window.print();
     }
   };
-  const filterPanel = React.createElement(
-    "div",
-    { className: "flex flex-col gap-4" },
-                      React.createElement(
-                        "div",
-                        { className: "flex flex-col gap-2" },
-                        React.createElement(
-                          "div",
-                          {
-                            className:
-                              "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono",
-                          },
-                          React.createElement("span", null, "Lightness"),
-                          React.createElement(
-                            "span",
-                            {
-                              className:
-                                "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded",
-                            },
-                            "\xB1 ",
-                            filterL.toFixed(2),
-                          ),
-                        ),
-                        React.createElement("input", {
-                          type: "range",
-                          min: "0",
-                          max: "1",
-                          step: "0.01",
-                          value: filterL,
-                          onChange: (e) => setFilterL(Number(e.target.value)),
-                          className: "w-full accent-sky-500",
-                        }),
-                      ),
-                      React.createElement(
-                        "div",
-                        { className: "flex flex-col gap-2" },
-                        React.createElement(
-                          "div",
-                          {
-                            className:
-                              "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono",
-                          },
-                          React.createElement("span", null, "Chroma"),
-                          React.createElement(
-                            "span",
-                            {
-                              className:
-                                "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded",
-                            },
-                            "\xB1 ",
-                            filterC.toFixed(2),
-                          ),
-                        ),
-                        React.createElement("input", {
-                          type: "range",
-                          min: "0",
-                          max: "0.4",
-                          step: "0.01",
-                          value: filterC,
-                          onChange: (e) => setFilterC(Number(e.target.value)),
-                          className: "w-full accent-sky-500",
-                        }),
-                      ),
-                      React.createElement(
-                        "div",
-                        { className: "flex flex-col gap-2" },
-                        React.createElement(
-                          "div",
-                          {
-                            className:
-                              "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono",
-                          },
-                          React.createElement("span", null, "Hue"),
-                          React.createElement(
-                            "span",
-                            {
-                              className:
-                                "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded",
-                            },
-                            "\xB1 ",
-                            filterH.toFixed(2),
-                            "\xB0",
-                          ),
-                        ),
-                        React.createElement("input", {
-                          type: "range",
-                          min: "0",
-                          max: "180",
-                          step: "0.01",
-                          value: filterH,
-                          onChange: (e) => setFilterH(Number(e.target.value)),
-                          className: "w-full accent-sky-500",
-                        }),
-                      ),
-  );
   return React.createElement(
     "div",
     { className: "flex flex-col md:flex-row h-screen overflow-hidden" },
@@ -17956,23 +18450,7 @@ const AppUI = ({
                   mode: globalFilterMode,
                   setMode: setGlobalFilterMode,
                   ctx: sameGroupContext,
-                }),
-                React.createElement(
-                  "div",
-                  {
-                    className:
-                      "pt-3 border-t border-slate-200 dark:border-neutral-800",
-                  },
-                  React.createElement(
-                    "span",
-                    {
-                      className:
-                        "block text-[9px] font-bold uppercase tracking-widest text-slate-400 pb-2",
-                    },
-                    "Viewport tolerance",
-                  ),
-                  filterPanel,
-                ),
+                })
               ),
             ),
           ),
@@ -18324,7 +18802,6 @@ const AppUI = ({
                 setSearchTerm: setViewportSearchQuery,
                 tagFilter: viewportTagFilter,
                 setTagFilter: setViewportTagFilter,
-                filterPt,
                 selectedIds,
                 setSelectedIds,
                 handleBatchTag,
@@ -18354,9 +18831,6 @@ const AppUI = ({
                 scrubL,
                 scrubC,
                 scrubH,
-                filterL,
-                filterC,
-                filterH,
                 handlePointClick,
                 onCursor: (L, C, H) => {
                   setScrubL(L);
