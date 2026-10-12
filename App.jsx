@@ -1718,37 +1718,6 @@ const spaceWorldSrgb = (x, y, z, out) => {
   }
   return out;
 };
-// The sRGB gamut's surface in world space: the six faces of the RGB cube,
-// each an n×n grid, coloured with their own (pure, unshaded) colours.
-const spaceGamutShell = (n = 40) => {
-  const pos = [], col = [], idx = [];
-  const lin = (c) => (c > 0.04045 ? Math.pow((c + 0.055) / 1.055, 2.4) : c / 12.92);
-  for (let ax = 0; ax < 3; ax++)
-    for (let side = 0; side < 2; side++) {
-      const base = pos.length / 3;
-      for (let i = 0; i <= n; i++)
-        for (let j = 0; j <= n; j++) {
-          const rgb = [0, 0, 0];
-          rgb[ax] = side; rgb[(ax + 1) % 3] = i / n; rgb[(ax + 2) % 3] = j / n;
-          const [r, g, b] = rgb.map(lin);
-          const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
-          const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
-          const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
-          const L = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s;
-          const A = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
-          const B = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
-          const C = Math.hypot(A, B), H = (Math.atan2(B, A) * 180) / Math.PI;
-          pos.push(...spaceToWorld(L, C, H));
-          col.push(...rgb);
-        }
-      for (let i = 0; i < n; i++)
-        for (let j = 0; j < n; j++) {
-          const a = base + i * (n + 1) + j, b = a + 1, c = a + n + 1, d = c + 1;
-          idx.push(a, c, b, b, c, d);
-        }
-    }
-  return { pos: new Float32Array(pos), col: new Float32Array(col), idx };
-};
 const spaceInGamut = (x, y, z) => {
   const L = y / SPACE_LW + SPACE_LC;
   if (L < 0 || L > 1) return false;
@@ -1762,6 +1731,26 @@ const spaceInGamut = (x, y, z) => {
   const bl = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3;
   const e = 0.002;
   return r >= -e && r <= 1 + e && g >= -e && g <= 1 + e && bl >= -e && bl <= 1 + e;
+};
+// The same test held tight (about colorjs's own ε near black): for drawing the
+// gamut itself. The loose one above keeps anchors that sit right on the edge
+// (pure green, yellow…) from collapsing; in linear light it also lets near-
+// black colours far outside the gamut through, which would bloat the solid.
+const spaceInGamutStrict = (x, y, z) => {
+  const L = y / SPACE_LW + SPACE_LC;
+  if (L < 0 || L > 1) return false;
+  const A = -z / SPACE_CW, B = x / SPACE_CW;
+  const l_ = L + 0.3963377774 * A + 0.2158037573 * B;
+  const m_ = L - 0.1055613458 * A - 0.0638541728 * B;
+  const s_ = L - 0.0894841775 * A - 1.291485548 * B;
+  const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
+  const r = 4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3;
+  const g = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3;
+  const bl = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3;
+  // the slack scales with brightness: near black the whole gamut shrinks to a
+  // point, and any fixed slack would let dark colours far outside through
+  const lo = -1e-9 - 0.0004 * Math.max(r, g, bl, 0), hi = 1.0002;
+  return r >= lo && r <= hi && g >= lo && g <= hi && bl >= lo && bl <= hi;
 };
 // OkLCH → gamma-encoded sRGB, clipped. Used whenever a point has no usable hex.
 const spaceLchToRgb = (L, C, H) => {
@@ -2026,7 +2015,8 @@ function createSpaceEngine(opts) {
     // below its plane colours are projected onto it (0 = only the plane).
     ranges: { "3d": { hl: null, hc: null, hh: null }, l: { hl: null, hc: null, hh: null, depth: 0 }, c: { hl: null, hc: null, hh: null, depth: 0 }, h: { hl: null, hc: null, hh: null, depth: 0 } },
     alpha: { l: 1, c: 1, h: 1 },
-    gamut: { "3d": 0, l: 0, c: 0, h: 0 },   // per view: opacity of the seamless gamut solid beneath everything
+    gamut: { "3d": 0, l: 0, c: 0, h: 0 },
+    tether: null,   // { L, C, H, kind } of what names the cursor   // per view: opacity of the seamless gamut solid beneath everything
     fill: 0.5, sep: 0, opacity: 1,
     dark: false, fg: [0.1, 0.1, 0.1], bg: [1, 1, 1],
     guide: { l: "#b7791f", c: "#0e7490", h: "#be185d" },
@@ -2102,36 +2092,118 @@ function createSpaceEngine(opts) {
     side: THREE.DoubleSide, depthTest: false, depthWrite: false,
   });
 
-  // The gamut solid: its own scene, drawn first so cells, dots and cards
-  // always sit on top. A depth-only pass, then colour where depth matches, so
-  // at part opacity only its nearest surface shows (no doubled back walls).
-  // Fragments outside the 3D view's visible range are cut away like the cells.
+  // The gamut solid: a true solid, ray-marched per pixel. Each pixel follows
+  // its view ray (clipped to the 3D view's visible range: L slab, C shell,
+  // hue wedge) to the first point that is both in gamut and in range, and
+  // shows that point's own colour, so a slice shows its filled cut face, not
+  // a hollow shell. Drawn first, in its own scene, so cells, dots and cards
+  // always sit on top. The proxy is a box's back faces: one fragment per pixel.
   const gamutScene = new THREE.Scene();
   const gamutU = { uSep: shared.uSep, uAlpha: { value: 0 }, uCur: { value: new THREE.Vector3(0.65, 0.12, 0) }, uRange: { value: new THREE.Vector3(-1, -1, -1) } };
   {
-    const sh = spaceGamutShell(40), g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.BufferAttribute(sh.pos, 3));
-    g.setAttribute("aColor", new THREE.BufferAttribute(sh.col, 3));
-    g.setIndex(sh.idx);
-    const vert = `attribute vec3 aColor; uniform float uSep; varying vec3 vColor; varying vec3 vW;
-      void main() { vColor = aColor; vW = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position * uSep, 1.0); }`;
-    const frag = (depthOnly) => `uniform float uAlpha; uniform vec3 uCur, uRange; varying vec3 vColor; varying vec3 vW;
+    const BX = AMAX * CW + 0.1, BY = LW / 2 + 0.05;
+    const f = (x) => x.toFixed(4);
+    const vert = `uniform float uSep; varying vec3 vW;
+      void main() { vec4 w = modelMatrix * vec4(position * uSep, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`;
+    const frag = `precision highp float;
+      uniform float uAlpha, uSep; uniform vec3 uCur, uRange; varying vec3 vW;
+      vec3 linRgb(vec3 p) {
+        float L = p.y / ${f(LW)} + ${f(LC)}, A = -p.z / ${f(CW)}, B = p.x / ${f(CW)};
+        float l = L + 0.3963377774 * A + 0.2158037573 * B, m = L - 0.1055613458 * A - 0.0638541728 * B, s = L - 0.0894841775 * A - 1.291485548 * B;
+        l = l * l * l; m = m * m * m; s = s * s * s;
+        return vec3(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+                    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+                    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s);
+      }
+      bool inside(vec3 p) {
+        float L = p.y / ${f(LW)} + ${f(LC)};
+        if (L < 0.0 || L > 1.0) return false;
+        float C = length(p.xz) / ${f(CW)};
+        if (uRange.x >= 0.0 && abs(L - uCur.x) > uRange.x) return false;
+        if (uRange.y >= 0.0 && abs(C - uCur.y) > uRange.y) return false;
+        if (uRange.z >= 0.0 && C >= 0.004) {
+          float H = degrees(atan(p.x, -p.z)); if (H < 0.0) H += 360.0;
+          if (abs(mod(H - uCur.z + 540.0, 360.0) - 180.0) > uRange.z) return false;
+        }
+        vec3 c = linRgb(p);
+        float lo = -1e-9 - 0.0004 * max(max(c.r, c.g), max(c.b, 0.0));
+        return all(greaterThanEqual(c, vec3(lo))) && all(lessThanEqual(c, vec3(1.0002)));
+      }
+      // first inside point on [a, b], or -1. A cut face sits exactly at a; past
+      // it the steps start at a per-pixel offset, so a thin edge missed
+      // between steps shows as fine grain rather than a regular sawtooth.
+      float march(vec3 o, vec3 d, float a, float b, float jit) {
+        if (b <= a) return -1.0;
+        if (inside(o + d * a)) return a;
+        float dt = (b - a) / 160.0;
+        for (int i = 0; i <= 160; i++) {
+          float t = min(b, a + dt * (float(i) + jit));
+          if (inside(o + d * t)) {
+            float lo = max(a, t - dt), hi = t;
+            for (int k = 0; k < 10; k++) { float mid = 0.5 * (lo + hi); if (inside(o + d * mid)) hi = mid; else lo = mid; }
+            return hi;
+          }
+        }
+        return -1.0;
+      }
+      // t-interval where |(o + t d).xz| <= R; false if never
+      bool cyl(vec3 o, vec3 d, float R, out float ta, out float tb) {
+        float a = dot(d.xz, d.xz), b = dot(o.xz, d.xz), c = dot(o.xz, o.xz) - R * R;
+        if (a < 1e-9) { ta = -1e9; tb = 1e9; return c <= 0.0; }
+        float disc = b * b - a * c;
+        if (disc < 0.0) return false;
+        float q = sqrt(disc); ta = (-b - q) / a; tb = (-b + q) / a; return true;
+      }
+      void clipHalf(vec3 o, vec3 d, vec2 n, inout float t0, inout float t1) {   // keep n·p.xz >= 0
+        float s = dot(n, o.xz), v = dot(n, d.xz);
+        if (abs(v) < 1e-9) { if (s < 0.0) t1 = -1.0; return; }
+        float t = -s / v;
+        if (v > 0.0) t0 = max(t0, t); else t1 = min(t1, t);
+      }
       void main() {
-        float L = vW.y / ${LW.toFixed(4)} + ${LC.toFixed(4)}, C = length(vW.xz) / ${CW.toFixed(4)};
-        float H = degrees(atan(vW.x, -vW.z)); if (H < 0.0) H += 360.0;
-        if (uRange.x >= 0.0 && abs(L - uCur.x) > uRange.x) discard;
-        if (uRange.y >= 0.0 && abs(C - uCur.y) > uRange.y) discard;
-        if (uRange.z >= 0.0 && C >= 0.004 && abs(mod(H - uCur.z + 540.0, 360.0) - 180.0) > uRange.z) discard;
-        gl_FragColor = ${depthOnly ? "vec4(0.0)" : "vec4(vColor, uAlpha)"};
+        vec3 o = cameraPosition / uSep, d = normalize(vW / uSep - o);
+        // the box
+        vec3 inv = 1.0 / d, lo = (vec3(-${f(BX)}, -${f(BY)}, -${f(BX)}) - o) * inv, hi = (vec3(${f(BX)}, ${f(BY)}, ${f(BX)}) - o) * inv;
+        vec3 tmin = min(lo, hi), tmax = max(lo, hi);
+        float t0 = max(max(max(tmin.x, tmin.y), tmin.z), 0.0), t1 = min(min(tmax.x, tmax.y), tmax.z);
+        // lightness slab
+        if (uRange.x >= 0.0) {
+          float ya = (uCur.x - uRange.x - ${f(LC)}) * ${f(LW)}, yb = (uCur.x + uRange.x - ${f(LC)}) * ${f(LW)};
+          if (abs(d.y) < 1e-9) { if (o.y < ya || o.y > yb) discard; }
+          else { float a = (ya - o.y) / d.y, b = (yb - o.y) / d.y; t0 = max(t0, min(a, b)); t1 = min(t1, max(a, b)); }
+        }
+        // chroma shell: outer cylinder clips, inner one splits the run in two
+        float ia = 1e9, ib = -1e9;
+        if (uRange.y >= 0.0) {
+          float a, b;
+          if (!cyl(o, d, (uCur.y + uRange.y) * ${f(CW)}, a, b)) discard;
+          t0 = max(t0, a); t1 = min(t1, b);
+          float Ri = (uCur.y - uRange.y) * ${f(CW)};
+          if (Ri > 0.0 && cyl(o, d, Ri, a, b)) { ia = a; ib = b; }
+        }
+        // hue wedge (narrower than a half-turn: two half-planes through the axis)
+        if (uRange.z >= 0.0 && uRange.z < 90.0) {
+          float h1 = radians(uCur.z - uRange.z), h2 = radians(uCur.z + uRange.z);
+          clipHalf(o, d, vec2(cos(h1), sin(h1)), t0, t1);
+          clipHalf(o, d, -vec2(cos(h2), sin(h2)), t0, t1);
+        }
+        // and always the gamut's own bounding cylinder, so the steps stay fine
+        { float a, b; if (!cyl(o, d, ${f(0.325 * CW)}, a, b)) discard; t0 = max(t0, a); t1 = min(t1, b); }
+        if (t1 <= t0) discard;
+        float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        float t = ib > ia ? march(o, d, t0, min(t1, ia), jit) : march(o, d, t0, t1, jit);
+        if (t < 0.0 && ib > ia) t = march(o, d, max(t0, ib), t1, jit);
+        if (t < 0.0) discard;
+        vec3 c = clamp(linRgb(o + d * t), 0.0, 1.0);
+        c = mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+        gl_FragColor = vec4(c, uAlpha);
       }`;
-    const pre = new THREE.Mesh(g, new THREE.ShaderMaterial({ vertexShader: vert, fragmentShader: frag(true), uniforms: gamutU, side: THREE.DoubleSide, colorWrite: false }));
-    const paintM = new THREE.Mesh(g, new THREE.ShaderMaterial({
-      vertexShader: vert, fragmentShader: frag(false), uniforms: gamutU, side: THREE.DoubleSide,
-      transparent: true, depthWrite: false, depthFunc: THREE.LessEqualDepth,
+    const box = new THREE.Mesh(new THREE.BoxGeometry(2 * BX, 2 * BY, 2 * BX), new THREE.ShaderMaterial({
+      vertexShader: vert, fragmentShader: frag, uniforms: gamutU, side: THREE.BackSide,
+      transparent: true, depthTest: false, depthWrite: false,
     }));
-    pre.frustumCulled = paintM.frustumCulled = false;
-    pre.renderOrder = 0; paintM.renderOrder = 1;
-    gamutScene.add(pre, paintM);
+    box.frustumCulled = false;
+    gamutScene.add(box);
   }
   const syncGamutRange = () => {
     const r = S.ranges["3d"];
@@ -2185,6 +2257,25 @@ function createSpaceEngine(opts) {
     marker.traverse((o) => (o.renderOrder = 999));
   }
   overlay.add(marker);
+  // The tether: a dashed line from the cursor to what names it (its pin, or
+  // the nearest anchor). Drawn over everything so it never hides in a cell.
+  const tetherMat = new THREE.LineDashedMaterial({ color: 0x000000, dashSize: 0.07, gapSize: 0.05, depthTest: false, transparent: true, opacity: 0.9 });
+  const tetherGeo = new THREE.BufferGeometry();
+  tetherGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3));
+  const tetherLine = new THREE.Line(tetherGeo, tetherMat);
+  tetherLine.frustumCulled = false; tetherLine.renderOrder = 5; tetherLine.visible = false;
+  overlay.add(tetherLine);
+  const updateTether3D = () => {
+    const t = S.tether;
+    if (!t) { tetherLine.visible = false; return; }
+    const w = spaceToWorld(t.L, t.C, t.H), k = 1 + S.sep, P = tetherGeo.attributes.position.array;
+    P[0] = marker.position.x; P[1] = marker.position.y; P[2] = marker.position.z;
+    P[3] = w[0] * k; P[4] = w[1] * k; P[5] = w[2] * k;
+    tetherLine.visible = Math.hypot(P[3] - P[0], P[4] - P[1], P[5] - P[2]) > 0.01;
+    tetherGeo.attributes.position.needsUpdate = true;
+    tetherGeo.computeBoundingSphere();
+    tetherLine.computeLineDistances();
+  };
 
   // Plane outlines (L, C, H)
   const planes = new THREE.Group();
@@ -2654,6 +2745,7 @@ function createSpaceEngine(opts) {
     const k = S.sep, c = selIdx >= 0 ? [px[selIdx], py[selIdx], pz[selIdx]] : [0, 0, 0];
     marker.position.set(cursorWorld.x + c[0] * k, cursorWorld.y + c[1] * k, cursorWorld.z + c[2] * k);
     marker.scale.setScalar(orb.r / 14);
+    updateTether3D();
     setGoal();
   };
   const updatePlanes = () => {
@@ -2930,7 +3022,7 @@ function createSpaceEngine(opts) {
   // nearest layer within the view's depth (left in P). Returns its depth
   // fraction (0 = on the plane), or -1 when there is none.
   const gamutAt = (k, u, w, P) => {
-    if (mappingAt(k, u, w, 0, P) && spaceInGamut(P[0], P[1], P[2])) return 0;
+    if (mappingAt(k, u, w, 0, P) && spaceInGamutStrict(P[0], P[1], P[2])) return 0;
     const D = depthOf(k);
     if (D <= 0) return -1;
     if ((k === "l" && Math.hypot(u, w) > MAX_C) || (k === "h" && u > MAX_C)) return -1;
@@ -2938,13 +3030,13 @@ function createSpaceEngine(opts) {
     for (let j = 1; j <= n; j++)
       for (let sgn = 1; sgn >= -1; sgn -= 2) {
         if (k === "c" && S.cursor[1] + sgn * j * st > MAX_C) continue;
-        if (mappingAt(k, u, w, sgn * j * st, P) && spaceInGamut(P[0], P[1], P[2])) {
+        if (mappingAt(k, u, w, sgn * j * st, P) && spaceInGamutStrict(P[0], P[1], P[2])) {
           // close in on the gamut's edge between the last step and this one,
           // so the projected outline is smooth rather than stepped
           let lo = (j - 1) * st, hi = j * st;
           for (let q = 0; q < 6; q++) {
             const mid = (lo + hi) / 2;
-            if (mappingAt(k, u, w, sgn * mid, P) && spaceInGamut(P[0], P[1], P[2])) hi = mid; else lo = mid;
+            if (mappingAt(k, u, w, sgn * mid, P) && spaceInGamutStrict(P[0], P[1], P[2])) hi = mid; else lo = mid;
           }
           mappingAt(k, u, w, sgn * hi, P);
           return hi / D;
@@ -3277,7 +3369,9 @@ function createSpaceEngine(opts) {
   };
   const drawGuides = (k) => {
     const v = SV[k], ctx = v.ctx, W = v.cv.width, H = v.cv.height, [L, C, Hh] = S.cursor, G = S.guide;
-    const hr = (Hh * Math.PI) / 180, TOL = 0.012;
+    // "On the plane" for pins and commercial colours: within half a display
+    // step (0.0005) of it; the view's depth widens that.
+    const hr = (Hh * Math.PI) / 180, TOL = 0.0005;
     drawAnchors2D(k);
     // markers lying on this section (positions kept for hover and click)
     v.mk = [];
@@ -3296,6 +3390,23 @@ function createSpaceEngine(opts) {
       markerShape(ctx, mx, my, m.hex, m.kind === "brand");
       v.mk.push([mx, my, mi]);
     });
+    // tether: the cursor to what names it, both seen straight on in this view
+    if (S.tether) {
+      const t = S.tether, th = (t.H * Math.PI) / 180;
+      const tu = k === "l" ? t.C * Math.sin(th) : k === "c" ? ((t.H - 180) * Math.PI / 180) * C : t.C;
+      const tw = k === "l" ? t.C * Math.cos(th) : (t.L * LW) / CW;
+      const [cu, cw] = cursorInView(k), x0 = u2px(v, cu), y0 = v2py(v, cw), x1 = u2px(v, tu), y1 = v2py(v, tw);
+      if (Math.hypot(x1 - x0, y1 - y0) > 3 && !(k === "c" && C < 0.002)) {
+        ctx.save();
+        ctx.strokeStyle = S.dark ? "rgba(0,0,0,0.7)" : "rgba(255,255,255,0.85)"; ctx.lineWidth = 3.5;
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+        ctx.strokeStyle = fgCss(); ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath(); ctx.arc(x1, y1, t.kind === "pin" ? 6.5 : 5.5, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+      }
+    }
     if (k === "l") {
       const ox = u2px(v, 0), oy = v2py(v, 0), sc = W / (v.dom.x1 - v.dom.x0);
       ctx.save(); ctx.strokeStyle = G.l; ctx.globalAlpha = 0.7; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.arc(ox, oy, AMAX * sc, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
@@ -3487,6 +3598,13 @@ function createSpaceEngine(opts) {
       if (three) { rebuild(); rebuildActive(); updateDotVisibility(); syncGamutRange(); }
       if (flat) scheduleSections();
     },
+    // What names the cursor ({ L, C, H, kind } or null): the tether's far end.
+    setTether(t) {
+      const n = t && isFinite(t.L) && isFinite(t.C) ? { L: +t.L, C: +t.C, H: +t.H || 0, kind: t.kind } : null, o = S.tether;
+      if (o === n || (o && n && o.L === n.L && o.C === n.C && o.H === n.H && o.kind === n.kind)) return;
+      S.tether = n;
+      updateTether3D(); requestRender(); scheduleSections();
+    },
     // { view: opacity } of the seamless gamut solid beneath each view (0 = off).
     setGamut(map) {
       let three = false, flat = false;
@@ -3521,6 +3639,7 @@ function createSpaceEngine(opts) {
       rimMat.uniforms.uColor.value.copy(fgc);
       dotMat.uniforms.uRing.value.copy(fgc);
       markerMats.forEach((m) => m.color.copy(fgc));
+      tetherMat.color.copy(fgc);
       plL.material.color.set(S.guide.l); plC.material.color.set(S.guide.c); plH.material.color.set(S.guide.h);
       axis.material.color.copy(fgc);
       const pp = paperRgb();
@@ -3554,7 +3673,7 @@ function createSpaceEngine(opts) {
       listeners.forEach(([el, ev, fn, o]) => el.removeEventListener(ev, fn, o));
       scene.traverse((o) => { o.geometry && o.geometry.dispose(); });
       overlay.traverse((o) => { o.geometry && o.geometry.dispose(); });
-      [cellMat, activeMat, rimMat, dotMat, ghostMat, cardMat, axis.material, plL.material, plC.material, plH.material, ...markerMats].forEach((m) => m.dispose());
+      [cellMat, activeMat, rimMat, dotMat, ghostMat, cardMat, tetherMat, axis.material, plL.material, plC.material, plH.material, ...markerMats].forEach((m) => m.dispose());
       renderer.dispose();
       renderer.forceContextLoss();
     },
@@ -3849,6 +3968,7 @@ const ViewSpaceInner = ({
   scrubL,
   scrubC,
   scrubH,
+  tether = null,
   onCursor,
   handlePointClick,
 }) => {
@@ -3869,9 +3989,13 @@ const ViewSpaceInner = ({
   const [lookOpen, setLookOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 768);
   const [secW, setSecW] = useState(250);
   const [heights, setHeights] = useState([0, 230, 150, 230]);
-  const [look, setLook] = useState(() => {
+  const defaultLook = () => {
     const d = { v: 2, sync: false, views: {} };
     SPACE_VIEWS.forEach((k) => (d.views[k] = spaceViewDefault(k)));
+    return d;
+  };
+  const [look, setLook] = useState(() => {
+    const d = defaultLook();
     try {
       const saved = JSON.parse(localStorage.getItem(SPACE_LOOK_KEY) || "{}");
       if (saved.views) {
@@ -3893,6 +4017,33 @@ const ViewSpaceInner = ({
     return d;
   });
   const [openPanel, setOpenPanel] = useState(null);   // slot index whose settings are open
+  // Reset views: every view's settings, the layout, the 3D camera and the
+  // sections' zoom back to how they start. The settings and layout can be
+  // brought back for a few seconds afterwards.
+  const undoRef = useRef(null);
+  const [undoable, setUndoable] = useState(false);
+  const undoTimer = useRef(0);
+  useEffect(() => () => clearTimeout(undoTimer.current), []);
+  const resetAll = () => {
+    undoRef.current = { look, slots, heights, secW };
+    setLook(defaultLook());
+    setSlots(["3d", "l", "c", "h"]);
+    setHeights([0, 230, 150, 230]);
+    setSecW(250);
+    setOpenPanel(null);
+    const e = engineRef.current;
+    if (e) { e.resetCamera(); ["l", "c", "h"].forEach((k) => e.resetView(k)); }
+    setUndoable(true);
+    clearTimeout(undoTimer.current);
+    undoTimer.current = setTimeout(() => setUndoable(false), 8000);
+  };
+  const undoReset = () => {
+    const u = undoRef.current;
+    if (u) { setLook(u.look); setSlots(u.slots); setHeights(u.heights); setSecW(u.secW); }
+    undoRef.current = null;
+    setUndoable(false);
+    clearTimeout(undoTimer.current);
+  };
   const closePanel = useCallback(() => setOpenPanel(null), []);
   // The preset a view is showing (3D: from its inflation; null = in between).
   const presetOf = (k) => {
@@ -4022,19 +4173,20 @@ const ViewSpaceInner = ({
   const eng = active ? engineRef.current : null;
   useEffect(() => { ready && eng && eng.setAnchors(anchors); }, [ready, anchors, active]);
   useEffect(() => { ready && eng && eng.setMarkers(markers); }, [ready, markers, active]);
+  useEffect(() => { ready && eng && eng.setTether(tether); }, [ready, tether, active]);
   useEffect(() => { ready && eng && eng.setCursor(scrubL, scrubC, ((scrubH % 360) + 360) % 360); }, [ready, scrubL, scrubC, scrubH, active]);
   useEffect(() => {
     if (!ready || !eng) return;
     // The range sliders are half-widths; at their maximum (or when they reach
     // past both ends) they mean "everything".
     const map = {};
-    // At 0 a filter keeps a thin band at the cursor rather than nothing.
+    // At 0 a filter keeps what sits at the cursor (within half a display step).
     SPACE_VIEWS.forEach((k) => {
       const t = look.views[k].tol;
       map[k] = {
-        hl: t.l >= 1 || (scrubL - t.l <= 0 && scrubL + t.l >= 1) ? null : Math.max(t.l, 0.01),
-        hc: t.c >= 0.4 || (scrubC - t.c <= 0 && scrubC + t.c >= 0.4) ? null : Math.max(t.c, 0.006),
-        hh: t.h >= 180 ? null : Math.max(t.h, 1.5),
+        hl: t.l >= 1 || (scrubL - t.l <= 0 && scrubL + t.l >= 1) ? null : Math.max(t.l, 0.0005),
+        hc: t.c >= 0.4 || (scrubC - t.c <= 0 && scrubC + t.c >= 0.4) ? null : Math.max(t.c, 0.0005),
+        hh: t.h >= 180 ? null : Math.max(t.h, 0.05),
       };
       if (k !== "3d") map[k].depth = t[k] >= SPACE_TOL[k].max ? null : t[k];
     });
@@ -4187,6 +4339,19 @@ const ViewSpaceInner = ({
         React.createElement(SpacePresets, { value: presetOf(big), onChange: (id) => setPreset(big, id), compact: narrow }),
         big !== "3d" && React.createElement(SpaceIconButton, { icon: "rotate-ccw", title: "Reset zoom", onClick: () => reset(big) }),
         big !== "3d" && React.createElement(SpaceIconButton, { icon: "minimize-2", title: "Back to the 3D view", onClick: () => maximize("3d") }),
+        React.createElement("span", { className: "w-px h-4 bg-slate-200 dark:bg-neutral-700" }),
+        React.createElement(
+          "button",
+          {
+            onClick: undoable ? undoReset : resetAll,
+            title: undoable ? "Bring back the settings and layout from before the reset" : "Reset every view: settings, layout, camera and zoom",
+            className: `flex items-center gap-1.5 px-1.5 py-1 rounded text-[10px] font-bold uppercase tracking-widest transition-colors ${
+              undoable ? "bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900" : "text-slate-500 dark:text-neutral-400 hover:text-slate-800 hover:bg-slate-100 dark:hover:text-white dark:hover:bg-neutral-800"
+            }`,
+          },
+          React.createElement(Icon, { name: undoable ? "undo" : "refresh-cw", className: "w-3 h-3" }),
+          !narrow && (undoable ? "Undo reset" : "Reset views"),
+        ),
       ),
       // plane legend
       React.createElement(
@@ -4742,6 +4907,8 @@ const ViewAnchors = ({
 // it is tethered to, else the name of the nearest anchor (the cell it sits in
 // in Explore). Returned upper-case; "" when nothing names it.
 const UNNAMED_RE = /^unnamed( noun)?$/i;
+// How far a pin pulls the cursor onto itself: 0.5 ΔE (OkLab distance ×100).
+const PIN_PULL = 0.005;
 const cleanName = (v) => {
   const s = String(v || "").trim();
   return UNNAMED_RE.test(s) ? "" : s;
@@ -9017,7 +9184,8 @@ const processCSVData = (
         hasNeutrals = true;
       }
       newGroupSettings.neutrals.push({
-        id: row.ID || crypto.randomUUID(),
+        // older exports put the id in Adjective
+        id: row.ID || row.Adjective || crypto.randomUUID(),
         name: row.Noun || "",
         maxL: parseFloat(row.OKLCH_L) || 0,
       });
@@ -9037,10 +9205,13 @@ const processCSVData = (
         newGroupSettings.hues = [];
         hasHues = true;
       }
+      const hv = parseFloat(row.OKLCH_H);
+      const isCenter = /^center/i.test(String(row.Note || "").trim());
       newGroupSettings.hues.push({
-        id: row.ID || crypto.randomUUID(),
+        id: row.ID || row.Adjective || crypto.randomUUID(),
         name: row.Noun || "",
-        maxH: parseFloat(row.OKLCH_H) || 0,
+        // a midpoint, or (older files) an upper bound turned into one later
+        ...(isCenter ? { centerH: isFinite(hv) ? hv : 0 } : { maxH: isFinite(hv) ? hv : 0 }),
       });
       return;
     }
@@ -9059,7 +9230,7 @@ const processCSVData = (
         hasOverrides = true;
       }
       newGroupSettings.overrides.push({
-        id: row.ID || crypto.randomUUID(),
+        id: row.ID || row.Tags || crypto.randomUUID(),
         condition: row.Adjective || "",
         name: row.Noun || "",
       });
@@ -11306,7 +11477,7 @@ const App = () => {
           Math.pow(b - pt.b, 2),
       );
       const EPSILON = 1e-9;
-      const allowedRadius = pt.isPin ? 0.002 : 0.02;
+      const allowedRadius = pt.isPin ? PIN_PULL : 0.02;
       if (d <= allowedRadius) {
         if (d < minGridDist - EPSILON) {
           minGridDist = d;
@@ -11323,6 +11494,15 @@ const App = () => {
         return p1.H - p2.H;
       });
     }
+    // A pin within its own pull radius names the cursor, even when an
+    // anchor's (wider) pull reaches it too.
+    let pulledPin = null, pulledPinDist = Infinity;
+    for (const pt of filteredViewData.points) {
+      if (!pt.isPin) continue;
+      const d = Math.sqrt(Math.pow(scrubL - pt.L, 2) + Math.pow(a - pt.a, 2) + Math.pow(b - pt.b, 2));
+      if (d <= PIN_PULL && d < pulledPinDist) { pulledPinDist = d; pulledPin = pt; }
+    }
+    if (pulledPin) { gridTieBreakers = [pulledPin]; minGridDist = pulledPinDist; }
     const closestGridPt = gridTieBreakers[0];
     const exactSavedColor =
       closestSaved && minSavedDist < 1e-4 ? closestSaved : null;
@@ -11361,7 +11541,7 @@ const App = () => {
       gravityA = closestGridPt.a;
       gravityB = closestGridPt.b;
       activePullType = "anchor";
-    } else if (minPinDist <= 0.002 && closestPin) {
+    } else if (minPinDist <= PIN_PULL && closestPin) {
       gravityL = closestPin.L;
       gravityC = closestPin.C;
       gravityH = closestPin.H;
@@ -11396,6 +11576,26 @@ const App = () => {
     // OkLab, the same rule that draws the cells in Explore.
     const nearAnchor = findNearestAnchor(effectiveL, effectiveC, effectiveH, savedColors);
     const nearestAnchorId = nearAnchor ? nearAnchor.nameKey : null;
+    // What names the cursor, for the tether line in Explore: its pin (exact or
+    // pulled), else the nearest anchor (a legacy range anchor at the cursor's L).
+    let tether = null;
+    {
+      const pinT =
+        activeSavedColor && activeSavedColor.type === "pin"
+          ? activeSavedColor
+          : !activeSavedColor && closestGridPt && closestGridPt.isPin
+            ? savedColors[closestGridPt.pinId]
+            : null;
+      if (pinT && isFinite(pinT.L) && isFinite(pinT.C))
+        tether = { L: Number(pinT.L), C: Number(pinT.C), H: Number(pinT.H) || 0, kind: "pin" };
+      else if (nearAnchor)
+        tether = {
+          L: Math.max(nearAnchor.minL, Math.min(nearAnchor.maxL, effectiveL)),
+          C: Number(nearAnchor.sc.C) || 0,
+          H: Number(nearAnchor.sc.H) || 0,
+          kind: "anchor",
+        };
+    }
     const exactErpCode = getExactErpCode(scrubL, scrubC, scrubH);
     const activeErpCode = exactErpCode;
     let validatedCommercial = null;
@@ -11434,6 +11634,7 @@ const App = () => {
       snapTarget: closestGridPt,
       temporarySpectral,
       activeCommercial: validatedCommercial,
+      tether,
     };
   }, [
     filteredViewData.points,
@@ -12097,25 +12298,28 @@ const App = () => {
         (groupSettings.neutrals || []).forEach((n) =>
           anchorsCsv.push({
             Type: "NEUTRAL_REGION",
-            Adjective: n.id,
+            ID: n.id,
             Noun: n.name,
             OKLCH_L: n.maxL,
           }),
         );
-        (groupSettings.hues || []).forEach((h) =>
+        // Hue regions are kept by their midpoint; "center" in Note tells the
+        // importer so (older files wrote an upper bound there instead).
+        (groupSettings.hues || []).forEach((h, _i, all) =>
           anchorsCsv.push({
             Type: "HUE_REGION",
-            Adjective: h.id,
+            ID: h.id,
             Noun: h.name,
-            OKLCH_H: h.maxH,
+            OKLCH_H: hueCenterOf(h, all),
+            Note: "center",
           }),
         );
         (groupSettings.overrides || []).forEach((o) =>
           anchorsCsv.push({
             Type: "OVERRIDE",
+            ID: o.id,
             Adjective: o.condition,
             Noun: o.name,
-            Tags: o.id,
           }),
         );
       }
@@ -19069,6 +19273,7 @@ const AppUI = ({
                 scrubL,
                 scrubC,
                 scrubH,
+                tether: crosshair ? crosshair.tether : null,
                 handlePointClick,
                 onCursor: (L, C, H) => {
                   setScrubL(L);
