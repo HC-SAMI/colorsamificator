@@ -1996,6 +1996,7 @@ function createSpaceEngine(opts) {
   const viewOf = (el) => Object.keys(slot).find((k) => slot[k] === el);
   const FONT = "Inter, ui-sans-serif, system-ui, sans-serif";
   const CARD_W = 0.14, CARD_H = CARD_W * 1.3;   // swatch card, world units (square swatch + label strip)
+  const CARD_ROUND = 0.07;   // corner radius, as a share of the card's width (Tailwind's "rounded" on a tile)
   const SLAB = 0.18;                            // sections show anchors this close to the plane (world units)
   const NAME_PX = 46;                           // names appear once neighbours are this far apart on screen
   const CARD_NAME_PX = 34;                      // …or a swatch card is this wide
@@ -2413,12 +2414,16 @@ function createSpaceEngine(opts) {
         vPx = uW * projectionMatrix[1][1] * uViewH * 0.5 / max(-mv.z, 0.001);
       }`,
     fragmentShader: `precision highp float;
+      #define CARD_R ${CARD_ROUND.toFixed(3)}
       varying vec2 vUv; varying vec3 vColor; varying float vPx; varying float vSel;
       uniform vec3 uPaper, uEdge; uniform float uH, uW, uAlpha;
       void main() {
         vec3 paper = mix(vColor, uPaper, smoothstep(10.0, 34.0, vPx));
         vec3 c = vUv.y < 1.0 ? vColor : paper;
-        float e = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, uH / uW - vUv.y)) * vPx;
+        // slightly rounded corners, like the swatches in the other tabs
+        vec2 hs = vec2(0.5, 0.5 * uH / uW), q = abs(vUv - hs) - hs + CARD_R;
+        float e = (CARD_R - length(max(q, 0.0)) - min(max(q.x, q.y), 0.0)) * vPx;
+        if (e < 0.0) discard;
         if (vSel > 0.5 && e < 2.0) c = uEdge;
         else if (e < 0.8 && vPx > 12.0) c = mix(c, uEdge, 0.3);
         gl_FragColor = vec4(c, vSel > 0.5 ? 1.0 : uAlpha);
@@ -2481,6 +2486,7 @@ function createSpaceEngine(opts) {
     // a Shaker or Slim frame inset from the edge, and the product photo laid
     // faintly over the top two-thirds — all in ink that suits the colour.
     fragmentShader: `precision highp float;
+      #define CARD_R ${CARD_ROUND.toFixed(3)}
       varying vec2 vUv; varying vec3 vColor; varying float vPx; varying float vSel; varying vec3 vLook; varying float vImg;
       uniform vec3 uPaper, uEdge; uniform float uH, uW, uAlpha, uTiles; uniform sampler2D uAtlas;
       void main() {
@@ -2510,7 +2516,10 @@ function createSpaceEngine(opts) {
             c = mix(c, ph, 0.38 * m);
           }
         }
-        float e = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, uH / uW - vUv.y)) * vPx;
+        // slightly rounded corners, like the swatches in the other tabs
+        vec2 hs = vec2(0.5, 0.5 * uH / uW), q = abs(vUv - hs) - hs + CARD_R;
+        float e = (CARD_R - length(max(q, 0.0)) - min(max(q.x, q.y), 0.0)) * vPx;
+        if (e < 0.0) discard;
         if (e < 0.8 && vPx > 12.0) c = mix(c, uEdge, 0.3);
         gl_FragColor = vec4(c, uAlpha);
       }`,
@@ -2671,6 +2680,7 @@ function createSpaceEngine(opts) {
   const buildCells = () => {
     const token = ++buildToken;
     ready = false;
+    cards.visible = false;   // the old anchors' cards go until the new ones are ready
     const list = S.anchors;
     N = list.length;
     px = new Float32Array(N); py = new Float32Array(N); pz = new Float32Array(N); cols = new Float32Array(N * 3);
@@ -2685,7 +2695,12 @@ function createSpaceEngine(opts) {
     NV = TPL.count;
     rCell = new Float32Array(N * NV); meanR = new Float32Array(N); maxR = new Float32Array(N); dotR = new Float32Array(N); nnW = new Float32Array(N);
     selIdx = -1;
-    if (!N) { ready = true; onStatus({ phase: "empty" }); rebuild(); rebuildActive(); return; }
+    if (!N) {
+      // nothing left of the old anchors: no cells, no cards (markers stay)
+      ready = true; onStatus({ phase: "empty" });
+      setCardGeometry(); updateMarkerOwners(); rebuild(); rebuildActive(); applyMode3D(); scheduleSections();
+      return;
+    }
     const D = TPL.dirs;
     let i = 0;
     const step = () => {
@@ -3492,17 +3507,30 @@ function createSpaceEngine(opts) {
   const drawCardRGB = (ctx, x, y, w, rgb, alpha, sel) => {
     const h = w * 1.3, x0 = x - w / 2, y0 = y - w / 2, t = Math.max(0, Math.min(1, (w - 10) / 24));
     const p = paperRgb(), mix = (a, b) => a + (b - a) * t;
+    const rr = Math.min(w * CARD_ROUND, w / 2);
     ctx.save();
     ctx.globalAlpha = alpha;
+    roundRectPath(ctx, x0, y0, w, h, rr);
     ctx.fillStyle = `rgb(${toByte(mix(rgb[0], p[0]))},${toByte(mix(rgb[1], p[1]))},${toByte(mix(rgb[2], p[2]))})`;
-    ctx.fillRect(x0, y0, w, h);
+    ctx.fill();
+    ctx.save();
+    ctx.clip();
     ctx.fillStyle = `rgb(${toByte(rgb[0])},${toByte(rgb[1])},${toByte(rgb[2])})`;
     ctx.fillRect(x0, y0, w, w);
+    ctx.restore();
     ctx.lineWidth = sel ? 2 : 1;
     ctx.strokeStyle = sel ? fgCss() : S.dark ? "rgba(255,255,255,0.18)" : "rgba(0,0,0,0.18)";
-    ctx.strokeRect(x0 + 0.5, y0 + 0.5, w - 1, h - 1);
+    roundRectPath(ctx, x0 + 0.5, y0 + 0.5, w - 1, h - 1, Math.max(0, rr - 0.5));
+    ctx.stroke();
     ctx.restore();
     return [x0, y0, x0 + w, y0 + h];
+  };
+  const roundRectPath = (ctx, x, y, w, h, r) => {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
   };
   // A pin or commercial colour's card dressed as in Match and Catalog: grain
   // hatch, door-profile frame, and its photo faintly over the top two-thirds.
@@ -3514,6 +3542,7 @@ function createSpaceEngine(opts) {
     const x0 = x - w / 2, y0 = y - w / 2, d = DPR(), ink = lk.light === false ? "255,255,255" : "0,0,0";
     ctx.save();
     ctx.globalAlpha = alpha;
+    roundRectPath(ctx, x0, y0, w, w * 1.3, Math.min(w * CARD_ROUND, w / 2)); ctx.clip();
     ctx.beginPath(); ctx.rect(x0, y0, w, w); ctx.clip();
     if (lk.hatch) {
       const n = Math.max(2, Math.min(9, Math.round(w / d / 14))), st = 100 / (n + 1), k = w / 100;
