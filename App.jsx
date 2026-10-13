@@ -2063,9 +2063,13 @@ function createSpaceEngine(opts) {
         if (dot(Ns, Nf) < 0.0) Ns = -Ns;
         vec3 N = normalize(mix(Nf, Ns, smoothstep(0.82, 0.96, dot(Ns, Nf))));
         vec3 V = normalize(-vViewPos);
-        float d1 = max(dot(N, uL1), 0.0), d2 = max(dot(N, uL2), 0.0);
-        float sp = pow(max(dot(N, normalize(uL1 + V)), 0.0), 55.0) * 0.28;
-        col = vColor * (0.34 + d1 * 0.56 + d2 * 0.2) + sp;
+        // Shading stays close to the true colour: a face turned to you shows
+        // it as is (a touch brighter under the key light), edges and faces
+        // turned away dim by at most about a fifth. The old lighting took
+        // unlit faces down to a third of their colour, so cells read too dark.
+        float d1 = max(dot(N, uL1), 0.0), dv = max(dot(N, V), 0.0);
+        float sp = pow(max(dot(N, normalize(uL1 + V)), 0.0), 60.0) * 0.08;
+        col = vColor * (0.80 + 0.17 * dv + 0.07 * d1) + sp;
       }
       gl_FragColor = vec4(col, uAlpha);
     }`;
@@ -2205,6 +2209,67 @@ function createSpaceEngine(opts) {
     box.frustumCulled = false;
     gamutScene.add(box);
   }
+  // Separated, the solid is drawn as every anchor's full zone (its cell at
+  // full inflation, cut by the visible range like the cells) moved exactly as
+  // the cells move, each vertex in its own true colour. Unseparated, the
+  // ray-marched solid above is exact and seamless, so that's used instead.
+  const gzGeo = new THREE.BufferGeometry();
+  const gzVert = `attribute vec3 aCenter; attribute vec3 aColor; uniform float uSep; varying vec3 vColor;
+    void main() { vColor = aColor; gl_Position = projectionMatrix * modelViewMatrix * vec4(position + aCenter * (uSep - 1.0), 1.0); }`;
+  const gzPre = new THREE.Mesh(gzGeo, new THREE.ShaderMaterial({ vertexShader: gzVert, fragmentShader: `void main() { gl_FragColor = vec4(0.0); }`, uniforms: gamutU, side: THREE.DoubleSide, colorWrite: false }));
+  const gzPaint = new THREE.Mesh(gzGeo, new THREE.ShaderMaterial({
+    vertexShader: gzVert, fragmentShader: `uniform float uAlpha; varying vec3 vColor; void main() { gl_FragColor = vec4(vColor, uAlpha); }`,
+    uniforms: gamutU, side: THREE.DoubleSide, transparent: true, depthWrite: false, depthFunc: THREE.LessEqualDepth,
+  }));
+  gzPre.frustumCulled = gzPaint.frustumCulled = false;
+  gzPre.renderOrder = 0; gzPaint.renderOrder = 1;
+  gzPre.visible = gzPaint.visible = false;
+  gamutScene.add(gzPre, gzPaint);
+  let gzKey = null;
+  const gamutZonesNeeded = () => S.gamut["3d"] > 0 && S.sep > 0.0005;
+  const buildGamutZones = () => {
+    const on = gamutZonesNeeded() && ready && N > 0;
+    gzPre.visible = gzPaint.visible = on;
+    gamutScene.children.forEach((o) => { if (o !== gzPre && o !== gzPaint) o.visible = !on; });
+    if (!on) return;
+    const r3 = S.ranges["3d"], sliced = r3.hl !== null || r3.hc !== null || r3.hh !== null;
+    const key = buildToken + "|" + NV + "|" + (sliced ? [r3.hl, r3.hc, r3.hh, ...S.cursor].join(",") : "all");
+    if (key === gzKey) return;
+    gzKey = key;
+    const cons = constraints(), parts = [], D = TPL.dirs;
+    let nV = 0, nI = 0;
+    for (let i = 0; i < N; i++) {
+      const X = px[i], Y = py[i], Z = pz[i], R = maxR[i] * 2 + 1e-4, active = [];
+      let skip = false;
+      for (const f of cons) { const fc = f(X, Y, Z); if (fc > R) { skip = true; break; } if (fc >= -R) active.push(f); }
+      if (skip) continue;
+      const P = new Array(NV * 3);
+      for (let v = 0; v < NV; v++) { const r = rCell[i * NV + v]; P[v * 3] = X + D[v * 3] * r; P[v * 3 + 1] = Y + D[v * 3 + 1] * r; P[v * 3 + 2] = Z + D[v * 3 + 2] * r; }
+      let m = { P, K: new Array(NV).fill(0), T: TPL.tris };
+      for (const f of active) { m = spaceClipMesh(m, f); if (!m) break; }
+      if (!m) continue;
+      parts.push([i, m]); nV += m.K.length; nI += m.T.length;
+    }
+    const pos = new Float32Array(nV * 3), cen = new Float32Array(nV * 3), col = new Float32Array(nV * 3), idx = new Uint32Array(nI), rgb = [0, 0, 0];
+    let vo = 0, io = 0;
+    for (const [i, m] of parts) {
+      const n = m.K.length;
+      for (let v = 0; v < n; v++) {
+        const o = (vo + v) * 3, x = m.P[v * 3], y = m.P[v * 3 + 1], z = m.P[v * 3 + 2];
+        pos[o] = x; pos[o + 1] = y; pos[o + 2] = z;
+        cen[o] = px[i]; cen[o + 1] = py[i]; cen[o + 2] = pz[i];
+        spaceWorldSrgb(x, y, z, rgb); col[o] = rgb[0] / 255; col[o + 1] = rgb[1] / 255; col[o + 2] = rgb[2] / 255;
+      }
+      for (let q = 0; q < m.T.length; q++) idx[io + q] = m.T[q] + vo;
+      vo += n; io += m.T.length;
+    }
+    if (gzGeo.attributes.position) gzGeo.dispose();
+    gzGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    gzGeo.setAttribute("aCenter", new THREE.BufferAttribute(cen, 3));
+    gzGeo.setAttribute("aColor", new THREE.BufferAttribute(col, 3));
+    gzGeo.setIndex(new THREE.BufferAttribute(idx, 1));
+    requestRender();
+  };
   const syncGamutRange = () => {
     const r = S.ranges["3d"];
     gamutU.uCur.value.set(S.cursor[0], S.cursor[1], S.cursor[2]);
@@ -2217,8 +2282,11 @@ function createSpaceEngine(opts) {
   mesh.frustumCulled = false;
   scene.add(mesh);
   let capV = 0, capI = 0, bPos, bCen, bCol, bCap, bIdx, bNor;
+  // Buffers are made on first use even when there's nothing to draw yet (no
+  // anchors loaded, or all of them hidden or sliced away): every rebuild
+  // writes into them, and with none allocated the first upload crashed.
   const ensure = (nV, nI) => {
-    if (nV <= capV && nI <= capI) return;
+    if (bPos && nV <= capV && nI <= capI) return;
     capV = Math.max(nV, capV, 1024) * 1.5 | 0;
     capI = Math.max(nI, capI, 1024) * 1.5 | 0;
     bPos = new Float32Array(capV * 3); bCen = new Float32Array(capV * 3); bCol = new Float32Array(capV * 3); bNor = new Float32Array(capV * 3);
@@ -2268,9 +2336,9 @@ function createSpaceEngine(opts) {
   const updateTether3D = () => {
     const t = S.tether;
     if (!t) { tetherLine.visible = false; return; }
-    const w = spaceToWorld(t.L, t.C, t.H), k = 1 + S.sep, P = tetherGeo.attributes.position.array;
+    const w = spaceToWorld(t.L, t.C, t.H), P = tetherGeo.attributes.position.array, e = sepOffset(w[0], w[1], w[2], [0, 0, 0]);
     P[0] = marker.position.x; P[1] = marker.position.y; P[2] = marker.position.z;
-    P[3] = w[0] * k; P[4] = w[1] * k; P[5] = w[2] * k;
+    P[3] = e[0]; P[4] = e[1]; P[5] = e[2];
     tetherLine.visible = Math.hypot(P[3] - P[0], P[4] - P[1], P[5] - P[2]) > 0.01;
     tetherGeo.attributes.position.needsUpdate = true;
     tetherGeo.computeBoundingSphere();
@@ -2294,10 +2362,13 @@ function createSpaceEngine(opts) {
   // Pins and commercial colours: round dots drawn before the cells
   const dotGeo = new THREE.BufferGeometry();
   const dotMat = new THREE.ShaderMaterial({
-    vertexShader: `attribute vec3 aColor; attribute float aKind; attribute float aVis;
+    // aOwner: the centre of the anchor cell the colour sits in. Separation
+    // moves every cell by its centre × sep, so the dot rides along with its
+    // cell and stays inside it instead of drifting into the gaps.
+    vertexShader: `attribute vec3 aColor; attribute float aKind; attribute float aVis; attribute vec3 aOwner;
       uniform float uSep, uSize; varying vec3 vColor; varying float vKind;
       void main() { vColor = aColor; vKind = aKind;
-        vec4 mv = modelViewMatrix * vec4(position * uSep, 1.0);
+        vec4 mv = modelViewMatrix * vec4(position + aOwner * (uSep - 1.0), 1.0);
         gl_Position = aVis < 0.5 ? vec4(2.0, 2.0, 2.0, 1.0) : projectionMatrix * mv;
         gl_PointSize = uSize; }`,
     fragmentShader: `precision highp float; varying vec3 vColor; varying float vKind; uniform vec3 uRing;
@@ -2536,6 +2607,7 @@ function createSpaceEngine(opts) {
       if (i < N) { onStatus({ phase: "building", progress: i / N }); setTimeout(step, 0); return; }
       ready = true;
       onStatus({ phase: "ready" });
+      updateMarkerOwners();
       updateCursor();
       setCardGeometry();
       rebuild();
@@ -2636,7 +2708,7 @@ function createSpaceEngine(opts) {
     if (!normalJobs || disposed) return;
     for (const [vo, nv, T, nt] of normalJobs) cellNormals(bPos, bNor, vo, nv, T, nt);
     const a = geo.attributes.aNormal;
-    a.updateRange = { offset: 0, count: normalJobs.vo * 3 }; a.needsUpdate = true;
+    if (a) { a.updateRange = { offset: 0, count: normalJobs.vo * 3 }; a.needsUpdate = true; }
     normalJobs = null;
     requestRender();
   };
@@ -2690,12 +2762,14 @@ function createSpaceEngine(opts) {
     else for (const [o, nv, T, nt] of jobs) cellNormals(bPos, bNor, o, nv, T, nt), (normalJobs = null);
     ["position", "aCenter", "aColor", "aCap"].concat(defer ? [] : ["aNormal"]).forEach((k) => {
       const a = geo.attributes[k];
+      if (!a) return;
       a.updateRange = { offset: 0, count: vo * a.itemSize };   // upload only what changed
       a.needsUpdate = true;
     });
     geo.index.updateRange = { offset: 0, count: io };
     geo.index.needsUpdate = true;
     geo.setDrawRange(0, io);
+    buildGamutZones();
     updateDotVisibility();
     requestRender();
     scheduleSections();
@@ -2728,7 +2802,7 @@ function createSpaceEngine(opts) {
       }
       for (let q = 0; q < ni; q++) idx[q] = m.T[q];
       cellNormals(pos, A.aNormal.array, 0, nv, m.T, ni);
-      ["position", "aCenter", "aColor", "aCap", "aNormal"].forEach((k) => { A[k].updateRange = { offset: 0, count: nv * A[k].itemSize }; A[k].needsUpdate = true; });
+      ["position", "aCenter", "aColor", "aCap", "aNormal"].forEach((k) => { if (A[k]) { A[k].updateRange = { offset: 0, count: nv * A[k].itemSize }; A[k].needsUpdate = true; } });
       activeGeo.index.updateRange = { offset: 0, count: ni };
       activeGeo.index.needsUpdate = true;
       activeGeo.setDrawRange(0, ni);
@@ -2772,7 +2846,26 @@ function createSpaceEngine(opts) {
   };
 
   // ── Markers (pins, commercial) ───────────────────────────────────────────
-  let mVis = null, markerPos = null, mVisAll = false;
+  let mVis = null, markerPos = null, mVisAll = false, mOwner = null;
+  // Which cell each marker sits in (its centre), for separation.
+  const updateMarkerOwners = () => {
+    if (!mOwner || !markerPos) return;
+    const n = mOwner.length / 3;
+    for (let i = 0; i < n; i++) {
+      if (!ready || !N) { mOwner[i * 3] = mOwner[i * 3 + 1] = mOwner[i * 3 + 2] = 0; continue; }
+      const j = grid.nearest(markerPos[i * 3], markerPos[i * 3 + 1], markerPos[i * 3 + 2]);
+      mOwner[i * 3] = px[j]; mOwner[i * 3 + 1] = py[j]; mOwner[i * 3 + 2] = pz[j];
+    }
+    if (dotGeo.attributes.aOwner) dotGeo.attributes.aOwner.needsUpdate = true;
+    requestRender();
+  };
+  // Where a world point is drawn once separated: moved with its cell.
+  const sepOffset = (x, y, z, out) => {
+    const s = S.sep;
+    if (s && ready && N) { const j = grid.nearest(x, y, z); out[0] = x + px[j] * s; out[1] = y + py[j] * s; out[2] = z + pz[j] * s; }
+    else { out[0] = x; out[1] = y; out[2] = z; }
+    return out;
+  };
   const setMarkerGeometry = () => {
     const M = S.markers, n = M.length, pos = new Float32Array(n * 3), col = new Float32Array(n * 3), kind = new Float32Array(n);
     markerPos = pos;
@@ -2786,6 +2879,9 @@ function createSpaceEngine(opts) {
     dotGeo.setAttribute("aColor", new THREE.BufferAttribute(col, 3));
     dotGeo.setAttribute("aKind", new THREE.BufferAttribute(kind, 1));
     dotGeo.setAttribute("aVis", new THREE.BufferAttribute(mVis, 1));
+    mOwner = new Float32Array(n * 3);
+    dotGeo.setAttribute("aOwner", new THREE.BufferAttribute(mOwner, 3));
+    updateMarkerOwners();
     updateDotVisibility();
   };
   function updateDotVisibility() {
@@ -2811,7 +2907,7 @@ function createSpaceEngine(opts) {
       const e = projM.elements, hw = rc.width / 2, hh = rc.height / 2;
       for (let i = 0, n = S.markers.length; i < n; i++) {
         if (!mVis[i]) continue;
-        const x = markerPos[i * 3] * k, y = markerPos[i * 3 + 1] * k, z = markerPos[i * 3 + 2] * k;
+        const sk = k - 1, x = markerPos[i * 3] + (mOwner ? mOwner[i * 3] * sk : 0), y = markerPos[i * 3 + 1] + (mOwner ? mOwner[i * 3 + 1] * sk : 0), z = markerPos[i * 3 + 2] + (mOwner ? mOwner[i * 3 + 2] * sk : 0);
         const w = e[3] * x + e[7] * y + e[11] * z + e[15];
         if (w <= 0) continue;
         const sz = (e[2] * x + e[6] * y + e[10] * z + e[14]) / w;
@@ -3376,13 +3472,13 @@ function createSpaceEngine(opts) {
     for (const [mx, my, mi] of SV[k].mk || []) { const d = (mx - x) ** 2 + (my - y) ** 2; if (d <= bd) { bd = d; best = S.markers[mi]; } }
     return best;
   };
-  const dotAt = (k, x, y) => {
+  const dotAt = (k, x, y, slack = 0) => {
     const v = SV[k];
     if (v.cards) {
-      for (let q = v.cards.length - 1; q >= 0; q--) { const c = v.cards[q]; if (x >= c[0] && x <= c[2] && y >= c[1] && y <= c[3]) return c[4]; }
+      for (let q = v.cards.length - 1; q >= 0; q--) { const c = v.cards[q]; if (x >= c[0] - slack && x <= c[2] + slack && y >= c[1] - slack && y <= c[3] + slack) return c[4]; }
       return -1;
     }
-    let best = -1, bd = 49;
+    let best = -1, bd = (7 + slack) * (7 + slack);
     for (const [dx, dy, i] of v.dots || []) { const d = (dx - x) ** 2 + (dy - y) ** 2; if (d < bd) { bd = d; best = i; } }
     return best;
   };
@@ -3392,6 +3488,33 @@ function createSpaceEngine(opts) {
     // step (0.0005) of it; the view's depth widens that.
     const hr = (Hh * Math.PI) / 180, TOL = 0.0005;
     drawAnchors2D(k);
+    // Pins' pull zones (the sphere within which a pin names the cursor), as
+    // dashed outlines in bins view: where the sphere cuts the plane, or its
+    // full outline for a pin seen through the view's depth. The vertical axis
+    // shows lightness at the 3D view's scale, so a zone is an ellipse there.
+    if (S.modes[k] === "bins" && S.markers.length) {
+      const R = typeof PIN_PULL !== "undefined" ? PIN_PULL : 0.01, D = depthOf(k);
+      const sx = W / (v.dom.x1 - v.dom.x0), sy = H / (v.dom.y1 - v.dom.y0), ky = LW / CW;
+      ctx.save();
+      ctx.lineWidth = 1.25; ctx.setLineDash([4, 3]);
+      S.markers.forEach((m) => {
+        if (m.kind !== "pin" || !inRangeLCH(m.L, m.C, m.H, k)) return;
+        let off, u, w;
+        if (k === "l") { off = Math.abs(m.L - L); const h = (m.H * Math.PI) / 180; u = m.C * Math.sin(h); w = m.C * Math.cos(h); }
+        else if (k === "c") { if (C < 0.002) return; off = Math.abs(m.C - C); u = ((m.H - 180) * Math.PI / 180) * C; w = (m.L * LW) / CW; }
+        else { const dh = ((m.H - Hh) * Math.PI) / 180; off = Math.cos(dh) < 0 ? Infinity : Math.abs(m.C * Math.sin(dh)); u = m.C; w = (m.L * LW) / CW;
+          if (D > 0 && (m.C < 0.004 || spaceHueDist(m.H, Hh) <= D)) off = 0; }
+        if (k !== "h" && D > 0 && off <= D) off = 0;   // seen through the depth: its whole zone
+        if (off >= R) return;
+        const r = Math.sqrt(R * R - off * off), x = u2px(v, u), y = v2py(v, w);
+        const rx = r * sx, ry = (k === "l" ? r : r * ky) * sy;
+        if (rx < 2.5 || x + rx < 0 || x - rx > W || y + ry < 0 || y - ry > H) return;
+        ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = S.dark ? "rgba(0,0,0,0.55)" : "rgba(255,255,255,0.75)"; ctx.lineWidth = 3; ctx.stroke();
+        ctx.strokeStyle = fgCss(); ctx.lineWidth = 1.25; ctx.stroke();
+      });
+      ctx.restore();
+    }
     // markers lying on this section (positions kept for hover and click)
     v.mk = [];
     S.markers.forEach((m, mi) => {
@@ -3524,10 +3647,21 @@ function createSpaceEngine(opts) {
       if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }; mode = "pinch"; return; }
       mode = e.button === 1 || e.button === 2 || e.shiftKey ? "pan" : "cursor";
       last = rel(e);
-      // A pin under the pointer: snap the cursor to it (and select it), no drag.
+      // Picking what's drawn, on the plane or seen through its depth: a pin or
+      // an anchor's dot/card under the pointer snaps the cursor to it (and
+      // selects it); a bin or gamut-solid pixel showing a colour off the plane
+      // jumps to that colour. None of these start a drag.
       if (mode === "cursor") {
         const m = markerAt(k, last[0], last[1], e.pointerType === "mouse" ? 9 : 16);
         if (m) { mode = "picked"; onPick(m); return; }
+        if (S.modes[k] !== "bins") {
+          const id = dotAt(k, last[0], last[1], e.pointerType === "mouse" ? 0 : 6);
+          if (id >= 0 && S.anchors[id]) { mode = "picked"; onPick(S.anchors[id]); return; }
+        }
+        if (S.modes[k] === "bins" || S.gamut[k] > 0) {
+          const P = [0, 0, 0], t = gamutAt(k, px2u(v, last[0]), py2v(v, last[1]), P);
+          if (t > 0) { mode = "picked"; moveCursor(spaceWorldToLCH(P[0], P[1], P[2])); return; }
+        }
       }
       if (mode === "cursor") dragView = k;
       if (mode === "cursor") moveCursor(setFromView[k](px2u(v, last[0]), py2v(v, last[1])));
@@ -3662,7 +3796,7 @@ function createSpaceEngine(opts) {
         S.gamut[k] = a;
         if (k === "3d") { gamutU.uAlpha.value = a; three = true; } else flat = true;
       });
-      if (three) requestRender();
+      if (three) { buildGamutZones(); requestRender(); }
       if (flat) scheduleSections();
     },
     // { view: opacity } for the sections
@@ -3677,7 +3811,7 @@ function createSpaceEngine(opts) {
       shared.uSep.value = 1 + sep;
       cellMat.uniforms.uAlpha.value = opacity;
       cardMat.uniforms.uAlpha.value = opacity;
-      placeMarker(); updatePlanes();
+      placeMarker(); updatePlanes(); buildGamutZones();
       if (geoChange) { rebuild(true); rebuildActive(); } else requestRender();
     },
     setTheme({ dark, fg, bg }) {
@@ -4713,7 +4847,7 @@ const TB_LAYOUTS = [
 // Visibility: pins, anchors and every commercial brand. The brand list flows
 // into as many columns as the window allows and the panel never runs past
 // the window's edge (it scrolls inside instead).
-const VisibilityMenu = ({ vis, setVis, brands, brandOn, setBrand, brandLabel }) => {
+const VisibilityMenu = ({ vis, setVis, brands, brandOn, setBrand, brandLabel, kinds = true }) => {
   const [open, setOpen] = useState(false);
   const btnRef = useRef(null), panelRef = useRef(null);
   const [pos, setPos] = useState(null);
@@ -4782,15 +4916,16 @@ const VisibilityMenu = ({ vis, setVis, brands, brandOn, setBrand, brandLabel }) 
             style: pos ? { position: "fixed", ...pos } : { position: "fixed", left: -9999, top: 0 },
             className: "z-[200] flex flex-col bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-xl text-xs overflow-hidden",
           },
+          kinds &&
+            React.createElement(
+              "div",
+              { className: "flex flex-wrap items-center gap-x-4 px-2 pt-2 pb-1" },
+              check(vis.pins, (v) => setVis((p) => ({ ...p, pins: v })), "Pins", "pins"),
+              check(vis.anchors, (v) => setVis((p) => ({ ...p, anchors: v })), "Anchors", "anchors"),
+            ),
           React.createElement(
             "div",
-            { className: "flex flex-wrap items-center gap-x-4 px-2 pt-2 pb-1" },
-            check(vis.pins, (v) => setVis((p) => ({ ...p, pins: v })), "Pins", "pins"),
-            check(vis.anchors, (v) => setVis((p) => ({ ...p, anchors: v })), "Anchors", "anchors"),
-          ),
-          React.createElement(
-            "div",
-            { className: "flex items-center gap-2 px-4 py-2 border-t border-slate-100 dark:border-neutral-800" },
+            { className: `flex items-center gap-2 px-4 py-2 ${kinds ? "border-t border-slate-100 dark:border-neutral-800" : ""}` },
             React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-widest text-slate-500" }, "Commercial colours"),
             React.createElement("span", { className: "text-[10px] font-mono text-slate-400" }, `${onCount}/${brands.length}`),
             React.createElement(
@@ -5284,8 +5419,9 @@ const ViewAnchors = ({
 // it is tethered to, else the name of the nearest anchor (the cell it sits in
 // in Explore). Returned upper-case; "" when nothing names it.
 const UNNAMED_RE = /^unnamed( noun)?$/i;
-// How far a pin pulls the cursor onto itself: 0.5 ΔE (OkLab distance ×100).
-const PIN_PULL = 0.005;
+// How far a pin pulls the cursor onto itself: 1 ΔE (OkLab distance ×100).
+// Explore's bins views outline this zone around every pin.
+const PIN_PULL = 0.01;
 const cleanName = (v) => {
   const s = String(v || "").trim();
   return UNNAMED_RE.test(s) ? "" : s;
@@ -5438,6 +5574,7 @@ const FILTER_FIELDS = [
   { id: "C", label: "Chroma", type: "number", get: (it) => it.C },
   { id: "H", label: "Hue", type: "number", get: (it) => it.H },
   { id: "deltaE", label: "\u0394E to cursor", type: "number", get: (it) => it._d },
+  { id: "xref", label: "Equivalent in brand", type: "xref", get: () => "" },
   {
     id: "spectral",
     label: "Has spectral data",
@@ -5452,6 +5589,53 @@ const FILTER_FIELDS = [
   },
 ];
 
+// Cross-reference as a filter: does this colour have an equivalent in brand X
+// within ΔE d (optionally with the same material traits)? Same nearest-match
+// rule as the Cross-Reference panel. Each brand gets a coarse OkLab grid,
+// built once per data load, so 20k colours check in a few milliseconds.
+const XREF_DATA = { current: null };
+const XREF_GRIDS = new WeakMap();
+const XREF_CELL = 0.03;
+const xrefGrid = (list) => {
+  let g = XREF_GRIDS.get(list);
+  if (g) return g;
+  g = new Map();
+  (list || []).forEach((c, i) => {
+    if (!isFinite(c.L) || !isFinite(c.C)) return;
+    const h = ((Number(c.H) || 0) * Math.PI) / 180, a = c.C * Math.sin(h), b = c.C * Math.cos(h);
+    const k = Math.floor(c.L / XREF_CELL) + "," + Math.floor(a / XREF_CELL) + "," + Math.floor(b / XREF_CELL);
+    let cell = g.get(k);
+    if (!cell) g.set(k, (cell = []));
+    cell.push({ c, i, L: c.L, a, b });
+  });
+  XREF_GRIDS.set(list, g);
+  return g;
+};
+// Nearest ΔE (×100) from an item to the brand's colours, or Infinity.
+const xrefNearest = (item, brand, maxDE, sameSpec) => {
+  const list = XREF_DATA.current && XREF_DATA.current[brand];
+  if (!list || !isFinite(item.L) || !isFinite(item.C)) return Infinity;
+  const g = xrefGrid(list), r = maxDE / 100;
+  const h = ((Number(item.H) || 0) * Math.PI) / 180, a = item.C * Math.sin(h), b = item.C * Math.cos(h);
+  const n = Math.ceil(r / XREF_CELL);
+  const cL = Math.floor(item.L / XREF_CELL), ca = Math.floor(a / XREF_CELL), cb = Math.floor(b / XREF_CELL);
+  let best = Infinity;
+  for (let x = -n; x <= n; x++)
+    for (let y = -n; y <= n; y++)
+      for (let z = -n; z <= n; z++) {
+        const cell = g.get(cL + x + "," + (ca + y) + "," + (cb + z));
+        if (!cell) continue;
+        for (const e of cell) {
+          // not itself (raw records arrive without brand/index in some lists)
+          if (e.c === item || (item.brand === brand && e.i === item.originalIndex) ||
+            (e.c.name === item.name && Math.abs(e.L - item.L) < 1e-9 && Math.abs(e.c.C - item.C) < 1e-9)) continue;
+          if (sameSpec && !crossRefSameSpec(item, e.c)) continue;
+          const d = Math.sqrt((item.L - e.L) ** 2 + (a - e.a) ** 2 + (b - e.b) ** 2) * 100;
+          if (d < best) best = d;
+        }
+      }
+  return best;
+};
 const nounNameOf = (item, ctx) => {
   const key = resolveNounKey(item.L, item.C, item.H, ctx.savedColors, ctx.namesObj);
   return key.indexOf("name:") === 0 ? key.slice(5) : "";
@@ -5480,6 +5664,12 @@ const FILTER_OPS = {
     { id: "is_true", label: "is yes" },
     { id: "is_false", label: "is no" },
   ],
+  // value = brand, value2 = ΔE limit
+  xref: [
+    { id: "has", label: "has one within \u0394E" },
+    { id: "has_spec", label: "has same-material within \u0394E" },
+    { id: "none", label: "has none within \u0394E" },
+  ],
 };
 
 const defaultOpFor = (type) => FILTER_OPS[type][0].id;
@@ -5496,6 +5686,13 @@ const evalFilterRow = (item, row, ctx) => {
     return row.op === "is_not" ? mine !== ctx.nounKey : mine === ctx.nounKey;
   }
 
+  if (field.type === "xref") {
+    const brand = String(row.value || "");
+    if (!brand) return true;
+    const lim = isFinite(parseFloat(row.value2)) ? parseFloat(row.value2) : 2;
+    const d = xrefNearest(item, brand, lim, row.op === "has_spec");
+    return row.op === "none" ? !(d <= lim) : d <= lim;
+  }
   const raw = field.get(item, ctx);
 
   if (field.type === "boolean") {
@@ -5579,6 +5776,10 @@ const describeFilterRow = (row, ctx) => {
   const op = (FILTER_OPS[field.type] || []).find((o) => o.id === row.op);
   const opLabel = op ? op.label : "";
   if (field.type === "boolean") return `${field.label} ${opLabel}${tag}`;
+  if (field.type === "xref") {
+    const b = row.value ? (typeof getBrandDisplayName === "function" ? getBrandDisplayName(row.value) : row.value) : "any brand";
+    return `Equivalent in ${b}: ${opLabel} ${row.value2 || 2}${tag}`;
+  }
   if (row.op === "between") {
     return `${field.label} ${opLabel} ${row.value}\u2013${row.value2}`;
   }
@@ -5662,7 +5863,10 @@ const FilterBuilder = ({
     rows.map((row, idx) => {
       const field = FILTER_FIELDS.find((f) => f.id === row.field) || FILTER_FIELDS[0];
       const ops = FILTER_OPS[field.type] || [];
-      const options = field.type === "select" && optionsFor ? optionsFor(field.id) : null;
+      const options =
+        field.type === "xref"
+          ? Object.keys(XREF_DATA.current || {}).sort()
+          : field.type === "select" && optionsFor ? optionsFor(field.id) : null;
       const selectCls =
         "bg-transparent border border-slate-200 dark:border-neutral-700 rounded-md px-1.5 py-1 text-[10px] text-slate-600 dark:text-neutral-300 focus:outline-none";
       return React.createElement(
@@ -5699,7 +5903,7 @@ const FilterBuilder = ({
                 field: e.target.value,
                 op: defaultOpFor(nf.type),
                 value: "",
-                value2: "",
+                value2: nf.type === "xref" ? "2" : "",
               });
             },
             className: selectCls,
@@ -5743,9 +5947,9 @@ const FilterBuilder = ({
                   onChange: (e) => update(row.id, { value: e.target.value }),
                   className: selectCls + " max-w-[110px]",
                 },
-                React.createElement("option", { value: "" }, "any"),
+                React.createElement("option", { value: "" }, field.type === "xref" ? "brand\u2026" : "any"),
                 options.map((o) =>
-                  React.createElement("option", { key: o, value: o }, o),
+                  React.createElement("option", { key: o, value: o }, field.type === "xref" && typeof getBrandDisplayName === "function" ? getBrandDisplayName(o) : o),
                 ),
               )
             : React.createElement("input", {
@@ -5756,6 +5960,17 @@ const FilterBuilder = ({
                 onChange: (e) => update(row.id, { value: e.target.value }),
                 className: selectCls + " w-[74px]",
               })),
+        field.type === "xref" &&
+          React.createElement("input", {
+            type: "number",
+            step: "0.5",
+            min: "0",
+            value: row.value2,
+            placeholder: "2",
+            title: "\u0394E limit",
+            onChange: (e) => update(row.id, { value2: e.target.value }),
+            className: selectCls + " w-[52px]",
+          }),
         row.op === "between" &&
           React.createElement("input", {
             type: "number",
@@ -8809,10 +9024,17 @@ const ViewGroups = ({ settings, setSettings }) => {
     ),
   );
 };
+// Tints, shades and tones: the colour mixed toward white, black or the grey of
+// its own lightness, in OkLab (so each step looks evenly spaced).
+const HARMONY_STEPS = [0, 0.2, 0.4, 0.6, 0.8];
 const ColorHarmonies = ({ L, C, H, handlePointClick }) => {
   const harmonies = useMemo(() => {
     const h = H || 0;
+    const mix = (fn) => HARMONY_STEPS.map((t) => fn(t));
     return [
+      { name: "Tints", hint: "toward white", points: mix((t) => [L + (1 - L) * t, C * (1 - t), h]) },
+      { name: "Shades", hint: "toward black", points: mix((t) => [L * (1 - t), C * (1 - t), h]) },
+      { name: "Tones", hint: "toward grey", points: mix((t) => [L, C * (1 - t), h]) },
       { name: "Complementary", hues: [h, (h + 180) % 360] },
       { name: "Analogous", hues: [h, (h + 30) % 360, (h - 30 + 360) % 360] },
       { name: "Triadic", hues: [h, (h + 120) % 360, (h + 240) % 360] },
@@ -8845,24 +9067,21 @@ const ColorHarmonies = ({ L, C, H, handlePointClick }) => {
               "text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400",
           },
           harmony.name,
+          harmony.hint &&
+            React.createElement("span", { className: "ml-1.5 normal-case tracking-normal font-normal text-slate-400" }, harmony.hint),
         ),
         React.createElement(
           "div",
           { className: "flex gap-2" },
-          harmony.hues.map((hue, i) => {
-            const l = harmony.Ls ? harmony.Ls[i] : L;
-            const cObj = new Color("oklch", [l, C, hue]);
-            const hex = cObj
-              .clone()
-              .toGamut({ space: "srgb" })
-              .toString({ format: "hex" });
+          (harmony.points || harmony.hues.map((hue, i) => [harmony.Ls ? harmony.Ls[i] : L, C, hue])).map(([l, c, hue], i) => {
+            const hex = lchDisplayHex(l, c, hue);
             return React.createElement("div", {
               key: i,
               className:
                 "h-8 flex-1 rounded-md shadow-sm cursor-pointer border border-slate-200 dark:border-neutral-700 hover:ring-2 hover:ring-sky-500 transition-all",
               style: { backgroundColor: hex },
-              onClick: () => handlePointClick([l, C, hue]),
-              title: `L: ${l.toFixed(2)} C: ${C.toFixed(2)} H: ${hue.toFixed(1)}`,
+              onClick: () => handlePointClick([l, c, hue]),
+              title: `L: ${l.toFixed(2)} C: ${c.toFixed(3)} H: ${hue.toFixed(1)}`,
             });
           }),
         ),
@@ -10370,15 +10589,29 @@ const App = () => {
     if (alias) setActiveTab(alias);
   }, [activeTab]);
   const [colorData, setColorData] = useState(null);
+  XREF_DATA.current = colorData;   // the cross-reference filter reads the full data
   const [filterSameNoun, setFilterSameNoun] = useState(false);
-  // One stack of filter rows for the whole app, not per tab.
-  // Verified colours only on load — the old default, now expressed as an
-  // ordinary filter row so it shows in the stack and can be removed.
-  const [globalFilters, setGlobalFilters] = useState(() => [
-    // Scoped to the DB list: the Explore viewports show everything by default.
-    newFilterRow("spectral", "is_true", "", "", false, "db"),
-  ]);
-  const [globalFilterMode, setGlobalFilterMode] = useState("and");
+  // Filter rows per tab. Match starts with verified colours only (the old
+  // default, an ordinary row you can remove); Explore and Catalog start open.
+  const [filtersByTab, setFiltersByTab] = useState(() => ({
+    explore: [],
+    db: [newFilterRow("spectral", "is_true", "", "", false, "db")],
+    pins: [],
+  }));
+  const [filterModeByTab, setFilterModeByTab] = useState({ explore: "and", db: "and", pins: "and" });
+  // Anchors and Color groups have no filter rows ("none" stays empty).
+  const filterTabKey = ["top", "chroma", "slice", "3d"].includes(activeTab) ? "explore" : activeTab === "pins" ? "pins" : activeTab === "db" ? "db" : "none";
+  const globalFilters = filtersByTab[filterTabKey] || [];
+  const setGlobalFilters = useCallback(
+    (v) => setFiltersByTab((p) => ({ ...p, [filterTabKey]: typeof v === "function" ? v(p[filterTabKey] || []) : v })),
+    [filterTabKey],
+  );
+  const globalFilterMode = filterModeByTab[filterTabKey] || "and";
+  const setGlobalFilterMode = useCallback((m) => setFilterModeByTab((p) => ({ ...p, [filterTabKey]: m })), [filterTabKey]);
+  const exploreFilters = filtersByTab.explore, exploreFilterMode = filterModeByTab.explore;
+  const dbFilters = filtersByTab.db, dbFilterMode = filterModeByTab.db;
+  const setDbFilters = useCallback((v) => setFiltersByTab((p) => ({ ...p, db: typeof v === "function" ? v(p.db) : v })), []);
+  const pinsFilters = filtersByTab.pins, pinsFilterMode = filterModeByTab.pins;
   const [globalSortBy, setGlobalSortBy] = useState("deltae");
   const [globalSortAsc, setGlobalSortAsc] = useState(true);
   const [scrubL, setScrubL] = useState(0.65);
@@ -11042,17 +11275,18 @@ const App = () => {
   // be rebuilt as the cursor moves; otherwise a drag rebuilt every list and,
   // through them, every Explore cell, on each step.
   const viewportRows = useMemo(
-    () => (globalFilters || []).filter((r) => !r.scope || r.scope === "viewport"),
-    [globalFilters],
+    () => (exploreFilters || []).filter((r) => !r.scope || r.scope === "viewport"),
+    [exploreFilters],
   );
   const viewportCursorDep =
     filterSameNoun ||
     viewportRows.some((r) => r.dynamic || r.field === "deltaE" || r.field === "noun");
   const viewportCursorKey = viewportCursorDep ? `${scrubL}|${scrubC}|${scrubH}` : "";
   const viewportCtxDep = viewportCursorDep ? viewportGroupContext : null;
+  // Explore's commercial colours (its own brand visibility and filter rows).
   const filteredColorData = useMemo(() => {
     if (!colorData) return null;
-    const isDb = activeTab === "db";
+    const isDb = false;
 
     let sameGroup = null;
     if (filterSameNoun) {
@@ -11114,9 +11348,9 @@ const App = () => {
           });
           list = applyGlobalFilters(
             decorated,
-            globalFilters,
+            exploreFilters,
             viewportGroupContext,
-            globalFilterMode,
+            exploreFilterMode,
             "viewport",
           ).items.map((k) => list[k.__idx]);
         }
@@ -11131,11 +11365,19 @@ const App = () => {
     savedColors,
     viewportCursorKey,
     names,
-    activeTab,
     viewportRows,
-    globalFilterMode,
+    exploreFilterMode,
     viewportCtxDep,
   ]);
+  // Match's commercial colours: its own brand visibility (every brand unless
+  // switched off); its filter rows apply inside the list.
+  const [dbVisibility, setDbVisibility] = useState({ pins: true, anchors: true, brands: {} });
+  const dbColorData = useMemo(() => {
+    if (!colorData) return null;
+    const out = {};
+    Object.keys(colorData).forEach((b) => { if (dbVisibility.brands[b] !== false) out[b] = colorData[b]; });
+    return out;
+  }, [colorData, dbVisibility]);
   const [showVisibilityMenu, setShowVisibilityMenu] = useState(false);
   const visibilityMenuRef = useRef(null);
   useEffect(() => {
@@ -11654,9 +11896,9 @@ const App = () => {
       };
       points = applyGlobalFilters(
         points.map(decorate),
-        globalFilters,
+        exploreFilters,
         viewportGroupContext,
-        globalFilterMode,
+        exploreFilterMode,
         "viewport",
       ).items.map(strip);
 
@@ -11665,9 +11907,9 @@ const App = () => {
       const keep = (item) =>
         applyGlobalFilters(
           [decorate(item)],
-          globalFilters,
+          exploreFilters,
           viewportGroupContext,
-          globalFilterMode,
+          exploreFilterMode,
           "viewport",
         ).items.length > 0;
 
@@ -11689,7 +11931,7 @@ const App = () => {
     filterSameNoun,
     viewportCursorKey,
     viewportRows,
-    globalFilterMode,
+    exploreFilterMode,
     viewportCtxDep,
   ]);
   useEffect(() => {
@@ -13549,6 +13791,14 @@ const App = () => {
     setShowVisibilityMenu,
     visibilityMenuRef,
     focusTick,
+    dbFilters,
+    setDbFilters,
+    dbFilterMode,
+    pinsFilters,
+    pinsFilterMode,
+    dbColorData,
+    dbVisibility,
+    setDbVisibility,
     viewportSearchQuery,
     setViewportSearchQuery,
     viewMode,
@@ -16671,6 +16921,14 @@ const AppUI = ({
   setShowVisibilityMenu,
   visibilityMenuRef,
   focusTick,
+  dbFilters,
+  setDbFilters,
+  dbFilterMode,
+  pinsFilters,
+  pinsFilterMode,
+  dbColorData,
+  dbVisibility,
+  setDbVisibility,
   viewportSearchQuery,
   setViewportSearchQuery,
   viewMode,
@@ -16826,14 +17084,18 @@ const AppUI = ({
     try { return JSON.parse(localStorage.getItem(TABS_KEY) || "{}"); } catch (e) { return {}; }
   }, []);
   const [pinsSearch, setPinsSearch] = useState("");
+  const [dbSearch, setDbSearch] = useState("");
+  const deferredDbSearch = useDeferredValue(dbSearch);
+  const [pinsZoom, setPinsZoom] = useState(tabsSaved.pinsZoom || 2);
+  const [anchorsZoom, setAnchorsZoom] = useState(tabsSaved.anchorsZoom || 2);
   const [anchorsSearch, setAnchorsSearch] = useState("");
   const [pinsLayout, setPinsLayout] = useState(tabsSaved.pinsLayout || "table");
   const [anchorsLayout, setAnchorsLayout] = useState(tabsSaved.anchorsLayout || "table");
   const [pinsSort, setPinsSort] = useState(tabsSaved.pinsSort || { by: "deltae", asc: true });
   const [anchorsSort, setAnchorsSort] = useState(tabsSaved.anchorsSort || { by: "name", asc: true });
   useEffect(() => {
-    try { localStorage.setItem(TABS_KEY, JSON.stringify({ pinsLayout, anchorsLayout, pinsSort, anchorsSort })); } catch (e) {}
-  }, [pinsLayout, anchorsLayout, pinsSort, anchorsSort]);
+    try { localStorage.setItem(TABS_KEY, JSON.stringify({ pinsLayout, anchorsLayout, pinsSort, anchorsSort, pinsZoom, anchorsZoom })); } catch (e) {}
+  }, [pinsLayout, anchorsLayout, pinsSort, anchorsSort, pinsZoom, anchorsZoom]);
   // Explore's View control sets every view's look at once; the toolbar shows
   // the look they share (none when they differ).
   const [explorePresetCmd, setExplorePresetCmd] = useState(null);
@@ -16841,7 +17103,6 @@ const AppUI = ({
   if (["top", "chroma", "slice", "3d"].includes(activeTab)) spaceSeenRef.current = true;
   // The input stays bound to the raw value so typing never lags; the heavy
   // table/grid re-filter runs against this deferred copy instead.
-  const deferredSearch = useDeferredValue(viewportSearchQuery);
   // On a phone the sidebar took a fixed 45vh whether or not you were using it,
   // leaving the view you navigated to squeezed into what was left.
   const [mobilePanelsOpen, setMobilePanelsOpen] = useState(false);
@@ -17988,9 +18249,9 @@ const AppUI = ({
                 },
                 colorData,
                 filterSameNoun,
-                globalFilters,
-                setGlobalFilters,
-                globalFilterMode,
+                globalFilters: dbFilters,
+                setGlobalFilters: setDbFilters,
+                globalFilterMode: dbFilterMode,
                 globalSortBy,
                 globalSortAsc,
                 sameGroupContext,
@@ -19178,6 +19439,7 @@ const AppUI = ({
             const srch =
               activeTab === "pins" ? [pinsSearch, setPinsSearch, "Search pins, notes, codes\u2026"]
               : activeTab === "anchors" ? [anchorsSearch, setAnchorsSearch, "Find anchor\u2026"]
+              : isDb ? [dbSearch, setDbSearch, "Search commercial colours\u2026"]
               : [viewportSearchQuery, setViewportSearchQuery, "Search\u2026"];
             const srt =
               activeTab === "pins"
@@ -19191,15 +19453,20 @@ const AppUI = ({
               layout: { enabled: listTab, value: listTab ? lay[0] : null, onChange: lay[1] },
               visibility: {
                 enabled: isExplore || isDb,
-                vis: viewportVisibility,
-                setVis: setViewportVisibility,
+                kinds: !isDb,   // Match lists commercial colours only
+                vis: isDb ? dbVisibility : viewportVisibility,
+                setVis: isDb ? setDbVisibility : setViewportVisibility,
                 brands,
-                brandOn: (b) => (isDb ? viewportVisibility.brands[b] !== false : viewportVisibility.brands[b] === true),
-                setBrand: (b, on) => setViewportVisibility((p) => ({ ...p, brands: { ...p.brands, [b]: on } })),
+                brandOn: (b) => (isDb ? dbVisibility.brands[b] !== false : viewportVisibility.brands[b] === true),
+                setBrand: (b, on) => (isDb ? setDbVisibility : setViewportVisibility)((p) => ({ ...p, brands: { ...p.brands, [b]: on } })),
                 brandLabel: getBrandDisplayName,
               },
               search: { enabled: activeTab !== "groups", value: srch[0], onChange: srch[1], placeholder: srch[2] },
-              zoom: { enabled: listTab && lay[0] !== "table", value: swatchZoom, onChange: setSwatchZoom },
+              zoom: {
+                enabled: listTab && lay[0] !== "table",
+                value: activeTab === "pins" ? pinsZoom : activeTab === "anchors" ? anchorsZoom : swatchZoom,
+                onChange: activeTab === "pins" ? setPinsZoom : activeTab === "anchors" ? setAnchorsZoom : setSwatchZoom,
+              },
               sort: { enabled: listTab, ...srt },
               filters: {
                 enabled: isExplore || isDb || activeTab === "pins",
@@ -19220,21 +19487,21 @@ const AppUI = ({
               React.createElement(ViewDatabase, {
                 setFilterSameNoun,
                 filterSameNoun,
-                globalFilters,
-                setGlobalFilters,
-                globalFilterMode,
+                globalFilters: dbFilters,
+                setGlobalFilters: setDbFilters,
+                globalFilterMode: dbFilterMode,
                 globalSortBy,
                 globalSortAsc,
                 sameGroupContext,
-                colorData: filteredColorData,
+                colorData: dbColorData,
                 fullColorData: colorData,
                 updateColorData,
                 swatchLayout,
                 swatchZoom,
                 handlePointClick,
                 crosshair,
-                searchTerm: deferredSearch,
-                setSearchTerm: setViewportSearchQuery,
+                searchTerm: deferredDbSearch,
+                setSearchTerm: setDbSearch,
                 tagFilter: viewportTagFilter,
                 setTagFilter: setViewportTagFilter,
                 selectedIds,
@@ -19299,22 +19566,22 @@ const AppUI = ({
                 sort: anchorsSort,
                 setSort: setAnchorsSort,
                 layout: anchorsLayout,
-                swatchZoom,
+                swatchZoom: anchorsZoom,
               }),
             activeTab === "pins" &&
               React.createElement(ViewPins, {
                 handlePointClick,
-                swatchZoom,
-                setSwatchZoom,
+                swatchZoom: pinsZoom,
+                setSwatchZoom: setPinsZoom,
                 globalSortBy: pinsSort.by,
                 globalSortAsc: pinsSort.asc,
                 searchTerm: pinsSearch,
                 layout: pinsLayout,
-                globalFilters,
-                globalFilterMode,
+                globalFilters: pinsFilters,
+                globalFilterMode: pinsFilterMode,
                 // Only rows that follow the cursor need its context; passing it
                 // otherwise re-rendered the whole catalog on every cursor move.
-                sameGroupContext: (globalFilters || []).some(
+                sameGroupContext: (pinsFilters || []).some(
                   (r) => (!r.scope || r.scope === "viewport") && (r.dynamic || r.field === "noun"),
                 )
                   ? sameGroupContext
@@ -20648,9 +20915,9 @@ const AppUI = ({
         crosshair,
         setFilterSameNoun,
         filterSameNoun,
-        globalFilters,
-        setGlobalFilters,
-        globalFilterMode,
+        globalFilters: dbFilters,
+        setGlobalFilters: setDbFilters,
+        globalFilterMode: dbFilterMode,
         globalSortBy,
         globalSortAsc,
         sameGroupContext,
