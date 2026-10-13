@@ -1657,8 +1657,9 @@ const PlotlyChart = ({
 // ─── Explore: OkLCH colour-space viewer ──────────────────────────────────────
 // One 3D view and three 2D sections (L, C, H) of the anchors' cells. Each
 // anchor owns the region of colour space that is nearer to it than to any
-// other anchor (its Voronoi cell), clipped to the sRGB gamut. Inflation grows
-// every cell from a small dot to that full region; the viewport tolerance
+// other anchor (its Voronoi cell), clipped to the sRGB gamut. At 0% inflation
+// each anchor is a dot; above it, each is its own cell scaled about the anchor,
+// up to that full region at 100%; the viewport tolerance
 // sliders cut true sections through the solid.
 //
 // Coordinates follow the rest of the app: a = C·sin H, b = C·cos H, so hue 0°
@@ -2463,8 +2464,9 @@ function createSpaceEngine(opts) {
   mcardGeo.setIndex([0, 1, 2, 2, 1, 3]);
   const mcardMat = new THREE.ShaderMaterial({
     vertexShader: `attribute vec3 iPos; attribute vec3 iOwner; attribute vec3 iColor; attribute float iVis; attribute float iScale;
+      attribute vec3 iLook; attribute float iImg;
       uniform float uSep, uW, uH, uViewH;
-      varying vec2 vUv; varying vec3 vColor; varying float vPx; varying float vSel;
+      varying vec2 vUv; varying vec3 vColor; varying float vPx; varying float vSel; varying vec3 vLook; varying float vImg;
       void main() {
         vec4 mv = viewMatrix * vec4(iPos + iOwner * (uSep - 1.0), 1.0);
         float W = uW * iScale, Hc = uH * iScale;
@@ -2472,13 +2474,102 @@ function createSpaceEngine(opts) {
         mv.xy += vec2((c.x - 0.5) * W, W * 0.5 - (1.0 - c.y) * Hc);
         gl_Position = iVis < 0.5 ? vec4(2.0, 2.0, 2.0, 1.0) : projectionMatrix * mv;
         vUv = vec2(c.x, (1.0 - c.y) * Hc / W);
-        vColor = iColor; vSel = 0.0;
+        vColor = iColor; vSel = 0.0; vLook = iLook; vImg = iImg;
         vPx = W * projectionMatrix[1][1] * uViewH * 0.5 / max(-mv.z, 0.001);
       }`,
-    fragmentShader: cardMat.fragmentShader,
-    uniforms: cardMat.uniforms,
+    // The Match and Catalog swatch: wood/texture grain as soft wavy strokes,
+    // a Shaker or Slim frame inset from the edge, and the product photo laid
+    // faintly over the top two-thirds — all in ink that suits the colour.
+    fragmentShader: `precision highp float;
+      varying vec2 vUv; varying vec3 vColor; varying float vPx; varying float vSel; varying vec3 vLook; varying float vImg;
+      uniform vec3 uPaper, uEdge; uniform float uH, uW, uAlpha, uTiles; uniform sampler2D uAtlas;
+      void main() {
+        vec3 paper = mix(vColor, uPaper, smoothstep(10.0, 34.0, vPx));
+        vec3 c = vUv.y < 1.0 ? vColor : paper;
+        if (vUv.y < 1.0 && vPx > 9.0) {
+          vec3 ink = vLook.z > 0.5 ? vec3(0.0) : vec3(1.0);
+          if (vLook.x > 0.5) {
+            float n = clamp(floor(vPx / 14.0 + 0.5), 2.0, 9.0), st = 1.0 / (n + 1.0);
+            float k = floor(vUv.x / st + 0.5);
+            if (k >= 1.0 && k <= n) {
+              float wob = sin(vUv.y * 6.2832 + k * 2.7) * 0.022 + sin(vUv.y * 15.7 + k * 5.1) * 0.008;
+              float d = abs(vUv.x - k * st - wob) * vPx;
+              c = mix(c, ink, (1.0 - smoothstep(0.3, 0.9, d)) * (vLook.z > 0.5 ? 0.2 : 0.22));
+            }
+          }
+          if (vLook.y > 0.5) {
+            float ins = vLook.y < 1.5 ? max(0.20, 5.0 / vPx) : max(0.06, 2.0 / vPx);
+            float dx = max(ins - vUv.x, vUv.x - (1.0 - ins)), dy = max(ins - vUv.y, vUv.y - (1.0 - ins));
+            float d = abs(max(dx, dy)) * vPx;
+            c = mix(c, ink, (1.0 - smoothstep(0.45, 1.1, d)) * (vLook.z > 0.5 ? 0.45 : 0.55));
+          }
+          if (vImg > -0.5) {
+            float m = max(0.0, 1.0 - vUv.y / 0.66);
+            vec2 t = vec2(mod(vImg, uTiles), floor(vImg / uTiles));
+            vec3 ph = texture2D(uAtlas, vec2((t.x + vUv.x) / uTiles, 1.0 - (t.y + vUv.y) / uTiles)).rgb;
+            c = mix(c, ph, 0.38 * m);
+          }
+        }
+        float e = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, uH / uW - vUv.y)) * vPx;
+        if (e < 0.8 && vPx > 12.0) c = mix(c, uEdge, 0.3);
+        gl_FragColor = vec4(c, uAlpha);
+      }`,
+    uniforms: { ...cardMat.uniforms, uAtlas: { value: null }, uTiles: { value: 32 } },
     transparent: true, depthWrite: true,
   });
+  // Product photos: one cache for every view. The 2D sections draw any photo
+  // the browser can load; the 3D cards need a CORS-readable copy, packed into
+  // a 32×32 atlas of 64 px tiles (photos that won't share skip the 3D cards).
+  const ATLAS_TILES = 32, ATLAS_PX = 64;
+  const atlasCanvas = document.createElement("canvas");
+  atlasCanvas.width = atlasCanvas.height = ATLAS_TILES * ATLAS_PX;
+  const atlasCtx = atlasCanvas.getContext("2d");
+  const atlasTex = new THREE.CanvasTexture(atlasCanvas);
+  atlasTex.minFilter = THREE.LinearMipmapLinearFilter;
+  mcardMat.uniforms.uAtlas.value = atlasTex;
+  const photos = new Map();   // url → { img, ok, cors, slot }
+  let photoQueue = [], photoBusy = 0, atlasNext = 0, mImg = null;
+  const coverCrop = (img) => {
+    const iw = img.naturalWidth, ih = img.naturalHeight, sz = Math.min(iw, ih);
+    return [(iw - sz) / 2, (ih - sz) / 2, sz];
+  };
+  const photoReady = (url, ent) => {
+    if (ent.cors && atlasNext < ATLAS_TILES * ATLAS_TILES) {
+      const slot = atlasNext++, [sx, sy, sz] = coverCrop(ent.img);
+      try {
+        atlasCtx.drawImage(ent.img, sx, sy, sz, sz, (slot % ATLAS_TILES) * ATLAS_PX, Math.floor(slot / ATLAS_TILES) * ATLAS_PX, ATLAS_PX, ATLAS_PX);
+        atlasCtx.getImageData(0, 0, 1, 1);   // throws if the copy is not readable
+        ent.slot = slot; atlasTex.needsUpdate = true;
+      } catch (e) { ent.cors = false; }
+      if (ent.slot !== undefined && mImg) {
+        S.markers.forEach((m, i) => { if (m.look && m.look.image === url) mImg[i] = ent.slot; });
+        if (mcardGeo.attributes.iImg) mcardGeo.attributes.iImg.needsUpdate = true;
+      }
+    }
+    requestRender(); scheduleSections();
+  };
+  const pumpPhotos = () => {
+    while (photoBusy < 6 && photoQueue.length) {
+      const url = photoQueue.shift(), ent = photos.get(url);
+      photoBusy++;
+      const tryLoad = (cors) => {
+        const img = new Image();
+        if (cors) img.crossOrigin = "anonymous";
+        img.decoding = "async";
+        img.onload = () => { if (disposed) return; photoBusy--; ent.img = img; ent.ok = true; ent.cors = cors; photoReady(url, ent); pumpPhotos(); };
+        img.onerror = () => { if (disposed) return; if (cors) return tryLoad(false); photoBusy--; ent.ok = false; pumpPhotos(); };
+        img.src = url;
+      };
+      tryLoad(true);
+    }
+  };
+  // The photo for a url once it has loaded (null until then; asks for it).
+  const photoFor = (url) => {
+    if (!url) return null;
+    let ent = photos.get(url);
+    if (!ent) { ent = { ok: null }; photos.set(url, ent); photoQueue.push(url); pumpPhotos(); }
+    return ent.ok ? ent.img : null;
+  };
   const mcards = new THREE.Mesh(mcardGeo, mcardMat);
   mcards.frustumCulled = false;
   mcards.visible = false;
@@ -2488,6 +2579,7 @@ function createSpaceEngine(opts) {
     const sw = cardsOn();
     cards.visible = sw && ready;
     mcards.visible = sw && mcardGeo.instanceCount > 0;
+    if (sw) S.markers.forEach((m) => m.look && m.look.image && photoFor(m.look.image));
     dots.visible = ghostDots.visible = !sw;
     mesh.visible = !sw;
     if (sw) activeMesh.visible = activeRim.visible = false;
@@ -2569,7 +2661,13 @@ function createSpaceEngine(opts) {
   };
 
   // ── Cells ────────────────────────────────────────────────────────────────
-  const inflR = (i, r) => (r > dotR[i] ? dotR[i] + (r - dotR[i]) * S.fill : dotR[i]);
+  // At 0% every anchor is a round dot. Above that the dot is gone: each bin is
+  // its own cell — the true chunk of colour space it owns — scaled about its
+  // anchor, from a sliver at the low end to the whole cell at 100%, so no
+  // sphere ever bulges past a cell wall.
+  const DOT_FILL = 0.005, CELL_MIN = 0.06;
+  const cellScale = () => CELL_MIN + (1 - CELL_MIN) * Math.min(1, (S.fill - DOT_FILL) / (1 - DOT_FILL));
+  const inflR = (i, r) => (S.fill < DOT_FILL ? dotR[i] : r * cellScale());
   const buildCells = () => {
     const token = ++buildToken;
     ready = false;
@@ -2922,6 +3020,18 @@ function createSpaceEngine(opts) {
     mcardGeo.setAttribute("iColor", new THREE.InstancedBufferAttribute(col, 3));
     mcardGeo.setAttribute("iVis", new THREE.InstancedBufferAttribute(mVis, 1));
     mcardGeo.setAttribute("iScale", new THREE.InstancedBufferAttribute(scale, 1));
+    const look = new Float32Array(n * 3);
+    mImg = new Float32Array(n).fill(-1);
+    M.forEach((m, i) => {
+      const lk = m.look || {};
+      look[i * 3] = lk.hatch ? 1 : 0;
+      look[i * 3 + 1] = lk.profile === "CS" ? 1 : lk.profile === "SS" ? 2 : 0;
+      look[i * 3 + 2] = lk.light === false ? 0 : 1;
+      const ent = lk.image && photos.get(lk.image);
+      if (ent && ent.slot !== undefined) mImg[i] = ent.slot;
+    });
+    mcardGeo.setAttribute("iLook", new THREE.InstancedBufferAttribute(look, 3));
+    mcardGeo.setAttribute("iImg", new THREE.InstancedBufferAttribute(mImg, 1));
     mcardGeo.instanceCount = n;
     applyMode3D();
     updateMarkerOwners();
@@ -3394,6 +3504,48 @@ function createSpaceEngine(opts) {
     ctx.restore();
     return [x0, y0, x0 + w, y0 + h];
   };
+  // A pin or commercial colour's card dressed as in Match and Catalog: grain
+  // hatch, door-profile frame, and its photo faintly over the top two-thirds.
+  const grainWob = (seed, n) => ((((Math.sin(seed * 12.9898 + n * 78.233) * 43758.5453) % 1) + 1) % 1) * 6 - 3;
+  const drawMarkerCard = (ctx, x, y, w, m, alpha) => {
+    const box = drawCardRGB(ctx, x, y, w, spaceHexToRgb(m.hex), alpha, false);
+    const lk = m.look;
+    if (!lk || w < 10) return box;
+    const x0 = x - w / 2, y0 = y - w / 2, d = DPR(), ink = lk.light === false ? "255,255,255" : "0,0,0";
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.beginPath(); ctx.rect(x0, y0, w, w); ctx.clip();
+    if (lk.hatch) {
+      const n = Math.max(2, Math.min(9, Math.round(w / d / 14))), st = 100 / (n + 1), k = w / 100;
+      ctx.strokeStyle = `rgba(${ink},${lk.light === false ? 0.22 : 0.2})`;
+      ctx.lineWidth = 0.67 * d; ctx.lineCap = "round";
+      for (let i = 1; i <= n; i++) {
+        const xx = st * i + grainWob(i, 1) * 0.3, X = (u) => x0 + u * k, Y = (v) => y0 + v * k;
+        ctx.beginPath();
+        ctx.moveTo(X(xx), Y(0));
+        ctx.bezierCurveTo(X(xx + grainWob(i, 2)), Y(20), X(xx + grainWob(i, 3)), Y(30), X(xx + grainWob(i, 4) * 0.6), Y(50));
+        ctx.bezierCurveTo(X(xx + grainWob(i, 5)), Y(68), X(xx + grainWob(i, 6)), Y(78), X(xx + grainWob(i, 7) * 0.4), Y(100));
+        ctx.stroke();
+      }
+    }
+    if (lk.profile === "CS" || lk.profile === "SS") {
+      const ins = Math.max(lk.profile === "CS" ? 0.2 : 0.06, ((lk.profile === "CS" ? 5 : 2) * d) / w) * w;
+      ctx.strokeStyle = `rgba(${ink},${lk.light === false ? 0.55 : 0.45})`;
+      ctx.lineWidth = 1.33 * d;
+      ctx.strokeRect(x0 + ins, y0 + ins, Math.max(0, w - 2 * ins), Math.max(0, w - 2 * ins));
+    }
+    const img = lk.image && photoFor(lk.image);
+    if (img) {
+      // fade from the top edge to nothing two-thirds down, in strips
+      const [sx, sy, sz] = coverCrop(img), STRIPS = 8, fh = 0.66;
+      for (let i = 0; i < STRIPS; i++) {
+        ctx.globalAlpha = alpha * 0.38 * (1 - (i + 0.5) / STRIPS);
+        ctx.drawImage(img, sx, sy + (sz * fh * i) / STRIPS, sz, (sz * fh) / STRIPS, x0, y0 + (w * fh * i) / STRIPS, w, (w * fh) / STRIPS + 0.5);
+      }
+    }
+    ctx.restore();
+    return box;
+  };
   // The name inside a card's strip, fitted to its width.
   const cardName = (ctx, i, x, y, w, dpr = 1) => cardText(ctx, nameOf(i), x, y, w, dpr);
   // A marker's short name: "Behr · behr color 4136" → "BEHR COLOR 4136".
@@ -3414,12 +3566,14 @@ function createSpaceEngine(opts) {
   // Names in the 3D view — under dots, on bins, in swatch strips — only once
   // they have room on screen, and never through a nearer anchor.
   const drawLabels3D = (ctx) => {
-    if (!ready || !N) return;
+    // with anchors hidden, pins and commercial colours still get their names
+    const NA = ready ? N : 0;
+    if (!NA && !(cardsOn() && S.markers.length)) return;
     const W = ctx.canvas.width, Hc = ctx.canvas.height, hw = W / 2, hh = Hc / 2;
     projM.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     const e = projM.elements, fy = camera.projectionMatrix.elements[5], k = 1 + S.sep, sw = cardsOn(), dpr = DPR();
     const items = [];
-    for (let i = 0; i < N; i++) {
+    for (let i = 0; i < NA; i++) {
       const a = S.anchors[i];
       if (i !== selIdx && a && !inRangeLCH(a.L, a.C, a.H)) continue;
       const x = px[i] * k, y = py[i] * k, z = pz[i] * k, w = e[3] * x + e[7] * y + e[11] * z + e[15];
@@ -3469,7 +3623,7 @@ function createSpaceEngine(opts) {
         add([sx - r, sy - r, sx + r, sy + r, sx, sy, r]);
         // the cursor's own cell is drawn over everything, so its name is too
         if ((!hidden || i === selIdx) && ppw >= NAME_ZOOM_3D * dpr && nnW[i] * ppw >= NAME_PX * dpr)
-          cands.push([sx, S.fill < 0.001 ? sy + Math.min(r, 14 * dpr) + 13 * dpr : sy + 4 * dpr, i, 11 * dpr]);
+          cands.push([sx, S.fill < DOT_FILL ? sy + Math.min(r, 14 * dpr) + 13 * dpr : sy + 4 * dpr, i, 11 * dpr]);
       }
     }
     for (const [i, sx, sy, cw, m] of cardsOut) (m ? cardText(ctx, markerName(m), sx, sy, cw, dpr) : cardName(ctx, i, sx, sy, cw, dpr));
@@ -3633,8 +3787,7 @@ function createSpaceEngine(opts) {
         // a small swatch card, like the anchors' (pins a little larger than
         // commercial colours), with its name once it fits
         const cw = Math.max(7, CARD_W * (W / (v.dom.x1 - v.dom.x0) / CW)) * (m.kind === "brand" ? MCARD_SCALE.brand : MCARD_SCALE.pin);
-        const rgb = spaceHexToRgb(m.hex);
-        drawCardRGB(ctx, mx, my, cw, rgb, S.alpha[k], false);
+        drawMarkerCard(ctx, mx, my, cw, m, S.alpha[k]);
         cardText(ctx, markerName(m), mx, my, cw);
         v.mk.push([mx, my, mi, cw]);
       } else {
@@ -3832,7 +3985,8 @@ function createSpaceEngine(opts) {
       buildCells();
     },
     setMarkers(list) {
-      const sig = list.length + ":" + list.map((m) => `${m.L},${m.C},${m.H},${m.hex},${m.kind}`).join(";");
+      const lookSig = (lk) => (lk ? `${lk.hatch ? 1 : 0}${lk.profile}${lk.light === false ? 0 : 1}${lk.image || ""}` : "");
+      const sig = list.length + ":" + list.map((m) => `${m.L},${m.C},${m.H},${m.hex},${m.kind},${lookSig(m.look)}`).join(";");
       S.markers = list;
       if (sig === markerSig) return;
       markerSig = sig;
@@ -3965,7 +4119,8 @@ function createSpaceEngine(opts) {
       listeners.forEach(([el, ev, fn, o]) => el.removeEventListener(ev, fn, o));
       scene.traverse((o) => { o.geometry && o.geometry.dispose(); });
       overlay.traverse((o) => { o.geometry && o.geometry.dispose(); });
-      [cellMat, activeMat, rimMat, dotMat, ghostMat, cardMat, tetherMat, axis.material, plL.material, plC.material, plH.material, ...markerMats].forEach((m) => m.dispose());
+      atlasTex.dispose(); photoQueue = [];
+      [cellMat, activeMat, rimMat, dotMat, ghostMat, cardMat, mcardMat, tetherMat, axis.material, plL.material, plC.material, plH.material, ...markerMats].forEach((m) => m.dispose());
       renderer.dispose();
       renderer.forceContextLoss();
     },
@@ -4418,6 +4573,20 @@ const ViewSpaceInner = ({
     });
     return out;
   }, [points, names]);
+  // How a pin or commercial colour looks in the Match and Catalog tabs — its
+  // photo, wood/texture hatch and door-profile outline — so its swatch card
+  // here reads the same. A pin borrows what it lacks from its source colour.
+  const lookOf = (item, src) => {
+    const merged = { ...(src || {}), ...Object.fromEntries(Object.entries(item || {}).filter(([, v]) => v !== undefined && v !== null && v !== "")) };
+    const t = typeof parseSwatchTraits === "function" ? parseSwatchTraits(merged.erpCode, merged) : null;
+    const img = merged.image || (typeof merged.notes === "string" && merged.notes.startsWith("http") ? merged.notes : null);
+    return {
+      hatch: !!(t && t.hatch),
+      profile: t && t.profile === "CS" ? "CS" : t && t.profile === "SS" ? "SS" : "SL",
+      light: t ? !!t.light : true,
+      image: img || null,
+    };
+  };
   const markers = useMemo(() => {
     const out = [];
     (points || []).forEach((p) => {
@@ -4427,6 +4596,7 @@ const ViewSpaceInner = ({
           const n = spacePointLabel(p, names || {});
           return `Pin · ${n !== "Unnamed" ? n : p.erpCode || p.pinId || "unnamed"}`;
         })(),
+        look: lookOf(p, p.brand !== undefined && p.originalIndex !== undefined ? colorData?.[p.brand]?.[p.originalIndex] : null),
         pick: [p.L, p.C, p.H, { pinId: p.pinId }] });
     });
     if (colorData) {
@@ -4437,6 +4607,7 @@ const ViewSpaceInner = ({
           const oi = c.originalIndex !== undefined ? c.originalIndex : idx;
           out.push({ L: c.L, C: c.C, H, hex: spaceHexFor(c.hex, c.L, c.C, H), kind: "brand",
             label: `${typeof getBrandDisplayName === "function" ? getBrandDisplayName(brand) : brand} · ${c.name}`,
+            look: lookOf(c, null),
             pick: [c.L, c.C, H, { brand, originalIndex: oi }] });
         });
       });
@@ -4678,7 +4849,7 @@ const ViewSpaceInner = ({
         ),
       ),
       // status
-      status.phase !== "ready" &&
+      status.phase !== "ready" && !(status.phase === "empty" && markers.length) &&
         React.createElement(
           "div",
           { className: "absolute inset-0 flex items-center justify-center pointer-events-none z-0" },
@@ -4690,7 +4861,7 @@ const ViewSpaceInner = ({
               { className: "text-[10px] font-bold uppercase tracking-widest text-slate-400" },
               status.phase === "loading" ? "Loading 3D view…"
                 : status.phase === "building" ? `Shaping cells · ${Math.round((status.progress || 0) * 100)}%`
-                : status.phase === "empty" ? "No anchors to show"
+                : status.phase === "empty" ? "Nothing to show"
                 : "3D view unavailable",
             ),
             (status.phase === "empty" || status.phase === "error") &&
@@ -4698,7 +4869,7 @@ const ViewSpaceInner = ({
                 "p",
                 { className: "mt-2 text-[11px] text-slate-500 dark:text-neutral-400" },
                 status.phase === "empty"
-                  ? "Load anchors, or clear the search, tag and visibility filters above."
+                  ? "Turn on anchors, pins or a brand under Visibility, or clear the search and filters above."
                   : status.message,
               ),
           ),
@@ -11787,6 +11958,9 @@ const App = () => {
           image: sc.image || (sc.notes?.startsWith("http") ? sc.notes : undefined),
           brand: sc.brand,
           originalIndex: sc.originalIndex,
+          visualTexture: sc.visualTexture,
+          tactileTexture: sc.tactileTexture,
+          doorProfile: sc.doorProfile,
         };
         indexPoint(pt, points.length);
         points.push(pt);
