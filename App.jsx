@@ -2454,10 +2454,41 @@ function createSpaceEngine(opts) {
     cardGeo.attributes.iSel.needsUpdate = true;
     requestRender();
   };
+  // Pins and commercial colours as swatch cards too (in swatches mode): the
+  // same card, a little smaller — pins at 0.62 of an anchor's, commercial
+  // colours at 0.5 — moved with their cell under separation like their dots.
+  const MCARD_SCALE = { pin: 0.62, brand: 0.5 };
+  const mcardGeo = new THREE.InstancedBufferGeometry();
+  mcardGeo.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0], 3));
+  mcardGeo.setIndex([0, 1, 2, 2, 1, 3]);
+  const mcardMat = new THREE.ShaderMaterial({
+    vertexShader: `attribute vec3 iPos; attribute vec3 iOwner; attribute vec3 iColor; attribute float iVis; attribute float iScale;
+      uniform float uSep, uW, uH, uViewH;
+      varying vec2 vUv; varying vec3 vColor; varying float vPx; varying float vSel;
+      void main() {
+        vec4 mv = viewMatrix * vec4(iPos + iOwner * (uSep - 1.0), 1.0);
+        float W = uW * iScale, Hc = uH * iScale;
+        vec2 c = position.xy;
+        mv.xy += vec2((c.x - 0.5) * W, W * 0.5 - (1.0 - c.y) * Hc);
+        gl_Position = iVis < 0.5 ? vec4(2.0, 2.0, 2.0, 1.0) : projectionMatrix * mv;
+        vUv = vec2(c.x, (1.0 - c.y) * Hc / W);
+        vColor = iColor; vSel = 0.0;
+        vPx = W * projectionMatrix[1][1] * uViewH * 0.5 / max(-mv.z, 0.001);
+      }`,
+    fragmentShader: cardMat.fragmentShader,
+    uniforms: cardMat.uniforms,
+    transparent: true, depthWrite: true,
+  });
+  const mcards = new THREE.Mesh(mcardGeo, mcardMat);
+  mcards.frustumCulled = false;
+  mcards.visible = false;
+  scene.add(mcards);
   const cardsOn = () => S.modes["3d"] === "swatches";
   const applyMode3D = () => {
     const sw = cardsOn();
     cards.visible = sw && ready;
+    mcards.visible = sw && mcardGeo.instanceCount > 0;
+    dots.visible = ghostDots.visible = !sw;
     mesh.visible = !sw;
     if (sw) activeMesh.visible = activeRim.visible = false;
     requestRender();
@@ -2857,6 +2888,7 @@ function createSpaceEngine(opts) {
       mOwner[i * 3] = px[j]; mOwner[i * 3 + 1] = py[j]; mOwner[i * 3 + 2] = pz[j];
     }
     if (dotGeo.attributes.aOwner) dotGeo.attributes.aOwner.needsUpdate = true;
+    if (mcardGeo.attributes.iOwner) mcardGeo.attributes.iOwner.needsUpdate = true;
     requestRender();
   };
   // Where a world point is drawn once separated: moved with its cell.
@@ -2881,6 +2913,17 @@ function createSpaceEngine(opts) {
     dotGeo.setAttribute("aVis", new THREE.BufferAttribute(mVis, 1));
     mOwner = new Float32Array(n * 3);
     dotGeo.setAttribute("aOwner", new THREE.BufferAttribute(mOwner, 3));
+    // the same markers as cards
+    const scale = new Float32Array(n);
+    M.forEach((m, i) => (scale[i] = m.kind === "brand" ? MCARD_SCALE.brand : MCARD_SCALE.pin));
+    if (mcardGeo.attributes.iPos) mcardGeo.dispose();
+    mcardGeo.setAttribute("iPos", new THREE.InstancedBufferAttribute(pos, 3));
+    mcardGeo.setAttribute("iOwner", new THREE.InstancedBufferAttribute(mOwner, 3));
+    mcardGeo.setAttribute("iColor", new THREE.InstancedBufferAttribute(col, 3));
+    mcardGeo.setAttribute("iVis", new THREE.InstancedBufferAttribute(mVis, 1));
+    mcardGeo.setAttribute("iScale", new THREE.InstancedBufferAttribute(scale, 1));
+    mcardGeo.instanceCount = n;
+    applyMode3D();
     updateMarkerOwners();
     updateDotVisibility();
   };
@@ -2890,6 +2933,7 @@ function createSpaceEngine(opts) {
     if (hl === null && hc === null && hh === null) { if (mVisAll) return; mVis.fill(1); mVisAll = true; }
     else { mVisAll = false; for (let i = 0; i < M.length; i++) mVis[i] = inRangeLCH(M[i].L, M[i].C, M[i].H) ? 1 : 0; }
     dotGeo.attributes.aVis.needsUpdate = true;
+    if (mcardGeo.attributes.iVis) mcardGeo.attributes.iVis.needsUpdate = true;
     updateCardState();
     requestRender();
   }
@@ -2900,9 +2944,40 @@ function createSpaceEngine(opts) {
     const rc = slot["3d"].getBoundingClientRect();
     projM.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     const nx = ((clientX - rc.left) / rc.width) * 2 - 1, ny = -((clientY - rc.top) / rc.height) * 2 + 1;
+    const k = 1 + S.sep;
+    if (cardsOn() && mVis && markerPos && mOwner) {
+      // the nearest marker card under the pointer; anchor cards are checked
+      // below and win only when nearer
+      const e = projM.elements, hw = rc.width / 2, hh = rc.height / 2, fy = camera.projectionMatrix.elements[5];
+      const mx = clientX - rc.left, my = clientY - rc.top, sk = k - 1;
+      let bz = 1e9, bm = null;
+      for (let i = 0, n = S.markers.length; i < n; i++) {
+        if (!mVis[i]) continue;
+        const x = markerPos[i * 3] + mOwner[i * 3] * sk, y = markerPos[i * 3 + 1] + mOwner[i * 3 + 1] * sk, z = markerPos[i * 3 + 2] + mOwner[i * 3 + 2] * sk;
+        const w = e[3] * x + e[7] * y + e[11] * z + e[15];
+        if (w <= 0.001) continue;
+        const sx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w) * hw + hw, sy = hh - ((e[1] * x + e[5] * y + e[9] * z + e[13]) / w) * hh;
+        const cw = (CARD_W * (S.markers[i].kind === "brand" ? MCARD_SCALE.brand : MCARD_SCALE.pin) * fy * hh) / w;
+        if (mx < sx - cw / 2 || mx > sx + cw / 2 || my < sy - cw / 2 || my > sy - cw / 2 + cw * 1.3) continue;
+        if (w < bz) { bz = w; bm = S.markers[i]; }
+      }
+      if (bm) {
+        // an anchor card in front of it takes the click instead
+        if (ready && N) {
+          for (let i = 0; i < N; i++) {
+            if (!cVis || !cVis[i]) continue;
+            const x = px[i] * k, y = py[i] * k, z = pz[i] * k, w = e[3] * x + e[7] * y + e[11] * z + e[15];
+            if (w <= 0.001 || w >= bz) continue;
+            const sx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w) * hw + hw, sy = hh - ((e[1] * x + e[5] * y + e[9] * z + e[13]) / w) * hh;
+            const cw = (CARD_W * fy * hh) / w;
+            if (mx >= sx - cw / 2 && mx <= sx + cw / 2 && my >= sy - cw / 2 && my <= sy - cw / 2 + cw * 1.3) return S.anchors[i];
+          }
+        }
+        return bm;
+      }
+    }
     // markers first: nearest projected dot within 9px
     let best = null, bd = 81;
-    const k = 1 + S.sep;
     if (mVis && markerPos) {
       const e = projM.elements, hw = rc.width / 2, hh = rc.height / 2;
       for (let i = 0, n = S.markers.length; i < n; i++) {
@@ -3302,14 +3377,16 @@ function createSpaceEngine(opts) {
   const cssRgb = (i, a = 1) => `rgba(${toByte(cols[i * 3])},${toByte(cols[i * 3 + 1])},${toByte(cols[i * 3 + 2])},${a})`;
   const paperRgb = () => (S.dark ? [0.13, 0.15, 0.13] : [1, 1, 1]);
   // A swatch card on a 2D canvas: square swatch centred on (x, y), strip below.
-  const drawCard = (ctx, x, y, w, i, alpha, sel) => {
+  const drawCard = (ctx, x, y, w, i, alpha, sel) =>
+    drawCardRGB(ctx, x, y, w, [cols[i * 3], cols[i * 3 + 1], cols[i * 3 + 2]], alpha, sel);
+  const drawCardRGB = (ctx, x, y, w, rgb, alpha, sel) => {
     const h = w * 1.3, x0 = x - w / 2, y0 = y - w / 2, t = Math.max(0, Math.min(1, (w - 10) / 24));
     const p = paperRgb(), mix = (a, b) => a + (b - a) * t;
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = `rgb(${toByte(mix(cols[i * 3], p[0]))},${toByte(mix(cols[i * 3 + 1], p[1]))},${toByte(mix(cols[i * 3 + 2], p[2]))})`;
+    ctx.fillStyle = `rgb(${toByte(mix(rgb[0], p[0]))},${toByte(mix(rgb[1], p[1]))},${toByte(mix(rgb[2], p[2]))})`;
     ctx.fillRect(x0, y0, w, h);
-    ctx.fillStyle = cssRgb(i);
+    ctx.fillStyle = `rgb(${toByte(rgb[0])},${toByte(rgb[1])},${toByte(rgb[2])})`;
     ctx.fillRect(x0, y0, w, w);
     ctx.lineWidth = sel ? 2 : 1;
     ctx.strokeStyle = sel ? fgCss() : S.dark ? "rgba(255,255,255,0.18)" : "rgba(0,0,0,0.18)";
@@ -3318,8 +3395,11 @@ function createSpaceEngine(opts) {
     return [x0, y0, x0 + w, y0 + h];
   };
   // The name inside a card's strip, fitted to its width.
-  const cardName = (ctx, i, x, y, w, dpr = 1) => {
-    let t = nameOf(i);
+  const cardName = (ctx, i, x, y, w, dpr = 1) => cardText(ctx, nameOf(i), x, y, w, dpr);
+  // A marker's short name: "Behr · behr color 4136" → "BEHR COLOR 4136".
+  const markerName = (m) => String((m && m.label) || "").split(" \u00b7 ").pop().toUpperCase();
+  const cardText = (ctx, text, x, y, w, dpr = 1) => {
+    let t = text;
     if (!t || w < CARD_NAME_PX * dpr) return;
     const size = Math.max(7, Math.min(14, w * 0.17));
     while (t.length > 1 && measure(ctx, t, size) > w - 6) t = t.slice(0, -2) + "…";
@@ -3348,6 +3428,18 @@ function createSpaceEngine(opts) {
       if (sx < -300 || sy < -300 || sx > W + 300 || sy > Hc + 300) continue;
       items.push({ i, sx, sy, w, ppw: (fy * hh) / w });
     }
+    if (sw && mVis && markerPos && mOwner) {
+      const sk = k - 1;
+      for (let mi = 0, n = S.markers.length; mi < n; mi++) {
+        if (!mVis[mi]) continue;
+        const x = markerPos[mi * 3] + mOwner[mi * 3] * sk, y = markerPos[mi * 3 + 1] + mOwner[mi * 3 + 1] * sk, z = markerPos[mi * 3 + 2] + mOwner[mi * 3 + 2] * sk;
+        const w = e[3] * x + e[7] * y + e[11] * z + e[15];
+        if (w <= 0.05) continue;
+        const sx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w) * hw + hw, sy = hh - ((e[1] * x + e[5] * y + e[9] * z + e[13]) / w) * hh;
+        if (sx < -300 || sy < -300 || sx > W + 300 || sy > Hc + 300) continue;
+        items.push({ i: -1, mi, sx, sy, w, ppw: (fy * hh) / w });
+      }
+    }
     items.sort((p, q) => p.w - q.w);   // nearest first
     // nearer anchors, bucketed on a coarse screen grid, hide the ones behind
     const G = 64, occ = new Map();
@@ -3365,10 +3457,12 @@ function createSpaceEngine(opts) {
     for (const it of items) {
       const { i, sx, sy, ppw } = it;
       if (sw) {
-        const cw = CARD_W * ppw, x0 = sx - cw / 2, x1 = sx + cw / 2, y0 = sy - cw / 2, y1 = sy + cw * 0.8, st = sy + cw / 2;
+        const m = i < 0 ? S.markers[it.mi] : null;
+        const cw = CARD_W * (m ? (m.kind === "brand" ? MCARD_SCALE.brand : MCARD_SCALE.pin) : 1) * ppw;
+        const x0 = sx - cw / 2, x1 = sx + cw / 2, y0 = sy - cw / 2, y1 = sy + cw * 0.8, st = sy + cw / 2;
         const hidden = hit(x0, st, x1, y1, (o) => o[0] < x1 && o[2] > x0 && o[1] < y1 && o[3] > st);
         add([x0, y0, x1, y1]);
-        if ((!hidden || i === selIdx) && cw >= CARD_NAME_PX * dpr) cardsOut.push([i, sx, sy, cw]);
+        if ((!hidden || (i >= 0 && i === selIdx)) && cw >= CARD_NAME_PX * dpr) cardsOut.push([i, sx, sy, cw, m]);
       } else {
         const r = inflR(i, meanR[i]) * ppw;
         const hidden = hit(sx, sy, sx, sy, (o) => (o[4] - sx) ** 2 + (o[5] - sy) ** 2 < (o[6] * 0.85) ** 2);
@@ -3378,7 +3472,7 @@ function createSpaceEngine(opts) {
           cands.push([sx, S.fill < 0.001 ? sy + Math.min(r, 14 * dpr) + 13 * dpr : sy + 4 * dpr, i, 11 * dpr]);
       }
     }
-    for (const [i, sx, sy, cw] of cardsOut) cardName(ctx, i, sx, sy, cw, dpr);
+    for (const [i, sx, sy, cw, m] of cardsOut) (m ? cardText(ctx, markerName(m), sx, sy, cw, dpr) : cardName(ctx, i, sx, sy, cw, dpr));
     if (cands.length) {
       const sel = cands.findIndex((c) => c[2] === selIdx);
       if (sel > 0) cands.unshift(cands.splice(sel, 1)[0]);
@@ -3469,7 +3563,13 @@ function createSpaceEngine(opts) {
   // The pin (or commercial colour) under a point of a section, if any.
   const markerAt = (k, x, y, r = 9) => {
     let best = null, bd = r * r;
-    for (const [mx, my, mi] of SV[k].mk || []) { const d = (mx - x) ** 2 + (my - y) ** 2; if (d <= bd) { bd = d; best = S.markers[mi]; } }
+    for (const [mx, my, mi, cw] of SV[k].mk || []) {
+      if (cw) {   // a card: inside its rectangle (later cards sit on top)
+        if (x >= mx - cw / 2 && x <= mx + cw / 2 && y >= my - cw / 2 && y <= my - cw / 2 + cw * 1.3) best = S.markers[mi];
+        continue;
+      }
+      const d = (mx - x) ** 2 + (my - y) ** 2; if (d <= bd) { bd = d; best = S.markers[mi]; }
+    }
     return best;
   };
   const dotAt = (k, x, y, slack = 0) => {
@@ -3529,8 +3629,18 @@ function createSpaceEngine(opts) {
         u = m.C; w = (m.L * LW) / CW;
       }
       const mx = u2px(v, u), my = v2py(v, w);
-      markerShape(ctx, mx, my, m.hex, m.kind === "brand");
-      v.mk.push([mx, my, mi]);
+      if (S.modes[k] === "swatches") {
+        // a small swatch card, like the anchors' (pins a little larger than
+        // commercial colours), with its name once it fits
+        const cw = Math.max(7, CARD_W * (W / (v.dom.x1 - v.dom.x0) / CW)) * (m.kind === "brand" ? MCARD_SCALE.brand : MCARD_SCALE.pin);
+        const rgb = spaceHexToRgb(m.hex);
+        drawCardRGB(ctx, mx, my, cw, rgb, S.alpha[k], false);
+        cardText(ctx, markerName(m), mx, my, cw);
+        v.mk.push([mx, my, mi, cw]);
+      } else {
+        markerShape(ctx, mx, my, m.hex, m.kind === "brand");
+        v.mk.push([mx, my, mi]);
+      }
     });
     // tether: the cursor to what names it, both seen straight on in this view
     if (S.tether) {
@@ -5674,7 +5784,15 @@ const FILTER_OPS = {
 
 const defaultOpFor = (type) => FILTER_OPS[type][0].id;
 
+// Does any plain row (inside groups too) satisfy pred?
+const filterRowsSome = (rows, pred) =>
+  (rows || []).some((r) => (r && r.group ? filterRowsSome(r.rows, pred) : pred(r)));
 const evalFilterRow = (item, row, ctx) => {
+  if (row && row.group) {
+    const rs = row.rows || [];
+    if (!rs.length) return true;
+    return row.mode === "or" ? rs.some((r) => evalFilterRow(item, r, ctx)) : rs.every((r) => evalFilterRow(item, r, ctx));
+  }
   const field = FILTER_FIELDS.find((f) => f.id === row.field);
   if (!field) return true;
 
@@ -5767,6 +5885,10 @@ const cursorValueFor = (fieldId, ctx) => {
 
 const describeFilterRow = (row, ctx) => {
   if (row && row.any) return "any of the active filters";
+  if (row && row.group) {
+    const parts = (row.rows || []).map((r) => describeFilterRow(r, ctx));
+    return parts.length ? `(${parts.join(row.mode === "or" ? " or " : " and ")})` : "(empty group)";
+  }
   const field = FILTER_FIELDS.find((f) => f.id === row.field);
   if (!field) return "filter";
   const tag = row.scope === "db" ? " (DB)" : "";
@@ -5812,55 +5934,74 @@ const newFilterRow = (fieldId, op, value, value2, dynamic, scope) => {
   };
 };
 
-const FilterBuilder = ({
-  rows,
-  setRows,
-  optionsFor,
-  presets,
-  mode,
-  setMode,
-  ctx,
-}) => {
+// Nested sub-filters: up to this many levels (the top list counts as one).
+const FILTER_MAX_DEPTH = 3;
+const newFilterGroup = (mode = "or") => ({ id: `g${++FILTER_ROW_SEQ}`, group: true, mode, rows: [newFilterRow("name")], scope: null });
+// One list of filter rows joined by one And/Or. A group row holds another such
+// list (its own And/Or), drawn indented under its header.
+const FilterRows = ({ rows, setRows, mode, setMode, optionsFor, ctx, depth = 0 }) => {
   const update = (id, patch) =>
     setRows(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-
+  const conjunction = (idx) =>
+    idx === 0
+      ? React.createElement("span", { className: "text-[9px] uppercase tracking-widest text-slate-400 w-12" }, "Where")
+      : React.createElement(
+          "select",
+          {
+            value: mode === "or" ? "or" : "and",
+            onChange: (e) => setMode && setMode(e.target.value),
+            title: depth ? "Applies to every row in this group" : "Applies to every filter in this list",
+            className: "w-12 bg-transparent border border-slate-200 dark:border-neutral-700 rounded-md px-1 py-0.5 text-[9px] uppercase tracking-widest text-slate-500 focus:outline-none",
+          },
+          React.createElement("option", { value: "and" }, "And"),
+          React.createElement("option", { value: "or" }, "Or"),
+        );
+  const renderGroup = (row, idx) =>
+    React.createElement(
+      "div",
+      { key: row.id, className: "flex flex-col gap-1.5" },
+      React.createElement(
+        "div",
+        { className: "flex items-center gap-1" },
+        conjunction(idx),
+        React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400" }, "Group \u2014 match"),
+        React.createElement(
+          "select",
+          {
+            value: row.mode === "or" ? "or" : "and",
+            onChange: (e) => update(row.id, { mode: e.target.value }),
+            className: "bg-transparent border border-slate-200 dark:border-neutral-700 rounded-md px-1.5 py-0.5 text-[10px] text-slate-600 dark:text-neutral-300 focus:outline-none",
+          },
+          React.createElement("option", { value: "and" }, "all of"),
+          React.createElement("option", { value: "or" }, "any of"),
+        ),
+        React.createElement(
+          "button",
+          { onClick: () => setRows(rows.filter((r) => r.id !== row.id)), title: "Remove this group", className: "ml-auto p-1 text-slate-400 hover:text-red-500" },
+          React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
+        ),
+      ),
+      React.createElement(FilterRows, {
+        rows: row.rows || [],
+        setRows: (next) => update(row.id, { rows: typeof next === "function" ? next(row.rows || []) : next }),
+        mode: row.mode,
+        setMode: (m) => update(row.id, { mode: m }),
+        optionsFor,
+        ctx,
+        depth: depth + 1,
+      }),
+    );
   return React.createElement(
     "div",
-    { className: "flex flex-col gap-2 min-w-[260px]" },
-    presets &&
-      presets.length > 0 &&
-      React.createElement(
-        "div",
-        { className: "flex flex-wrap gap-1 pb-2 border-b border-slate-200 dark:border-neutral-800" },
-        React.createElement(
-          "span",
-          {
-            className:
-              "w-full text-[9px] font-bold uppercase tracking-widest text-slate-400 pb-1",
-          },
-          "Presets",
-        ),
-        presets.map((p) =>
-          React.createElement(
-            "button",
-            {
-              key: p.id,
-              onClick: p.apply,
-              title: p.hint || "",
-              className:
-                "px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-slate-200 dark:border-neutral-700 text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800",
-            },
-            p.label,
-          ),
-        ),
-      ),
-    rows.length === 0 &&
-      React.createElement(
-        "div",
-        { className: "text-[11px] italic text-slate-400 py-1" },
-        "No filters. Everything is shown.",
-      ),
+    {
+      className: depth
+        ? "flex flex-col gap-2 ml-3 pl-2.5 py-1 border-l-2 border-sky-200 dark:border-sky-500/30"
+        : "flex flex-col gap-2",
+    },
+    depth > 0 && rows.length === 0 &&
+      React.createElement("div", { className: "text-[10px] italic text-slate-400" }, "Empty group \u2014 matches everything."),
     rows.map((row, idx) => {
+      if (row.group) return renderGroup(row, idx);
       const field = FILTER_FIELDS.find((f) => f.id === row.field) || FILTER_FIELDS[0];
       const ops = FILTER_OPS[field.type] || [];
       const options =
@@ -5872,27 +6013,7 @@ const FilterBuilder = ({
       return React.createElement(
         "div",
         { key: row.id, className: "flex items-center gap-1 flex-wrap" },
-        idx === 0
-          ? React.createElement(
-              "span",
-              {
-                className:
-                  "text-[9px] uppercase tracking-widest text-slate-400 w-12",
-              },
-              "Where",
-            )
-          : React.createElement(
-              "select",
-              {
-                value: mode === "or" ? "or" : "and",
-                onChange: (e) => setMode && setMode(e.target.value),
-                title: "Applies to every filter in this group",
-                className:
-                  "w-12 bg-transparent border border-slate-200 dark:border-neutral-700 rounded-md px-1 py-0.5 text-[9px] uppercase tracking-widest text-slate-500 focus:outline-none",
-              },
-              React.createElement("option", { value: "and" }, "And"),
-              React.createElement("option", { value: "or" }, "Or"),
-            ),
+        conjunction(idx),
         React.createElement(
           "select",
           {
@@ -5993,28 +6114,83 @@ const FilterBuilder = ({
     }),
     React.createElement(
       "div",
-      { className: "flex items-center gap-2 pt-1" },
+      { className: "flex items-center gap-3 pt-1" },
       React.createElement(
         "button",
         {
           onClick: () => setRows([...rows, newFilterRow("name")]),
-          className:
-            "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400",
+          className: "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400",
         },
         React.createElement(Icon, { name: "plus", className: "w-3 h-3" }),
-        "Add filter",
+        depth ? "Add to group" : "Add filter",
       ),
-      rows.length > 0 &&
+      depth < FILTER_MAX_DEPTH - 1 &&
         React.createElement(
           "button",
           {
-            onClick: () => setRows([]),
-            className:
-              "ml-auto text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-slate-600",
+            onClick: () => setRows([...rows, newFilterGroup(mode === "or" ? "and" : "or")]),
+            title: "A group of filters joined by its own And/Or",
+            className: "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400",
           },
+          React.createElement(Icon, { name: "list-plus", className: "w-3 h-3" }),
+          depth ? "Add sub-group" : "Add group",
+        ),
+      depth === 0 && rows.length > 0 &&
+        React.createElement(
+          "button",
+          { onClick: () => setRows([]), className: "ml-auto text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-slate-600" },
           "Clear all",
         ),
     ),
+  );
+};
+const FilterBuilder = ({
+  rows,
+  setRows,
+  optionsFor,
+  presets,
+  mode,
+  setMode,
+  ctx,
+}) => {
+
+  return React.createElement(
+    "div",
+    { className: "flex flex-col gap-2 min-w-[260px]" },
+    presets &&
+      presets.length > 0 &&
+      React.createElement(
+        "div",
+        { className: "flex flex-wrap gap-1 pb-2 border-b border-slate-200 dark:border-neutral-800" },
+        React.createElement(
+          "span",
+          {
+            className:
+              "w-full text-[9px] font-bold uppercase tracking-widest text-slate-400 pb-1",
+          },
+          "Presets",
+        ),
+        presets.map((p) =>
+          React.createElement(
+            "button",
+            {
+              key: p.id,
+              onClick: p.apply,
+              title: p.hint || "",
+              className:
+                "px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-slate-200 dark:border-neutral-700 text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800",
+            },
+            p.label,
+          ),
+        ),
+      ),
+    rows.length === 0 &&
+      React.createElement(
+        "div",
+        { className: "text-[11px] italic text-slate-400 py-1" },
+        "No filters. Everything is shown.",
+      ),
+    React.createElement(FilterRows, { rows, setRows, mode, setMode, optionsFor, ctx, depth: 0 }),
   );
 };
 
@@ -11280,7 +11456,7 @@ const App = () => {
   );
   const viewportCursorDep =
     filterSameNoun ||
-    viewportRows.some((r) => r.dynamic || r.field === "deltaE" || r.field === "noun");
+    filterRowsSome(viewportRows, (r) => r.dynamic || r.field === "deltaE" || r.field === "noun");
   const viewportCursorKey = viewportCursorDep ? `${scrubL}|${scrubC}|${scrubH}` : "";
   const viewportCtxDep = viewportCursorDep ? viewportGroupContext : null;
   // Explore's commercial colours (its own brand visibility and filter rows).
@@ -19314,7 +19490,7 @@ const AppUI = ({
               "div",
               {
                 className:
-                  "relative md:absolute md:right-3 md:top-28 bg-white dark:bg-neutral-900 border-t md:border border-slate-200 dark:border-neutral-800 rounded-t-2xl md:rounded-xl shadow-2xl max-h-[80vh] md:max-h-[70vh] flex flex-col md:w-[420px]",
+                  "relative md:absolute md:right-3 md:top-28 bg-white dark:bg-neutral-900 border-t md:border border-slate-200 dark:border-neutral-800 rounded-t-2xl md:rounded-xl shadow-2xl max-h-[80vh] md:max-h-[70vh] flex flex-col md:w-[540px]",
               },
               React.createElement("div", {
                 className:
@@ -19582,7 +19758,7 @@ const AppUI = ({
                 // Only rows that follow the cursor need its context; passing it
                 // otherwise re-rendered the whole catalog on every cursor move.
                 sameGroupContext: (pinsFilters || []).some(
-                  (r) => (!r.scope || r.scope === "viewport") && (r.dynamic || r.field === "noun"),
+                  (r) => (!r.scope || r.scope === "viewport") && filterRowsSome([r], (x) => x.dynamic || x.field === "noun"),
                 )
                   ? sameGroupContext
                   : null,
