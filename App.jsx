@@ -63,6 +63,21 @@ const LABEL_OPTIONS = {
   doorProfile: ['-', 'SL (Slab)', 'CS (Shaker)', 'SS (Slim)', 'RD (Reeded)', 'CT (Countertop)', 'WG (Wood-Framed Glass)', 'MG (Metal-framed Glass)'],
   material: ['-', 'Solid Laminate', 'Textured Laminate', 'Lacquered MDF', 'Natural Oak', 'Natural Maple']
 };
+// The option a stored spec value means: exact, or by its leading code.
+const specOption = (options, value) => {
+  const v = String(value || "").trim();
+  if (!v || v === "-") return "";
+  if (options.indexOf(v) !== -1) return v;
+  const code = v.split(/[\s(]/)[0].toUpperCase();
+  const hit = options.find((o) => o !== "-" && o.split(" ")[0].toUpperCase() === code);
+  if (hit) return hit;
+  const low = v.toLowerCase();
+  return options.find((o) => o.toLowerCase() === low) || v;
+};
+const specOptions = (options, value) => {
+  const v = specOption(options, value);
+  return v && options.indexOf(v) === -1 ? [...options, v] : options;
+};
 const defaultGroupSettings = {
   lightL: 0.5,
   neutralC: 0.02,
@@ -604,12 +619,13 @@ const fastItemLch = (item) => {
 // Gamut test and display hex for an OkLCH point, via colorjs once per distinct
 // coordinate (anchors are re-listed on every edit; their colours don't change).
 const LCH_GAMUT_HEX = new Map();
+setTimeout(() => DisplayGamut.subscribe(() => { LCH_GAMUT_HEX.clear(); }), 0);
 const lchGamutHex = (L, C, H) => {
   const k = L + "|" + C + "|" + H;
   let hit = LCH_GAMUT_HEX.get(k);
   if (!hit) {
     const c = new Color("oklch", [L, C, H]);
-    const inGamut = c.inGamut("srgb");
+    const inGamut = c.inGamut(DisplayGamut.space);
     hit = { inGamut, hex: inGamut ? c.clone().toGamut({ space: "srgb" }).toString({ format: "hex" }) : null };
     if (LCH_GAMUT_HEX.size > 50000) LCH_GAMUT_HEX.clear();
     LCH_GAMUT_HEX.set(k, hit);
@@ -627,8 +643,10 @@ const FAST_XYZ_RGB = [
   -0.9692436362808796, 1.8759675015077202, 0.04155505740717559,
   0.05563007969699366, -0.20397695888897652, 1.0569715142428786,
 ];
+// (now the screen's working gamut: sRGB, or Display P3 on a wide-gamut screen)
 const fastInGamutSrgb = (L, C, H) => {
-  if (![L, C, H].every((v) => typeof v === "number" && isFinite(v))) return new Color("oklch", [L, C, H]).inGamut("srgb");
+  if (DisplayGamut.id !== "srgb") return DisplayGamut.inGamut(L, C, H);
+  if (![L, C, H].every((v) => typeof v === "number" && isFinite(v))) return new Color("oklch", [L, C, H]).inGamut(DisplayGamut.space);
   const h = (H * Math.PI) / 180, A = C * Math.cos(h), B = C * Math.sin(h), M = FAST_LAB_LMS, X = FAST_LMS_XYZ, R = FAST_XYZ_RGB;
   let l = M[0] * L + M[1] * A + M[2] * B, m = M[3] * L + M[4] * A + M[5] * B, s = M[6] * L + M[7] * A + M[8] * B;
   l = l * l * l; m = m * m * m; s = s * s * s;
@@ -1067,7 +1085,7 @@ const MatchRow = ({ label, match, onSelectColor, setFullscreenImage, fmt }) => {
             {
               className:
                 "relative group w-8 h-8 rounded shadow-sm shrink-0 border border-slate-200 dark:border-neutral-700 overflow-hidden",
-              style: { backgroundColor: match.hex },
+              style: { backgroundColor: DisplayGamut.css(match.L, match.C, match.H, match.hex) },
             },
             React.createElement("div", {
               className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
@@ -1096,7 +1114,7 @@ const MatchRow = ({ label, match, onSelectColor, setFullscreenImage, fmt }) => {
         : React.createElement("div", {
             className:
               "w-8 h-8 rounded shadow-sm shrink-0 border border-slate-200 dark:border-neutral-700",
-            style: { backgroundColor: match.hex },
+            style: { backgroundColor: DisplayGamut.css(match.L, match.C, match.H, match.hex) },
           }),
       React.createElement(
         "div",
@@ -1686,8 +1704,129 @@ const loadSpaceThree = () => {
   return SPACE_THREE_PROMISE;
 };
 
+
+// ─── Display gamut ──────────────────────────────────────────────────────────
+// Which colours this screen can actually show. The screen reports its gamut
+// through the color-gamut media query (sRGB, P3 or Rec. 2020); the app can
+// only draw beyond sRGB where the browser paints canvases and CSS in Display
+// P3, so the working gamut is Display P3 on a wide-gamut screen in such a
+// browser, and sRGB everywhere else. It follows the window to another screen,
+// and can be held to sRGB by choice (colours safe on any screen).
+const DisplayGamut = (() => {
+  const KEY = "colorsamificator-gamut";
+  const mq = (q) => { try { return !!(window.matchMedia && window.matchMedia(q).matches); } catch (e) { return false; } };
+  // linear sRGB → linear target RGB (D65 throughout)
+  const M = {
+    p3: [0.8224621209, 0.1775378791, 0, 0.0331941989, 0.9668058011, 0, 0.0170826307, 0.0723974407, 0.9105199286],
+    rec2020: [0.6274038959, 0.3292830384, 0.0433130657, 0.0690972894, 0.9195403951, 0.0113623156, 0.0163914389, 0.0880133079, 0.8955952532],
+  };
+  const LABEL = { srgb: "sRGB", p3: "Display P3", rec2020: "Rec. 2020" };
+  let canvasP3 = false;
+  try {
+    const c = document.createElement("canvas"), x = c.getContext("2d", { colorSpace: "display-p3" });
+    canvasP3 = !!x && (!x.getContextAttributes || x.getContextAttributes().colorSpace === "display-p3") &&
+      typeof WebGLRenderingContext !== "undefined" && "drawingBufferColorSpace" in WebGLRenderingContext.prototype &&
+      !!(window.CSS && CSS.supports && CSS.supports("color", "color(display-p3 1 0 0)"));
+  } catch (e) {}
+  const st = { screen: "srgb", id: "srgb", pref: "auto" };
+  const listeners = new Set();
+  const compute = () => {
+    st.screen = mq("(color-gamut: rec2020)") ? "rec2020" : mq("(color-gamut: p3)") ? "p3" : "srgb";
+    try { st.pref = localStorage.getItem(KEY) === "srgb" ? "srgb" : "auto"; } catch (e) { st.pref = "auto"; }
+    st.id = st.pref === "auto" && st.screen !== "srgb" && canvasP3 ? "p3" : "srgb";
+  };
+  compute();
+  const changed = () => { const before = st.id; compute(); if (st.id !== before) listeners.forEach((fn) => { try { fn(st.id); } catch (e) {} }); };
+  try {
+    ["(color-gamut: p3)", "(color-gamut: rec2020)"].forEach((q) => {
+      const m = window.matchMedia && window.matchMedia(q);
+      if (m && m.addEventListener) m.addEventListener("change", changed); else if (m && m.addListener) m.addListener(changed);
+    });
+  } catch (e) {}
+  const enc = (v) => { const x = Math.max(0, Math.min(1, v)); return x <= 0.0031308 ? 12.92 * x : 1.055 * Math.pow(x, 1 / 2.4) - 0.055; };
+  const dec = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+  const mul = (m, r, g, b) => [m[0] * r + m[1] * g + m[2] * b, m[3] * r + m[4] * g + m[5] * b, m[6] * r + m[7] * g + m[8] * b];
+  const oklabLin = (L, A, B) => {
+    const l_ = L + 0.3963377774 * A + 0.2158037573 * B, m_ = L - 0.1055613458 * A - 0.0638541728 * B, s_ = L - 0.0894841775 * A - 1.291485548 * B;
+    const l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_;
+    return [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s, -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s];
+  };
+  const lchLin = (L, C, H) => { const h = (H * Math.PI) / 180; return oklabLin(L, C * Math.cos(h), C * Math.sin(h)); };
+  const api = {
+    get id() { return st.id; },
+    get screen() { return st.screen; },
+    get pref() { return st.pref; },
+    get label() { return LABEL[st.id]; },
+    get screenLabel() { return LABEL[st.screen]; },
+    get space() { return st.id === "p3" ? "p3" : "srgb"; },    // colorjs space id
+    get canvasP3() { return canvasP3; },
+    get maxChroma() { return st.id === "p3" ? 0.37 : 0.325; },
+    M, mul, enc, dec, oklabLin, lchLin,
+    // linear sRGB → linear RGB of the working gamut
+    toGamut(r, g, b) { return st.id === "p3" ? mul(M.p3, r, g, b) : [r, g, b]; },
+    // does an OkLCH colour fit the working gamut (colorjs-like ε on encoded channels)
+    inGamut(L, C, H, eps = 0.000075) {
+      if (![L, C, H].every((v) => typeof v === "number" && isFinite(v))) return true;
+      const v = api.toGamut(...lchLin(L, C, H));
+      for (let k = 0; k < 3; k++) {
+        const a = Math.abs(v[k]), g = a > 0.0031308 ? Math.sign(v[k]) * (1.055 * Math.pow(a, 1 / 2.4) - 0.055) : 12.92 * v[k];
+        if (g < -eps || g > 1 + eps) return false;
+      }
+      return true;
+    },
+    // CSS for an OkLCH colour as this screen can show it: its own hex inside
+    // sRGB, and Display P3 beyond it when the working gamut is P3
+    css(L, C, H, hex) {
+      if (st.id !== "p3" || ![L, C, H].every((v) => typeof v === "number" && isFinite(v))) return hex;
+      const lin = lchLin(L, C, H);
+      if (lin.every((v) => v >= -0.0001 && v <= 1.0001) && hex) return hex;
+      const p = mul(M.p3, ...lin).map((v) => enc(v).toFixed(4));
+      return `color(display-p3 ${p[0]} ${p[1]} ${p[2]})`;
+    },
+    setPref(pref) {
+      try { if (pref === "srgb") localStorage.setItem(KEY, "srgb"); else localStorage.removeItem(KEY); } catch (e) {}
+      compute(); listeners.forEach((fn) => { try { fn(st.id); } catch (e) {} });
+    },
+    subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+  };
+  return api;
+})();
+
 // World units: chroma ×10 across, lightness ×7 up (the solid's familiar shape).
-const SPACE_CW = 10, SPACE_LW = 7, SPACE_LC = 0.5, SPACE_AMAX = 0.34;
+// The views frame the widest chroma the working gamut reaches.
+const SPACE_CW = 10, SPACE_LW = 7, SPACE_LC = 0.5, SPACE_AMAX = DisplayGamut.id === "p3" ? 0.39 : 0.34;
+// The colour pipeline for drawing: canvases (2D and WebGL) are Display P3
+// wherever the browser can do that, so every colour handed to them is encoded
+// for the canvas, after being held to the working gamut.
+const spaceCanvasOpts = () => (DisplayGamut.canvasP3 ? { colorSpace: "display-p3" } : undefined);
+const spaceOutLin = (r, g, b, out = [0, 0, 0]) => {
+  const D = DisplayGamut, cl = (x) => Math.max(0, Math.min(1, x));
+  let v;
+  if (D.id === "p3") v = D.mul(D.M.p3, r, g, b).map(cl);
+  else { v = [cl(r), cl(g), cl(b)]; if (D.canvasP3) v = D.mul(D.M.p3, v[0], v[1], v[2]); }
+  out[0] = D.enc(v[0]); out[1] = D.enc(v[1]); out[2] = D.enc(v[2]);
+  return out;
+};
+// An sRGB colour (0–1, encoded) re-encoded for the canvas (same colour).
+const spaceSrgbToCanvas = (rgb) => {
+  if (!DisplayGamut.canvasP3) return rgb.slice(0, 3);
+  const D = DisplayGamut, v = D.mul(D.M.p3, D.dec(rgb[0]), D.dec(rgb[1]), D.dec(rgb[2]));
+  return v.map((x) => D.enc(x));
+};
+// A point's canvas colour: from its OkLCH beyond sRGB on a P3 screen, else its hex.
+const spaceDisplayRgb = (hex, L, C, H) => {
+  const D = DisplayGamut;
+  if (D.id === "p3" && [L, C, H].every((v) => typeof v === "number" && isFinite(v))) return spaceOutLin(...D.lchLin(L, C, H));
+  const s = spaceHexToRgb(spaceHexFor(hex, L, C, H));
+  return spaceOutLin(D.dec(s[0]), D.dec(s[1]), D.dec(s[2]));
+};
+// CSS for a canvas colour (0–1, canvas-encoded).
+const spaceCss = (rgb, a = 1) => {
+  const f = (x) => Math.max(0, Math.min(1, x)).toFixed(4);
+  if (DisplayGamut.canvasP3) return `color(display-p3 ${f(rgb[0])} ${f(rgb[1])} ${f(rgb[2])}${a < 1 ? ` / ${a}` : ""})`;
+  const b = (x) => Math.round(Math.max(0, Math.min(1, x)) * 255);
+  return `rgba(${b(rgb[0])},${b(rgb[1])},${b(rgb[2])},${a})`;
+};
 const spaceHueDist = (a, b) => {
   const d = Math.abs((((a - b) % 360) + 360) % 360);
   return d > 180 ? 360 - d : d;
@@ -1702,21 +1841,13 @@ const spaceWorldToLCH = (x, y, z) => {
   if (H < 0) H += 360;
   return [y / SPACE_LW + SPACE_LC, Math.hypot(a, b), H];
 };
-// Is a world point a displayable sRGB colour? (OkLab a = C·cos H = b_app.)
+// Is a world point a colour this screen can show? (OkLab a = C·cos H = b_app.)
 // sRGB (0–255) of a world point, clipped; `out` gets [r, g, b].
+// (bytes 0–255, encoded for the canvas and held to the working gamut)
 const spaceWorldSrgb = (x, y, z, out) => {
   const L = y / SPACE_LW + SPACE_LC, A = -z / SPACE_CW, B = x / SPACE_CW;
-  const l_ = L + 0.3963377774 * A + 0.2158037573 * B, m_ = L - 0.1055613458 * A - 0.0638541728 * B, s_ = L - 0.0894841775 * A - 1.291485548 * B;
-  const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
-  const lin = [
-    4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3,
-    -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3,
-    -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3,
-  ];
-  for (let i = 0; i < 3; i++) {
-    const v = Math.max(0, Math.min(1, lin[i]));
-    out[i] = Math.round((v > 0.0031308 ? 1.055 * Math.pow(v, 1 / 2.4) - 0.055 : 12.92 * v) * 255);
-  }
+  const lin = DisplayGamut.oklabLin(L, A, B), c = spaceOutLin(lin[0], lin[1], lin[2]);
+  out[0] = Math.round(c[0] * 255); out[1] = Math.round(c[1] * 255); out[2] = Math.round(c[2] * 255);
   return out;
 };
 const spaceInGamut = (x, y, z) => {
@@ -1727,9 +1858,10 @@ const spaceInGamut = (x, y, z) => {
   const m_ = L - 0.1055613458 * A - 0.0638541728 * B;
   const s_ = L - 0.0894841775 * A - 1.291485548 * B;
   const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
-  const r = 4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3;
-  const g = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3;
-  const bl = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3;
+  let r = 4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3;
+  let g = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3;
+  let bl = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3;
+  if (DisplayGamut.id === "p3") [r, g, bl] = DisplayGamut.mul(DisplayGamut.M.p3, r, g, bl);
   const e = 0.002;
   return r >= -e && r <= 1 + e && g >= -e && g <= 1 + e && bl >= -e && bl <= 1 + e;
 };
@@ -1745,9 +1877,10 @@ const spaceInGamutStrict = (x, y, z) => {
   const m_ = L - 0.1055613458 * A - 0.0638541728 * B;
   const s_ = L - 0.0894841775 * A - 1.291485548 * B;
   const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
-  const r = 4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3;
-  const g = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3;
-  const bl = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3;
+  let r = 4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3;
+  let g = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3;
+  let bl = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3;
+  if (DisplayGamut.id === "p3") [r, g, bl] = DisplayGamut.mul(DisplayGamut.M.p3, r, g, bl);
   // the slack scales with brightness: near black the whole gamut shrinks to a
   // point, and any fixed slack would let dark colours far outside through
   const lo = -1e-9 - 0.0004 * Math.max(r, g, bl, 0), hi = 1.0002;
@@ -2029,6 +2162,7 @@ function createSpaceEngine(opts) {
   // ── Renderer ─────────────────────────────────────────────────────────────
   const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true, alpha: true });
   renderer.setPixelRatio(1);   // the slot canvas is sized in device pixels already
+  if (DisplayGamut.canvasP3) { try { renderer.getContext().drawingBufferColorSpace = "display-p3"; } catch (e) {} }
   renderer.setClearColor(0x000000, 0);
   renderer.autoClear = false;
   const scene = new THREE.Scene(), overlay = new THREE.Scene();
@@ -2105,19 +2239,28 @@ function createSpaceEngine(opts) {
   // a hollow shell. Drawn first, in its own scene, so cells, dots and cards
   // always sit on top. The proxy is a box's back faces: one fragment per pixel.
   const gamutScene = new THREE.Scene();
-  const gamutU = { uSep: shared.uSep, uAlpha: { value: 0 }, uCur: { value: new THREE.Vector3(0.65, 0.12, 0) }, uRange: { value: new THREE.Vector3(-1, -1, -1) } };
+  const gamutU = { uSep: shared.uSep, uAlpha: { value: 0 }, uCur: { value: new THREE.Vector3(0.65, 0.12, 0) }, uRange: { value: new THREE.Vector3(-1, -1, -1) },
+    uToGamut: { value: new THREE.Matrix3() }, uToCanvas: { value: new THREE.Matrix3() }, uRmax: { value: 0.325 * CW } };
+  // linear sRGB → working gamut, and working gamut → canvas (both linear)
+  const syncGamutSpace = () => {
+    const P = DisplayGamut.M.p3, I = [1, 0, 0, 0, 1, 0, 0, 0, 1], p3 = DisplayGamut.id === "p3";
+    gamutU.uToGamut.value.set(...(p3 ? P : I));
+    gamutU.uToCanvas.value.set(...(!p3 && DisplayGamut.canvasP3 ? P : I));
+    gamutU.uRmax.value = (p3 ? 0.375 : 0.325) * CW;
+  };
+  syncGamutSpace();
   {
-    const BX = AMAX * CW + 0.1, BY = LW / 2 + 0.05;
+    const BX = 0.4 * CW + 0.1, BY = LW / 2 + 0.05;   // room for any working gamut
     const f = (x) => x.toFixed(4);
     const vert = `uniform float uSep; varying vec3 vW;
       void main() { vec4 w = modelMatrix * vec4(position * uSep, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`;
     const frag = `precision highp float;
-      uniform float uAlpha, uSep; uniform vec3 uCur, uRange; varying vec3 vW;
+      uniform float uAlpha, uSep, uRmax; uniform vec3 uCur, uRange; uniform mat3 uToGamut, uToCanvas; varying vec3 vW;
       vec3 linRgb(vec3 p) {
         float L = p.y / ${f(LW)} + ${f(LC)}, A = -p.z / ${f(CW)}, B = p.x / ${f(CW)};
         float l = L + 0.3963377774 * A + 0.2158037573 * B, m = L - 0.1055613458 * A - 0.0638541728 * B, s = L - 0.0894841775 * A - 1.291485548 * B;
         l = l * l * l; m = m * m * m; s = s * s * s;
-        return vec3(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+        return uToGamut * vec3(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
                     -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
                     -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s);
       }
@@ -2194,13 +2337,13 @@ function createSpaceEngine(opts) {
           clipHalf(o, d, -vec2(cos(h2), sin(h2)), t0, t1);
         }
         // and always the gamut's own bounding cylinder, so the steps stay fine
-        { float a, b; if (!cyl(o, d, ${f(0.325 * CW)}, a, b)) discard; t0 = max(t0, a); t1 = min(t1, b); }
+        { float a, b; if (!cyl(o, d, uRmax, a, b)) discard; t0 = max(t0, a); t1 = min(t1, b); }
         if (t1 <= t0) discard;
         float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
         float t = ib > ia ? march(o, d, t0, min(t1, ia), jit) : march(o, d, t0, t1, jit);
         if (t < 0.0 && ib > ia) t = march(o, d, max(t0, ib), t1, jit);
         if (t < 0.0) discard;
-        vec3 c = clamp(linRgb(o + d * t), 0.0, 1.0);
+        vec3 c = clamp(uToCanvas * clamp(linRgb(o + d * t), 0.0, 1.0), 0.0, 1.0);
         c = mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
         gl_FragColor = vec4(c, uAlpha);
       }`;
@@ -2647,7 +2790,7 @@ function createSpaceEngine(opts) {
     renderer.render(overlay, camera);
     const cv = slot["3d"];
     if (cv && cv.width === glCanvas.width && cv.height === glCanvas.height) {
-      const ctx = cv.getContext("2d");
+      const ctx = cv.getContext("2d", spaceCanvasOpts());
       ctx.clearRect(0, 0, cv.width, cv.height);
       ctx.drawImage(glCanvas, 0, 0);
       drawLabels3D(ctx);
@@ -2687,7 +2830,7 @@ function createSpaceEngine(opts) {
     for (let i = 0; i < N; i++) {
       const a = list[i], w = spaceToWorld(a.L, a.C, a.H);
       px[i] = w[0]; py[i] = w[1]; pz[i] = w[2];
-      const c = spaceHexToRgb(a.hex);
+      const c = spaceDisplayRgb(a.hex, a.L, a.C, a.H);
       cols[i * 3] = c[0]; cols[i * 3 + 1] = c[1]; cols[i * 3 + 2] = c[2];
     }
     grid = spaceMakeGrid(px, py, pz, N);
@@ -3017,7 +3160,7 @@ function createSpaceEngine(opts) {
     if (dotGeo.attributes.position) dotGeo.dispose();   // release the previous GPU buffers
     mVis = new Float32Array(n).fill(1); mVisAll = false;
     M.forEach((m, i) => {
-      const w = spaceToWorld(m.L, m.C, m.H), c = spaceHexToRgb(m.hex);
+      const w = spaceToWorld(m.L, m.C, m.H), c = spaceDisplayRgb(m.hex, m.L, m.C, m.H);
       pos.set(w, i * 3); col.set(c, i * 3); kind[i] = m.kind === "brand" ? 1 : 0;
     });
     dotGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
@@ -3154,6 +3297,7 @@ function createSpaceEngine(opts) {
   const listeners = [];
   const on = (el, ev, fn, o) => { el.addEventListener(ev, fn, o); listeners.push([el, ev, fn, o]); };
   const handlers = { "3d": {}, l: {}, c: {}, h: {} };   // view → event → handler
+  const TOUCH_HOLD = 120;   // ms a touch waits for a second finger before acting
   {
     const ptrs = new Map();
     let mode = null, lx = 0, ly = 0, pinch = null, down = null;
@@ -3171,11 +3315,14 @@ function createSpaceEngine(opts) {
       if (ptrs.size === 2) {
         const [a, b] = [...ptrs.values()];
         pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] };
+        // undo the first finger's little start of a turn, and never pick
+        if (down && down.orb) { orb.theta = down.orb[0]; orb.phi = down.orb[1]; applyOrbit(); }
         mode = "pinch"; down = null; return;
       }
+      if (ptrs.size > 2 || mode === "after") return;
       mode = e.button === 1 || e.button === 2 || e.shiftKey ? "pan" : "rotate";
       lx = e.clientX; ly = e.clientY;
-      down = { x: e.clientX, y: e.clientY, t: performance.now() };
+      down = { x: e.clientX, y: e.clientY, t: performance.now(), touch: e.pointerType === "touch", orb: [orb.theta, orb.phi] };
     });
     handlers["3d"]["pointermove"] = ((e) => {
       if (!ptrs.has(e.pointerId)) {
@@ -3193,23 +3340,27 @@ function createSpaceEngine(opts) {
         pan(m[0] - pinch.m[0], m[1] - pinch.m[1]);
         pinch = { d, m }; placeMarker(); applyOrbit(); return;
       }
+      if (mode !== "pan" && mode !== "rotate") return;
       const dx = e.clientX - lx, dy = e.clientY - ly;
       lx = e.clientX; ly = e.clientY;
       if (mode === "pan") pan(dx, dy);
       else if (mode === "rotate") { orb.theta += dx * 0.006; orb.phi -= dy * 0.006; }
       applyOrbit();
     });
-    const up = (e) => {
+    const up = (e, cancelled) => {
       ptrs.delete(e.pointerId);
-      if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 5 && performance.now() - down.t < 400) {
+      // a tap picks: one pointer, barely moved, quickly lifted, and (for touch)
+      // no other finger joined it
+      if (!cancelled && down && !ptrs.size && Math.hypot(e.clientX - down.x, e.clientY - down.y) < (down.touch ? 10 : 5) && performance.now() - down.t < 400) {
         const hit = pick3D(e.clientX, e.clientY);
         if (hit) onPick(hit);
       }
       down = null;
-      if (!ptrs.size) mode = null;
+      if (mode === "pinch" || mode === "after") mode = ptrs.size ? "after" : null;   // the finger left after a pinch does nothing
+      else if (!ptrs.size) mode = null;
     };
-    handlers["3d"]["pointerup"] = (up);
-    handlers["3d"]["pointercancel"] = (up);
+    handlers["3d"]["pointerup"] = ((e) => up(e, false));
+    handlers["3d"]["pointercancel"] = ((e) => up(e, true));
     handlers["3d"]["pointerleave"] = (() => onHover(null));
     handlers["3d"]["wheel"] = ((e) => {
       e.preventDefault();
@@ -3243,7 +3394,7 @@ function createSpaceEngine(opts) {
     const W = Math.max(40, Math.round(v.cv.clientWidth)), H = Math.max(40, Math.round(v.cv.clientHeight));
     if (v.cv.width === W && v.cv.height === H && v.img) return false;
     v.cv.width = W; v.cv.height = H;
-    v.ctx = v.cv.getContext("2d");
+    v.ctx = v.cv.getContext("2d", spaceCanvasOpts());
     v.img = v.ctx.createImageData(W, H);
     v.ids = new Int32Array(W * H); v.dim = new Float32Array(W * H); v.gc = new Uint8Array(W * H * 4);
     if (!v.dom) v.user = false;
@@ -3329,7 +3480,8 @@ function createSpaceEngine(opts) {
     }
     out[0] = C * Math.sin(h) * CW; out[1] = (L - LC) * LW; out[2] = -C * Math.cos(h) * CW; return true;
   };
-  const MAX_C = 0.33;   // no sRGB colour has more chroma
+  // no colour in the working gamut has more chroma (sRGB 0.33, Display P3 0.37)
+  const maxC = () => (DisplayGamut.id === "p3" ? 0.375 : 0.33);
   // The bin a section pixel shows: the cell on the plane, or else the nearest
   // layer within the view's depth. Returns [id, depth fraction].
   // The in-gamut point a section pixel shows: on the plane, or else the
@@ -3339,6 +3491,7 @@ function createSpaceEngine(opts) {
     if (mappingAt(k, u, w, 0, P) && spaceInGamutStrict(P[0], P[1], P[2])) return 0;
     const D = depthOf(k);
     if (D <= 0) return -1;
+    const MAX_C = maxC();
     if ((k === "l" && Math.hypot(u, w) > MAX_C) || (k === "h" && u > MAX_C)) return -1;
     const n = Math.min(40, Math.ceil(D / ({ l: 0.01, c: 0.006, h: 1.5 })[k])), st = D / n;
     for (let j = 1; j <= n; j++)
@@ -3396,7 +3549,7 @@ function createSpaceEngine(opts) {
   // Turn classified pixels into colours, then draw the plane guides on top.
   const present = (k) => {
     const v = SV[k], W = v.cv.width, H = v.cv.height, d = v.img.data, ids = v.ids, dim = v.dim, gc = v.gc, al = S.alpha[k], ga = S.gamut[k];
-    const bg = S.bg, empty = S.dark ? [bg[0] * 0.75, bg[1] * 0.75, bg[2] * 0.75] : [bg[0] * 0.94, bg[1] * 0.94, bg[2] * 0.94];
+    const bg = S.bg, empty = spaceSrgbToCanvas(S.dark ? [bg[0] * 0.75, bg[1] * 0.75, bg[2] * 0.75] : [bg[0] * 0.94, bg[1] * 0.94, bg[2] * 0.94]);
     for (let i = 0, n = W * H; i < n; i++) {
       const id = ids[i], o = i * 4;
       d[o + 3] = 255;
@@ -3499,8 +3652,8 @@ function createSpaceEngine(opts) {
     ctx.fillText(t, x, y);
     ctx.restore();
   };
-  const cssRgb = (i, a = 1) => `rgba(${toByte(cols[i * 3])},${toByte(cols[i * 3 + 1])},${toByte(cols[i * 3 + 2])},${a})`;
-  const paperRgb = () => (S.dark ? [0.13, 0.15, 0.13] : [1, 1, 1]);
+  const cssRgb = (i, a = 1) => spaceCss([cols[i * 3], cols[i * 3 + 1], cols[i * 3 + 2]], a);
+  const paperRgb = () => spaceSrgbToCanvas(S.dark ? [0.13, 0.15, 0.13] : [1, 1, 1]);
   // A swatch card on a 2D canvas: square swatch centred on (x, y), strip below.
   const drawCard = (ctx, x, y, w, i, alpha, sel) =>
     drawCardRGB(ctx, x, y, w, [cols[i * 3], cols[i * 3 + 1], cols[i * 3 + 2]], alpha, sel);
@@ -3511,11 +3664,11 @@ function createSpaceEngine(opts) {
     ctx.save();
     ctx.globalAlpha = alpha;
     roundRectPath(ctx, x0, y0, w, h, rr);
-    ctx.fillStyle = `rgb(${toByte(mix(rgb[0], p[0]))},${toByte(mix(rgb[1], p[1]))},${toByte(mix(rgb[2], p[2]))})`;
+    ctx.fillStyle = spaceCss([mix(rgb[0], p[0]), mix(rgb[1], p[1]), mix(rgb[2], p[2])]);
     ctx.fill();
     ctx.save();
     ctx.clip();
-    ctx.fillStyle = `rgb(${toByte(rgb[0])},${toByte(rgb[1])},${toByte(rgb[2])})`;
+    ctx.fillStyle = spaceCss(rgb);
     ctx.fillRect(x0, y0, w, w);
     ctx.restore();
     ctx.lineWidth = sel ? 2 : 1;
@@ -3536,7 +3689,7 @@ function createSpaceEngine(opts) {
   // hatch, door-profile frame, and its photo faintly over the top two-thirds.
   const grainWob = (seed, n) => ((((Math.sin(seed * 12.9898 + n * 78.233) * 43758.5453) % 1) + 1) % 1) * 6 - 3;
   const drawMarkerCard = (ctx, x, y, w, m, alpha) => {
-    const box = drawCardRGB(ctx, x, y, w, spaceHexToRgb(m.hex), alpha, false);
+    const box = drawCardRGB(ctx, x, y, w, spaceDisplayRgb(m.hex, m.L, m.C, m.H), alpha, false);
     const lk = m.look;
     if (!lk || w < 10) return box;
     const x0 = x - w / 2, y0 = y - w / 2, d = DPR(), ink = lk.light === false ? "255,255,255" : "0,0,0";
@@ -3820,7 +3973,7 @@ function createSpaceEngine(opts) {
         cardText(ctx, markerName(m), mx, my, cw);
         v.mk.push([mx, my, mi, cw]);
       } else {
-        markerShape(ctx, mx, my, m.hex, m.kind === "brand");
+        markerShape(ctx, mx, my, spaceCss(spaceDisplayRgb(m.hex, m.L, m.C, m.H)), m.kind === "brand");
         v.mk.push([mx, my, mi]);
       }
     });
@@ -3911,7 +4064,7 @@ function createSpaceEngine(opts) {
   };
   Object.keys(SV).forEach((k) => {
     const v = SV[k], ptrs = new Map();
-    let mode = null, last = null, pinch = null;
+    let mode = null, last = null, pinch = null, pend = null;
     const rel = (e) => { const r = v.cv.getBoundingClientRect(); return [((e.clientX - r.left) * v.cv.width) / r.width, ((e.clientY - r.top) * v.cv.height) / r.height]; };
     // While a section is centred on the cursor, the wheel zooms about the
     // cursor so it stays centred; once panned away, about the pointer.
@@ -3936,28 +4089,50 @@ function createSpaceEngine(opts) {
       e.currentTarget.setPointerCapture(e.pointerId);
       ptrs.set(e.pointerId, rel(e));
       onHover(null);
-      if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }; mode = "pinch"; return; }
-      mode = e.button === 1 || e.button === 2 || e.shiftKey ? "pan" : "cursor";
-      last = rel(e);
-      // Picking what's drawn, on the plane or seen through its depth: a pin or
-      // an anchor's dot/card under the pointer snaps the cursor to it (and
-      // selects it); a bin or gamut-solid pixel showing a colour off the plane
-      // jumps to that colour. None of these start a drag.
-      if (mode === "cursor") {
-        const m = markerAt(k, last[0], last[1], e.pointerType === "mouse" ? 9 : 16);
-        if (m) { mode = "picked"; onPick(m); return; }
-        if (S.modes[k] !== "bins") {
-          const id = dotAt(k, last[0], last[1], e.pointerType === "mouse" ? 0 : 6);
-          if (id >= 0 && S.anchors[id]) { mode = "picked"; onPick(S.anchors[id]); return; }
-        }
-        if (S.modes[k] === "bins" || S.gamut[k] > 0) {
-          const P = [0, 0, 0], t = gamutAt(k, px2u(v, last[0]), py2v(v, last[1]), P);
-          if (t > 0) { mode = "picked"; moveCursor(spaceWorldToLCH(P[0], P[1], P[2])); return; }
-        }
+      if (ptrs.size === 2) {
+        // a second finger: this is a pinch or a two-finger pan, never a pick —
+        // whatever the first finger was about to do is dropped
+        if (pend) { clearTimeout(pend.timer); pend = null; }
+        const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }; mode = "pinch"; return;
       }
-      if (mode === "cursor") dragView = k;
-      if (mode === "cursor") moveCursor(setFromView[k](px2u(v, last[0]), py2v(v, last[1])));
+      if (ptrs.size > 2) return;
+      if (mode === "after") return;   // a finger left over from a pinch does nothing
+      last = rel(e);
+      if (e.button === 1 || e.button === 2 || e.shiftKey) { mode = "pan"; return; }
+      // A touch waits a moment before it acts, so the first finger of a
+      // two-finger gesture can't select or move the cursor.
+      if (e.pointerType === "touch") {
+        mode = "pending";
+        pend = { p: last, t: performance.now(), timer: setTimeout(() => { if (pend && mode === "pending" && ptrs.size === 1) commit(); }, TOUCH_HOLD) };
+        return;
+      }
+      startCursor(last, e.pointerType);
     });
+    const commit = () => {
+      const q = pend; pend = null;
+      if (!q) return;
+      clearTimeout(q.timer);
+      startCursor(q.p, "touch");
+    };
+    // Picking what's drawn, on the plane or seen through its depth: a pin or
+    // an anchor's dot/card under the pointer snaps the cursor to it (and
+    // selects it); a bin or gamut-solid pixel showing a colour off the plane
+    // jumps to that colour. None of these start a drag.
+    const startCursor = (at, pointerType) => {
+      mode = "cursor";
+      const m = markerAt(k, at[0], at[1], pointerType === "mouse" ? 9 : 16);
+      if (m) { mode = "picked"; onPick(m); return; }
+      if (S.modes[k] !== "bins") {
+        const id = dotAt(k, at[0], at[1], pointerType === "mouse" ? 0 : 6);
+        if (id >= 0 && S.anchors[id]) { mode = "picked"; onPick(S.anchors[id]); return; }
+      }
+      if (S.modes[k] === "bins" || S.gamut[k] > 0) {
+        const P = [0, 0, 0], t = gamutAt(k, px2u(v, at[0]), py2v(v, at[1]), P);
+        if (t > 0) { mode = "picked"; moveCursor(spaceWorldToLCH(P[0], P[1], P[2])); return; }
+      }
+      dragView = k;
+      moveCursor(setFromView[k](px2u(v, at[0]), py2v(v, at[1])));
+    };
     handlers[k]["pointermove"] = ((e) => {
       if (!ptrs.has(e.pointerId)) {
         if (e.pointerType === "mouse") {
@@ -3975,16 +4150,25 @@ function createSpaceEngine(opts) {
         const [a, b] = [...ptrs.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]), m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
         panV(m[0] - pinch.m[0], m[1] - pinch.m[1]); zoom(m[0], m[1], pinch.d / d, true); pinch = { d, m }; return;
       }
+      if (mode === "pending") {
+        // a single finger that clearly travels, after the moment a second one
+        // would have landed, is a cursor drag from where it went down
+        if (pend && performance.now() - pend.t > TOUCH_HOLD * 0.5 && Math.hypot(p[0] - pend.p[0], p[1] - pend.p[1]) > 10 * DPR()) commit();
+        if (mode !== "cursor") return;
+      }
       if (mode === "pan") { panV(p[0] - last[0], p[1] - last[1]); last = p; }
       else if (mode === "cursor") moveCursor(setFromView[k](px2u(v, p[0]), py2v(v, p[1])));
     });
-    const up = (e) => {
+    const up = (e, cancelled) => {
       ptrs.delete(e.pointerId);
-      if (!ptrs.size || mode === "pinch") mode = null;
+      // a quick tap acts on lift
+      if (mode === "pending") { if (!cancelled && !ptrs.size) commit(); else { if (pend) clearTimeout(pend.timer); pend = null; } }
+      if (mode === "pinch" || mode === "after") mode = ptrs.size ? "after" : null;
+      else if (!ptrs.size) mode = null;
       if (!ptrs.size && dragView === k) { dragView = null; followCursor(k); }
     };
-    handlers[k]["pointerup"] = (up);
-    handlers[k]["pointercancel"] = (up);
+    handlers[k]["pointerup"] = ((e) => up(e, false));
+    handlers[k]["pointercancel"] = ((e) => up(e, true));
     handlers[k]["pointerleave"] = (() => onHover(null));
     handlers[k]["wheel"] = ((e) => { e.preventDefault(); const [x, y] = rel(e); zoom(x, y, Math.exp(e.deltaY * 0.0015)); });
     handlers[k]["dblclick"] = (() => api.resetView(k));
@@ -4110,12 +4294,13 @@ function createSpaceEngine(opts) {
     setTheme({ dark, fg, bg }) {
       S.dark = dark; S.fg = fg; S.bg = bg;
       S.guide = dark ? { l: "#ffd27a", c: "#7ad7ff", h: "#ff8ad8" } : { l: "#b7791f", c: "#0e7490", h: "#be185d" };
-      const fgc = new THREE.Color(fg[0], fg[1], fg[2]);
+      const fg2 = spaceSrgbToCanvas(fg), fgc = new THREE.Color(fg2[0], fg2[1], fg2[2]);
       rimMat.uniforms.uColor.value.copy(fgc);
       dotMat.uniforms.uRing.value.copy(fgc);
       markerMats.forEach((m) => m.color.copy(fgc));
       tetherMat.color.copy(fgc);
-      plL.material.color.set(S.guide.l); plC.material.color.set(S.guide.c); plH.material.color.set(S.guide.h);
+      const guide3 = (hex) => { const c = spaceSrgbToCanvas(spaceHexToRgb(hex)); return new THREE.Color(c[0], c[1], c[2]); };
+      plL.material.color.copy(guide3(S.guide.l)); plC.material.color.copy(guide3(S.guide.c)); plH.material.color.copy(guide3(S.guide.h));
       axis.material.color.copy(fgc);
       const pp = paperRgb();
       cardMat.uniforms.uPaper.value.setRGB(pp[0], pp[1], pp[2]);
@@ -4139,10 +4324,20 @@ function createSpaceEngine(opts) {
       resize(); scheduleSections(); requestRender();
     },
     resetView(k) { const v = SV[k]; v.zoomTo = 0; fitContain(v); followCursor(k, true); },
+    // The screen's gamut changed (another monitor, or the sRGB setting): the
+    // solid, the cells' reach and every colour are redone for it.
+    refreshGamut() {
+      syncGamutSpace();
+      gzKey = null;
+      buildCells();
+      setMarkerGeometry();
+      scheduleSections(); requestRender();
+    },
     resetCamera() { Object.assign(orb, { theta: 0.75, phi: 1.12, r: 14, ox: 0, oy: 0, oz: 0, rGoal: null }); placeMarker(); applyOrbit(); },
     resize,
     dispose() {
       disposed = true; buildToken++;
+      unsubGamut();
       cancelAnimationFrame(rafId); cancelAnimationFrame(secRaf); clearTimeout(secTimer); sharpJob++;
       ro.disconnect();
       listeners.forEach(([el, ev, fn, o]) => el.removeEventListener(ev, fn, o));
@@ -4154,6 +4349,7 @@ function createSpaceEngine(opts) {
       renderer.forceContextLoss();
     },
   };
+  const unsubGamut = DisplayGamut.subscribe(() => api.refreshGamut());
   slotCanvases.forEach((el) => (el.style.cursor = viewOf(el) === "3d" ? "grab" : "crosshair"));
   resize();
   applyOrbit();
@@ -4269,6 +4465,34 @@ const tolSlider = (a, v, onPatch, depth) => {
     onChange: (x) => onPatch({ tol: { [a]: x } }),
   });
 };
+// Which gamut the solid, the cells and the out-of-gamut warnings follow: the
+// screen's own (detected), or held to sRGB.
+const useDisplayGamut = () => {
+  const [, setTick] = useState(0);
+  useEffect(() => DisplayGamut.subscribe(() => setTick((t) => t + 1)), []);
+  return DisplayGamut;
+};
+const SpaceGamutSetting = () => {
+  const G = useDisplayGamut();
+  const note =
+    G.pref === "srgb" ? `Held to sRGB: colours every screen can show. This screen can show ${G.screenLabel}.`
+      : G.screen === "srgb" ? "This screen shows sRGB."
+        : G.id === "p3" ? `Detected a ${G.screenLabel} screen: the solid, cells and warnings use Display P3.`
+          : `This screen is ${G.screenLabel}, but this browser only draws sRGB here.`;
+  return React.createElement(
+    "div",
+    { className: "flex flex-col gap-2 pt-2 border-t border-slate-200 dark:border-neutral-800" },
+    React.createElement(
+      "div",
+      { className: "flex items-center justify-between gap-2" },
+      React.createElement("span", { className: "text-[9px] font-bold uppercase tracking-widest text-slate-400" }, "Gamut"),
+      React.createElement("span", { className: "text-[10px] font-mono text-slate-600 dark:text-neutral-300", "data-gamut": G.id }, G.label),
+    ),
+    (G.screen !== "srgb" || G.pref === "srgb") &&
+      React.createElement(SpaceSwitch, { on: G.pref === "srgb", onChange: (on) => G.setPref(on ? "srgb" : "auto"), label: "Hold to sRGB" }),
+    React.createElement("span", { className: "text-[10px] leading-snug text-slate-400" }, note),
+  );
+};
 const SpaceSettings = ({ k, v, preset, sync, onPreset, onPatch, onSync, onReset }) =>
   React.createElement(
     "div",
@@ -4294,6 +4518,7 @@ const SpaceSettings = ({ k, v, preset, sync, onPreset, onPatch, onSync, onReset 
       label: "Gamut solid", value: v.gamut || 0, min: 0, max: 1, step: 0.01, format: (x) => (x <= 0 ? "off" : `${Math.round(x * 100)}%`),
       onChange: (x) => onPatch({ gamut: x }),
     }),
+    React.createElement(SpaceGamutSetting),
     // A section's own axis is its depth: 0 shows only what crosses the plane,
     // more brings in the colours on either side, seen straight on, up to all
     // of them. The other two narrow what's shown around the cursor.
@@ -4913,7 +5138,7 @@ const ViewSpaceInner = ({
           },
           React.createElement("span", {
             className: "w-7 h-7 rounded-md border border-black/10 dark:border-white/10 shrink-0",
-            style: { background: hover.item.hex },
+            style: { background: DisplayGamut.css(hover.item.L, hover.item.C, hover.item.H, hover.item.hex) },
           }),
           React.createElement(
             "div",
@@ -6983,6 +7208,7 @@ const ViewportSwatches = ({
   onRemoveItem,
   onEditItem,
 }) => {
+  useDisplayGamut();
   const [sortBy, setSortBy] = useState(dim1);
   const [sortAsc, setSortAsc] = useState(true);
   const [fullscreenImage, setFullscreenImage] = useState(null);
@@ -7060,7 +7286,7 @@ const ViewportSwatches = ({
         _inGamut:
           item.inSrgb !== void 0
             ? item.inSrgb
-            : new Color("oklch", [item.L, item.C, item.H]).inGamut("srgb"),
+            : new Color("oklch", [item.L, item.C, item.H]).inGamut(DisplayGamut.space),
       }));
     if (externalSort) return withGamut(filtered);
     return filtered
@@ -7076,7 +7302,7 @@ const ViewportSwatches = ({
         _inGamut:
           item.inSrgb !== void 0
             ? item.inSrgb
-            : new Color("oklch", [item.L, item.C, item.H]).inGamut("srgb"),
+            : new Color("oklch", [item.L, item.C, item.H]).inGamut(DisplayGamut.space),
       }));
   }, [
     items,
@@ -7085,6 +7311,7 @@ const ViewportSwatches = ({
     viewportSearchQuery,
     viewportTagFilter,
     externalSort,
+    DisplayGamut.id,
   ]);
   // Full-size photo, opened from the eye button in any layout.
   const imagePreview =
@@ -7212,7 +7439,7 @@ const ViewportSwatches = ({
                             ),
                           className: `group rounded cursor-pointer transition-all relative ${activeHex === item.hex ? "ring-4 ring-sky-500 z-20 scale-110" : "z-10"} ${selectedIds?.includes(item.id) ? "ring-2 ring-sky-500 shadow-md" : "hover:ring-2 hover:ring-sky-500"}`,
                           style: {
-                            backgroundColor: item.hex,
+                            backgroundColor: DisplayGamut.css(item.L, item.C, item.H, item.hex),
                             width: `${baseMatrixSize * swatchZoom}px`,
                             height: `${baseMatrixSize * swatchZoom}px`,
                           },
@@ -7514,7 +7741,7 @@ ${item.erpCode}`,
                     {
                       className: "w-8 h-8 rounded relative shadow-sm overflow-hidden",
                       style: {
-                        backgroundColor: item.hex,
+                        backgroundColor: DisplayGamut.css(item.L, item.C, item.H, item.hex),
                       },
                     },
                     React.createElement(SwatchTreatment, { item, size: 32 }),
@@ -7737,7 +7964,7 @@ ${item.erpCode}`,
             {
               className: `aspect-square rounded-2xl relative overflow-hidden transition-all group-hover:scale-[1.02] group-hover:shadow-md ${activeHex === item.hex ? "ring-4 ring-sky-500" : ""} ${selectedIds?.includes(item.id) ? "ring-2 ring-sky-500 shadow-md" : "hover:ring-2 hover:ring-sky-500"}`,
               style: {
-                backgroundColor: item.hex,
+                backgroundColor: DisplayGamut.css(item.L, item.C, item.H, item.hex),
                 width: "100%",
               },
             },
@@ -7941,7 +8168,7 @@ ${item.erpCode}`,
                         "select",
                         {
                           key: f.key,
-                          value: item[f.key] || "-",
+                          value: specOption(f.options, item[f.key]) || "-",
                           title: f.label,
                           onClick: (e) => e.stopPropagation(),
                           onChange: (e) => {
@@ -7952,7 +8179,7 @@ ${item.erpCode}`,
                             "w-full bg-transparent border border-slate-200 dark:border-neutral-700 rounded px-0.5 text-center cursor-pointer hover:border-slate-400",
                           style: { fontSize: "inherit" },
                         },
-                        f.options.map((opt) =>
+                        specOptions(f.options, item[f.key]).map((opt) =>
                           React.createElement("option", { key: opt, value: opt }, opt),
                         ),
                       )
@@ -8629,10 +8856,10 @@ const ViewPinsInner = ({
                   }),
                 className:
                   "relative w-14 h-14 rounded-lg shadow-sm cursor-pointer border border-slate-200 dark:border-neutral-700 hover:ring-2 hover:ring-sky-500 transition-all flex-shrink-0 overflow-hidden ml-6",
-                style: { backgroundColor: item.color },
+                style: { backgroundColor: DisplayGamut.css(item.L, item.C, item.H, item.color) },
               },
               React.createElement(SwatchTreatment, { item, size: 56 }),
-              !new Color("oklch", [item.L, item.C, item.H]).inGamut("srgb") &&
+              !new Color("oklch", [item.L, item.C, item.H]).inGamut(DisplayGamut.space) &&
                 React.createElement("div", {
                   className: "absolute inset-0 pointer-events-none",
                   style: {
@@ -9825,6 +10052,9 @@ function getBrandDisplayName(key) {
     pionite: "Pionite",
     swissKrono: "Swiss Krono",
     munsell: "Munsell",
+    pantoneFhiTcx: "Pantone FHI TCX",
+    pantoneCmykCoated: "Pantone CMYK Coated",
+    pantoneCmykUncoated: "Pantone CMYK Uncoated",
     unknown: "Unknown",
   };
   if (displayNames[key]) return displayNames[key];
@@ -10957,6 +11187,7 @@ const GitHubSyncModal = ({ config, setConfig, status, onSync, onPull, onClose })
 };
 
 const App = () => {
+  useDisplayGamut();
   const [theme, setTheme] = useState("light");
   const [activeTab, setActiveTab] = useState("db");
   // Retired tabs (old Explore views, adjective/noun grids) open their replacements.
@@ -12734,7 +12965,8 @@ const App = () => {
                 color: item.hex || "#000000",
                 image: item.image || null,
                 displayName: customName || item.name,
-                erpCode: brandKey === "REFERENCE" ? "REF" : brandKey,
+                erpCode: brandKey === "REFERENCE" ? "REF"
+                  : `${getBrandDisplayName(brandKey)}${item.erpCode && !/^https?:/i.test(item.erpCode) ? ` · ${item.erpCode}` : ""}`,
                 type: "Commercial Item",
                 note:
                   customNote ||
@@ -13987,7 +14219,7 @@ const App = () => {
   }
   const labValues = `${labCoords[0].toFixed(1)}, ${labCoords[1].toFixed(1)}, ${labCoords[2].toFixed(1)}`;
   const colorGroup = getColorGroup(scrubL, scrubC, scrubH, groupSettings);
-  const isOutOfGamut = !activeColorObj.inGamut("srgb", { epsilon: 0.001 });
+  const isOutOfGamut = !activeColorObj.inGamut(DisplayGamut.space, { epsilon: 0.001 });
   const crosshairHex = activeColorObj
     .clone()
     .toGamut({ space: "srgb" })
@@ -14540,6 +14772,7 @@ const ViewDatabase = ({
   globalTags,
   onOpenAveryModal,
 }) => {
+  useDisplayGamut();
   const dataForUpdates = fullColorData || colorData;
   // Sort now lives in the global bar; this stays as the fallback for the
   // Database Manager modal, which renders outside that bar.
@@ -14641,7 +14874,7 @@ const ViewDatabase = ({
       });
     });
     return items;
-  }, [colorData, dataForUpdates]);
+  }, [colorData, dataForUpdates, DisplayGamut.id]);
   const allBrands = useMemo(
     () => Array.from(new Set(allDbItems.map((i) => i.brand))).sort(),
     [allDbItems],
@@ -15283,6 +15516,12 @@ const ViewDatabase = ({
       hex: editingItem.hex,
       tags: editingItem.tags,
       brand: editingItem.brand,
+      // the material specs edited in the modal (they were dropped on save)
+      sheen: editingItem.sheen ?? oldItem.sheen ?? "",
+      doorProfile: editingItem.doorProfile ?? oldItem.doorProfile ?? "",
+      visualTexture: editingItem.visualTexture ?? oldItem.visualTexture ?? "",
+      tactileTexture: editingItem.tactileTexture ?? oldItem.tactileTexture ?? "",
+      material: editingItem.material ?? oldItem.material ?? "",
       spectral: editingItem.spectralStr
         ? editingItem.spectralStr.split(",").map(Number)
         : oldItem.spectral,
@@ -15843,7 +16082,7 @@ const ViewDatabase = ({
                 {
                   className: "rounded relative flex-shrink-0",
                   style: {
-                    backgroundColor: item.hex,
+                    backgroundColor: DisplayGamut.css(item.L, item.C, item.H, item.hex),
                     width: `${baseListSize * swatchZoom}px`,
                     height: `${baseListSize * swatchZoom}px`,
                   },
@@ -16136,7 +16375,7 @@ const ViewDatabase = ({
                       {
                         className: "w-8 h-8 rounded relative shadow-sm overflow-hidden",
                         style: {
-                          backgroundColor: item.hex,
+                          backgroundColor: DisplayGamut.css(item.L, item.C, item.H, item.hex),
                         },
                       },
                       React.createElement(SwatchTreatment, { item, size: 32 }),
@@ -16189,12 +16428,12 @@ const ViewDatabase = ({
                     React.createElement(
                       "select",
                       {
-                        value: item.sheen || "",
+                        value: specOption(LABEL_OPTIONS.sheen, item.sheen),
                         onChange: (e) => handleInlineMetadataEdit(item, "sheen", e.target.value),
                         onClick: (e) => e.stopPropagation(),
                         className: "w-20 bg-transparent text-[9px] outline-none cursor-pointer"
                       },
-                      LABEL_OPTIONS.sheen.map((opt) =>
+                      specOptions(LABEL_OPTIONS.sheen, item.sheen).map((opt) =>
                         React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)
                       )
                     )
@@ -16205,12 +16444,12 @@ const ViewDatabase = ({
                     React.createElement(
                       "select",
                       {
-                        value: item.doorProfile || "",
+                        value: specOption(LABEL_OPTIONS.doorProfile, item.doorProfile),
                         onChange: (e) => handleInlineMetadataEdit(item, "doorProfile", e.target.value),
                         onClick: (e) => e.stopPropagation(),
                         className: "w-20 bg-transparent text-[9px] outline-none cursor-pointer"
                       },
-                      LABEL_OPTIONS.doorProfile.map((opt) =>
+                      specOptions(LABEL_OPTIONS.doorProfile, item.doorProfile).map((opt) =>
                         React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)
                       )
                     )
@@ -16221,12 +16460,12 @@ const ViewDatabase = ({
                     React.createElement(
                       "select",
                       {
-                        value: item.visualTexture || "",
+                        value: specOption(LABEL_OPTIONS.visualPattern, item.visualTexture),
                         onChange: (e) => handleInlineMetadataEdit(item, "visualTexture", e.target.value),
                         onClick: (e) => e.stopPropagation(),
                         className: "w-20 bg-transparent text-[9px] outline-none cursor-pointer"
                       },
-                      LABEL_OPTIONS.visualPattern.map((opt) =>
+                      specOptions(LABEL_OPTIONS.visualPattern, item.visualTexture).map((opt) =>
                         React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)
                       )
                     )
@@ -16237,12 +16476,12 @@ const ViewDatabase = ({
                     React.createElement(
                       "select",
                       {
-                        value: item.tactileTexture || "",
+                        value: specOption(LABEL_OPTIONS.tactileTexture, item.tactileTexture),
                         onChange: (e) => handleInlineMetadataEdit(item, "tactileTexture", e.target.value),
                         onClick: (e) => e.stopPropagation(),
                         className: "w-20 bg-transparent text-[9px] outline-none cursor-pointer"
                       },
-                      LABEL_OPTIONS.tactileTexture.map((opt) =>
+                      specOptions(LABEL_OPTIONS.tactileTexture, item.tactileTexture).map((opt) =>
                         React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)
                       )
                     )
@@ -16253,12 +16492,12 @@ const ViewDatabase = ({
                     React.createElement(
                       "select",
                       {
-                        value: item.material || "",
+                        value: specOption(LABEL_OPTIONS.material, item.material),
                         onChange: (e) => handleInlineMetadataEdit(item, "material", e.target.value),
                         onClick: (e) => e.stopPropagation(),
                         className: "w-20 bg-transparent text-[9px] outline-none cursor-pointer"
                       },
-                      LABEL_OPTIONS.material.map((opt) =>
+                      specOptions(LABEL_OPTIONS.material, item.material).map((opt) =>
                         React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)
                       )
                     )
@@ -16363,7 +16602,7 @@ const ViewDatabase = ({
                 {
                   className: `aspect-square relative flex items-center justify-center overflow-hidden transition-all text-[0px] rounded-xl group-hover:scale-[1.05] group-hover:shadow-md`,
                   style: {
-                    backgroundColor: item.hex,
+                    backgroundColor: DisplayGamut.css(item.L, item.C, item.H, item.hex),
                     width: "100%",
                   },
                 },
@@ -17007,10 +17246,10 @@ const ViewDatabase = ({
                       field.label
                     ),
                     React.createElement("select", {
-                      value: editingItem[field.key] || "",
+                      value: specOption(field.options, editingItem[field.key]),
                       onChange: (e) => setEditingItem({ ...editingItem, [field.key]: e.target.value }),
                       className: "w-full bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs text-slate-900 dark:text-white outline-none cursor-pointer"
-                    }, field.options.map(opt => React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)))
+                    }, specOptions(field.options, editingItem[field.key]).map(opt => React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)))
                   )
                 )
               ),
@@ -18228,7 +18467,7 @@ const AppUI = ({
                 {
                   className:
                     "h-44 w-full relative rounded-2xl shadow-inner border border-black/5 dark:border-white/5 overflow-hidden transition-colors duration-300",
-                  style: { backgroundColor: crosshairHex },
+                  style: { backgroundColor: DisplayGamut.css(scrubL, scrubC, scrubH, crosshairHex) },
                 },
                 crosshair?.activeCommercial &&
                   (() => {
@@ -18271,7 +18510,7 @@ const AppUI = ({
                         className:
                           "mt-1 inline-block px-1.5 py-0.5 bg-red-500/90 text-white text-[8px] font-bold uppercase tracking-widest rounded shadow-sm backdrop-blur-sm border border-red-400/30",
                       },
-                      "Out of sRGB Gamut",
+                      `Out of ${DisplayGamut.label} gamut`,
                     ),
                 ),
                 getGlobalDuplicate(
@@ -18351,7 +18590,7 @@ const AppUI = ({
                       "div",
                       {
                         className: "p-1.5 text-red-500 dark:text-red-400",
-                        title: "Out of sRGB Gamut",
+                        title: `Out of ${DisplayGamut.label} gamut`,
                       },
                       React.createElement(Icon, {
                         name: "alert-triangle",
@@ -19078,7 +19317,7 @@ const AppUI = ({
                               compSlotA.L,
                               compSlotA.C,
                               compSlotA.H,
-                            ]).inGamut("srgb") &&
+                            ]).inGamut(DisplayGamut.space) &&
                               React.createElement("div", {
                                 className:
                                   "absolute inset-0 pointer-events-none",
@@ -19104,11 +19343,11 @@ const AppUI = ({
                               compSlotA.L,
                               compSlotA.C,
                               compSlotA.H,
-                            ]).inGamut("srgb") &&
+                            ]).inGamut(DisplayGamut.space) &&
                               React.createElement(Icon, {
                                 name: "alert-triangle",
                                 className: "w-3 h-3 text-red-500",
-                                title: "Out of sRGB Gamut",
+                                title: `Out of ${DisplayGamut.label} gamut`,
                               }),
                             React.createElement(
                               "span",
@@ -19235,7 +19474,7 @@ const AppUI = ({
                               compSlotB.L,
                               compSlotB.C,
                               compSlotB.H,
-                            ]).inGamut("srgb") &&
+                            ]).inGamut(DisplayGamut.space) &&
                               React.createElement("div", {
                                 className:
                                   "absolute inset-0 pointer-events-none",
@@ -19261,11 +19500,11 @@ const AppUI = ({
                               compSlotB.L,
                               compSlotB.C,
                               compSlotB.H,
-                            ]).inGamut("srgb") &&
+                            ]).inGamut(DisplayGamut.space) &&
                               React.createElement(Icon, {
                                 name: "alert-triangle",
                                 className: "w-3 h-3 text-red-500",
-                                title: "Out of sRGB Gamut",
+                                title: `Out of ${DisplayGamut.label} gamut`,
                               }),
                             React.createElement(
                               "span",
@@ -20102,7 +20341,7 @@ const AppUI = ({
                   maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                 },
               }),
-            !cA.inGamut("srgb") &&
+            !cA.inGamut(DisplayGamut.space) &&
               React.createElement("div", {
                 className: "absolute inset-0 pointer-events-none",
                 style: {
@@ -20123,11 +20362,11 @@ const AppUI = ({
                     "text-6xl font-black mb-4 tracking-tight uppercase drop-shadow-md flex items-center justify-center gap-4",
                 },
                 displayA,
-                !cA.inGamut("srgb") &&
+                !cA.inGamut(DisplayGamut.space) &&
                   React.createElement(Icon, {
                     name: "alert-triangle",
                     className: "w-12 h-12 text-red-500 drop-shadow-md",
-                    title: "Out of sRGB Gamut",
+                    title: `Out of ${DisplayGamut.label} gamut`,
                   }),
               ),
               React.createElement(
@@ -20170,7 +20409,7 @@ const AppUI = ({
                   maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                 },
               }),
-            !cB.inGamut("srgb") &&
+            !cB.inGamut(DisplayGamut.space) &&
               React.createElement("div", {
                 className: "absolute inset-0 pointer-events-none",
                 style: {
@@ -20191,11 +20430,11 @@ const AppUI = ({
                     "text-6xl font-black mb-4 tracking-tight uppercase drop-shadow-md flex items-center justify-center gap-4",
                 },
                 displayB,
-                !cB.inGamut("srgb") &&
+                !cB.inGamut(DisplayGamut.space) &&
                   React.createElement(Icon, {
                     name: "alert-triangle",
                     className: "w-12 h-12 text-red-500 drop-shadow-md",
-                    title: "Out of sRGB Gamut",
+                    title: `Out of ${DisplayGamut.label} gamut`,
                   }),
               ),
               React.createElement(
@@ -20611,7 +20850,7 @@ const AppUI = ({
           {
             className:
               "fixed inset-0 z-[100] flex flex-col items-center justify-end p-20 animate-in fade-in duration-300 cursor-pointer overflow-hidden",
-            style: { backgroundColor: crosshairHex },
+            style: { backgroundColor: DisplayGamut.css(scrubL, scrubC, scrubH, crosshairHex) },
             onClick: () => setShowFullscreenPreview(false),
           },
           previewImage &&
