@@ -78,6 +78,24 @@ const specOptions = (options, value) => {
   const v = specOption(options, value);
   return v && options.indexOf(v) === -1 ? [...options, v] : options;
 };
+// A NOUN row's OKLCH_L: one lightness, or a legacy "min-max" range. "0"
+// stays 0 (it used to become the whole 0–1 axis, splitting black across the
+// neutral scale), and exponent notation is a number, not a range.
+const parseAnchorL = (raw, fallbackL) => {
+  const s = String(raw === undefined || raw === null ? "" : raw).trim();
+  const num = "(\\d*\\.?\\d+(?:[eE][-+]?\\d+)?)";
+  const m = s.match(new RegExp(`^${num}\\s*-\\s*${num}$`));
+  if (m) {
+    const a = parseFloat(m[1]), b = parseFloat(m[2]);
+    if (isFinite(a) && isFinite(b)) return [Math.min(a, b), Math.max(a, b)];
+  }
+  const n = parseFloat(s);
+  if (s !== "" && isFinite(n)) return [n, n];
+  if (fallbackL !== null && fallbackL !== undefined && isFinite(fallbackL)) return [fallbackL, fallbackL];
+  return [0, 1];
+};
+// Numbers written to CSV never in exponent notation (6.5e-7 read back as a range).
+const csvNum = (v) => (typeof v === "number" && isFinite(v) ? String(Math.round(v * 1e6) / 1e6) : v);
 const defaultGroupSettings = {
   lightL: 0.5,
   neutralC: 0.02,
@@ -10053,6 +10071,16 @@ function getBrandDisplayName(key) {
     swissKrono: "Swiss Krono",
     munsell: "Munsell",
     pantoneFhiTcx: "Pantone FHI TCX",
+    isccNbs: "ISCC–NBS",
+    css: "CSS",
+    isccnbsCentroids: "ISCC–NBS Centroids",
+    fs595c: "FS 595C",
+    fs595b: "FS 595B",
+    ralDesignSystem: "RAL Design System",
+    ralClassic: "RAL Classic",
+    ncsStandard: "NCS Standard",
+    werner: "Werner's Nomenclature",
+    ridgway: "Ridgway (1912)",
     pantoneCmykCoated: "Pantone CMYK Coated",
     pantoneCmykUncoated: "Pantone CMYK Uncoated",
     unknown: "Unknown",
@@ -10086,6 +10114,9 @@ function normalizeBrandKey(s) {
     pionite: "pionite",
     "swiss krono": "swissKrono",
     munsell: "munsell",
+    "iscc-nbs": "isccNbs",
+    "iscc nbs": "isccNbs",
+    "iscc–nbs": "isccNbs",
   };
   const lower = s.toLowerCase().trim();
   if (knownBrands[lower]) return knownBrands[lower];
@@ -10210,6 +10241,7 @@ const processCSVData = (
   let pinsAdded2 = 0;
   let hasNeutrals = false;
   let hasHues = false;
+  let groupSettingRows = false;
   let hasOverrides = false;
   parsedData.forEach((rawRow) => {
     const row = normalizeCsvRow(rawRow);
@@ -10241,6 +10273,7 @@ const processCSVData = (
       return;
     }
     if (targetType === "SETTING") {
+      groupSettingRows = true;
       if (!newGroupSettings)
         newGroupSettings = {
           lightL: 0.5,
@@ -10617,18 +10650,7 @@ const processCSVData = (
           .filter(Boolean);
       if (typeof pinsAdded2 !== "undefined") pinsAdded2++;
     } else if (targetType === "NOUN") {
-      const parts = String(row.OKLCH_L || "").split("-");
-      let minL = 0,
-        maxL = 1;
-      if (parts.length === 2) {
-        minL = parseFloat(parts[0]) || 0;
-        maxL = parseFloat(parts[1]) || 1;
-      } else if (parts.length === 1 && parts[0] !== "") {
-        minL = parseFloat(parts[0]) || 0;
-        maxL = parseFloat(parts[0]) || 1;
-      } else if (pL !== null) {
-        minL = maxL = pL;
-      }
+      const [minL, maxL] = parseAnchorL(row.OKLCH_L, pL);
       const C = pC !== null ? pC : 0;
       const H = pH !== null ? pH : 0;
       let id = row.ID;
@@ -10667,15 +10689,7 @@ const processCSVData = (
           ? `anchor-${Math.round(C * 100).toString().padStart(2, "0")}-${Math.round(H).toString().padStart(3, "0")}-${Math.round(pL * 100)}`
           : `noun-${crypto.randomUUID()}`);
       if (targetType === "NOUN_COLUMN") {
-        const parts = (row.OKLCH_L || "").split("-");
-        let minL = 0,
-          maxL = 1;
-        if (parts.length === 2) {
-          minL = parseFloat(parts[0]) || 0;
-          maxL = parseFloat(parts[1]) || 1;
-        } else if (pL !== null) {
-          minL = maxL = pL;
-        }
+        const [minL, maxL] = parseAnchorL(row.OKLCH_L, pL);
         newSavedColors[id] = {
           id,
           type: "nounColumn",
@@ -10718,12 +10732,18 @@ const processCSVData = (
       }
     }
   });
+  if (hasHues && newGroupSettings && (newGroupSettings.hues || []).some((h) => isFinite(h.centerH))) {
+    newGroupSettings.hues = newGroupSettings.hues.map((h) =>
+      isFinite(h.centerH) || !isFinite(h.maxH) ? h : { id: h.id, name: h.name, centerH: h.maxH },
+    );
+  }
   return {
     newColorData,
     newSavedColors,
     newNames,
     newNotes,
     newTags,
+    groupRowsSeen: !!(hasHues || hasNeutrals || hasOverrides || groupSettingRows),
     colorsAdded,
     pinsAdded: pinsAdded2,
     newGroupSettings,
@@ -11004,6 +11024,7 @@ const ghReadDataFiles = async (cfg, branch, dir, onProgress) => {
     (e) =>
       e.type === "blob" &&
       e.path.indexOf(prefix) === 0 &&
+      e.path.slice(prefix.length).indexOf("/") === -1 &&
       e.path.toLowerCase().endsWith(".csv"),
   );
   const out = {};
@@ -11624,6 +11645,7 @@ const App = () => {
     let currentSavedPalettes = savedPalettes || [];
     let currentGroupSettings =
       initialState?.groupSettings || defaultGroupSettings;
+    const rawUrls = {};
     const discoverCSVFiles = async () => {
       try {
         const res = await fetch("./data/");
@@ -11663,15 +11685,15 @@ const App = () => {
             if (repoPath.endsWith("/")) repoPath = repoPath.slice(0, -1);
             const targetPath = repoPath ? `${repoPath}/data` : "data";
             const apiPath = `https://api.github.com/repos/${user}/${repo}/contents/${targetPath}`;
-            const res = await fetch(apiPath);
+            const res = await fetch(apiPath, { cache: "no-store" });
             if (res.ok) {
               const data = await res.json();
               if (Array.isArray(data)) {
-                return data
-                  .filter(
-                    (f) => f.name && f.name.toLowerCase().endsWith(".csv"),
-                  )
-                  .map((f) => f.name);
+                const csvs = data.filter(
+                  (f) => f.name && f.type !== "dir" && f.name.toLowerCase().endsWith(".csv"),
+                );
+                csvs.forEach((f) => { if (f.download_url) rawUrls[f.name] = f.download_url; });
+                return csvs.map((f) => f.name);
               }
             }
           }
@@ -11730,7 +11752,14 @@ const App = () => {
       let baseForFetch = parsedUrl.origin + p;
       const resolvedPath = file.startsWith("data/") ? file : "data/" + file;
       const resolvedUrl = new URL(resolvedPath, baseForFetch).href;
-      const res = await fetch(resolvedUrl);
+      const raw = rawUrls[file.replace(/^data\//, "")];
+      if (raw) {
+        try {
+          const r = await fetch(`${raw}${raw.includes("?") ? "&" : "?"}t=${Date.now()}`, { cache: "no-store" });
+          if (r.ok) return await r.text();
+        } catch (e) {}
+      }
+      const res = await fetch(resolvedUrl, { cache: "no-store" });
       return res.ok ? await res.text() : "";
     };
     const pendingTexts = filesToLoad.map((file) => fetchText(file).catch((e) => e));
@@ -11760,7 +11789,8 @@ const App = () => {
           currentNames = processed.newNames;
           currentNotes = processed.newNotes;
           currentTags = processed.newTags;
-          if (processed.newGroupSettings)
+          if (processed.newGroupSettings && processed.groupRowsSeen &&
+              (file === "anchors.csv" || !filesToLoad.includes("anchors.csv")))
             currentGroupSettings = processed.newGroupSettings;
           if (processed.newSavedPalettes)
             currentSavedPalettes = processed.newSavedPalettes;
@@ -13325,13 +13355,13 @@ const App = () => {
             OKLCH_L:
               sc.minL !== undefined && sc.maxL !== undefined
                 ? sc.minL === sc.maxL
-                  ? sc.minL
-                  : `${sc.minL}-${sc.maxL}`
+                  ? csvNum(sc.minL)
+                  : `${csvNum(sc.minL)}-${csvNum(sc.maxL)}`
                 : sc.L !== undefined
-                  ? sc.L
+                  ? csvNum(sc.L)
                   : "",
-            OKLCH_C: sc.C !== undefined ? sc.C : "",
-            OKLCH_H: sc.H !== undefined ? sc.H : "",
+            OKLCH_C: sc.C !== undefined ? csvNum(sc.C) : "",
+            OKLCH_H: sc.H !== undefined ? csvNum(sc.H) : "",
           });
         } else if (sc.type === "anchor") {
           exportedAnchorIds.add(sc.id);
@@ -13344,9 +13374,9 @@ const App = () => {
             Noun: anchorNoun,
             Note: sc.notes || dictNotes[sc.id] || dictNotes[sc.anchorId] || "",
             Tags: (dictTags[sc.id] || dictTags[sc.anchorId] || []).join(","),
-            OKLCH_L: sc.L !== undefined ? sc.L : "",
-            OKLCH_C: sc.C !== undefined ? sc.C : "",
-            OKLCH_H: sc.H !== undefined ? sc.H : "",
+            OKLCH_L: sc.L !== undefined ? csvNum(sc.L) : "",
+            OKLCH_C: sc.C !== undefined ? csvNum(sc.C) : "",
+            OKLCH_H: sc.H !== undefined ? csvNum(sc.H) : "",
             ...extra,
             HEX:
               sc.color ||
@@ -13381,9 +13411,9 @@ const App = () => {
             Noun_Override: sc.nameOverride || "",
             Note: sc.notes || "",
             Tags: (dictTags[sc.id] || []).join(","),
-            OKLCH_L: sc.L,
-            OKLCH_C: sc.C,
-            OKLCH_H: sc.H,
+            OKLCH_L: csvNum(sc.L),
+            OKLCH_C: csvNum(sc.C),
+            OKLCH_H: csvNum(sc.H),
             ...extra,
             ERP_Code: sc.erpCode,
             Sheen: sc.sheen || "",
@@ -13663,7 +13693,8 @@ const App = () => {
         cNames = processed.newNames;
         cNotes = processed.newNotes;
         cTags = processed.newTags;
-        cGroups = processed.newGroupSettings || cGroups;
+        if (processed.groupRowsSeen && (name === "anchors.csv" || !names.includes("anchors.csv")))
+          cGroups = processed.newGroupSettings || cGroups;
         cPalettes = processed.newSavedPalettes || cPalettes;
         log.push(`${name} — ${parsed.length} rows`);
       });
