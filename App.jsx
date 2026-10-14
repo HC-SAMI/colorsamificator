@@ -10242,6 +10242,7 @@ const processCSVData = (
   let hasNeutrals = false;
   let hasHues = false;
   let groupSettingRows = false;
+  const newTagLibrary = [];
   let hasOverrides = false;
   parsedData.forEach((rawRow) => {
     const row = normalizeCsvRow(rawRow);
@@ -10270,6 +10271,11 @@ const processCSVData = (
           });
         }
       } catch (e2) {}
+      return;
+    }
+    if (targetType === "TAG") {
+      const t = String(row.Noun || row.Tags || "").trim();
+      if (t && !newTagLibrary.some((x) => x.toLowerCase() === t.toLowerCase())) newTagLibrary.push(t);
       return;
     }
     if (targetType === "SETTING") {
@@ -10744,6 +10750,7 @@ const processCSVData = (
     newNotes,
     newTags,
     groupRowsSeen: !!(hasHues || hasNeutrals || hasOverrides || groupSettingRows),
+    newTagLibrary,
     colorsAdded,
     pinsAdded: pinsAdded2,
     newGroupSettings,
@@ -11207,6 +11214,200 @@ const GitHubSyncModal = ({ config, setConfig, status, onSync, onPull, onClose })
   );
 };
 
+// ─── Tag manager ─────────────────────────────────────────────────────────────
+// Every tag in use (anchors, pins, commercial colours) plus tags created ahead
+// of use, in one list: search it, select many, and create, delete, apply or
+// remove them in bulk. The list can run to thousands, so only the first rows
+// that match are drawn; "select all shown" still takes every match.
+const TAG_LIST_CAP = 400;
+const TagManagerModal = ({ tags, targets, onCreate, onDelete, onApply, onRemove, onClose }) => {
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState("name");
+  const [selected, setSelected] = useState(() => new Set());
+  const [draft, setDraft] = useState("");
+  const [target, setTarget] = useState(targets[0] ? targets[0].id : "");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [notice, setNotice] = useState("");
+  const lc = (t) => String(t).toLowerCase().trim();
+  useEffect(() => {
+    const key = (e) => e.key === "Escape" && onClose();
+    document.addEventListener("keydown", key);
+    return () => document.removeEventListener("keydown", key);
+  }, []);
+  useEffect(() => {
+    if (!targets.some((t) => t.id === target) && targets[0]) setTarget(targets[0].id);
+  }, [targets]);
+  const total = (t) => t.anchors + t.pins + t.commercial;
+  const shown = useMemo(() => {
+    const q = lc(query);
+    const list = q ? tags.filter((t) => lc(t.name).includes(q)) : tags.slice();
+    if (sort === "name") list.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    else if (sort === "most") list.sort((a, b) => total(b) - total(a) || a.name.localeCompare(b.name));
+    else list.sort((a, b) => total(a) - total(b) || a.name.localeCompare(b.name));
+    return list;
+  }, [tags, query, sort]);
+  const allShownSelected = shown.length > 0 && shown.every((t) => selected.has(lc(t.name)));
+  const toggle = (name) =>
+    setSelected((prev) => {
+      const n = new Set(prev), k = lc(name);
+      if (n.has(k)) n.delete(k); else n.add(k);
+      return n;
+    });
+  const toggleAllShown = () =>
+    setSelected((prev) => {
+      const n = new Set(prev);
+      if (allShownSelected) shown.forEach((t) => n.delete(lc(t.name)));
+      else shown.forEach((t) => n.add(lc(t.name)));
+      return n;
+    });
+  const selectedNames = tags.filter((t) => selected.has(lc(t.name))).map((t) => t.name);
+  const say = (m) => { setNotice(m); setConfirmDelete(false); };
+  const create = () => {
+    const names = [...new Set(draft.split(/[,\n]/).map((s) => s.trim()).filter(Boolean))];
+    if (!names.length) return;
+    onCreate(names);
+    setDraft("");
+    setSelected((prev) => { const n = new Set(prev); names.forEach((x) => n.add(lc(x))); return n; });
+    say(`Created ${names.length} tag${names.length === 1 ? "" : "s"} and selected ${names.length === 1 ? "it" : "them"}.`);
+  };
+  const tgt = targets.find((t) => t.id === target);
+  const apply = () => {
+    if (!selectedNames.length || !tgt) return;
+    const n = onApply(selectedNames, target);
+    say(`Applied ${selectedNames.length} tag${selectedNames.length === 1 ? "" : "s"} to ${n} colour${n === 1 ? "" : "s"} (${tgt.label}).`);
+  };
+  const remove = () => {
+    if (!selectedNames.length || !tgt) return;
+    const n = onRemove(selectedNames, target);
+    say(`Removed ${selectedNames.length} tag${selectedNames.length === 1 ? "" : "s"} from ${n} colour${n === 1 ? "" : "s"} (${tgt.label}).`);
+  };
+  const del = () => {
+    if (!selectedNames.length) return;
+    if (!confirmDelete) { setConfirmDelete(true); setNotice(""); return; }
+    const n = onDelete(selectedNames);
+    setSelected(new Set());
+    say(`Deleted ${selectedNames.length} tag${selectedNames.length === 1 ? "" : "s"} from ${n} colour${n === 1 ? "" : "s"}.`);
+  };
+  const btn = "px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-colors disabled:opacity-40 disabled:cursor-not-allowed";
+  const field = "bg-slate-50 dark:bg-neutral-800/60 border border-slate-200 dark:border-neutral-700 rounded-lg px-2.5 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-sky-500";
+  const usage = (t) =>
+    [t.anchors && `${t.anchors} anchor${t.anchors === 1 ? "" : "s"}`, t.pins && `${t.pins} pin${t.pins === 1 ? "" : "s"}`,
+      t.commercial && `${t.commercial} commercial`].filter(Boolean).join(" · ") || "unused";
+  return ReactDOM.createPortal(
+    React.createElement(
+      "div",
+      { className: "fixed inset-0 z-[120] flex items-center justify-center p-3 md:p-6", role: "dialog", "aria-modal": true, "aria-label": "Manage tags" },
+      React.createElement("div", { className: "absolute inset-0 bg-black/40", onClick: onClose }),
+      React.createElement(
+        "div",
+        { className: "relative w-full max-w-2xl max-h-full flex flex-col bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-neutral-800 overflow-hidden" },
+        // header
+        React.createElement(
+          "div",
+          { className: "flex items-center gap-2 px-4 py-3 border-b border-slate-200 dark:border-neutral-800" },
+          React.createElement(Icon, { name: "tags", className: "w-4 h-4 text-slate-500" }),
+          React.createElement("h2", { className: "text-xs font-black uppercase tracking-widest text-slate-800 dark:text-neutral-100" }, "Manage tags"),
+          React.createElement("span", { className: "text-[10px] text-slate-400" }, `${tags.length} tag${tags.length === 1 ? "" : "s"}`),
+          React.createElement(
+            "button",
+            { onClick: onClose, title: "Close", "aria-label": "Close", className: "ml-auto p-1 rounded hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500" },
+            React.createElement(Icon, { name: "x", className: "w-4 h-4" }),
+          ),
+        ),
+        // create
+        React.createElement(
+          "div",
+          { className: "flex gap-2 px-4 py-3 border-b border-slate-200 dark:border-neutral-800" },
+          React.createElement("input", {
+            value: draft, onChange: (e) => setDraft(e.target.value),
+            onKeyDown: (e) => e.key === "Enter" && create(),
+            placeholder: "New tags, separated by commas…", "aria-label": "New tags",
+            className: `${field} flex-1`,
+          }),
+          React.createElement("button", { onClick: create, disabled: !draft.trim(), className: `${btn} bg-slate-900 text-white dark:bg-white dark:text-neutral-900 hover:opacity-90` }, "Create"),
+        ),
+        // search + sort
+        React.createElement(
+          "div",
+          { className: "flex items-center gap-2 px-4 pt-3 pb-2" },
+          React.createElement(
+            "label",
+            { className: "flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 cursor-pointer shrink-0" },
+            React.createElement("input", { type: "checkbox", checked: allShownSelected, onChange: toggleAllShown, "aria-label": "Select all shown" }),
+            "All",
+          ),
+          React.createElement("input", {
+            value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Search tags…", "aria-label": "Search tags",
+            className: `${field} flex-1 min-w-0`,
+          }),
+          React.createElement(
+            "select",
+            { value: sort, onChange: (e) => setSort(e.target.value), "aria-label": "Sort tags", className: `${field} w-auto` },
+            React.createElement("option", { value: "name" }, "A–Z"),
+            React.createElement("option", { value: "most" }, "Most used"),
+            React.createElement("option", { value: "least" }, "Least used"),
+          ),
+        ),
+        // list
+        React.createElement(
+          "div",
+          { className: "flex-1 min-h-[160px] overflow-y-auto custom-scrollbar px-2 pb-2" },
+          shown.length === 0 &&
+            React.createElement("p", { className: "px-2 py-6 text-center text-[11px] text-slate-400 italic" }, query ? "No tags match." : "No tags yet. Create some above."),
+          shown.slice(0, TAG_LIST_CAP).map((t) =>
+            React.createElement(
+              "label",
+              {
+                key: lc(t.name),
+                className: `flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer ${selected.has(lc(t.name)) ? "bg-sky-50 dark:bg-sky-500/10" : "hover:bg-slate-50 dark:hover:bg-neutral-800/60"}`,
+              },
+              React.createElement("input", { type: "checkbox", checked: selected.has(lc(t.name)), onChange: () => toggle(t.name) }),
+              React.createElement("span", { className: "text-[11px] font-bold text-slate-800 dark:text-neutral-100 truncate" }, t.name),
+              React.createElement("span", { className: `ml-auto shrink-0 text-[10px] ${!total(t) ? "text-amber-600 dark:text-amber-400" : selected.has(lc(t.name)) ? "text-slate-600 dark:text-neutral-300" : "text-slate-400"}` }, usage(t)),
+            ),
+          ),
+          shown.length > TAG_LIST_CAP &&
+            React.createElement(
+              "p",
+              { className: "px-2 py-2 text-[10px] text-slate-400" },
+              `Showing ${TAG_LIST_CAP} of ${shown.length}. Search to narrow it; "All" still selects every match.`,
+            ),
+        ),
+        // actions
+        React.createElement(
+          "div",
+          { className: "flex flex-col gap-2 px-4 py-3 border-t border-slate-200 dark:border-neutral-800 bg-slate-50/60 dark:bg-neutral-900" },
+          React.createElement(
+            "div",
+            { className: "flex flex-wrap items-center gap-2" },
+            React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-500" }, `${selectedNames.length} selected`),
+            selectedNames.length > 0 &&
+              React.createElement("button", { onClick: () => setSelected(new Set()), className: "text-[10px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400" }, "Clear"),
+            React.createElement(
+              "select",
+              { value: target, onChange: (e) => setTarget(e.target.value), "aria-label": "Apply to", className: `${field} ml-auto max-w-[60%]` },
+              targets.map((t) => React.createElement("option", { key: t.id, value: t.id }, `${t.label}${t.count !== undefined ? ` (${t.count})` : ""}`)),
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "flex flex-wrap items-center gap-2" },
+            React.createElement("button", { onClick: apply, disabled: !selectedNames.length || !tgt, className: `${btn} bg-sky-600 text-white hover:bg-sky-700` }, "Apply to target"),
+            React.createElement("button", { onClick: remove, disabled: !selectedNames.length || !tgt, className: `${btn} bg-slate-200 dark:bg-neutral-800 text-slate-700 dark:text-neutral-200 hover:bg-slate-300 dark:hover:bg-neutral-700` }, "Remove from target"),
+            React.createElement(
+              "button",
+              { onClick: del, disabled: !selectedNames.length, className: `${btn} ml-auto ${confirmDelete ? "bg-red-600 text-white" : "text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10"}` },
+              confirmDelete ? `Delete ${selectedNames.length} everywhere?` : "Delete",
+            ),
+          ),
+          notice && React.createElement("p", { className: "text-[10px] text-emerald-700 dark:text-emerald-400", role: "status" }, notice),
+        ),
+      ),
+    ),
+    document.body,
+  );
+};
+
 const App = () => {
   useDisplayGamut();
   const [theme, setTheme] = useState("light");
@@ -11307,8 +11508,11 @@ const App = () => {
   const [names, setNames] = useState(initialState?.names || {});
   const [dictNotes, setDictNotes] = useState(initialState?.dictNotes || {});
   const [dictTags, setDictTags] = useState(initialState?.dictTags || {});
+  const [tagLibrary, setTagLibrary] = useState(() => (Array.isArray(initialState?.tagLibrary) ? initialState.tagLibrary : []));
+  const [showTagManager, setShowTagManager] = useState(false);
   const globalTags = useMemo(() => {
     const tags = new Set();
+    tagLibrary.forEach((t) => tags.add(t));
     Object.values(dictTags).forEach((tagList) => {
       if (Array.isArray(tagList)) {
         tagList.forEach((t) => tags.add(t));
@@ -11326,7 +11530,7 @@ const App = () => {
     return Array.from(tags).sort((a, b) =>
       a.toLowerCase().localeCompare(b.toLowerCase()),
     );
-  }, [dictTags, colorData]);
+  }, [dictTags, colorData, tagLibrary]);
   const [savedColors, setSavedColors] = useState(
     initialState?.savedColors || {},
   );
@@ -11645,6 +11849,7 @@ const App = () => {
     let currentSavedPalettes = savedPalettes || [];
     let currentGroupSettings =
       initialState?.groupSettings || defaultGroupSettings;
+    const currentTagLibrary = Array.isArray(initialState?.tagLibrary) ? [...initialState.tagLibrary] : [];
     const rawUrls = {};
     const discoverCSVFiles = async () => {
       try {
@@ -11794,6 +11999,9 @@ const App = () => {
             currentGroupSettings = processed.newGroupSettings;
           if (processed.newSavedPalettes)
             currentSavedPalettes = processed.newSavedPalettes;
+          (processed.newTagLibrary || []).forEach((t) => {
+            if (!currentTagLibrary.some((x) => x.toLowerCase() === t.toLowerCase())) currentTagLibrary.push(t);
+          });
         }
       } catch (e) {
         console.warn("Failed: " + file, e);
@@ -11810,6 +12018,7 @@ const App = () => {
     setDictTags(currentTags);
     setGroupSettings(currentGroupSettings);
     setSavedPalettes(currentSavedPalettes);
+    setTagLibrary(currentTagLibrary);
   }, [linkedFiles]);
   useEffect(() => {
     loadInitialData();
@@ -12073,8 +12282,10 @@ const App = () => {
         savedPalettes,
         observer,
         illuminant,
+        tagLibrary,
       }),
     [
+      tagLibrary,
       names,
       dictNotes,
       dictTags,
@@ -13189,6 +13400,7 @@ const App = () => {
         observer,
         illuminant,
         linkedFiles,
+        tagLibrary,
       };
       let appCode = "";
       let styleCode = "";
@@ -13473,6 +13685,8 @@ const App = () => {
           }),
         );
       }
+      // tags created in the tag manager, so ones not yet on any colour survive
+      (tagLibrary || []).forEach((t) => anchorsCsv.push({ Type: "TAG", Noun: t }));
       const palettesCsv = [];
       (savedPalettes || []).forEach((p) => {
         palettesCsv.push({
@@ -13671,6 +13885,7 @@ const App = () => {
       let cTags = {};
       let cGroups = defaultGroupSettings;
       let cPalettes = [];
+      const cTagLib = [];
       const log = [];
       names.forEach((name) => {
         const parsed = parseCSV(files[name]);
@@ -13696,6 +13911,7 @@ const App = () => {
         if (processed.groupRowsSeen && (name === "anchors.csv" || !names.includes("anchors.csv")))
           cGroups = processed.newGroupSettings || cGroups;
         cPalettes = processed.newSavedPalettes || cPalettes;
+        (processed.newTagLibrary || []).forEach((t) => { if (!cTagLib.some((x) => x.toLowerCase() === t.toLowerCase())) cTagLib.push(t); });
         log.push(`${name} — ${parsed.length} rows`);
       });
       setColorData(Object.keys(cColorData).length > 0 ? cColorData : null);
@@ -13705,6 +13921,7 @@ const App = () => {
       setDictTags(cTags);
       setGroupSettings(cGroups);
       setSavedPalettes(cPalettes);
+      setTagLibrary(cTagLib);
       setSyncStatus({
         state: "done",
         message: `Pulled ${names.length} file${names.length === 1 ? "" : "s"} from ${cfg.owner}/${cfg.repo}@${branch}.`,
@@ -13785,6 +14002,8 @@ const App = () => {
       setSavedColors(processed.newSavedColors);
       setDictTags(processed.newTags);
       setSavedPalettes(processed.newSavedPalettes);
+      if (processed.newTagLibrary && processed.newTagLibrary.length)
+        setTagLibrary((prev) => [...prev, ...processed.newTagLibrary.filter((t) => !prev.some((x) => x.toLowerCase() === t.toLowerCase()))]);
       if (Object.keys(processed.newColorData).length > 0) {
         updateColorData(processed.newColorData);
       }
@@ -14351,6 +14570,114 @@ const App = () => {
       });
     }
   };
+  // ── Tag manager: every tag with where it's used, and bulk operations ──
+  const tagLcOf = (t) => String(t).toLowerCase().trim();
+  const anchorTagKeys = () =>
+    Object.values(savedColors)
+      .filter((sc) => sc && (sc.type === "nounColumn" || sc.type === "anchor"))
+      .map((sc) => (sc.type === "anchor" ? sc.anchorId || sc.id : sc.id));
+  const pinTagKeys = () => Object.values(savedColors).filter((sc) => sc && sc.type === "pin").map((sc) => sc.id);
+  const tagUsage = useMemo(() => {
+    if (!showTagManager) return [];
+    const m = new Map();
+    const pins = new Set(pinTagKeys());
+    const bump = (t, kind) => {
+      const k = tagLcOf(t);
+      if (!k) return;
+      let e = m.get(k);
+      if (!e) { e = { name: String(t).trim(), anchors: 0, pins: 0, commercial: 0 }; m.set(k, e); }
+      e[kind]++;
+    };
+    Object.entries(dictTags || {}).forEach(([id, list]) =>
+      (Array.isArray(list) ? list : []).forEach((t) => bump(t, pins.has(id) ? "pins" : /^(commercial|brand)-/.test(id) ? "commercial" : "anchors")),
+    );
+    Object.values(colorData || {}).forEach((list) => (list || []).forEach((c) => (c.tags || []).forEach((t) => bump(t, "commercial"))));
+    tagLibrary.forEach((t) => { const k = tagLcOf(t); if (k && !m.has(k)) m.set(k, { name: t, anchors: 0, pins: 0, commercial: 0 }); });
+    return [...m.values()];
+  }, [showTagManager, dictTags, colorData, tagLibrary, savedColors]);
+  const tagTargets = useMemo(() => {
+    if (!showTagManager) return [];
+    const out = [];
+    if (activeCommercial || activeItemId)
+      out.push({ id: "active", label: `Current colour${activeName ? `: ${activeName}` : ""}`, count: 1 });
+    out.push({ id: "anchors", label: "All anchors", count: anchorTagKeys().length });
+    out.push({ id: "pins", label: "All pins", count: pinTagKeys().length });
+    const brands = Object.keys(colorData || {});
+    out.push({ id: "commercial", label: "All commercial colours", count: brands.reduce((s, b) => s + (colorData[b] || []).length, 0) });
+    brands
+      .sort((a, b) => getBrandDisplayName(a).localeCompare(getBrandDisplayName(b)))
+      .forEach((b) => out.push({ id: `brand:${b}`, label: `Brand: ${getBrandDisplayName(b)}`, count: (colorData[b] || []).length }));
+    return out;
+  }, [showTagManager, colorData, savedColors, activeCommercial, activeItemId, activeName]);
+  // Change the tags of every colour in a target; returns how many changed.
+  const editTagsWhere = (target, edit) => {
+    let changed = 0;
+    let keys = [], brands = [], one = null;
+    if (target === "active") {
+      if (activeCommercial) one = activeCommercial; else if (activeItemId) keys = [activeItemId];
+    } else if (target === "anchors") keys = anchorTagKeys();
+    else if (target === "pins") keys = pinTagKeys();
+    else if (target === "commercial") brands = Object.keys(colorData || {});
+    else if (target.startsWith("brand:")) brands = [target.slice(6)];
+    else if (target === "everywhere") { keys = Object.keys(dictTags || {}); brands = Object.keys(colorData || {}); }
+    if (keys.length) {
+      const next = { ...dictTags };
+      keys.forEach((k) => {
+        const before = next[k] || [], after = edit(before);
+        if (after !== before) { changed++; if (after.length) next[k] = after; else delete next[k]; }
+      });
+      if (changed) setDictTags(next);
+    }
+    if (brands.length || one) {
+      const updated = { ...colorData };
+      let any = false;
+      const doBrand = (b, only) => {
+        const list = updated[b];
+        if (!list) return;
+        let copy = null;
+        list.forEach((c, i) => {
+          if (only !== undefined && i !== only) return;
+          const before = c.tags || [], after = edit(before);
+          if (after !== before) {
+            if (!copy) copy = list.slice();
+            copy[i] = { ...c, tags: after };
+            changed++;
+          }
+        });
+        if (copy) { updated[b] = copy; any = true; }
+      };
+      if (one) doBrand(one.brand, one.originalIndex);
+      brands.forEach((b) => doBrand(b));
+      if (any) updateColorData(updated);
+    }
+    return changed;
+  };
+  const tagOps = {
+    create: (names) =>
+      setTagLibrary((prev) => [...prev, ...names.filter((n) => !prev.some((x) => tagLcOf(x) === tagLcOf(n)))]),
+    apply: (names, target) =>
+      editTagsWhere(target, (list) => {
+        const have = new Set(list.map(tagLcOf)), add = names.filter((n) => !have.has(tagLcOf(n)));
+        return add.length ? [...list, ...add] : list;
+      }),
+    remove: (names, target) => {
+      const drop = new Set(names.map(tagLcOf));
+      return editTagsWhere(target, (list) => (list.some((t) => drop.has(tagLcOf(t))) ? list.filter((t) => !drop.has(tagLcOf(t))) : list));
+    },
+    delete: (names) => {
+      const drop = new Set(names.map(tagLcOf));
+      const n = editTagsWhere("everywhere", (list) => (list.some((t) => drop.has(tagLcOf(t))) ? list.filter((t) => !drop.has(tagLcOf(t))) : list));
+      setTagLibrary((prev) => prev.filter((t) => !drop.has(tagLcOf(t))));
+      return n;
+    },
+  };
+  const tagManagerNode =
+    showTagManager &&
+    React.createElement(TagManagerModal, {
+      tags: tagUsage, targets: tagTargets,
+      onCreate: tagOps.create, onApply: tagOps.apply, onRemove: tagOps.remove, onDelete: tagOps.delete,
+      onClose: () => setShowTagManager(false),
+    });
   const removeTag = (tag) => {
     const normalizedTag = tag.toLowerCase().trim();
     if (activeCommercial) {
@@ -14548,6 +14875,8 @@ const App = () => {
     activeTags,
     addTag,
     removeTag,
+    tagManagerNode,
+    openTagManager: () => setShowTagManager(true),
     nounInputClass,
     deltaEOK,
     deltaE2000,
@@ -17685,6 +18014,8 @@ const AppUI = ({
   activeTags,
   addTag,
   removeTag,
+  tagManagerNode,
+  openTagManager,
   nounInputClass,
   deltaEOK,
   deltaE2000,
@@ -19867,6 +20198,17 @@ const AppUI = ({
                       React.createElement("option", { key: t, value: t }, t),
                     ),
                   ),
+                  React.createElement(
+                    "button",
+                    {
+                      onClick: openTagManager,
+                      className:
+                        "w-full flex items-center justify-center gap-1.5 py-2 rounded-lg border border-slate-200 dark:border-neutral-700 text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-neutral-800 transition-colors",
+                    },
+                    React.createElement(Icon, { name: "tags", className: "w-3.5 h-3.5" }),
+                    "Manage all tags",
+                  ),
+                  tagManagerNode,
                   React.createElement("input", {
                     type: "text",
                     placeholder: "Or type new tag & press Enter...",
