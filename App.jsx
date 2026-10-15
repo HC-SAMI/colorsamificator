@@ -4875,6 +4875,288 @@ const CrossReference = ({ colorData, onSelectColor }) => {
   );
 };
 
+// --- Printable catalogue matrix --------------------------------------------
+// A sheet in the shape of the paper SAMI Cabinet Matrix: one block per door
+// profile, colours across, with the swatch, name, SKU, specs, notes and tags
+// underneath. Opens in its own window so the app's layout and theme have no
+// say in how it prints.
+
+
+const matrixEscape = (s) =>
+  String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+// The same treatment rules the on-screen swatch uses, as standalone SVG.
+const matrixSwatchSvg = (item, hex) => {
+  const t = parseSwatchTraits(null, item);
+  const ink = t.light ? "#000" : "#fff";
+  let inner = "";
+  if (t.hatch) {
+    for (let i = 1; i <= 7; i++) {
+      const x = (100 / 8) * i;
+      inner +=
+        `<path d="M ${x} 0 C ${x + 2} 22, ${x - 2} 34, ${x + 1} 52 ` +
+        `C ${x + 2} 70, ${x - 1} 82, ${x} 100" fill="none" stroke="${ink}" ` +
+        `stroke-opacity="${t.light ? 0.2 : 0.22}" stroke-width="0.7"/>`;
+    }
+  }
+  if (t.profile === "CS" || t.profile === "SS") {
+    const ins = t.profile === "CS" ? 20 : 7;
+    inner +=
+      `<rect x="${ins}" y="${ins}" width="${100 - ins * 2}" height="${100 - ins * 2}" ` +
+      `fill="none" stroke="${ink}" stroke-opacity="${t.light ? 0.45 : 0.55}" stroke-width="1.4"/>`;
+  }
+  return (
+    `<svg class="sw" viewBox="0 0 100 100" preserveAspectRatio="none" ` +
+    `style="background:${hex}">${inner}</svg>`
+  );
+};
+
+// --- Configurable matrix grouping ------------------------------------------
+// Rows and columns can be any attribute, not just lightness and chroma.
+// Numeric axes bucket by an adjustable tolerance so near values collapse into
+// one band; categorical axes group on the value itself.
+
+const GROUP_FIELDS = [
+  { id: "L", label: "Lightness", type: "number", min: 0, max: 1,
+    step: 0.01, tol: 0.1, tolMin: 0.02, tolMax: 0.5, tolStep: 0.01,
+    get: (it) => it.L, fmt: (v, t) => `${v.toFixed(2)}–${(v + t).toFixed(2)}` },
+  { id: "C", label: "Chroma", type: "number", min: 0, max: 0.4,
+    step: 0.005, tol: 0.04, tolMin: 0.005, tolMax: 0.2, tolStep: 0.005,
+    get: (it) => it.C, fmt: (v, t) => `${v.toFixed(3)}–${(v + t).toFixed(3)}` },
+  { id: "H", label: "Hue", type: "number", min: 0, max: 360,
+    step: 1, tol: 30, tolMin: 5, tolMax: 120, tolStep: 5,
+    get: (it) => it.H, fmt: (v, t) => `${Math.round(v)}°–${Math.round(v + t)}°` },
+  { id: "doorProfile", label: "Profile", type: "text", get: (it) => it.doorProfile },
+  { id: "material", label: "Material", type: "text", get: (it) => it.material },
+  { id: "sheen", label: "Sheen", type: "text", get: (it) => it.sheen },
+  { id: "visualTexture", label: "Visual pattern", type: "text", get: (it) => it.visualTexture },
+  { id: "tactileTexture", label: "Tactile texture", type: "text", get: (it) => it.tactileTexture },
+  { id: "tag", label: "Tag", type: "text", get: (it) => (it.tags || [])[0] || "" },
+  { id: "none", label: "— none —", type: "none", get: () => "" },
+];
+const groupField = (id) =>
+  GROUP_FIELDS.find((f) => f.id === id) || GROUP_FIELDS[GROUP_FIELDS.length - 1];
+
+// A bucket key plus the label and sort value that go with it.
+const groupBucket = (field, item, tol) => {
+  if (field.type === "none") return { key: "", label: "", sort: 0 };
+  const raw = field.get(item);
+  if (field.type === "number") {
+    const v = Number(raw);
+    if (!isFinite(v)) return { key: "~", label: "unset", sort: Infinity };
+    const t = tol > 0 ? tol : field.tol;
+    const base = Math.floor(v / t) * t;
+    return { key: base.toFixed(6), label: field.fmt(base, t), sort: base };
+  }
+  const s = String(raw == null ? "" : raw).trim();
+  return { key: s.toLowerCase() || "~", label: s || "unset", sort: s.toLowerCase() || "\uffff" };
+};
+
+// Build the row x column table from a flat list.
+const buildGroupMatrix = (items, rowId, colId, rowTol, colTol) => {
+  const rf = groupField(rowId), cf = groupField(colId);
+  const rows = new Map(), cols = new Map(), cells = new Map();
+  items.forEach((it) => {
+    const r = groupBucket(rf, it, rowTol), c = groupBucket(cf, it, colTol);
+    if (!rows.has(r.key)) rows.set(r.key, r);
+    if (!cols.has(c.key)) cols.set(c.key, c);
+    const k = r.key + "\u0000" + c.key;
+    if (!cells.has(k)) cells.set(k, []);
+    cells.get(k).push(it);
+  });
+  const bySort = (a, b) =>
+    typeof a.sort === "number" && typeof b.sort === "number"
+      ? a.sort - b.sort
+      : String(a.sort).localeCompare(String(b.sort));
+  return {
+    rowField: rf,
+    colField: cf,
+    rows: [...rows.values()].sort(bySort),
+    cols: [...cols.values()].sort(bySort),
+    cell: (rk, ck) => cells.get(rk + "\u0000" + ck) || [],
+    total: items.length,
+  };
+};
+
+const buildCatalogMatrix = (items, meta) => {
+  // The sheet follows whatever grouping is set on screen: one band per row
+  // bucket, the column buckets across, each cell listing its colours.
+  const m = buildGroupMatrix(
+    items, meta.rowId, meta.colId, meta.rowTol, meta.colTol,
+  );
+  const PER_TABLE = 6;                     // column buckets per printed table
+  const entry = (it) => `
+    <div class="entry">
+      ${matrixSwatchSvg(it, it.hex || "#ccc")}
+      <div class="ename">${matrixEscape(it.displayName || "\u2014")}</div>
+      <div class="esku mono">${matrixEscape(it.erpCode || "")}</div>
+      <div class="espec">${matrixEscape(
+        [it.material, it.sheen, it.visualTexture, it.tactileTexture, it.doorProfile]
+          .filter(Boolean).join(" \u00b7 ") || "\u2014",
+      )}</div>
+      ${it.displayNotes ? `<div class="enote">${matrixEscape(it.displayNotes)}</div>` : ""}
+      ${(it.tags || []).length
+        ? `<div class="etags">${(it.tags || [])
+            .map((t) => `<span>${matrixEscape(t)}</span>`).join("")}</div>`
+        : ""}
+    </div>`;
+
+  let body = "";
+  m.rows.forEach((r) => {
+    const live = m.cols.filter((c) => m.cell(r.key, c.key).length);
+    if (!live.length) return;
+    const count = live.reduce((n, c) => n + m.cell(r.key, c.key).length, 0);
+    body += `<section class="band">
+      <div class="bandhead">
+        <div><b>${matrixEscape(m.rowField.label)}: ${matrixEscape(r.label)}</b></div>
+        <div>${matrixEscape(m.colField.label)} across</div>
+        <div>${count} colour${count === 1 ? "" : "s"}</div>
+      </div>`;
+    for (let s = 0; s < live.length; s += PER_TABLE) {
+      const chunk = live.slice(s, s + PER_TABLE);
+      body += `<table class="grid"><colgroup>${chunk
+        .map(() => `<col style="width:${(100 / chunk.length).toFixed(2)}%">`)
+        .join("")}</colgroup>
+        <tr class="chead">${chunk
+          .map((c) => `<th>${matrixEscape(c.label || "\u2014")}</th>`).join("")}</tr>
+        <tr>${chunk
+          .map((c) => `<td>${m.cell(r.key, c.key).map(entry).join("")}</td>`)
+          .join("")}</tr>
+      </table>`;
+    }
+    body += `</section>`;
+  });
+
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>SAMI \u2014 Cabinet Matrix</title>
+<style>
+  @page { size: landscape; margin: 12mm; }
+  * { box-sizing: border-box; }
+  body { font: 11px/1.35 "Inter", Arial, Helvetica, sans-serif; color: #111; margin: 0; }
+  h1 { font-size: 16px; margin: 0 0 2px; }
+  .sub { font-size: 10px; color: #555; margin-bottom: 12px; }
+  .band { margin-bottom: 14px; page-break-inside: avoid; }
+  .bandhead { display: flex; gap: 20px; font-size: 10px; padding: 4px 6px;
+              background: #f1efec; border: 1px solid #c9c4bd; border-bottom: none; }
+  table.grid { width: 100%; border-collapse: collapse; table-layout: fixed;
+               page-break-inside: avoid; margin-bottom: 8px; }
+  .grid td, .grid th { border: 1px solid #c9c4bd; padding: 4px; vertical-align: top; }
+  .chead th { background: #f7f6f4; font-size: 9.5px; font-weight: 600; color: #444;
+              text-transform: uppercase; letter-spacing: .04em; }
+  .entry { break-inside: avoid; margin-bottom: 7px; padding-bottom: 6px;
+           border-bottom: 1px dotted #ddd; }
+  .entry:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+  .sw { display: block; width: 100%; height: 54px; margin-bottom: 3px; }
+  .ename { font-weight: 700; font-size: 11px; }
+  .esku { font-size: 9.5px; color: #555; }
+  .espec { font-size: 8.5px; color: #444; }
+  .enote { font-size: 8.5px; color: #333; margin-top: 2px; }
+  .etags span { display: inline-block; border: 1px solid #bbb; border-radius: 3px;
+                padding: 0 4px; margin: 2px 3px 0 0; font-size: 8px; }
+  .mono { font-family: "SFMono-Regular", Consolas, monospace; }
+  @media print { .noprint { display: none; } }
+  .noprint { margin: 10px 0 16px; }
+  button { font: inherit; padding: 6px 12px; cursor: pointer; }
+</style></head><body>
+<h1>SAMI \u2014 Cabinet Matrix</h1>
+<div class="sub">${matrixEscape(meta.count)} colours \u00b7 ${matrixEscape(meta.when)} \u00b7 ${
+    matrixEscape(m.rowField.label)} \u00d7 ${matrixEscape(m.colField.label)}${
+    meta.filters ? " \u00b7 " + matrixEscape(meta.filters) : ""}</div>
+<div class="noprint"><button onclick="window.print()">Print</button></div>
+${body}
+</body></html>`;
+};
+
+const GroupMatrix = ({ items, rowId, colId, rowTol, colTol, swatchZoom, onSelect }) => {
+  const m = useMemo(
+    () => buildGroupMatrix(items, rowId, colId, rowTol, colTol),
+    [items, rowId, colId, rowTol, colTol],
+  );
+  const size = Math.round(26 * (swatchZoom || 1));
+  if (!items.length)
+    return React.createElement(
+      "div",
+      { className: "text-[11px] italic text-slate-400 p-4" },
+      "Nothing to group.",
+    );
+  const head = (txt) =>
+    React.createElement(
+      "th",
+      {
+        className:
+          "sticky top-0 z-10 bg-slate-50 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400 whitespace-nowrap",
+      },
+      txt,
+    );
+  return React.createElement(
+    "div",
+    { className: "overflow-auto custom-scrollbar h-full" },
+    React.createElement(
+      "table",
+      { className: "border-collapse" },
+      React.createElement(
+        "thead",
+        null,
+        React.createElement(
+          "tr",
+          null,
+          head(`${m.rowField.label} \u2193 / ${m.colField.label} \u2192`),
+          m.cols.map((c) => React.createElement(React.Fragment, { key: c.key }, head(c.label))),
+        ),
+      ),
+      React.createElement(
+        "tbody",
+        null,
+        m.rows.map((r) =>
+          React.createElement(
+            "tr",
+            { key: r.key },
+            React.createElement(
+              "th",
+              {
+                className:
+                  "sticky left-0 z-10 bg-slate-50 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400 text-right whitespace-nowrap",
+              },
+              r.label,
+            ),
+            m.cols.map((c) => {
+              const cell = m.cell(r.key, c.key);
+              return React.createElement(
+                "td",
+                {
+                  key: c.key,
+                  className:
+                    "border border-slate-200 dark:border-neutral-700 p-1 align-top",
+                },
+                cell.length
+                  ? React.createElement(
+                      "div",
+                      { className: "flex flex-wrap gap-1", style: { maxWidth: `${size * 6 + 30}px` } },
+                      cell.map((it) =>
+                        React.createElement(ColorSwatch, {
+                          key: it.id,
+                          item: it,
+                          hex: it.hex,
+                          size,
+                          label: it.displayName,
+                          className: "cursor-pointer",
+                          onClick: () => onSelect && onSelect(it),
+                          title: `${it.displayName} \u00b7 ${it.erpCode || ""}`,
+                        }),
+                      ),
+                    )
+                  : null,
+              );
+            }),
+          ),
+        ),
+      ),
+    ),
+  );
+};
+
 const ViewportSwatches = ({
   items,
   layout,
@@ -7655,6 +7937,10 @@ const ViewPins = ({
   const [isAdding, setIsAdding] = useState(false);
   // Catalog now offers the same three presentations as the other views.
   const [catalogView, setCatalogView] = useState("table");
+  const [mRow, setMRow] = useState("L");
+  const [mCol, setMCol] = useState("C");
+  const [mRowTol, setMRowTol] = useState(groupField("L").tol);
+  const [mColTol, setMColTol] = useState(groupField("C").tol);
   const [showSpecs, setShowSpecs] = useState(true);
   const [editForm, setEditForm] = useState({
     id: "",
@@ -8015,6 +8301,32 @@ const ViewPins = ({
           }),
           isAdding ? "Cancel" : "Add Pin",
         ),
+        React.createElement(
+          "button",
+          {
+            onClick: () => {
+              const win = window.open("", "_blank");
+              if (!win) return;
+              win.document.write(
+                buildCatalogMatrix(sortedItems, {
+                  count: sortedItems.length,
+                  when: new Date().toLocaleDateString(),
+                  filters: tagFilter ? `tag: ${tagFilter}` : "",
+                  rowId: mRow,
+                  colId: mCol,
+                  rowTol: mRowTol,
+                  colTol: mColTol,
+                }),
+              );
+              win.document.close();
+            },
+            title: "Open a printable matrix of the colours currently listed",
+            className:
+              "px-3 py-1.5 bg-slate-800 hover:bg-slate-900 dark:bg-neutral-100 dark:hover:bg-white dark:text-neutral-900 text-white rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5",
+          },
+          React.createElement(Icon, { name: "printer", className: "w-3.5 h-3.5" }),
+          "Print Matrix",
+        ),
         selectedIds.length > 0 &&
           React.createElement(
             "button",
@@ -8072,6 +8384,63 @@ const ViewPins = ({
               Math.round(swatchZoom * 100),
               "%",
             ),
+          ),
+        catalogView === "matrix" &&
+          React.createElement(
+            "div",
+            { className: "flex items-center gap-1.5 ml-2 flex-wrap" },
+            [
+              ["Rows", mRow, setMRow, mRowTol, setMRowTol],
+              ["Cols", mCol, setMCol, mColTol, setMColTol],
+            ].map(([label, val, setVal, tol, setTol]) => {
+              const f = groupField(val);
+              return React.createElement(
+                "span",
+                { key: label, className: "flex items-center gap-1" },
+                React.createElement(
+                  "span",
+                  { className: "text-[9px] font-bold uppercase tracking-wider text-slate-400" },
+                  label,
+                ),
+                React.createElement(
+                  "select",
+                  {
+                    value: val,
+                    onChange: (e) => {
+                      const nf = groupField(e.target.value);
+                      setVal(e.target.value);
+                      if (nf.type === "number") setTol(nf.tol);
+                    },
+                    className:
+                      "bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-1 py-0.5 text-[10px]",
+                  },
+                  GROUP_FIELDS.map((g) =>
+                    React.createElement("option", { key: g.id, value: g.id }, g.label),
+                  ),
+                ),
+                // tolerance only means something on a numeric axis
+                f.type === "number" &&
+                  React.createElement(
+                    "span",
+                    { className: "flex items-center gap-1" },
+                    React.createElement("input", {
+                      type: "range",
+                      min: f.tolMin,
+                      max: f.tolMax,
+                      step: f.tolStep,
+                      value: tol,
+                      onChange: (e) => setTol(parseFloat(e.target.value)),
+                      title: `Band width for ${f.label}`,
+                      className: "w-16 accent-sky-500",
+                    }),
+                    React.createElement(
+                      "span",
+                      { className: "text-[9px] font-mono text-slate-400 w-8" },
+                      f.id === "H" ? `${Math.round(tol)}\u00b0` : tol.toFixed(f.id === "C" ? 3 : 2),
+                    ),
+                  ),
+              );
+            }),
           ),
         catalogView === "swatches" &&
           React.createElement(
@@ -8270,7 +8639,18 @@ const ViewPins = ({
               "Save Custom Pin",
             ),
           ),
-        catalogView !== "table"
+        catalogView === "matrix"
+          ? React.createElement(GroupMatrix, {
+              items: sortedItems,
+              rowId: mRow,
+              colId: mCol,
+              rowTol: mRowTol,
+              colTol: mColTol,
+              swatchZoom,
+              onSelect: (it) =>
+                handlePointClick([it.L, it.C, it.H], it.spectral || null),
+            })
+          : catalogView !== "table"
           ? React.createElement(
               "div",
               {
