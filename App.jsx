@@ -8413,7 +8413,6 @@ const usePrinting = () => {
   return printStore.on();
 };
 const PRINT_CSS = `
-@page { margin: 10mm; }
 html, body { background: #fff !important; margin: 0; }
 * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
 body { padding: 12px; font-family: inherit; }
@@ -8431,6 +8430,20 @@ body { padding: 12px; font-family: inherit; }
 [data-print-view]:not([data-print-mode="fixed"]) .h-full { height: auto !important; }
 [data-print-view]:not([data-print-mode="fixed"]) .min-h-0 { min-height: 0 !important; }
 [data-print-view] .opacity-0 { display: none !important; }
+/* scaled flex columns would print as one unbreakable block (a blank first
+   page, then the view): the outer layout columns become plain blocks */
+[data-print-view]:not([data-print-mode="fixed"]).flex-col,
+[data-print-view]:not([data-print-mode="fixed"]) > div.flex-col,
+[data-print-view]:not([data-print-mode="fixed"]) > div > div.flex-col,
+[data-print-view]:not([data-print-mode="fixed"]) [data-print-flow] { display: block !important; }
+[data-print-view]:not([data-print-mode="fixed"]) > div.flex-col.gap-3 > * + * { margin-top: 0.75rem; }
+/* white paper: every panel, card and header background turns white; the
+   swatches keep their colour (theirs is set inline, never by a bg- class) */
+[data-print-view], [data-print-view] [data-print-flow],
+[data-print-view] [class*="bg-slate-"], [data-print-view] [class*="bg-neutral-"],
+[data-print-view] [class*="bg-white"], [data-print-view] [class*="bg-stone-"],
+[data-print-view] [class*="bg-gray-"], [data-print-view] [class*="bg-zinc-"] { background-color: #fff !important; }
+[data-print-view] .shadow, [data-print-view] .shadow-sm, [data-print-view] .shadow-md, [data-print-view] .shadow-xl { box-shadow: none !important; }
 tr, .csam-print-keep { break-inside: avoid; }
 `;
 const escHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -8493,7 +8506,10 @@ const printCurrentView = async ({ title, subtitle } = {}) => {
     const styles = [...document.styleSheets, ...(document.adoptedStyleSheets || [])]
       .map((sh) => {
         try {
-          return `<style>${[...sh.cssRules].map((r) => r.cssText).join("\n")}</style>`;
+          // the app's own print rules are for Avery labels (fixed 8.5×11in
+          // body, app hidden): leave them out
+          const keep = [...sh.cssRules].filter((r) => !(r.media && /print/i.test(r.media.mediaText || "")));
+          return `<style>${keep.map((r) => r.cssText).join("\n")}</style>`;
         } catch (e) {
           return sh.href ? `<link rel="stylesheet" href="${escHtml(sh.href)}">` : "";
         }
@@ -8506,25 +8522,44 @@ ${clone.outerHTML}
 </body></html>`;
     // fit wide views to the page, then print (driven from here, so a slow
     // stylesheet in the new window cannot hold it up)
+    // The print follows whatever paper and orientation are picked in the
+    // print dialog: lists reflow to the page width, and anything that cannot
+    // get narrower (a wide matrix or table, Explore's fixed layout) scales
+    // down to fit. The browser re-evaluates these media queries for each page
+    // setup, so a ladder of widths (and heights, for Explore) covers any paper.
     const fitAndPrint = (win) => {
       setTimeout(() => {
         try {
-          // Lay the page out at paper width, not window width: about 720 CSS
-          // px inside portrait margins, 960 landscape. What still doesn't fit
-          // (a wide matrix, Explore) goes landscape and is scaled down.
-          const d = win.document;
-          const wideNow = () => d.body.scrollWidth;
-          d.body.style.width = "720px";
-          let target = 720;
-          if (wideNow() > 760) {
+          const d = win.document, root = d.querySelector("[data-print-view]");
+          if (root) {
+            const fixed = root.getAttribute("data-print-mode") === "fixed";
+            // the narrowest the view can lay out: squeeze the page, see what sticks out
+            const prev = d.body.style.width;
+            d.body.style.width = "1px";
+            const minW = Math.ceil(Math.max(root.scrollWidth, root.offsetWidth));
+            d.body.style.width = prev;
+            const W = fixed ? Math.ceil(root.offsetWidth) : minW;
+            const Hh = Math.ceil(root.offsetHeight);
+            const head = d.querySelector(".csam-print-head");
+            const headH = head ? Math.ceil(head.getBoundingClientRect().height) + 12 : 0;
+            const pad = 24; // body padding, both sides
+            // `slack` keeps a scaled view a little inside the page, so rounding
+            // never spills a sliver onto a second sheet
+            const ladder = (prop, dim, size, reserve, slack = 1) => {
+              const out = [];
+              for (let p = Math.ceil((size + reserve) / slack); p >= 120; p -= 6) {
+                const k = Math.max(0.05, ((p - reserve) / size) * slack);
+                if (k < 1) out.push(`@media print and (max-${dim}: ${p}px) { :root { ${prop}: ${k.toFixed(4)}; } }`);
+              }
+              return out.join("\n");
+            };
+            let css = ladder("--csam-zw", "width", W, pad);
+            if (fixed) css += "\n" + ladder("--csam-zh", "height", Hh, pad + headH, 0.96);
+            css += "\n@media print { [data-print-view] { zoom: min(var(--csam-zw, 1), var(--csam-zh, 1)); } }";
             const st = d.createElement("style");
-            st.textContent = "@page { size: landscape; }";
+            st.textContent = css;
             d.head.appendChild(st);
-            d.body.style.width = "960px";
-            target = 960;
           }
-          const wide = wideNow();
-          if (wide > target + 2) d.body.style.zoom = (target / wide).toFixed(3);
           win.focus();
           win.print();
         } catch (e) { console.error(e); }
