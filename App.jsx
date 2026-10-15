@@ -5440,7 +5440,7 @@ const AnchorRow = React.memo(({ r, isHere, checked, confirming, autoFocus, deCur
 // tooltip saying why, so nothing jumps around when switching tabs.
 const TB_BTN =
   "flex items-center gap-1.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors whitespace-nowrap";
-const TB_LABEL = "text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-neutral-500 hidden xl:inline";
+const TB_LABEL = "text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-neutral-500 hidden 2xl:inline";
 // A group of controls; when it doesn't apply it is dimmed and inert, and the
 // outer box still carries the tooltip (an inert box can't show one itself).
 const TbGroup = ({ label, enabled = true, why, children, grow }) =>
@@ -5594,7 +5594,7 @@ const VisibilityMenu = ({ vis, setVis, brands, brandOn, setBrand, brandLabel, ki
   );
 };
 
-const TabToolbar = ({ view, layout, visibility, search, zoom, sort, group, filters }) =>
+const TabToolbar = ({ view, layout, visibility, search, zoom, sort, group, fields, filters }) =>
   React.createElement(
     "div",
     {
@@ -5646,6 +5646,9 @@ const TabToolbar = ({ view, layout, visibility, search, zoom, sort, group, filte
     group &&
       React.createElement(TbGroup, { enabled: group.enabled, why: group.why },
         React.createElement(GroupMenu, { scope: group.scope })),
+    fields &&
+      React.createElement(TbGroup, { enabled: fields.enabled, why: "Explore draws colours in colour space; Fields are for the Match, Catalog and Anchors views" },
+        React.createElement(FieldsMenu, { key: `${fields.scope}:${fields.layout}`, scope: fields.scope, layout: fields.layout })),
     React.createElement(TbGroup, { enabled: filters.enabled, why: "Filters narrow colour lists; anchors are listed in full" },
       React.createElement(
         "button",
@@ -5803,6 +5806,7 @@ const ViewAnchors = ({
   const grp = useGrouping("anchors", shown);
   const flat = grp.rows;
   const rowCount = flat ? flat.length : shown.length;
+  useColumnFieldCss("anchors-table", { L: 4, C: 5, H: 6, nearest: 7, cursorDE: 8 }, useViewFields("anchors", "table"));
 
   const closePairs = useMemo(() => rows.filter((r) => r.nnDE < ANCHOR_CLOSE_DE).length, [rows]);
   const unnamed = useMemo(() => rows.filter((r) => !r.name).length, [rows]);
@@ -6021,7 +6025,7 @@ const ViewAnchors = ({
           )
         : React.createElement(
             "table",
-            { className: "w-full border-collapse" },
+            { className: "w-full border-collapse", "data-fields": "anchors-table" },
             React.createElement(
               "thead",
               { className: "sticky top-0 z-10 bg-white dark:bg-neutral-900 border-b border-slate-100 dark:border-neutral-800" },
@@ -7726,7 +7730,7 @@ const GroupMenu = ({ scope }) => {
         }`,
       },
       React.createElement(Icon, { name: "layers", className: "w-3.5 h-3.5 shrink-0" }),
-      React.createElement("span", { className: "truncate" }, "Group"),
+      React.createElement("span", { className: "hidden 2xl:inline" }, "Group"),
       levels.length > 0 && React.createElement("span", { className: "hidden 2xl:inline truncate" }, `· ${summary}`),
       levels.length > 0 && React.createElement("span", { className: "2xl:hidden min-w-[16px] h-4 px-1 rounded-full bg-sky-500 text-white text-[9px] leading-4 text-center" }, levels.length),
     ),
@@ -7793,7 +7797,7 @@ const GroupMenu = ({ scope }) => {
 
 // ── matrix axes ──
 // Rows (Y) and columns (X) of the matrix: any field, binned at its tolerance.
-const MatrixAxisBar = ({ scope, axes }) => {
+const MatrixAxisBar = ({ scope, axes, more }) => {
   const store = useGroupStore();
   const set = (k, patch) => store.setMatrix(scope, { ...axes, [k]: { ...axes[k], ...patch } });
   const axis = (k, label) =>
@@ -7817,6 +7821,17 @@ const MatrixAxisBar = ({ scope, axes }) => {
       React.createElement(Icon, { name: "arrow-left-right", className: "w-3.5 h-3.5" }),
     ),
     axis("x", "Columns · X"),
+    more &&
+      React.createElement(
+        "div",
+        { className: "ml-auto flex items-center gap-2 text-[10px] text-slate-500 dark:text-neutral-400" },
+        `${more.shown.toLocaleString()} of ${more.total.toLocaleString()}`,
+        React.createElement(
+          "button",
+          { onClick: more.onMore, className: "px-2 py-1 rounded font-bold uppercase tracking-wider text-[9px] text-sky-600 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-500/10" },
+          `Show ${Math.min(300, more.total - more.shown).toLocaleString()} more`,
+        ),
+      ),
   );
 };
 // The matrix's rows, columns and cells. Numeric axes show every bin between
@@ -7861,6 +7876,272 @@ const buildMatrix = (items, axes) => {
   return { rows: list(Y), cols: list(X), cells };
 };
 
+// ─── Fields ──────────────────────────────────────────────────────────────────
+// Which details each view shows (ClickUp's "Fields"): every tab × layout has
+// its own set, picked from the toolbar. Defaults reproduce what each view
+// showed before, plus notes everywhere.
+const VIEW_FIELD_DEFS = {
+  name: { label: "Name" },
+  code: { label: "Code / link" },
+  brand: { label: "Brand" },
+  deltaE: { label: "ΔE to cursor" },
+  L: { label: "Lightness (L)" },
+  C: { label: "Chroma (C)" },
+  H: { label: "Hue (H)" },
+  hex: { label: "Hex" },
+  colorGroup: { label: "Colour group" },
+  material: { label: "Material", spec: LABEL_OPTIONS.material },
+  sheen: { label: "Sheen", spec: LABEL_OPTIONS.sheen },
+  visualTexture: { label: "Visual pattern", spec: LABEL_OPTIONS.visualPattern },
+  tactileTexture: { label: "Tactile texture", spec: LABEL_OPTIONS.tactileTexture },
+  doorProfile: { label: "Profile", spec: LABEL_OPTIONS.doorProfile },
+  tags: { label: "Tags" },
+  notes: { label: "Notes" },
+  nearest: { label: "Nearest anchor" },
+  cursorDE: { label: "ΔE to cursor" },
+};
+// A colour's sRGB hex, whatever form its display colour is stored in.
+const itemHexOf = (it) => {
+  if (it && /^#[0-9a-f]{6}$/i.test(String(it.hex || ""))) return String(it.hex).toUpperCase();
+  try { return new Color("oklch", [it.L, it.C, it.H]).to("srgb").toGamut({ space: "srgb" }).toString({ format: "hex", collapse: false }).toUpperCase(); } catch (e) { return ""; }
+};
+const SPEC_FIELD_IDS = ["material", "sheen", "visualTexture", "tactileTexture", "doorProfile"];
+const COLOUR_FIELD_IDS = ["L", "C", "H", "hex", "colorGroup"];
+const VIEW_FIELD_SETS = {
+  "pins:gallery": { avail: ["name", "code", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "code", ...SPEC_FIELD_IDS, "tags", "notes"] },
+  "pins:table": { avail: ["code", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["code", "L", "C", "H", ...SPEC_FIELD_IDS, "tags", "notes"] },
+  "pins:matrix": { avail: ["name", "code", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "notes"] },
+  "db:gallery": { avail: ["name", "deltaE", "code", "brand", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "deltaE", "code", "brand", "notes"] },
+  "db:table": {
+    avail: ["brand", "sheen", "doorProfile", "visualTexture", "tactileTexture", "material", "code", "deltaE", "L", "C", "H", "tags", "notes"],
+    on: ["brand", "sheen", "doorProfile", "visualTexture", "tactileTexture", "material", "code", "deltaE", "L", "C", "H", "notes"],
+  },
+  "db:matrix": { avail: ["name", "deltaE", "code", "brand", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "notes"] },
+  "anchors:gallery": { avail: ["name", ...COLOUR_FIELD_IDS], on: ["name"] },
+  "anchors:matrix": { avail: ["name", ...COLOUR_FIELD_IDS], on: ["name"] },
+  "anchors:table": { avail: ["L", "C", "H", "nearest", "cursorDE"], on: ["L", "C", "H", "nearest", "cursorDE"] },
+};
+const VIEW_FIELD_FALLBACK = { avail: Object.keys(VIEW_FIELD_DEFS), on: ["name", "code", ...SPEC_FIELD_IDS, "tags", "notes"] };
+const viewFieldSet = (scope, layout) => VIEW_FIELD_SETS[`${scope}:${layout}`] || VIEW_FIELD_FALLBACK;
+
+const FIELDS_PREF_KEY = "csam-fields-v1";
+const fieldStore = (() => {
+  let st = {};
+  try { st = JSON.parse(localStorage.getItem(FIELDS_PREF_KEY) || "{}") || {}; } catch (e) { st = {}; }
+  const subs = new Set();
+  const emit = () => {
+    try { localStorage.setItem(FIELDS_PREF_KEY, JSON.stringify(st)); } catch (e) {}
+    subs.forEach((fn) => { try { fn(); } catch (e) {} });
+  };
+  return {
+    get: (key) => st[key] || null,
+    set: (key, map) => { st = { ...st, [key]: map }; emit(); },
+    reset: (key) => { const n = { ...st }; delete n[key]; st = n; emit(); },
+    subscribe: (fn) => (subs.add(fn), () => subs.delete(fn)),
+  };
+})();
+const useViewFields = (scope, layout) => {
+  const [, force] = useState(0);
+  useEffect(() => fieldStore.subscribe(() => force((n) => n + 1)), []);
+  const key = `${scope}:${layout}`;
+  const set = viewFieldSet(scope, layout);
+  const saved = fieldStore.get(key);
+  const on = (id) => {
+    if (!set.avail.includes(id)) return id === "name";
+    if (saved && saved[id] !== undefined) return !!saved[id];
+    return set.on.includes(id);
+  };
+  return {
+    key, avail: set.avail, on,
+    toggle: (id) => fieldStore.set(key, { ...(saved || {}), [id]: !on(id) }),
+    setAll: (v) => fieldStore.set(key, Object.fromEntries(set.avail.map((id) => [id, v]))),
+    reset: () => fieldStore.reset(key),
+    custom: !!saved,
+  };
+};
+// Tables hide columns by position, so rows (and group headers, which are one
+// wide cell) need no changes: one stylesheet per table, rewritten on change.
+const useColumnFieldCss = (attr, columns, fv) => {
+  const hidden = Object.keys(columns).filter((id) => !fv.on(id));
+  const css = hidden
+    .map((id) => `table[data-fields="${attr}"] > * > tr > :nth-child(${columns[id]}):not([colspan])`)
+    .join(",\n");
+  useEffect(() => {
+    let el = document.getElementById(`csam-fields-${attr}`);
+    if (!el) {
+      el = document.createElement("style");
+      el.id = `csam-fields-${attr}`;
+      document.head.appendChild(el);
+    }
+    el.textContent = css ? `${css} { display: none; }` : "";
+  }, [css]);
+};
+
+// Lines of detail under a swatch (gallery and matrix), for whichever of `ids`
+// the view shows. Specs read as "Sheen: MT (Matte)"; empty ones are skipped.
+const SwatchMetaLines = ({ item, fv, ids, zoom = 1 }) => {
+  const fs = Math.max(5, 6 * zoom);
+  const line = (key, text, extra = "", title) =>
+    React.createElement(
+      "span",
+      { key, className: `w-full truncate text-center ${extra}`, style: { fontSize: `${fs}px` }, title: title || text },
+      text,
+    );
+  const out = [];
+  const lch = ["L", "C", "H"].filter((k) => ids.includes(k) && fv.on(k));
+  ids.forEach((id) => {
+    if (!fv.on(id)) return;
+    if (id === "code" && item.erpCode)
+      out.push(
+        item.erpCode.startsWith("http")
+          ? React.createElement(
+              "a",
+              { key: id, href: item.erpCode, target: "_blank", rel: "noopener noreferrer", onClick: (e) => e.stopPropagation(), className: "w-full truncate text-center font-mono text-sky-600 dark:text-sky-400 hover:underline", style: { fontSize: `${fs}px` } },
+              "Web link",
+            )
+          : line(id, item.erpCode, "font-mono text-slate-500 dark:text-neutral-400"),
+      );
+    else if (id === "brand" && item.brand) out.push(line(id, getBrandDisplayName(item.brand), "font-bold uppercase tracking-widest text-slate-400"));
+    else if (id === "deltaE" && typeof item._d === "number") out.push(line(id, `ΔE ${item._d.toFixed(2)}`, "font-bold text-emerald-600 dark:text-emerald-400"));
+    else if (id === lch[0])
+      out.push(
+        line(
+          "lch",
+          lch.map((k) => (k === "H" ? `H ${Number(item.H).toFixed(0)}°` : `${k} ${Number(item[k]).toFixed(k === "L" ? 2 : 3)}`)).join(" · "),
+          "font-mono text-slate-500 dark:text-neutral-400",
+        ),
+      );
+    else if (id === "hex" && itemHexOf(item)) out.push(line(id, itemHexOf(item), "font-mono text-slate-500 dark:text-neutral-400"));
+    else if (id === "colorGroup") out.push(line(id, getColorGroup(item.L, item.C, item.H, groupingColourSettings), "font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400"));
+    else if (VIEW_FIELD_DEFS[id] && VIEW_FIELD_DEFS[id].spec) {
+      const v = specOption(VIEW_FIELD_DEFS[id].spec, item[id]);
+      if (v) out.push(line(id, `${VIEW_FIELD_DEFS[id].label}: ${v}`, "italic text-slate-500 dark:text-neutral-400"));
+    } else if (id === "tags" && item.tags && item.tags.length)
+      out.push(
+        React.createElement(
+          "div",
+          { key: id, className: "flex flex-wrap justify-center gap-0.5 w-full" },
+          item.tags.slice(0, 3).map((t) =>
+            React.createElement(
+              "span",
+              { key: t, style: { fontSize: `${Math.max(4, 5 * zoom)}px` }, className: "bg-sky-50 dark:bg-sky-500/10 text-sky-600 dark:text-sky-400 px-0.5 rounded-[3px] font-bold uppercase tracking-wider truncate max-w-full" },
+              t,
+            ),
+          ),
+        ),
+      );
+    else if (id === "notes") {
+      const n = itemNotes(item);
+      if (n)
+        out.push(
+          React.createElement(
+            "p",
+            { key: id, title: n, className: "w-full text-center text-slate-600 dark:text-neutral-300 leading-snug whitespace-pre-line break-words line-clamp-4", style: { fontSize: `${fs}px` } },
+            n,
+          ),
+        );
+    }
+  });
+  return out.length ? React.createElement("div", { className: "w-full flex flex-col items-center gap-[1px] leading-tight" }, out) : null;
+};
+const MATRIX_META_IDS = ["code", "brand", "deltaE", "L", "C", "H", "hex", "colorGroup", ...SPEC_FIELD_IDS, "tags", "notes"];
+
+// ── toolbar menu ──
+const FieldsMenu = ({ scope, layout }) => {
+  const fv = useViewFields(scope, layout);
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef(null), panelRef = useRef(null);
+  const [pos, setPos] = useState(null);
+  React.useLayoutEffect(() => {
+    if (!open) return undefined;
+    const place = () => {
+      const r = btnRef.current && btnRef.current.getBoundingClientRect();
+      if (!r) return;
+      const W = window.innerWidth, w = Math.min(300, W - 16);
+      setPos({ left: Math.max(8, Math.min(r.right - w, W - w - 8)), top: r.bottom + 6, width: w, maxHeight: window.innerHeight - r.bottom - 14 });
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [open]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const down = (e) => {
+      if (panelRef.current && panelRef.current.contains(e.target)) return;
+      if (btnRef.current && btnRef.current.contains(e.target)) return;
+      setOpen(false);
+    };
+    const key = (e) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("pointerdown", down, true);
+    document.addEventListener("keydown", key);
+    return () => { document.removeEventListener("pointerdown", down, true); document.removeEventListener("keydown", key); };
+  }, [open]);
+  const shown = fv.avail.filter(fv.on).length;
+  const smallBtn = "text-[9px] font-bold uppercase tracking-wider px-2 py-1 rounded hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 disabled:opacity-40";
+  const layoutName = { gallery: "gallery", table: "table", matrix: "matrix" }[layout] || layout;
+  return React.createElement(
+    React.Fragment,
+    null,
+    React.createElement(
+      "button",
+      {
+        ref: btnRef,
+        onClick: () => setOpen(!open),
+        "aria-expanded": open,
+        title: `Fields shown in this ${layoutName}`,
+        className: `${TB_BTN} px-2.5 border ${
+          fv.custom
+            ? "border-sky-200 dark:border-sky-500/30 bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400"
+            : "border-slate-200 dark:border-neutral-700 text-slate-500 dark:text-neutral-400 hover:bg-slate-50 dark:hover:bg-neutral-800"
+        }`,
+      },
+      React.createElement(Icon, { name: "list-checks", className: "w-3.5 h-3.5 shrink-0" }),
+      React.createElement("span", { className: "hidden 2xl:inline" }, "Fields"),
+      React.createElement("span", { className: "text-[9px] font-mono opacity-70" }, `${shown}/${fv.avail.length}`),
+    ),
+    open && pos &&
+      ReactDOM.createPortal(
+        React.createElement(
+          "div",
+          {
+            ref: panelRef,
+            role: "dialog",
+            "aria-label": "Fields",
+            className: "fixed z-[110] bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-2xl p-3 flex flex-col gap-1",
+            style: { left: pos.left, top: pos.top, width: pos.width, maxHeight: Math.max(200, pos.maxHeight) },
+          },
+          React.createElement(
+            "div",
+            { className: "flex items-baseline gap-2 pb-1" },
+            React.createElement("span", { className: "text-[10px] font-black uppercase tracking-widest text-slate-700 dark:text-neutral-200" }, "Fields"),
+            React.createElement("span", { className: "text-[9px] text-slate-400" }, `shown in this ${layoutName}`),
+          ),
+          React.createElement(
+            "div",
+            { className: "flex-1 min-h-0 overflow-y-auto custom-scrollbar -mx-1" },
+            fv.avail.map((id) =>
+              React.createElement(
+                "label",
+                { key: id, className: "flex items-center gap-2 px-1 py-1 rounded hover:bg-slate-50 dark:hover:bg-neutral-800/60 cursor-pointer" },
+                React.createElement("input", { type: "checkbox", checked: fv.on(id), onChange: () => fv.toggle(id), className: "accent-sky-500" }),
+                React.createElement("span", { className: "text-[11px] font-bold text-slate-700 dark:text-neutral-200" }, VIEW_FIELD_DEFS[id].label),
+              ),
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "flex items-center gap-1 pt-1 border-t border-slate-100 dark:border-neutral-800" },
+            React.createElement("button", { onClick: () => fv.setAll(true), className: smallBtn }, "Show all"),
+            React.createElement("button", { onClick: () => fv.setAll(false), className: smallBtn }, "Hide all"),
+            React.createElement("div", { className: "flex-1" }),
+            React.createElement("button", { onClick: fv.reset, disabled: !fv.custom, className: smallBtn }, "Reset"),
+          ),
+        ),
+        document.body,
+      ),
+  );
+};
+
 const ViewportSwatches = ({
   items,
   layout,
@@ -7886,6 +8167,8 @@ const ViewportSwatches = ({
   onEditItem,
   // Which tab's Group by / matrix axes apply ("pins", "db", "anchors").
   groupScope,
+  // { shown, total, onMore } when the list behind the matrix loads in pages
+  matrixMore,
 }) => {
   useDisplayGamut();
   const [sortBy, setSortBy] = useState(dim1);
@@ -7993,6 +8276,17 @@ const ViewportSwatches = ({
     DisplayGamut.id,
   ]);
   const grp = useGrouping(groupScope || "none", sortedItems);
+  const fv = useViewFields(groupScope || "none", layout === "matrix" ? "matrix" : layout === "table" ? "table" : "gallery");
+  // a matrix swatch with the view's fields under it
+  const matrixCard = (item, idx, sw) =>
+    MATRIX_META_IDS.some(fv.on)
+      ? React.createElement(
+          "div",
+          { key: idx, className: "flex flex-col items-center gap-0.5 self-start", style: { width: `${baseMatrixSize * swatchZoom}px` } },
+          sw,
+          React.createElement(SwatchMetaLines, { item, fv, ids: MATRIX_META_IDS, zoom: swatchZoom }),
+        )
+      : sw;
   const axisStore = useGroupStore();
   const axes = groupScope
     ? axisStore.matrix(groupScope)
@@ -8043,7 +8337,7 @@ const ViewportSwatches = ({
     return React.createElement(
       "div",
       { className: "absolute inset-0 flex flex-col bg-slate-50/50 dark:bg-neutral-900/50" },
-      React.createElement(MatrixAxisBar, { scope: groupScope || "pins", axes }),
+      React.createElement(MatrixAxisBar, { scope: groupScope || "pins", axes, more: matrixMore }),
       React.createElement(
       "div",
       { className: "flex-1 min-h-0 overflow-auto custom-scrollbar p-4" },
@@ -8110,7 +8404,7 @@ const ViewportSwatches = ({
                       style: { width: `${blockPx}px` },
                     },
                     cellItems.map((item, idx) =>
-                      React.createElement(
+                      matrixCard(item, idx, React.createElement(
                         "div",
                         {
                           key: idx,
@@ -8215,7 +8509,7 @@ ${item.erpCode}`,
                               }),
                             ),
                         ),
-                        swatchZoom >= 1 &&
+                        swatchZoom >= 1 && fv.on("name") &&
                           React.createElement(
                             "div",
                             {
@@ -8245,7 +8539,7 @@ ${item.erpCode}`,
                                 ),
                               ),
                           ),
-                      ),
+                      )),
                     ),
                   ),
                 );
@@ -8765,6 +9059,7 @@ ${item.erpCode}`,
                   }),
                 ),
             ),
+            fv.on("name") &&
             React.createElement(
               "div",
               {
@@ -8802,6 +9097,7 @@ ${item.erpCode}`,
               className:
                 "flex flex-col items-center text-center px-0.5 pb-2 w-full",
             },
+            fv.on("code") &&
             React.createElement(
               "span",
               {
@@ -8829,6 +9125,7 @@ ${item.erpCode}`,
                   )
                 : item.erpCode,
             ),
+            React.createElement(SwatchMetaLines, { item, fv, ids: ["brand", "deltaE", "L", "C", "H", "hex", "colorGroup"], zoom: swatchZoom }),
             // Catalog reads like the printed Avery labels: the spec line under
             // each swatch, in the same order as the label.
             showSpecs &&
@@ -8848,7 +9145,7 @@ ${item.erpCode}`,
                   { label: "Vis. Pattern", key: "visualTexture", options: LABEL_OPTIONS.visualPattern },
                   { label: "Tac. Texture", key: "tactileTexture", options: LABEL_OPTIONS.tactileTexture },
                   { label: "Profile", key: "doorProfile", options: LABEL_OPTIONS.doorProfile },
-                ].map((f) =>
+                ].filter((f) => fv.on(f.key)).map((f) =>
                   // Editable here too, so the swatch view is not a read-only
                   // copy of the table.
                   onEditItem
@@ -8878,6 +9175,7 @@ ${item.erpCode}`,
                       ),
                 ),
               ),
+            fv.on("notes") &&
             itemNotes(item) &&
               React.createElement(
                 "p",
@@ -8893,6 +9191,7 @@ ${item.erpCode}`,
                 },
                 itemNotes(item),
               ),
+            fv.on("tags") &&
             item.tags &&
               item.tags.length > 0 &&
               React.createElement(
@@ -9196,6 +9495,7 @@ const ViewPinsInner = ({
     });
   }, [filteredPinItems, sortBy, sortAsc, tagFilter, searchTerm]);
   const grp = useGrouping("pins", sortedItems);
+  const fvT = useViewFields("pins", "table");
   const handleUnlock = (id) => {
     setSavedColors((prev) => {
       const next = { ...prev };
@@ -9313,21 +9613,6 @@ const ViewPinsInner = ({
           sortedItems.length,
         ),
         React.createElement(SwatchLegend, { className: "ml-3" }),
-        catalogView === "swatches" &&
-          React.createElement(
-            "button",
-            {
-              onClick: () => setShowSpecs(!showSpecs),
-              "aria-pressed": showSpecs,
-              title: "Show material properties under each swatch",
-              className: `ml-2 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors ${
-                showSpecs
-                  ? "bg-slate-800 text-white dark:bg-neutral-100 dark:text-neutral-900"
-                  : "text-slate-500 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-800"
-              }`,
-            },
-            "Specs",
-          ),
       ),
     ),
     React.createElement(
@@ -9591,6 +9876,7 @@ const ViewPinsInner = ({
                 className:
                   "flex flex-col w-full sm:w-40 sm:flex-shrink-0 border-t sm:border-t-0 sm:border-r border-slate-100 dark:border-neutral-800 pt-2 sm:pt-0 sm:pr-4",
               },
+              fvT.on("code") &&
               React.createElement(
                 "div",
                 {
@@ -9608,6 +9894,14 @@ const ViewPinsInner = ({
                 },
                 item.displayName,
               ),
+              (fvT.on("hex") || fvT.on("colorGroup")) &&
+                React.createElement(
+                  "div",
+                  { className: "mt-1 flex flex-col text-[9px] text-slate-500 dark:text-neutral-400" },
+                  fvT.on("hex") && React.createElement("span", { className: "font-mono" }, itemHexOf(item)),
+                  fvT.on("colorGroup") && React.createElement("span", { className: "font-bold uppercase tracking-wider truncate" }, getColorGroup(item.L, item.C, item.H, groupingColourSettings)),
+                ),
+              fvT.on("tags") &&
               item.tags.length > 0 &&
                 React.createElement(
                   "div",
@@ -9628,6 +9922,7 @@ const ViewPinsInner = ({
             React.createElement(
               "div",
               { className: "flex-1 flex flex-col justify-center min-w-0 sm:pr-4 py-1" },
+              fvT.on("notes") &&
               React.createElement(
                 "div",
                 {
@@ -9636,6 +9931,7 @@ const ViewPinsInner = ({
                 },
                 "Notes",
               ),
+              fvT.on("notes") &&
               React.createElement(
                 "div",
                 {
@@ -9654,7 +9950,7 @@ const ViewPinsInner = ({
                   { label: "Vis. Pattern", key: "visualTexture", options: LABEL_OPTIONS.visualPattern },
                   { label: "Tac. Texture", key: "tactileTexture", options: LABEL_OPTIONS.tactileTexture },
                   { label: "Material", key: "material", options: LABEL_OPTIONS.material }
-                ].map(field => 
+                ].filter((f) => fvT.on(f.key)).map(field => 
                   React.createElement(
                     "div",
                     { key: field.key, className: "flex flex-col gap-0.5" },
@@ -9680,6 +9976,7 @@ const ViewPinsInner = ({
             React.createElement(
               "div",
               { className: "flex flex-row sm:flex-col gap-3 sm:gap-0 items-center sm:items-end w-full sm:w-24 sm:flex-shrink-0 sm:pr-4" },
+              fvT.on("L") &&
               React.createElement(
                 "div",
                 {
@@ -9689,6 +9986,7 @@ const ViewPinsInner = ({
                 "L: ",
                 item.L.toFixed(3),
               ),
+              fvT.on("C") &&
               React.createElement(
                 "div",
                 {
@@ -9698,6 +9996,7 @@ const ViewPinsInner = ({
                 "C: ",
                 item.C.toFixed(3),
               ),
+              fvT.on("H") &&
               React.createElement(
                 "div",
                 {
@@ -16758,9 +17057,12 @@ const ViewDatabase = ({
   };
   // Plain render helper, not a component (see note on the other SortButtons).
   // Rows arrive in pages as you scroll (it used to stop at 300).
-  useEffect(() => setListLimit(150), [sortedItems]);
+  useEffect(() => setListLimit(150), [sortedItems, swatchLayout]);
   const renderItems = sortedItems.slice(0, listLimit);
   const grp = useGrouping("db", sortedItems);
+  const fv = useViewFields("db", swatchLayout === "matrix" ? "matrix" : swatchLayout === "gallery" ? "gallery" : "table");
+  const fvTable = useViewFields("db", "table");
+  useColumnFieldCss("db-table", { brand: 4, sheen: 5, doorProfile: 6, visualTexture: 7, tactileTexture: 8, material: 9, code: 10, deltaE: 11, L: 12, C: 13, H: 14, tags: 15, notes: 16 }, fvTable);
   // The table is unusable below ~640px — eight columns behind a horizontal
   // scroll. The existing card list says the same thing in one column, so narrow
   // viewports fall back to it rather than getting a second render path.
@@ -17111,6 +17413,10 @@ const ViewDatabase = ({
               items: renderItems,
               layout: "matrix",
               groupScope: "db",
+              matrixMore:
+                sortedItems.length > renderItems.length
+                  ? { shown: renderItems.length, total: sortedItems.length, onMore: () => setListLimit((n) => n + 300) }
+                  : null,
               swatchZoom,
               dim1: dbAxis === "HxL" ? "L" : dbAxis === "CxL" ? "L" : "C",
               dim2: dbAxis === "HxL" ? "H" : dbAxis === "CxL" ? "C" : "H",
@@ -17358,7 +17664,7 @@ const ViewDatabase = ({
           },
           React.createElement(
             "table",
-            { className: "w-full text-[10px] text-left" },
+            { className: "w-full text-[10px] text-left", "data-fields": "db-table" },
             React.createElement(
               "thead",
               {
@@ -17409,6 +17715,8 @@ const ViewDatabase = ({
                 renderFilterHeader("L", "L", "w-16", true, true),
                 renderFilterHeader("C", "C", "w-16", true, true),
                 renderFilterHeader("H", "H", "w-16", true, true),
+                React.createElement("th", { className: "p-3" }, "Tags"),
+                React.createElement("th", { className: "p-3" }, "Notes"),
                 React.createElement("th", { className: "p-3 w-12" }, "Edit"),
               ),
             ),
@@ -17637,6 +17945,23 @@ const ViewDatabase = ({
                   ),
                   React.createElement(
                     "td",
+                    { className: "p-2" },
+                    item.tags && item.tags.length > 0 &&
+                      React.createElement(
+                        "div",
+                        { className: "flex flex-wrap gap-1 max-w-[180px]" },
+                        item.tags.map((t) =>
+                          React.createElement("span", { key: t, className: "bg-sky-100 dark:bg-sky-500/20 text-sky-700 dark:text-sky-300 px-1 py-0.5 rounded text-[7px] font-bold uppercase tracking-wider" }, t),
+                        ),
+                      ),
+                  ),
+                  React.createElement(
+                    "td",
+                    { className: "p-2 text-[10px] text-slate-600 dark:text-neutral-300 min-w-[140px] max-w-[260px]", title: itemNotes(item) || undefined },
+                    React.createElement("span", { className: "line-clamp-2 whitespace-pre-line" }, itemNotes(item)),
+                  ),
+                  React.createElement(
+                    "td",
                     { className: "p-2 text-center text-slate-300" },
                     React.createElement(
                       "button",
@@ -17790,7 +18115,7 @@ const ViewDatabase = ({
                     }),
                   ),
                 ),
-                swatchZoom >= 1 &&
+                swatchZoom >= 1 && fv.on("name") &&
                   React.createElement(
                     "div",
                     {
@@ -17833,7 +18158,7 @@ const ViewDatabase = ({
                   className:
                     "flex flex-col items-center text-center px-0.5 pb-2 w-full",
                 },
-                item._d !== void 0 &&
+                fv.on("deltaE") && item._d !== void 0 &&
                   React.createElement(
                     "div",
                     {
@@ -17848,6 +18173,7 @@ const ViewDatabase = ({
                     " ",
                     item._d.toFixed(2),
                   ),
+                fv.on("code") &&
                 React.createElement(
                   "span",
                   {
@@ -17876,6 +18202,7 @@ const ViewDatabase = ({
                       )
                     : item.erpCode,
                 ),
+                fv.on("brand") &&
                 React.createElement(
                   "span",
                   {
@@ -17885,7 +18212,8 @@ const ViewDatabase = ({
                   },
                   getBrandDisplayName(item.brand),
                 ),
-                itemNotes(item) &&
+                React.createElement(SwatchMetaLines, { item, fv, ids: [...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags"], zoom: swatchZoom }),
+                fv.on("notes") && itemNotes(item) &&
                   React.createElement(
                     "p",
                     {
@@ -17904,6 +18232,7 @@ const ViewDatabase = ({
             ),
           ),
         ),
+      effectiveLayout !== "matrix" &&
       sortedItems.length > renderItems.length &&
         React.createElement(LoadMoreSentinel, {
           left: sortedItems.length - renderItems.length,
@@ -21225,6 +21554,7 @@ const AppUI = ({
                 onChange: activeTab === "pins" ? setPinsZoom : activeTab === "anchors" ? setAnchorsZoom : setSwatchZoom,
               },
               sort: { enabled: listTab, ...srt },
+              fields: { enabled: listTab, scope: activeTab, layout: listTab ? lay[0] : "gallery" },
               group: {
                 enabled: listTab && lay[0] !== "matrix",
                 scope: activeTab,
