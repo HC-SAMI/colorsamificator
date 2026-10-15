@@ -5594,7 +5594,7 @@ const VisibilityMenu = ({ vis, setVis, brands, brandOn, setBrand, brandLabel, ki
   );
 };
 
-const TabToolbar = ({ view, layout, visibility, search, zoom, sort, filters }) =>
+const TabToolbar = ({ view, layout, visibility, search, zoom, sort, group, filters }) =>
   React.createElement(
     "div",
     {
@@ -5643,6 +5643,9 @@ const TabToolbar = ({ view, layout, visibility, search, zoom, sort, filters }) =
     ),
     React.createElement(TbGroup, { enabled: sort.enabled, why: "Explore places colours by their coordinates, not in a sorted list" },
       React.createElement(SortControl, { fields: sort.fields, sortBy: sort.by, setSortBy: sort.setBy, sortAsc: sort.asc, setSortAsc: sort.setAsc, compact: true })),
+    group &&
+      React.createElement(TbGroup, { enabled: group.enabled, why: group.why },
+        React.createElement(GroupMenu, { scope: group.scope })),
     React.createElement(TbGroup, { enabled: filters.enabled, why: "Filters narrow colour lists; anchors are listed in full" },
       React.createElement(
         "button",
@@ -5796,6 +5799,10 @@ const ViewAnchors = ({
     keyed.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0) * (sortAsc ? 1 : -1));
     return keyed.map((k) => k[1]);
   }, [rows, query, sortBy, sortAsc, sortBy === "cursor" ? cursor : null]);
+  // Group by: headers become rows of the same height, so the table stays virtual.
+  const grp = useGrouping("anchors", shown);
+  const flat = grp.rows;
+  const rowCount = flat ? flat.length : shown.length;
 
   const closePairs = useMemo(() => rows.filter((r) => r.nnDE < ANCHOR_CLOSE_DE).length, [rows]);
   const unnamed = useMemo(() => rows.filter((r) => !r.name).length, [rows]);
@@ -5872,7 +5879,7 @@ const ViewAnchors = ({
     return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); cancelAnimationFrame(raf); };
   }, [rows.length === 0, layout]);
   const first = Math.max(0, Math.floor(view.top / ANCHOR_ROW_H) - ANCHOR_OVERSCAN);
-  const last = Math.min(shown.length, Math.ceil((view.top + view.h) / ANCHOR_ROW_H) + ANCHOR_OVERSCAN);
+  const last = Math.min(rowCount, Math.ceil((view.top + view.h) / ANCHOR_ROW_H) + ANCHOR_OVERSCAN);
 
   const th = "px-2 py-2 text-left text-[9px] font-bold uppercase tracking-widest text-slate-400 whitespace-nowrap";
   const sortHeader = (id, label, right) =>
@@ -5982,6 +5989,7 @@ const ViewAnchors = ({
             displayName: r.name || "Unnamed", tags: [], note: "", erpCode: "", inSrgb: true,
           })),
           layout: layout === "matrix" ? "matrix" : "gallery",
+          groupScope: "anchors",
           swatchZoom,
           externalSort: true,
           dim1: "L",
@@ -6044,17 +6052,19 @@ const ViewAnchors = ({
               "tbody",
               null,
               first > 0 && React.createElement("tr", { key: "pad-top", "aria-hidden": true, style: { height: first * ANCHOR_ROW_H } }),
-              shown.slice(first, last).map((r) =>
-                React.createElement(AnchorRow, {
+              (flat ? flat.slice(first, last) : shown.slice(first, last).map((it) => ({ it }))).map((e) => {
+                if (e.h) return grp.header(e, { colSpan: 9, rowHeight: ANCHOR_ROW_H });
+                const r = e.it;
+                return React.createElement(AnchorRow, {
                   key: r.id, r, act,
                   isHere: !!cursorAnchor && cursorAnchor.id === r.id,
                   checked: !!selected[r.id],
                   confirming: confirm === r.id,
                   autoFocus: focusId === r.id,
                   deCursor: anchorRowDE(r, cursor).toFixed(1),
-                }),
-              ),
-              last < shown.length && React.createElement("tr", { key: "pad-bottom", "aria-hidden": true, style: { height: (shown.length - last) * ANCHOR_ROW_H } }),
+                });
+              }),
+              last < rowCount && React.createElement("tr", { key: "pad-bottom", "aria-hidden": true, style: { height: (rowCount - last) * ANCHOR_ROW_H } }),
             ),
           ),
     ),
@@ -7297,6 +7307,560 @@ const CrossReference = ({ colorData, onSelectColor }) => {
   );
 };
 
+// ─── Grouping ────────────────────────────────────────────────────────────────
+// ClickUp-style "Group by" for the colour lists: up to three nested levels,
+// each on any field (hue, chroma, lightness, colour group, brand, any material
+// spec, tags, ΔE). Numeric fields are cut into bins as wide as the level's
+// tolerance. The same fields drive the matrix's rows and columns.
+//
+// Settings live in a small store shared by the toolbar menu and the lists, so
+// nothing needs threading through props; each tab (scope) has its own.
+
+// A note is text; a URL or data URI in the note column is a photo.
+const isImageRef = (s) => {
+  const v = String(s || "").trim();
+  return /^(https?:|data:|blob:)/i.test(v) || /^[\w./-]+\.(jpe?g|png|webp|gif|svg|avif)(\?.*)?$/i.test(v);
+};
+const itemNotes = (it) => {
+  if (!it) return "";
+  for (const v of [it.displayNotes, it.notes, it.note]) {
+    const s = typeof v === "string" ? v.trim() : "";
+    if (s && !isImageRef(s)) return s;
+  }
+  return "";
+};
+
+// The current colour-group settings (App writes them here as it renders).
+let groupingColourSettings = null;
+const hueFamilyOf = (L, C, H, gs) => {
+  const s = gs || defaultGroupSettings;
+  if (!(C >= (s.neutralC ?? 0.02))) return "Neutral";
+  let best = null, bd = Infinity;
+  (s.hues || []).forEach((hu) => {
+    const d = hueArcDistance(H, hueCenterOf(hu, s.hues));
+    if (d < bd) { bd = d; best = hu; }
+  });
+  return best ? best.name : "Unknown";
+};
+const hueCentreByName = (name, gs) => {
+  const s = gs || defaultGroupSettings;
+  const hu = (s.hues || []).find((x) => x.name === name);
+  return hu ? hueCenterOf(hu, s.hues) : null;
+};
+
+const specGroupField = (id, label, options) => ({
+  id, label, kind: "cat", none: `No ${label.toLowerCase()}`,
+  get: (it) => { const v = specOption(options, it[id]); return v ? [v] : []; },
+  rank: (k) => { const i = options.indexOf(k); return i < 0 ? 900 : i; },
+});
+const GROUP_FIELDS = [
+  { id: "H", label: "Hue", short: "H", kind: "num", unit: "°", wrap: 360, def: 30, min: 2, max: 120, step: 1, digits: 0, get: (it) => it.H },
+  { id: "L", label: "Lightness", short: "L", kind: "num", def: 0.1, min: 0.01, max: 0.5, step: 0.01, digits: 2, lo: 0, hi: 1, get: (it) => it.L },
+  { id: "C", label: "Chroma", short: "C", kind: "num", def: 0.04, min: 0.005, max: 0.2, step: 0.005, digits: 3, lo: 0, get: (it) => it.C },
+  { id: "colorGroup", label: "Colour group", kind: "cat", colourOrder: true,
+    get: (it) => [getColorGroup(it.L, it.C, it.H, groupingColourSettings)] },
+  { id: "hueFamily", label: "Hue family", kind: "cat", colourOrder: true,
+    get: (it) => [hueFamilyOf(it.L, it.C, it.H, groupingColourSettings)] },
+  { id: "brand", label: "Brand", kind: "cat", none: "No brand",
+    get: (it) => (it.brand ? [typeof getBrandDisplayName === "function" ? getBrandDisplayName(it.brand) : it.brand] : []) },
+  specGroupField("material", "Material", LABEL_OPTIONS.material),
+  specGroupField("sheen", "Sheen", LABEL_OPTIONS.sheen),
+  specGroupField("visualTexture", "Visual pattern", LABEL_OPTIONS.visualPattern),
+  specGroupField("tactileTexture", "Tactile texture", LABEL_OPTIONS.tactileTexture),
+  specGroupField("doorProfile", "Profile", LABEL_OPTIONS.doorProfile),
+  { id: "tags", label: "Tag", kind: "cat", multi: true, none: "No tags",
+    get: (it) => [...new Set((it.tags || []).map((t) => String(t).trim()).filter(Boolean))] },
+  { id: "notes", label: "Notes", kind: "cat", get: (it) => [itemNotes(it) ? "With notes" : "No notes"] },
+  { id: "spectral", label: "Spectral data", kind: "cat", get: (it) => [it.hasSpectral || (it.spectral && it.spectral.length) ? "Spectral data" : "No spectral data"] },
+  { id: "deltaE", label: "ΔE to cursor", short: "ΔE", kind: "num", def: 1, min: 0.1, max: 20, step: 0.1, digits: 1, lo: 0, get: (it) => it._d },
+];
+const GROUP_FIELD = Object.fromEntries(GROUP_FIELDS.map((f) => [f.id, f]));
+const GROUP_SCOPE_FIELDS = {
+  pins: ["H", "L", "C", "colorGroup", "hueFamily", "material", "sheen", "visualTexture", "tactileTexture", "doorProfile", "tags", "notes"],
+  db: ["H", "L", "C", "colorGroup", "hueFamily", "brand", "material", "sheen", "visualTexture", "tactileTexture", "doorProfile", "tags", "notes", "spectral", "deltaE"],
+  anchors: ["H", "L", "C", "colorGroup", "hueFamily"],
+};
+const groupFieldsFor = (scope) => (GROUP_SCOPE_FIELDS[scope] || GROUP_SCOPE_FIELDS.pins).map((id) => GROUP_FIELD[id]);
+const GROUP_MAX_LEVELS = 3;
+const MATRIX_DEFAULTS = { pins: { y: "L", x: "C" }, db: { y: "L", x: "H" }, anchors: { y: "L", x: "H" } };
+
+const fmtGroupNum = (f, v) => (f.digits === 0 ? String(Math.round(v)) : v.toFixed(f.digits));
+const clampTol = (f, t) => {
+  const n = parseFloat(t);
+  return isFinite(n) && n > 0 ? Math.max(f.min, Math.min(f.max, n)) : f.def;
+};
+// The bin a value falls in. Hue wraps; lightness 1.0 joins the top bin.
+const groupBin = (f, tol, v) => {
+  if (typeof v !== "number" || !isFinite(v)) return null;
+  if (f.wrap) {
+    const n = Math.max(1, Math.ceil(f.wrap / tol - 1e-9));
+    const h = ((v % f.wrap) + f.wrap) % f.wrap;
+    return Math.min(n - 1, Math.floor(h / tol + 1e-9));
+  }
+  if (f.hi !== undefined && v >= f.hi) return Math.max(0, Math.ceil(f.hi / tol - 1e-9) - 1);
+  if (f.lo !== undefined && v < f.lo) return Math.floor(f.lo / tol + 1e-9);
+  return Math.floor(v / tol + 1e-9);
+};
+const groupBinLabel = (f, tol, b) => {
+  const a = b * tol;
+  let z = (b + 1) * tol;
+  if (f.wrap) z = Math.min(f.wrap, z);
+  if (f.hi !== undefined) z = Math.min(f.hi, z);
+  return `${f.short || f.label} ${fmtGroupNum(f, a)}–${fmtGroupNum(f, z)}${f.unit || ""}`;
+};
+// Every group an item belongs to on one level: [{ key, label, rank }].
+const groupKeysOf = (lv, it) => {
+  const f = GROUP_FIELD[lv.field];
+  if (!f) return [{ key: "·", label: "—", rank: 0 }];
+  if (f.kind === "num") {
+    const tol = clampTol(f, lv.tol);
+    const b = groupBin(f, tol, f.get(it));
+    return b === null
+      ? [{ key: "none", label: `No ${f.label.toLowerCase()}`, rank: Infinity, none: true }]
+      : [{ key: `b${b}`, label: groupBinLabel(f, tol, b), rank: b, bin: b }];
+  }
+  const vals = f.get(it).filter((v) => v !== "" && v !== undefined && v !== null);
+  if (!vals.length) return [{ key: "none", label: f.none || `No ${f.label.toLowerCase()}`, rank: Infinity, none: true }];
+  return (f.multi ? vals : vals.slice(0, 1)).map((v) => ({ key: `v:${String(v).toLowerCase()}`, label: String(v), rank: null }));
+};
+// How groups on one level are ordered: bins by value, specs in their option
+// order, colour groups round the hue circle (neutrals first, dark to light),
+// everything else A–Z. "None" always last.
+const groupRank = (f, g, gs) => {
+  if (g.none) return [2, 0, ""];
+  if (f.kind === "num") return [0, g.rank, ""];
+  if (f.rank) return [0, f.rank(g.label), g.label.toLowerCase()];
+  if (f.colourOrder) {
+    if (g.n && g.neutral / g.n > 0.5) return [0, -10 + g.sumL / g.n, ""];
+    const c = hueCentreByName(g.label.split(" ").pop(), gs);
+    const meanH = ((Math.atan2(g.sumB, g.sumA) * 180) / Math.PI + 360) % 360;
+    return [0, (c !== null ? c : meanH) + (g.sumL / g.n >= ((gs || defaultGroupSettings).lightL ?? 0.5) ? 0 : 0.5), g.label.toLowerCase()];
+  }
+  return [0, 0, g.label.toLowerCase()];
+};
+const cmpRank = (a, b) => a[0] - b[0] || a[1] - b[1] || (a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : 0);
+
+// Items → nested groups. Items keep their incoming (sorted) order inside a group.
+const buildGroupTree = (items, levels, gs) => {
+  const neutralC = (gs || defaultGroupSettings).neutralC ?? 0.02;
+  const root = { children: new Map(), level: -1, path: "" };
+  const add = (node, it) => {
+    node.n = (node.n || 0) + 1;
+    const C = it.C || 0, h = ((it.H || 0) * Math.PI) / 180;
+    node.sumL = (node.sumL || 0) + (it.L || 0);
+    node.sumA = (node.sumA || 0) + C * Math.cos(h);
+    node.sumB = (node.sumB || 0) + C * Math.sin(h);
+    node.neutral = (node.neutral || 0) + (C < neutralC ? 1 : 0);
+  };
+  items.forEach((it) => {
+    let frontier = [root];
+    levels.forEach((lv, li) => {
+      const keys = groupKeysOf(lv, it), next = [];
+      frontier.forEach((parent) => {
+        keys.forEach((k) => {
+          let node = parent.children.get(k.key);
+          if (!node) {
+            node = { ...k, level: li, field: lv.field, desc: !!lv.desc, path: parent.path ? `${parent.path}\u0001${lv.field}=${k.key}` : `${lv.field}=${k.key}`, children: new Map(), items: [] };
+            parent.children.set(k.key, node);
+          }
+          add(node, it);
+          next.push(node);
+        });
+      });
+      frontier = next;
+    });
+    frontier.forEach((leaf) => leaf.items.push(it));
+  });
+  const order = (node) => {
+    const kids = [...node.children.values()];
+    if (!kids.length) return;
+    const f = GROUP_FIELD[kids[0].field];
+    const ranked = kids.map((g) => [groupRank(f, g, gs), g]);
+    ranked.sort((a, b) => cmpRank(a[0], b[0]));
+    let list = ranked.map((r) => r[1]);
+    if (kids[0].desc) {
+      const none = list.filter((g) => g.none);
+      list = list.filter((g) => !g.none).reverse().concat(none);
+    }
+    node.sorted = list;
+    list.forEach(order);
+  };
+  order(root);
+  return root;
+};
+// Mean colour of a group (OkLab mean), for the swatch in its header.
+const groupMeanColour = (g) => {
+  if (!g.n) return null;
+  const L = g.sumL / g.n, a = g.sumA / g.n, b = g.sumB / g.n;
+  const C = Math.sqrt(a * a + b * b), H = ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360;
+  try {
+    const hex = typeof lchDisplayHex === "function" ? lchDisplayHex(L, C, H) : new Color("oklch", [L, C, H]).toGamut({ space: "srgb" }).toString({ format: "hex" });
+    return DisplayGamut.css(L, C, H, hex) || hex;
+  } catch (e) {
+    return null;
+  }
+};
+
+// ── store ──
+const GROUP_PREF_KEY = "csam-groupby-v1";
+const groupStore = (() => {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(GROUP_PREF_KEY) || "{}") || {}; } catch (e) { saved = {}; }
+  const st = { levels: saved.levels || {}, matrix: saved.matrix || {}, collapsed: {} };
+  const subs = new Set();
+  const NO_LEVELS = [], OPEN = { all: false, keys: new Set() };
+  const persist = () => {
+    try { localStorage.setItem(GROUP_PREF_KEY, JSON.stringify({ levels: st.levels, matrix: st.matrix })); } catch (e) {}
+  };
+  const emit = () => subs.forEach((fn) => { try { fn(); } catch (e) {} });
+  return {
+    st, subscribe: (fn) => (subs.add(fn), () => subs.delete(fn)),
+    levels: (scope) => st.levels[scope] || NO_LEVELS,
+    setLevels: (scope, lv) => { st.levels = { ...st.levels, [scope]: lv }; st.collapsed = { ...st.collapsed, [scope]: { all: false, keys: new Set() } }; persist(); emit(); },
+    matrix: (scope) => {
+      const d = MATRIX_DEFAULTS[scope] || MATRIX_DEFAULTS.pins, m = st.matrix[scope] || {};
+      return { y: m.y || { field: d.y, tol: GROUP_FIELD[d.y].def }, x: m.x || { field: d.x, tol: GROUP_FIELD[d.x].def } };
+    },
+    setMatrix: (scope, m) => { st.matrix = { ...st.matrix, [scope]: m }; persist(); emit(); },
+    collapsed: (scope) => st.collapsed[scope] || OPEN,
+    toggle: (scope, path) => {
+      const c = st.collapsed[scope] || { all: false, keys: new Set() }, keys = new Set(c.keys);
+      if (keys.has(path)) keys.delete(path); else keys.add(path);
+      st.collapsed = { ...st.collapsed, [scope]: { all: c.all, keys } }; emit();
+    },
+    setAll: (scope, all) => { st.collapsed = { ...st.collapsed, [scope]: { all, keys: new Set() } }; emit(); },
+  };
+})();
+const useGroupStore = () => {
+  const [, force] = useState(0);
+  useEffect(() => groupStore.subscribe(() => force((n) => n + 1)), []);
+  return groupStore;
+};
+const isGroupCollapsed = (c, path) => (c.all ? !c.keys.has(path) : c.keys.has(path));
+
+// ── header ──
+const GroupHeader = ({ node, collapsed, onToggle, colSpan, height }) => {
+  const fill = groupMeanColour(node);
+  const body = React.createElement(
+    "button",
+    {
+      type: "button",
+      onClick: onToggle,
+      "aria-expanded": !collapsed,
+      className: `group/gh w-full flex items-center gap-2 text-left select-none ${node.level === 0 ? "py-1.5" : "py-1"}`,
+      style: { paddingLeft: `${node.level * 18}px` },
+    },
+    React.createElement(Icon, {
+      name: "chevron-right",
+      className: `w-3.5 h-3.5 shrink-0 text-slate-400 transition-transform ${collapsed ? "" : "rotate-90"}`,
+    }),
+    fill && React.createElement("span", {
+      className: "w-3.5 h-3.5 shrink-0 rounded-[4px] ring-1 ring-black/10 dark:ring-white/15",
+      style: { backgroundColor: fill },
+      "aria-hidden": true,
+    }),
+    React.createElement(
+      "span",
+      {
+        className: `truncate font-black uppercase tracking-widest text-slate-700 dark:text-neutral-200 group-hover/gh:text-slate-950 dark:group-hover/gh:text-white ${node.level === 0 ? "text-[10px]" : "text-[9px]"}`,
+      },
+      node.label,
+    ),
+    React.createElement("span", { className: "shrink-0 text-[10px] font-mono text-slate-400" }, node.n),
+    React.createElement("span", { className: "flex-1 h-px bg-slate-200 dark:bg-neutral-800 ml-1", "aria-hidden": true }),
+  );
+  if (colSpan)
+    return React.createElement(
+      "tr",
+      { className: "bg-slate-50/70 dark:bg-neutral-900/60", style: height ? { height } : undefined },
+      React.createElement("td", { colSpan, className: "px-3" }, body),
+    );
+  return React.createElement("div", { className: `basis-full w-full ${node.level === 0 ? "mt-2 first:mt-0" : ""}` }, body);
+};
+
+// The grouped form of a list. `map(opts)(render)` is a drop-in for
+// `list.slice(0, limit).map(render)`: group headers are slotted in between the
+// items (as table rows when opts.colSpan is set), collapsed groups keep only
+// their header, and `limit` counts items, not headers.
+const useGrouping = (scope, items) => {
+  const store = useGroupStore();
+  const levels = store.levels(scope);
+  const collapsed = store.collapsed(scope);
+  const gs = groupingColourSettings;
+  const valid = useMemo(() => levels.filter((l) => GROUP_FIELD[l.field] && GROUP_SCOPE_FIELDS[scope]?.includes(l.field)), [levels, scope]);
+  const tree = useMemo(() => (valid.length && items && items.length ? buildGroupTree(items, valid, gs) : null), [items, valid, gs]);
+  const entries = useMemo(() => {
+    if (!tree) return null;
+    const out = [];
+    const walk = (node) => {
+      (node.sorted || []).forEach((g) => {
+        const shut = isGroupCollapsed(collapsed, g.path);
+        out.push({ h: g, shut });
+        if (shut) return;
+        if (g.sorted && g.sorted.length) walk(g);
+        else g.items.forEach((it) => out.push({ it, path: g.path }));
+      });
+    };
+    walk(tree);
+    return out;
+  }, [tree, collapsed]);
+  const header = (e, opts) =>
+    React.createElement(GroupHeader, {
+      key: `gh:${e.h.path}`, node: e.h, collapsed: e.shut, colSpan: opts.colSpan, height: opts.rowHeight,
+      onToggle: (ev) => { if (ev) ev.stopPropagation(); store.toggle(scope, e.h.path); },
+    });
+  return {
+    active: !!entries,
+    levels: valid,
+    // Flat rows for a virtualised table: { header } or { item }.
+    rows: entries,
+    header,
+    map: (opts = {}) => (render) => {
+      if (!entries) return (opts.limit !== undefined ? items.slice(0, opts.limit) : items).map(render);
+      const out = [];
+      let n = 0;
+      for (let i = 0; i < entries.length; i++) {
+        const e = entries[i];
+        if (e.h) { out.push(header(e, opts)); continue; }
+        if (opts.limit !== undefined && n >= opts.limit) break;
+        const el = render(e.it, n);
+        n++;
+        if (el) out.push(React.cloneElement(el, { key: `${e.path}\u0002${el.key !== null && el.key !== undefined ? el.key : n}` }));
+      }
+      // drop headers stranded after the last item that fits
+      while (out.length && out[out.length - 1].type === GroupHeader && opts.limit !== undefined && n >= opts.limit) out.pop();
+      return out;
+    },
+  };
+};
+
+// ── tolerance input ──
+const GroupTol = ({ field, value, onChange, compact }) => {
+  const f = GROUP_FIELD[field];
+  if (!f || f.kind !== "num") return compact ? null : React.createElement("span", { className: "text-[9px] text-slate-400 italic w-[132px] shrink-0" }, "exact values");
+  const v = clampTol(f, value);
+  return React.createElement(
+    "label",
+    { className: "flex items-center gap-1.5 shrink-0", title: `Tolerance: each ${f.label.toLowerCase()} group spans ${fmtGroupNum(f, v)}${f.unit || ""}` },
+    React.createElement("span", { className: "text-[9px] font-bold uppercase tracking-wider text-slate-400" }, "±"),
+    React.createElement("input", {
+      type: "range", min: f.min, max: f.max, step: f.step, value: v,
+      "aria-label": `${f.label} tolerance`,
+      onChange: (e) => onChange(parseFloat(e.target.value)),
+      className: `${compact ? "w-14" : "w-20"} accent-sky-500 cursor-pointer`,
+    }),
+    React.createElement("input", {
+      type: "number", min: f.min, max: f.max, step: f.step, value: v,
+      "aria-label": `${f.label} tolerance value`,
+      onChange: (e) => { const n = parseFloat(e.target.value); if (isFinite(n) && n > 0) onChange(n); },
+      className: "w-14 bg-white dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-1 py-0.5 text-[10px] font-mono text-slate-700 dark:text-neutral-200 outline-none focus:border-sky-500",
+    }),
+    f.unit && React.createElement("span", { className: "text-[10px] text-slate-400 -ml-1" }, f.unit),
+  );
+};
+const GroupFieldSelect = ({ scope, value, onChange, label, exclude = [] }) =>
+  React.createElement(
+    "select",
+    {
+      value, "aria-label": label,
+      onChange: (e) => onChange(e.target.value),
+      className: "min-w-0 bg-white dark:bg-neutral-800 text-[10px] font-bold border border-slate-200 dark:border-neutral-700 rounded px-1.5 py-1 outline-none text-slate-700 dark:text-neutral-200 focus:border-sky-500",
+    },
+    groupFieldsFor(scope).filter((f) => f.id === value || !exclude.includes(f.id)).map((f) => React.createElement("option", { key: f.id, value: f.id }, f.label)),
+  );
+
+// ── toolbar menu ──
+const GroupMenu = ({ scope }) => {
+  const store = useGroupStore();
+  const levels = store.levels(scope).filter((l) => GROUP_FIELD[l.field] && GROUP_SCOPE_FIELDS[scope]?.includes(l.field));
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef(null), panelRef = useRef(null);
+  const [pos, setPos] = useState(null);
+  React.useLayoutEffect(() => {
+    if (!open) return undefined;
+    const place = () => {
+      const r = btnRef.current && btnRef.current.getBoundingClientRect();
+      if (!r) return;
+      const W = window.innerWidth, w = Math.min(440, W - 16);
+      setPos({ left: Math.max(8, Math.min(r.right - w, W - w - 8)), top: r.bottom + 6, width: w });
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [open]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const down = (e) => {
+      if (panelRef.current && panelRef.current.contains(e.target)) return;
+      if (btnRef.current && btnRef.current.contains(e.target)) return;
+      setOpen(false);
+    };
+    const key = (e) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("pointerdown", down, true);
+    document.addEventListener("keydown", key);
+    return () => { document.removeEventListener("pointerdown", down, true); document.removeEventListener("keydown", key); };
+  }, [open]);
+  const set = (next) => store.setLevels(scope, next);
+  const used = levels.map((l) => l.field);
+  const add = () => {
+    const f = groupFieldsFor(scope).find((x) => !used.includes(x.id));
+    if (f) set([...levels, { field: f.id, tol: f.def }]);
+  };
+  const upd = (i, patch) => set(levels.map((l, k) => (k === i ? { ...l, ...patch } : l)));
+  const summary = levels.map((l) => GROUP_FIELD[l.field].label).join(" › ");
+  const smallBtn = "text-[9px] font-bold uppercase tracking-wider px-2 py-1 rounded hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 disabled:opacity-40";
+  return React.createElement(
+    React.Fragment,
+    null,
+    React.createElement(
+      "button",
+      {
+        ref: btnRef,
+        onClick: () => setOpen(!open),
+        "aria-expanded": open,
+        title: levels.length ? `Grouped by ${summary}` : "Group the list",
+        className: `${TB_BTN} px-2.5 border max-w-[220px] ${
+          levels.length
+            ? "border-sky-200 dark:border-sky-500/30 bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400"
+            : "border-slate-200 dark:border-neutral-700 text-slate-500 dark:text-neutral-400 hover:bg-slate-50 dark:hover:bg-neutral-800"
+        }`,
+      },
+      React.createElement(Icon, { name: "layers", className: "w-3.5 h-3.5 shrink-0" }),
+      React.createElement("span", { className: "truncate" }, "Group"),
+      levels.length > 0 && React.createElement("span", { className: "hidden 2xl:inline truncate" }, `· ${summary}`),
+      levels.length > 0 && React.createElement("span", { className: "2xl:hidden min-w-[16px] h-4 px-1 rounded-full bg-sky-500 text-white text-[9px] leading-4 text-center" }, levels.length),
+    ),
+    open && pos &&
+      ReactDOM.createPortal(
+        React.createElement(
+          "div",
+          {
+            ref: panelRef,
+            role: "dialog",
+            "aria-label": "Group by",
+            className: "fixed z-[110] bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-2xl p-3 flex flex-col gap-2",
+            style: { left: pos.left, top: pos.top, width: pos.width },
+          },
+          React.createElement(
+            "div",
+            { className: "flex items-center gap-2" },
+            React.createElement("span", { className: "text-[10px] font-black uppercase tracking-widest text-slate-700 dark:text-neutral-200" }, "Group by"),
+            React.createElement("span", { className: "text-[9px] text-slate-400" }, "numeric groups are as wide as their tolerance"),
+          ),
+          levels.length === 0 &&
+            React.createElement("p", { className: "text-[11px] text-slate-500 dark:text-neutral-400 py-1" }, "Not grouped. Add a group to split the list into sections."),
+          levels.map((l, i) =>
+            React.createElement(
+              "div",
+              { key: i, className: "flex flex-wrap items-center gap-2 p-1.5 rounded-lg bg-slate-50 dark:bg-neutral-800/50" },
+              React.createElement("span", { className: "w-10 text-[9px] font-bold uppercase tracking-wider text-slate-400" }, i === 0 ? "Group" : "Then"),
+              React.createElement(GroupFieldSelect, {
+                scope, value: l.field, label: `Level ${i + 1} field`, exclude: used,
+                onChange: (id) => upd(i, { field: id, tol: GROUP_FIELD[id].def }),
+              }),
+              React.createElement(GroupTol, { field: l.field, value: l.tol, onChange: (t) => upd(i, { tol: t }) }),
+              React.createElement(
+                "button",
+                { onClick: () => upd(i, { desc: !l.desc }), title: l.desc ? "Groups in descending order" : "Groups in ascending order", className: "ml-auto p-1 rounded hover:bg-white dark:hover:bg-neutral-700 text-slate-500" },
+                React.createElement(Icon, { name: l.desc ? "arrow-up-wide-narrow" : "arrow-down-narrow-wide", className: "w-3.5 h-3.5" }),
+              ),
+              React.createElement(
+                "button",
+                { onClick: () => set(levels.filter((_, k) => k !== i)), title: "Remove this group", "aria-label": "Remove this group", className: "p-1 rounded hover:bg-white dark:hover:bg-neutral-700 text-slate-400 hover:text-red-500" },
+                React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" }),
+              ),
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "flex items-center gap-1 pt-1 border-t border-slate-100 dark:border-neutral-800" },
+            React.createElement(
+              "button",
+              { onClick: add, disabled: levels.length >= GROUP_MAX_LEVELS, className: `${smallBtn} text-sky-600 dark:text-sky-400 flex items-center gap-1` },
+              React.createElement(Icon, { name: "plus", className: "w-3 h-3" }),
+              levels.length ? "Add subgroup" : "Add group",
+            ),
+            React.createElement("div", { className: "flex-1" }),
+            React.createElement("button", { onClick: () => store.setAll(scope, true), disabled: !levels.length, className: smallBtn }, "Collapse all"),
+            React.createElement("button", { onClick: () => store.setAll(scope, false), disabled: !levels.length, className: smallBtn }, "Expand all"),
+            React.createElement("button", { onClick: () => set([]), disabled: !levels.length, className: `${smallBtn} hover:text-red-500` }, "Clear"),
+          ),
+        ),
+        document.body,
+      ),
+  );
+};
+
+// ── matrix axes ──
+// Rows (Y) and columns (X) of the matrix: any field, binned at its tolerance.
+const MatrixAxisBar = ({ scope, axes }) => {
+  const store = useGroupStore();
+  const set = (k, patch) => store.setMatrix(scope, { ...axes, [k]: { ...axes[k], ...patch } });
+  const axis = (k, label) =>
+    React.createElement(
+      "div",
+      { className: "flex items-center gap-1.5 min-w-0" },
+      React.createElement("span", { className: "text-[9px] font-bold uppercase tracking-wider text-slate-400 shrink-0" }, label),
+      React.createElement(GroupFieldSelect, {
+        scope, value: axes[k].field, label: `${label} field`,
+        onChange: (id) => set(k, { field: id, tol: GROUP_FIELD[id].def }),
+      }),
+      React.createElement(GroupTol, { field: axes[k].field, value: axes[k].tol, onChange: (t) => set(k, { tol: t }), compact: true }),
+    );
+  return React.createElement(
+    "div",
+    { className: "shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2 border-b border-slate-200 dark:border-neutral-800 bg-white/80 dark:bg-neutral-900/80" },
+    axis("y", "Rows · Y"),
+    React.createElement(
+      "button",
+      { onClick: () => store.setMatrix(scope, { x: axes.y, y: axes.x }), title: "Swap rows and columns", "aria-label": "Swap rows and columns", className: "p-1 rounded hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500" },
+      React.createElement(Icon, { name: "arrow-left-right", className: "w-3.5 h-3.5" }),
+    ),
+    axis("x", "Columns · X"),
+  );
+};
+// The matrix's rows, columns and cells. Numeric axes show every bin between
+// the lowest and highest occupied one, so gaps in the colour space read as gaps.
+const MATRIX_MAX_FILL = 240;
+const buildMatrix = (items, axes) => {
+  const axisOf = (ax) => {
+    const f = GROUP_FIELD[ax.field];
+    return { f, lv: { field: ax.field, tol: f && f.kind === "num" ? clampTol(f, ax.tol) : undefined }, groups: new Map() };
+  };
+  const Y = axisOf(axes.y), X = axisOf(axes.x), cells = new Map();
+  items.forEach((it) => {
+    const ys = groupKeysOf(Y.lv, it), xs = groupKeysOf(X.lv, it);
+    ys.forEach((y) => { if (!Y.groups.has(y.key)) Y.groups.set(y.key, { ...y, n: 0, sumL: 0, sumA: 0, sumB: 0, neutral: 0 }); });
+    xs.forEach((x) => { if (!X.groups.has(x.key)) X.groups.set(x.key, { ...x, n: 0, sumL: 0, sumA: 0, sumB: 0, neutral: 0 }); });
+    const C = it.C || 0, h = ((it.H || 0) * Math.PI) / 180, neutralC = (groupingColourSettings || defaultGroupSettings).neutralC ?? 0.02;
+    [...ys.map((y) => Y.groups.get(y.key)), ...xs.map((x) => X.groups.get(x.key))].forEach((g) => {
+      g.n++; g.sumL += it.L || 0; g.sumA += C * Math.cos(h); g.sumB += C * Math.sin(h); g.neutral += C < neutralC ? 1 : 0;
+    });
+    ys.forEach((y) => xs.forEach((x) => {
+      const k = `${y.key}\u0001${x.key}`;
+      if (!cells.has(k)) cells.set(k, []);
+      cells.get(k).push(it);
+    }));
+  });
+  const list = (A) => {
+    const f = A.f;
+    let gs = [...A.groups.values()];
+    if (f && f.kind === "num") {
+      const bins = gs.filter((g) => !g.none).map((g) => g.bin);
+      if (bins.length) {
+        const lo = Math.min(...bins), hi = Math.max(...bins);
+        if (hi - lo + 1 <= MATRIX_MAX_FILL)
+          for (let b = lo; b <= hi; b++)
+            if (!A.groups.has(`b${b}`)) gs.push({ key: `b${b}`, label: groupBinLabel(f, A.lv.tol, b), rank: b, bin: b, n: 0 });
+      }
+    }
+    const ranked = gs.map((g) => [f ? groupRank(f, g, groupingColourSettings) : [0, 0, ""], g]);
+    ranked.sort((a, b) => cmpRank(a[0], b[0]));
+    return ranked.map((r) => r[1]);
+  };
+  return { rows: list(Y), cols: list(X), cells };
+};
+
 const ViewportSwatches = ({
   items,
   layout,
@@ -7320,6 +7884,8 @@ const ViewportSwatches = ({
   onDuplicateItem,
   onRemoveItem,
   onEditItem,
+  // Which tab's Group by / matrix axes apply ("pins", "db", "anchors").
+  groupScope,
 }) => {
   useDisplayGamut();
   const [sortBy, setSortBy] = useState(dim1);
@@ -7426,6 +7992,23 @@ const ViewportSwatches = ({
     externalSort,
     DisplayGamut.id,
   ]);
+  const grp = useGrouping(groupScope || "none", sortedItems);
+  const axisStore = useGroupStore();
+  const axes = groupScope
+    ? axisStore.matrix(groupScope)
+    : { y: { field: dim1, tol: (GROUP_FIELD[dim1] || {}).def }, x: { field: dim2, tol: (GROUP_FIELD[dim2] || {}).def } };
+  const axesKey = JSON.stringify(axes);
+  const matrix = useMemo(() => {
+    if (layout !== "matrix") return null;
+    const m = buildMatrix(sortedItems, axes);
+    // each column wide enough for a square-ish block of its fullest cell
+    m.cols.forEach((col) => {
+      let most = 1;
+      m.rows.forEach((row) => { const c = m.cells.get(`${row.key}\u0001${col.key}`); if (c && c.length > most) most = c.length; });
+      col.per = Math.ceil(Math.sqrt(most));
+    });
+    return m;
+  }, [layout, sortedItems, axesKey, groupingColourSettings]);
   // Full-size photo, opened from the eye button in any layout.
   const imagePreview =
     fullscreenImage &&
@@ -7456,21 +8039,14 @@ const ViewportSwatches = ({
       document.body,
     );
   if (layout === "matrix") {
-    const quantize = (v) => Math.round(v * 1e3) / 1e3;
-    const d1ValsUniq = new Set();
-    const d2ValsUniq = new Set();
-    sortedItems.forEach((i) => {
-      d1ValsUniq.add(quantize(i[dim1]));
-      d2ValsUniq.add(quantize(i[dim2]));
-    });
-    const d1Vals = [...d1ValsUniq].sort((a, b) => a - b);
-    const d2Vals = [...d2ValsUniq].sort((a, b) => a - b);
+    const cellPx = baseMatrixSize * swatchZoom;
     return React.createElement(
       "div",
-      {
-        className:
-          "absolute inset-0 overflow-auto custom-scrollbar p-4 bg-slate-50/50 dark:bg-neutral-900/50",
-      },
+      { className: "absolute inset-0 flex flex-col bg-slate-50/50 dark:bg-neutral-900/50" },
+      React.createElement(MatrixAxisBar, { scope: groupScope || "pins", axes }),
+      React.createElement(
+      "div",
+      { className: "flex-1 min-h-0 overflow-auto custom-scrollbar p-4" },
       React.createElement(
         "table",
         { className: "w-full border-collapse border-spacing-0" },
@@ -7484,15 +8060,15 @@ const ViewportSwatches = ({
               className:
                 "p-1 min-w-[50px] sticky left-0 top-0 z-50 bg-slate-50/90 dark:bg-neutral-900/90 backdrop-blur border-b border-slate-200 dark:border-neutral-800 relative",
             }),
-            d2Vals.map((val) =>
+            matrix.cols.map((col) =>
               React.createElement(
                 "td",
                 {
-                  key: val,
+                  key: col.key,
                   className:
                     "p-1 text-center text-[9px] font-mono text-slate-400 dark:text-neutral-500 whitespace-nowrap sticky top-0 bg-slate-50/90 dark:bg-neutral-900/90 backdrop-blur z-40 border-b border-slate-200 dark:border-neutral-800",
                 },
-                dim2Labels(val),
+                col.label,
               ),
             ),
           ),
@@ -7500,32 +8076,29 @@ const ViewportSwatches = ({
         React.createElement(
           "tbody",
           null,
-          d1Vals.map((v1) =>
+          matrix.rows.map((row) =>
             React.createElement(
               "tr",
-              { key: v1 },
+              { key: row.key },
               React.createElement(
                 "td",
                 {
                   className:
                     "p-1 text-right text-[9px] font-mono text-slate-400 dark:text-neutral-500 whitespace-nowrap sticky left-0 bg-slate-50/90 dark:bg-neutral-900/90 backdrop-blur z-40 relative border-r border-slate-200 dark:border-neutral-800",
                 },
-                dim1Labels(v1),
+                row.label,
               ),
-              d2Vals.map((v2) => {
-                const cellItems = sortedItems.filter(
-                  (i) =>
-                    Math.abs(quantize(i[dim1]) - v1) < 0.001 &&
-                    Math.abs(quantize(i[dim2]) - v2) < 0.001,
-                );
+              matrix.cols.map((col) => {
+                const cellItems = matrix.cells.get(`${row.key}\u0001${col.key}`) || [];
+                const blockPx = col.per * (cellPx + 4) + 4;
                 return React.createElement(
                   "td",
                   {
-                    key: v2,
+                    key: col.key,
                     className:
                       "p-1 text-center align-middle hover:bg-slate-100 dark:hover:bg-neutral-800/50 rounded transition-colors relative",
                     style: {
-                      minWidth: `${(baseMatrixSize + 12) * swatchZoom}px`,
+                      minWidth: `${Math.max((baseMatrixSize + 12) * swatchZoom, blockPx + 8)}px`,
                       height: `${(baseMatrixSize + 12) * swatchZoom}px`,
                     },
                   },
@@ -7533,7 +8106,8 @@ const ViewportSwatches = ({
                     "div",
                     {
                       className:
-                        "flex flex-wrap items-center justify-center gap-1 w-full h-full p-0.5",
+                        "flex flex-wrap items-center justify-center gap-1 h-full p-0.5 mx-auto",
+                      style: { width: `${blockPx}px` },
                     },
                     cellItems.map((item, idx) =>
                       React.createElement(
@@ -7686,6 +8260,7 @@ ${item.erpCode}`,
           { className: "text-center text-slate-400 text-xs w-full p-8 italic" },
           "No saved colors or pins found in this slice.",
         ),
+      ),
       imagePreview,
     );
   }
@@ -8054,7 +8629,7 @@ ${item.erpCode}`,
     React.createElement(
       "div",
       { className: "flex flex-wrap gap-4 md:gap-6 pb-8" },
-      sortedItems.map((item, i) =>
+      grp.map()((item, i) =>
         React.createElement(
           "div",
           {
@@ -8302,6 +8877,21 @@ ${item.erpCode}`,
                         `${f.label}: ${String(item[f.key] || "-").trim()}`,
                       ),
                 ),
+              ),
+            itemNotes(item) &&
+              React.createElement(
+                "p",
+                {
+                  className:
+                    "w-full text-center text-slate-600 dark:text-neutral-300 leading-snug whitespace-pre-line break-words line-clamp-4 border-t border-slate-200 dark:border-neutral-700",
+                  style: {
+                    fontSize: `${Math.max(5, 6 * swatchZoom)}px`,
+                    marginTop: `${Math.max(1, 3 * swatchZoom)}px`,
+                    paddingTop: `${Math.max(1, 2 * swatchZoom)}px`,
+                  },
+                  title: itemNotes(item),
+                },
+                itemNotes(item),
               ),
             item.tags &&
               item.tags.length > 0 &&
@@ -8605,6 +9195,7 @@ const ViewPinsInner = ({
       return sortAsc ? (valA < valB ? -1 : 1) : valB < valA ? -1 : 1;
     });
   }, [filteredPinItems, sortBy, sortAsc, tagFilter, searchTerm]);
+  const grp = useGrouping("pins", sortedItems);
   const handleUnlock = (id) => {
     setSavedColors((prev) => {
       const next = { ...prev };
@@ -8912,6 +9503,7 @@ const ViewPinsInner = ({
               swatchZoom,
               externalSort: true,
               showSpecs: catalogView === "swatches" && showSpecs,
+              groupScope: "pins",
               onDuplicateItem: (it) => handleDuplicatePin(it.id),
               onRemoveItem: (it) => handleUnlock(it.id),
               onEditItem: (it, key, value) =>
@@ -8933,7 +9525,7 @@ const ViewPinsInner = ({
             )
           : null,
         catalogView === "table" &&
-        sortedItems.slice(0, tableLimit).map((item) =>
+        grp.map({ limit: tableLimit })((item) =>
           React.createElement(
             "div",
             {
@@ -10628,7 +11220,9 @@ const processCSVData = (
       const brandRaw = (row.Adjective || row.Brand || "").trim();
       const name = (row.Noun || row.Name || "").trim() || "Unnamed";
       const url = (row.ERP_Code || row.URL || "").trim();
-      let image = (row.Note || row.Image || "").trim();
+      const noteRaw = String(row.Note || "").trim();
+      let image = String(row.Image || "").trim() || (isImageRef(noteRaw) ? noteRaw : "");
+      const notesText = noteRaw && !isImageRef(noteRaw) ? noteRaw : "";
       if (image.includes("placehold") || image.includes("dummy")) image = "";
       const finalBrand = normalizeBrandKey(brandRaw) || "unknown";
       if (finalBrand) {
@@ -10664,6 +11258,7 @@ const processCSVData = (
           colorObj.erpCode = url;
         }
         if (image) colorObj.image = image;
+        if (notesText) colorObj.notes = notesText;
         if (row.Illuminant) colorObj.illuminant = String(row.Illuminant).trim();
         if (row.Observer)
           colorObj.observer = parseInt(row.Observer, 10) || void 0;
@@ -13948,7 +14543,9 @@ const App = () => {
           const customName =
             names[customId] !== void 0 ? names[customId] : color.name;
           const customNote =
-            dictNotes[customId] !== void 0 ? dictNotes[customId] : color.image;
+            dictNotes[customId] !== void 0
+              ? dictNotes[customId]
+              : color.notes || (color.image && !isImageRef(color.image) ? color.image : "");
           const extra = getExtraColorValues(color.L, color.C, color.H, color.hex);
           const row = {
             Type: "DB",
@@ -13961,6 +14558,7 @@ const App = () => {
             ...extra,
             ERP_Code: color.url || "",
             Note: customNote || "",
+            Image: color.image && isImageRef(color.image) ? color.image : "",
             Tags: (color.tags || dictTags[customId] || []).join(","),
             Sheen: color.sheen || "",
             Profile: color.doorProfile || "",
@@ -14631,6 +15229,7 @@ const App = () => {
     labCoords = xyzToLab(varXYZ, wp);
   }
   const labValues = `${labCoords[0].toFixed(1)}, ${labCoords[1].toFixed(1)}, ${labCoords[2].toFixed(1)}`;
+  groupingColourSettings = groupSettings;
   const colorGroup = getColorGroup(scrubL, scrubC, scrubH, groupSettings);
   const isOutOfGamut = !activeColorObj.inGamut(DisplayGamut.space, { epsilon: 0.001 });
   const crosshairHex = activeColorObj
@@ -15393,6 +15992,7 @@ const ViewDatabase = ({
           tags: c.tags || [],
           spectral: c.spectral,
           note: c.image || "",
+          notes: c.notes || "",
         });
       });
     });
@@ -16036,6 +16636,7 @@ const ViewDatabase = ({
       url: editingItem.erpCode,
       erpCode: editingItem.erpCode,
       image: editingItem.note,
+      notes: (editingItem.notes ?? oldItem.notes ?? "").trim(),
       hex: editingItem.hex,
       tags: editingItem.tags,
       brand: editingItem.brand,
@@ -16159,6 +16760,7 @@ const ViewDatabase = ({
   // Rows arrive in pages as you scroll (it used to stop at 300).
   useEffect(() => setListLimit(150), [sortedItems]);
   const renderItems = sortedItems.slice(0, listLimit);
+  const grp = useGrouping("db", sortedItems);
   // The table is unusable below ~640px — eight columns behind a horizontal
   // scroll. The existing card list says the same thing in one column, so narrow
   // viewports fall back to it rather than getting a second render path.
@@ -16504,46 +17106,11 @@ const ViewDatabase = ({
           { className: "flex flex-col gap-2 h-full" },
           React.createElement(
             "div",
-            {
-              className:
-                "flex items-center gap-2 p-2 bg-slate-50 dark:bg-neutral-900 border-b border-slate-200 dark:border-neutral-800 rounded-lg shrink-0",
-            },
-            React.createElement(
-              "span",
-              { className: "text-[10px] font-bold text-slate-400 uppercase" },
-              "XY Axis:",
-            ),
-            React.createElement(
-              "select",
-              {
-                value: dbAxis,
-                onChange: (e) => setDbAxis(e.target.value),
-                className:
-                  "bg-white dark:bg-neutral-800 text-xs font-bold border border-slate-200 dark:border-neutral-700 rounded px-2 py-1 outline-none text-slate-700 dark:text-neutral-300",
-              },
-              React.createElement(
-                "option",
-                { value: "HxL" },
-                "Hue \xD7 Lightness",
-              ),
-              React.createElement(
-                "option",
-                { value: "CxL" },
-                "Chroma \xD7 Lightness",
-              ),
-              React.createElement(
-                "option",
-                { value: "HxC" },
-                "Hue \xD7 Chroma",
-              ),
-            ),
-          ),
-          React.createElement(
-            "div",
             { className: "flex-1 relative" },
             React.createElement(ViewportSwatches, {
               items: renderItems,
               layout: "matrix",
+              groupScope: "db",
               swatchZoom,
               dim1: dbAxis === "HxL" ? "L" : dbAxis === "CxL" ? "L" : "C",
               dim2: dbAxis === "HxL" ? "H" : dbAxis === "CxL" ? "C" : "H",
@@ -16566,7 +17133,7 @@ const ViewDatabase = ({
         React.createElement(
           "div",
           { className: "flex flex-col gap-2" },
-          renderItems.map((item, i) =>
+          grp.map({ limit: listLimit })((item, i) =>
             React.createElement(
               "div",
               {
@@ -16851,7 +17418,7 @@ const ViewDatabase = ({
                 className:
                   "divide-y divide-slate-100 dark:divide-neutral-800/50",
               },
-              renderItems.map((item, i) =>
+              grp.map({ limit: listLimit, colSpan: 99 })((item, i) =>
                 React.createElement(
                   "tr",
                   {
@@ -17104,7 +17671,7 @@ const ViewDatabase = ({
             className:
               "flex flex-wrap gap-3 pb-8 content-start h-max justify-center",
           },
-          renderItems.map((item, i) =>
+          grp.map({ limit: listLimit })((item, i) =>
             React.createElement(
               "div",
               {
@@ -17318,6 +17885,21 @@ const ViewDatabase = ({
                   },
                   getBrandDisplayName(item.brand),
                 ),
+                itemNotes(item) &&
+                  React.createElement(
+                    "p",
+                    {
+                      className:
+                        "w-full text-center text-slate-600 dark:text-neutral-300 leading-snug whitespace-pre-line break-words line-clamp-4 border-t border-slate-200 dark:border-neutral-700",
+                      style: {
+                        fontSize: `${Math.max(5, 6 * swatchZoom)}px`,
+                        marginTop: `${Math.max(1, 3 * swatchZoom)}px`,
+                        paddingTop: `${Math.max(1, 2 * swatchZoom)}px`,
+                      },
+                      title: itemNotes(item),
+                    },
+                    itemNotes(item),
+                  ),
               ),
             ),
           ),
@@ -17738,7 +18320,7 @@ const ViewDatabase = ({
                     className:
                       "block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1",
                   },
-                  "Image URL (note)",
+                  "Image URL",
                 ),
                 React.createElement("input", {
                   type: "text",
@@ -17748,6 +18330,27 @@ const ViewDatabase = ({
                   className:
                     "w-full bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-3 py-2 text-sm font-mono",
                   placeholder: "https://",
+                }),
+              ),
+              React.createElement(
+                "div",
+                null,
+                React.createElement(
+                  "label",
+                  {
+                    className:
+                      "block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1",
+                  },
+                  "Notes",
+                ),
+                React.createElement("textarea", {
+                  value: editingItem.notes || "",
+                  rows: 3,
+                  onChange: (e) =>
+                    setEditingItem({ ...editingItem, notes: e.target.value }),
+                  className:
+                    "w-full bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-3 py-2 text-sm resize-y",
+                  placeholder: "Shown under the swatch in the gallery",
                 }),
               ),
               React.createElement(
@@ -20622,6 +21225,11 @@ const AppUI = ({
                 onChange: activeTab === "pins" ? setPinsZoom : activeTab === "anchors" ? setAnchorsZoom : setSwatchZoom,
               },
               sort: { enabled: listTab, ...srt },
+              group: {
+                enabled: listTab && lay[0] !== "matrix",
+                scope: activeTab,
+                why: listTab ? "The matrix groups by its rows and columns: pick them above the matrix" : "Group by sorts the Match, Catalog and Anchors lists into sections",
+              },
               filters: {
                 enabled: isExplore || isDb || activeTab === "pins",
                 count: globalFilters.length,
