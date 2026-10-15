@@ -2178,7 +2178,8 @@ function createSpaceEngine(opts) {
   let selIdx = -1, disposed = false, anchorSig = null, markerSig = null;
 
   // ── Renderer ─────────────────────────────────────────────────────────────
-  const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true, alpha: true });
+  // the drawing buffer is kept so Print can take a picture of the 3D view
+  const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(1);   // the slot canvas is sized in device pixels already
   if (DisplayGamut.canvasP3) { try { renderer.getContext().drawingBufferColorSpace = "display-p3"; } catch (e) {} }
   renderer.setClearColor(0x000000, 0);
@@ -5098,7 +5099,7 @@ const ViewSpaceInner = ({
 
   return React.createElement(
     "div",
-    { ref: rootRef, className: `w-full h-full flex ${narrow ? "flex-col-reverse" : "flex-row"} text-slate-900 dark:text-neutral-100 overflow-hidden` },
+    { ref: rootRef, "data-print-view": "explore", "data-print-mode": "fixed", className: `w-full h-full flex ${narrow ? "flex-col-reverse" : "flex-row"} text-slate-900 dark:text-neutral-100 overflow-hidden` },
     // ── small views ──
     React.createElement(
       "div",
@@ -5158,7 +5159,7 @@ const ViewSpaceInner = ({
       // the large view's settings
       React.createElement(
         "div",
-        { className: `absolute top-3 left-3 z-10 ${overlayCard} ${lookOpen ? "w-64 p-3 max-h-[calc(100%-4.5rem)] overflow-y-auto custom-scrollbar" : "p-1"}` },
+        { "data-no-print": "", className: `absolute top-3 left-3 z-10 ${overlayCard} ${lookOpen ? "w-64 p-3 max-h-[calc(100%-4.5rem)] overflow-y-auto custom-scrollbar" : "p-1"}` },
         React.createElement(
           "button",
           {
@@ -5176,7 +5177,7 @@ const ViewSpaceInner = ({
       // the large view's own bar: its name, looks, reset, and back to 3D
       React.createElement(
         "div",
-        { className: `absolute top-3 right-3 z-10 flex items-center gap-2 px-2 py-1.5 ${overlayCard}` },
+        { "data-no-print": "", className: `absolute top-3 right-3 z-10 flex items-center gap-2 px-2 py-1.5 ${overlayCard}` },
         big !== "3d" &&
           React.createElement(
             "span",
@@ -5477,7 +5478,7 @@ const TbSeg = ({ options, value, onChange }) =>
           }`,
         },
         React.createElement(Icon, { name: o.icon, className: "w-3.5 h-3.5" }),
-        React.createElement("span", { className: "hidden 2xl:inline" }, o.label),
+        React.createElement("span", { className: "hidden min-[2000px]:inline" }, o.label),
       ),
     ),
   );
@@ -5551,7 +5552,7 @@ const VisibilityMenu = ({ vis, setVis, brands, brandOn, setBrand, brandLabel, ki
         className: `${TB_BTN} px-2 border border-slate-200 dark:border-neutral-700 text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800 ${open ? "bg-slate-100 dark:bg-neutral-800" : ""}`,
       },
       React.createElement(Icon, { name: "eye", className: "w-3.5 h-3.5" }),
-      React.createElement("span", { className: "hidden xl:inline" }, "Visibility"),
+      React.createElement("span", { className: "hidden 2xl:inline" }, "Visibility"),
       React.createElement(Icon, { name: "chevron-down", className: "w-3 h-3" }),
     ),
     open &&
@@ -5594,7 +5595,7 @@ const VisibilityMenu = ({ vis, setVis, brands, brandOn, setBrand, brandLabel, ki
   );
 };
 
-const TabToolbar = ({ view, layout, visibility, search, zoom, sort, group, fields, filters }) =>
+const TabToolbar = ({ view, layout, visibility, search, zoom, sort, group, fields, filters, print }) =>
   React.createElement(
     "div",
     {
@@ -5602,7 +5603,7 @@ const TabToolbar = ({ view, layout, visibility, search, zoom, sort, group, field
       className:
         // phones: wrap onto a second row (same order) rather than hide Sort and
         // Filters off the edge; wider screens: one row
-        "px-3 md:px-4 py-2 border-b border-slate-100 dark:border-neutral-800 bg-slate-50/30 dark:bg-neutral-900/30 flex flex-wrap md:flex-nowrap items-center gap-2 md:gap-3 md:overflow-x-auto no-scrollbar shrink-0 z-20",
+        "px-3 md:px-4 py-2 border-b border-slate-100 dark:border-neutral-800 bg-slate-50/30 dark:bg-neutral-900/30 flex flex-wrap md:flex-nowrap items-center gap-2 2xl:gap-3 md:overflow-x-auto no-scrollbar shrink-0 z-20",
     },
     React.createElement(TbGroup, { label: "View", enabled: view.enabled, why: "Dots, bins and swatches are Explore's views" },
       React.createElement(TbSeg, { options: TB_VIEWS, value: view.value, onChange: view.onChange })),
@@ -5637,12 +5638,13 @@ const TabToolbar = ({ view, layout, visibility, search, zoom, sort, group, field
         type: "range", min: "0.1", max: "5", step: "0.1", value: zoom.value,
         "aria-label": "Swatch size",
         onChange: (e) => zoom.onChange(parseFloat(e.target.value)),
-        className: "w-16 xl:w-20 accent-sky-500 cursor-pointer",
+        className: "w-12 2xl:w-20 accent-sky-500 cursor-pointer",
       }),
       React.createElement("span", { className: "text-[10px] font-mono text-slate-400 min-w-[34px] hidden 2xl:inline" }, `${Math.round(zoom.value * 100)}%`),
     ),
     React.createElement(TbGroup, { enabled: sort.enabled, why: "Explore places colours by their coordinates, not in a sorted list" },
-      React.createElement(SortControl, { fields: sort.fields, sortBy: sort.by, setSortBy: sort.setBy, sortAsc: sort.asc, setSortAsc: sort.setAsc, compact: true })),
+      React.createElement(SortControl, { fields: sort.fields, sortBy: sort.by, setSortBy: sort.setBy, sortAsc: sort.asc, setSortAsc: sort.setAsc, compact: true }),
+      sort.scope && React.createElement(SortLevelsMenu, { key: sort.scope, scope: sort.scope, fields: sort.fields, by: sort.by, asc: sort.asc, setBy: sort.setBy, setAsc: sort.setAsc })),
     group &&
       React.createElement(TbGroup, { enabled: group.enabled, why: group.why },
         React.createElement(GroupMenu, { scope: group.scope })),
@@ -5661,8 +5663,10 @@ const TabToolbar = ({ view, layout, visibility, search, zoom, sort, group, field
           }`,
         },
         React.createElement(Icon, { name: "filter", className: "w-3.5 h-3.5" }),
-        filters.count ? `Filters · ${filters.count}` : "Filters",
+        React.createElement("span", { className: "hidden 2xl:inline" }, "Filters"),
+        filters.count > 0 && React.createElement("span", { className: "min-w-[16px] h-4 px-1 rounded-full bg-sky-500 text-white text-[9px] leading-4 text-center" }, filters.count),
       )),
+    print && React.createElement(TbGroup, { enabled: true }, React.createElement(PrintButton, print)),
   );
 
 // Match's brand management (it used to hang off a brand filter dropdown,
@@ -5788,7 +5792,7 @@ const ViewAnchors = ({
     return best ? { ...best, de: bd } : null;
   }, [rows, cursor]);
 
-  const shown = useMemo(() => {
+  const shownBase = useMemo(() => {
     const q = query.trim().toLowerCase();
     let out = q ? rows.filter((r) => r.name.toLowerCase().includes(q) || r.hex.includes(q)) : rows.slice();
     const key = {
@@ -5802,6 +5806,9 @@ const ViewAnchors = ({
     keyed.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0) * (sortAsc ? 1 : -1));
     return keyed.map((k) => k[1]);
   }, [rows, query, sortBy, sortAsc, sortBy === "cursor" ? cursor : null]);
+  // the toolbar's extra "Then by" levels
+  const shown = useMultiSort("anchors", shownBase, ANCHOR_SORT_OUT[sortBy] || "name", sortAsc, { deltaE: (r) => anchorRowDE(r, cursor) }, cursor);
+  const printing = usePrinting();
   // Group by: headers become rows of the same height, so the table stays virtual.
   const grp = useGrouping("anchors", shown);
   const flat = grp.rows;
@@ -5882,8 +5889,8 @@ const ViewAnchors = ({
     read();
     return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); cancelAnimationFrame(raf); };
   }, [rows.length === 0, layout]);
-  const first = Math.max(0, Math.floor(view.top / ANCHOR_ROW_H) - ANCHOR_OVERSCAN);
-  const last = Math.min(rowCount, Math.ceil((view.top + view.h) / ANCHOR_ROW_H) + ANCHOR_OVERSCAN);
+  const first = printing ? 0 : Math.max(0, Math.floor(view.top / ANCHOR_ROW_H) - ANCHOR_OVERSCAN);
+  const last = printing ? rowCount : Math.min(rowCount, Math.ceil((view.top + view.h) / ANCHOR_ROW_H) + ANCHOR_OVERSCAN);
 
   const th = "px-2 py-2 text-left text-[9px] font-bold uppercase tracking-widest text-slate-400 whitespace-nowrap";
   const sortHeader = (id, label, right) =>
@@ -5986,7 +5993,7 @@ const ViewAnchors = ({
     layout !== "table" && rows.length > 0 &&
       React.createElement(
         "div",
-        { className: "relative flex-1 min-h-0" },
+        { "data-print-view": "anchors", className: "relative flex-1 min-h-0" },
         React.createElement(ViewportSwatches, {
           items: shown.map((r) => ({
             id: r.id, type: "anchor", L: r.L, C: r.C, H: r.H, hex: r.hex,
@@ -6015,7 +6022,7 @@ const ViewAnchors = ({
     (layout === "table" || rows.length === 0) &&
     React.createElement(
       "div",
-      { ref: scrollRef, className: "flex-1 min-h-0 overflow-auto custom-scrollbar" },
+      { ref: scrollRef, "data-print-view": "anchors", className: "flex-1 min-h-0 overflow-auto custom-scrollbar" },
       rows.length === 0
         ? React.createElement(
             "div",
@@ -6754,8 +6761,7 @@ const SortControl = ({ fields, sortBy, setSortBy, sortAsc, setSortAsc, compact }
     React.createElement(
       "span",
       {
-        className:
-          "text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-neutral-500",
+        className: `text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-neutral-500 ${compact ? "hidden 2xl:inline" : ""}`,
       },
       "Sort",
     ),
@@ -6765,7 +6771,7 @@ const SortControl = ({ fields, sortBy, setSortBy, sortAsc, setSortAsc, compact }
         value: active ? active.field : "",
         onChange: (e) => setSortBy(e.target.value),
         className: `appearance-none bg-transparent border border-slate-200 dark:border-neutral-700 rounded-md py-1 pl-2 pr-6 text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-neutral-300 cursor-pointer hover:bg-slate-50 dark:hover:bg-neutral-800 focus:outline-none ${
-          compact ? "max-w-[104px]" : ""
+          compact ? "max-w-[84px]" : ""
         }`,
       },
       fields.map((f) =>
@@ -7810,10 +7816,20 @@ const MatrixAxisBar = ({ scope, axes, more }) => {
         onChange: (id) => set(k, { field: id, tol: GROUP_FIELD[id].def }),
       }),
       React.createElement(GroupTol, { field: axes[k].field, value: axes[k].tol, onChange: (t) => set(k, { tol: t }), compact: true }),
+      React.createElement(
+        "button",
+        {
+          onClick: () => set(k, { desc: !axes[k].desc }),
+          title: axes[k].desc ? `${label}: descending` : `${label}: ascending`,
+          "aria-label": `${label} direction: ${axes[k].desc ? "descending" : "ascending"}`,
+          className: `p-1 rounded border ${axes[k].desc ? "border-sky-200 dark:border-sky-500/30 bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400" : "border-slate-200 dark:border-neutral-700 text-slate-500"} hover:bg-slate-100 dark:hover:bg-neutral-800`,
+        },
+        React.createElement(Icon, { name: axes[k].desc ? "arrow-down-wide-narrow" : "arrow-up-narrow-wide", className: "w-3.5 h-3.5" }),
+      ),
     );
   return React.createElement(
     "div",
-    { className: "shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2 border-b border-slate-200 dark:border-neutral-800 bg-white/80 dark:bg-neutral-900/80" },
+    { "data-no-print": "", className: "shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2 border-b border-slate-200 dark:border-neutral-800 bg-white/80 dark:bg-neutral-900/80" },
     axis("y", "Rows · Y"),
     React.createElement(
       "button",
@@ -7834,13 +7850,22 @@ const MatrixAxisBar = ({ scope, axes, more }) => {
       ),
   );
 };
+const matrixAxesCaption = (axes) => {
+  const one = (ax) => {
+    const f = GROUP_FIELD[ax.field];
+    if (!f) return ax.field;
+    const tol = f.kind === "num" ? ` ±${fmtGroupNum(f, clampTol(f, ax.tol))}${f.unit || ""}` : "";
+    return `${f.label}${tol}${ax.desc ? ", descending" : ""}`;
+  };
+  return `Rows: ${one(axes.y)} · Columns: ${one(axes.x)}`;
+};
 // The matrix's rows, columns and cells. Numeric axes show every bin between
 // the lowest and highest occupied one, so gaps in the colour space read as gaps.
 const MATRIX_MAX_FILL = 240;
 const buildMatrix = (items, axes) => {
   const axisOf = (ax) => {
     const f = GROUP_FIELD[ax.field];
-    return { f, lv: { field: ax.field, tol: f && f.kind === "num" ? clampTol(f, ax.tol) : undefined }, groups: new Map() };
+    return { f, desc: !!ax.desc, lv: { field: ax.field, tol: f && f.kind === "num" ? clampTol(f, ax.tol) : undefined }, groups: new Map() };
   };
   const Y = axisOf(axes.y), X = axisOf(axes.x), cells = new Map();
   items.forEach((it) => {
@@ -7871,7 +7896,23 @@ const buildMatrix = (items, axes) => {
     }
     const ranked = gs.map((g) => [f ? groupRank(f, g, groupingColourSettings) : [0, 0, ""], g]);
     ranked.sort((a, b) => cmpRank(a[0], b[0]));
-    return ranked.map((r) => r[1]);
+    if (A.desc) {
+      const none = ranked.filter((r) => r[1].none);
+      ranked.splice(0, ranked.length, ...ranked.filter((r) => !r[1].none).reverse(), ...none);
+    }
+    // A run of empty bins collapses into one thin band: the gap still shows,
+    // without a screenful of blank rows or columns.
+    const out = [];
+    ranked.forEach(([, g]) => {
+      if (g.n) { out.push(g); return; }
+      const last = out[out.length - 1];
+      if (last && last.empty) {
+        last.span++;
+        last.label = `${last.firstLabel} … ${g.label}`;
+        last.key += `+${g.key}`;
+      } else out.push({ key: `gap:${g.key}`, label: g.label, firstLabel: g.label, empty: true, span: 1, n: 0 });
+    });
+    return out;
   };
   return { rows: list(Y), cols: list(X), cells };
 };
@@ -8142,6 +8183,402 @@ const FieldsMenu = ({ scope, layout }) => {
   );
 };
 
+// ─── Multi-level sort ────────────────────────────────────────────────────────
+// The toolbar's Sort stays the first level (each tab keeps its own); "Then by"
+// levels break its ties, as many as needed, like the Group levels. Each tab
+// (scope) keeps its own extra levels.
+const SORT_LEVEL_MAX = 4; // including the first
+// Specs sort in their option order (SM, MT, ST, HG), unknown values after.
+const sortSpecKey = (key, opts) => (it) => {
+  const v = specOption(opts, it && it[key]);
+  if (!v) return null;
+  const i = opts.indexOf(v);
+  return i >= 0 ? i : 1000 + v.toLowerCase().charCodeAt(0);
+};
+const SORT_GETTERS = {
+  deltae: (it, ctx) => (ctx && ctx.deltaE ? ctx.deltaE(it) : typeof it._d === "number" ? it._d : null),
+  name: (it) => String(it.displayName || it.name || "").toLowerCase() || null,
+  brand: (it) => (it.brand ? String(typeof getBrandDisplayName === "function" ? getBrandDisplayName(it.brand) : it.brand).toLowerCase() : null),
+  material: sortSpecKey("material", LABEL_OPTIONS.material),
+  sheen: sortSpecKey("sheen", LABEL_OPTIONS.sheen),
+  doorProfile: sortSpecKey("doorProfile", LABEL_OPTIONS.doorProfile),
+  visualTexture: sortSpecKey("visualTexture", LABEL_OPTIONS.visualPattern),
+  tactileTexture: sortSpecKey("tactileTexture", LABEL_OPTIONS.tactileTexture),
+  lightness: (it) => it.L, layer: (it) => it.L,
+  chroma: (it) => it.C,
+  hue: (it) => it.H,
+  nn: (it) => (typeof it.nnDE === "number" ? it.nnDE : null),
+  tag: (it) => ((it.tags || []).join(", ").toLowerCase() || null),
+  erpCode: (it) => String(it.erpCode || "").toLowerCase() || null,
+};
+const isEmptySortVal = (v) => v === null || v === undefined || v === "" || (typeof v === "number" && !isFinite(v));
+const cmpSortVal = (a, b) => {
+  if (typeof a === "string" || typeof b === "string") return String(a).localeCompare(String(b), undefined, { numeric: true });
+  return a - b;
+};
+
+const SORT_PREF_KEY = "csam-sortlevels-v1";
+const sortStore = (() => {
+  let st = {};
+  try { st = JSON.parse(localStorage.getItem(SORT_PREF_KEY) || "{}") || {}; } catch (e) { st = {}; }
+  const subs = new Set(), NONE = [];
+  return {
+    get: (scope) => st[scope] || NONE,
+    set: (scope, lv) => {
+      st = { ...st, [scope]: lv };
+      try { localStorage.setItem(SORT_PREF_KEY, JSON.stringify(st)); } catch (e) {}
+      subs.forEach((fn) => { try { fn(); } catch (e) {} });
+    },
+    subscribe: (fn) => (subs.add(fn), () => subs.delete(fn)),
+  };
+})();
+const useSortLevels = (scope) => {
+  const [, force] = useState(0);
+  useEffect(() => sortStore.subscribe(() => force((n) => n + 1)), []);
+  return sortStore.get(scope);
+};
+// The tab's own sorted list, re-sorted stably on every level when there is
+// more than one. `ctx` supplies values a row does not carry (ΔE to the cursor).
+const useMultiSort = (scope, items, primary, primaryAsc, ctx, ctxKey) => {
+  const extra = useSortLevels(scope);
+  return useMemo(() => {
+    const levels = extra.filter((l) => SORT_GETTERS[l.field]);
+    if (!levels.length || !items || items.length < 2) return items;
+    const all = [{ field: primary, desc: !primaryAsc }, ...levels].filter((l) => SORT_GETTERS[l.field]);
+    const keyed = items.map((it, i) => [all.map((l) => SORT_GETTERS[l.field](it, ctx)), i, it]);
+    keyed.sort((A, B) => {
+      for (let k = 0; k < all.length; k++) {
+        const a = A[0][k], b = B[0][k], ea = isEmptySortVal(a), eb = isEmptySortVal(b);
+        // empty values go last whichever way the level runs
+        if (ea || eb) { if (ea !== eb) return ea ? 1 : -1; continue; }
+        const c = cmpSortVal(a, b);
+        if (c) return all[k].desc ? -c : c;
+      }
+      return A[1] - B[1];
+    });
+    const out = keyed.map((k) => k[2]);
+    if (items.emptyReason !== undefined) out.emptyReason = items.emptyReason;
+    return out;
+  }, [items, extra, primary, primaryAsc, ctxKey]);
+};
+
+// The toolbar's sort button: first level in place, plus a menu for the rest.
+const SortLevelsMenu = ({ scope, fields, by, asc, setBy, setAsc }) => {
+  const levels = useSortLevels(scope).filter((l) => fields.some((f) => f.field === l.field));
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef(null), panelRef = useRef(null);
+  const [pos, setPos] = useState(null);
+  React.useLayoutEffect(() => {
+    if (!open) return undefined;
+    const place = () => {
+      const r = btnRef.current && btnRef.current.getBoundingClientRect();
+      if (!r) return;
+      const W = window.innerWidth, w = Math.min(340, W - 16);
+      setPos({ left: Math.max(8, Math.min(r.right - w, W - w - 8)), top: r.bottom + 6, width: w });
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [open]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const down = (e) => {
+      if (panelRef.current && panelRef.current.contains(e.target)) return;
+      if (btnRef.current && btnRef.current.contains(e.target)) return;
+      setOpen(false);
+    };
+    const key = (e) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("pointerdown", down, true);
+    document.addEventListener("keydown", key);
+    return () => { document.removeEventListener("pointerdown", down, true); document.removeEventListener("keydown", key); };
+  }, [open]);
+  const set = (next) => sortStore.set(scope, next);
+  const used = [by, ...levels.map((l) => l.field)];
+  const add = () => {
+    const f = fields.find((x) => !used.includes(x.field));
+    if (f) set([...levels, { field: f.field, desc: false }]);
+  };
+  const upd = (i, patch) => set(levels.map((l, k) => (k === i ? { ...l, ...patch } : l)));
+  const sel = (value, onChange, label, exclude) =>
+    React.createElement(
+      "select",
+      {
+        value, "aria-label": label, onChange: (e) => onChange(e.target.value),
+        className: "flex-1 min-w-0 bg-white dark:bg-neutral-800 text-[10px] font-bold border border-slate-200 dark:border-neutral-700 rounded px-1.5 py-1 outline-none text-slate-700 dark:text-neutral-200 focus:border-sky-500",
+      },
+      fields.filter((f) => f.field === value || !exclude.includes(f.field)).map((f) => React.createElement("option", { key: f.field, value: f.field }, f.label)),
+    );
+  const dirBtn = (desc, onClick) =>
+    React.createElement(
+      "button",
+      { onClick, title: desc ? "Descending" : "Ascending", "aria-label": desc ? "Descending" : "Ascending", className: "p-1 rounded border border-slate-200 dark:border-neutral-700 text-slate-500 hover:bg-white dark:hover:bg-neutral-700" },
+      React.createElement(Icon, { name: desc ? "arrow-down-wide-narrow" : "arrow-up-narrow-wide", className: "w-3.5 h-3.5" }),
+    );
+  const row = (label, body) =>
+    React.createElement(
+      "div",
+      { className: "flex items-center gap-2 p-1.5 rounded-lg bg-slate-50 dark:bg-neutral-800/50" },
+      React.createElement("span", { className: "w-12 shrink-0 text-[9px] font-bold uppercase tracking-wider text-slate-400" }, label),
+      ...body,
+    );
+  return React.createElement(
+    React.Fragment,
+    null,
+    React.createElement(
+      "button",
+      {
+        ref: btnRef,
+        onClick: () => setOpen(!open),
+        "aria-expanded": open,
+        title: levels.length ? `Sorted on ${levels.length + 1} levels` : "Add sort levels",
+        className: `p-1 rounded-md border flex items-center gap-0.5 ${
+          levels.length
+            ? "border-sky-200 dark:border-sky-500/30 bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400"
+            : "border-slate-200 dark:border-neutral-700 text-slate-500 dark:text-neutral-400 hover:bg-slate-50 dark:hover:bg-neutral-800"
+        }`,
+      },
+      React.createElement(Icon, { name: "list-ordered", className: "w-3.5 h-3.5" }),
+      levels.length > 0 && React.createElement("span", { className: "text-[9px] font-bold leading-none" }, `+${levels.length}`),
+    ),
+    open && pos &&
+      ReactDOM.createPortal(
+        React.createElement(
+          "div",
+          {
+            ref: panelRef, role: "dialog", "aria-label": "Sort by",
+            className: "fixed z-[110] bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-2xl p-3 flex flex-col gap-2",
+            style: { left: pos.left, top: pos.top, width: pos.width },
+          },
+          React.createElement(
+            "div",
+            { className: "flex items-baseline gap-2" },
+            React.createElement("span", { className: "text-[10px] font-black uppercase tracking-widest text-slate-700 dark:text-neutral-200" }, "Sort by"),
+            React.createElement("span", { className: "text-[9px] text-slate-400" }, "each level breaks the ties of the one above"),
+          ),
+          row("Sort", [sel(by, setBy, "First sort field", used), dirBtn(!asc, () => setAsc(!asc))]),
+          levels.map((l, i) =>
+            React.createElement(
+              React.Fragment,
+              { key: i },
+              row("Then", [
+                sel(l.field, (f) => upd(i, { field: f }), `Sort level ${i + 2} field`, used),
+                dirBtn(!!l.desc, () => upd(i, { desc: !l.desc })),
+                React.createElement(
+                  "button",
+                  { onClick: () => set(levels.filter((_, k) => k !== i)), title: "Remove this level", "aria-label": "Remove this level", className: "p-1 rounded text-slate-400 hover:text-red-500" },
+                  React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" }),
+                ),
+              ]),
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "flex items-center gap-1 pt-1 border-t border-slate-100 dark:border-neutral-800" },
+            React.createElement(
+              "button",
+              { onClick: add, disabled: levels.length + 1 >= Math.min(SORT_LEVEL_MAX, fields.length), className: "text-[9px] font-bold uppercase tracking-wider px-2 py-1 rounded hover:bg-slate-100 dark:hover:bg-neutral-800 text-sky-600 dark:text-sky-400 disabled:opacity-40 flex items-center gap-1" },
+              React.createElement(Icon, { name: "plus", className: "w-3 h-3" }),
+              "Add sort level",
+            ),
+            React.createElement("div", { className: "flex-1" }),
+            React.createElement(
+              "button",
+              { onClick: () => set([]), disabled: !levels.length, className: "text-[9px] font-bold uppercase tracking-wider px-2 py-1 rounded hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 hover:text-red-500 disabled:opacity-40" },
+              "Clear extra levels",
+            ),
+          ),
+        ),
+        document.body,
+      ),
+  );
+};
+
+// ─── Print ───────────────────────────────────────────────────────────────────
+// A clean print of whatever view is showing: only the view itself (no
+// toolbar, filters, sort or axis controls), with its table, matrix row/column
+// and group headers. Explore prints as a picture of its viewports.
+const printStore = (() => {
+  let on = false;
+  const subs = new Set();
+  return {
+    on: () => on,
+    set: (v) => { on = v; subs.forEach((fn) => { try { fn(); } catch (e) {} }); },
+    subscribe: (fn) => (subs.add(fn), () => subs.delete(fn)),
+  };
+})();
+// Virtualised lists render every row while a print is being prepared.
+const usePrinting = () => {
+  const [, force] = useState(0);
+  useEffect(() => printStore.subscribe(() => force((n) => n + 1)), []);
+  return printStore.on();
+};
+const PRINT_CSS = `
+@page { margin: 10mm; }
+html, body { background: #fff !important; margin: 0; }
+* { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+body { padding: 12px; font-family: inherit; }
+.csam-print-head { display: flex; align-items: baseline; gap: 12px; margin: 0 0 10px; padding-bottom: 6px; border-bottom: 1px solid #ccc; color: #111; }
+.csam-print-head b { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; }
+.csam-print-head span { font-size: 10px; color: #666; }
+.csam-print-caption { font-size: 10px; color: #444; margin: 0 0 8px; }
+.backdrop-blur, .backdrop-blur-sm { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+[data-print-view]:not([data-print-mode="fixed"]),
+[data-print-view]:not([data-print-mode="fixed"]) * { overflow: visible !important; max-height: none !important; }
+[data-print-view]:not([data-print-mode="fixed"]) { position: static !important; height: auto !important; }
+[data-print-view]:not([data-print-mode="fixed"]) [data-print-flow] { position: static !important; inset: auto !important; height: auto !important; }
+[data-print-flow="wide"] { width: max-content !important; min-width: 100%; }
+[data-print-view]:not([data-print-mode="fixed"]) .sticky { position: static !important; }
+[data-print-view]:not([data-print-mode="fixed"]) .h-full { height: auto !important; }
+[data-print-view]:not([data-print-mode="fixed"]) .min-h-0 { min-height: 0 !important; }
+[data-print-view] .opacity-0 { display: none !important; }
+tr, .csam-print-keep { break-inside: avoid; }
+`;
+const escHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const printCurrentView = async ({ title, subtitle } = {}) => {
+  printStore.set(true);
+  try {
+    // let virtualised lists render every row
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    await new Promise((r) => setTimeout(r, 80));
+    const root = [...document.querySelectorAll("[data-print-view]")].find((el) => el.getClientRects().length > 0);
+    if (!root) { window.print(); return; }
+    const fixed = root.getAttribute("data-print-mode") === "fixed";
+    const box = root.getBoundingClientRect();
+    // canvases become pictures (cloneNode copies a blank canvas)
+    const canv = [...root.querySelectorAll("canvas")];
+    const shots = canv.map((c) => {
+      try { return { src: c.toDataURL("image/png"), r: c.getBoundingClientRect() }; } catch (e) { return null; }
+    });
+    const sels = [...root.querySelectorAll("select")];
+    const fields = [...root.querySelectorAll("input, textarea")];
+    const clone = root.cloneNode(true);
+    [...clone.querySelectorAll("canvas")].forEach((c, i) => {
+      const s = shots[i];
+      if (!s || !s.r.width) { c.remove(); return; }
+      const img = document.createElement("img");
+      img.src = s.src;
+      img.className = c.className;
+      img.style.cssText = c.style.cssText;
+      img.style.width = `${s.r.width}px`;
+      img.style.height = `${s.r.height}px`;
+      c.replaceWith(img);
+    });
+    [...clone.querySelectorAll("select")].forEach((c, i) => {
+      const o = sels[i], opt = o && o.options[o.selectedIndex];
+      const t = opt ? opt.text : "";
+      const span = document.createElement("span");
+      span.textContent = t === "-" || t === "Default" || t === "None" ? "—" : t;
+      span.className = "text-[9px]";
+      c.replaceWith(span);
+    });
+    [...clone.querySelectorAll("input, textarea")].forEach((c, i) => {
+      const o = fields[i];
+      if (!o || o.type === "checkbox" || o.type === "range" || o.type === "radio" || o.type === "file" || !String(o.value || "").trim()) { c.remove(); return; }
+      const span = document.createElement("span");
+      span.textContent = o.value;
+      c.replaceWith(span);
+    });
+    clone.querySelectorAll("[data-no-print]").forEach((e) => e.remove());
+    clone.querySelectorAll("[data-print-only]").forEach((e) => { e.classList.remove("hidden"); e.removeAttribute("hidden"); });
+    clone.querySelectorAll("button").forEach((b) => {
+      if (!b.textContent.trim()) { b.remove(); return; }
+      const d = document.createElement(b.closest("table") ? "span" : "div");
+      d.className = b.className;
+      d.innerHTML = b.innerHTML;
+      b.replaceWith(d);
+    });
+    if (fixed) { clone.style.width = `${box.width}px`; clone.style.height = `${box.height}px`; }
+    // the page's CSS inlined (the print window has no base URL and must not
+    // wait on the network); sheets the browser won't let us read stay links
+    const styles = [...document.styleSheets, ...(document.adoptedStyleSheets || [])]
+      .map((sh) => {
+        try {
+          return `<style>${[...sh.cssRules].map((r) => r.cssText).join("\n")}</style>`;
+        } catch (e) {
+          return sh.href ? `<link rel="stylesheet" href="${escHtml(sh.href)}">` : "";
+        }
+      })
+      .join("\n");
+    const when = new Date().toLocaleString();
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escHtml(title || "ColorSAMIficator")}</title>${styles}<style>${PRINT_CSS}</style></head>
+<body><div class="csam-print-head"><b>${escHtml(title || "")}</b><span>${escHtml(subtitle || "")}</span><span style="margin-left:auto">${escHtml(when)}</span></div>
+${clone.outerHTML}
+</body></html>`;
+    // fit wide views to the page, then print (driven from here, so a slow
+    // stylesheet in the new window cannot hold it up)
+    const fitAndPrint = (win) => {
+      setTimeout(() => {
+        try {
+          // Lay the page out at paper width, not window width: about 720 CSS
+          // px inside portrait margins, 960 landscape. What still doesn't fit
+          // (a wide matrix, Explore) goes landscape and is scaled down.
+          const d = win.document;
+          const wideNow = () => d.body.scrollWidth;
+          d.body.style.width = "720px";
+          let target = 720;
+          if (wideNow() > 760) {
+            const st = d.createElement("style");
+            st.textContent = "@page { size: landscape; }";
+            d.head.appendChild(st);
+            d.body.style.width = "960px";
+            target = 960;
+          }
+          const wide = wideNow();
+          if (wide > target + 2) d.body.style.zoom = (target / wide).toFixed(3);
+          win.focus();
+          win.print();
+        } catch (e) { console.error(e); }
+      }, 600);
+    };
+    const w = window.open("", "_blank");
+    if (w && w.document) {
+      w.document.open(); w.document.write(html); w.document.close();
+      fitAndPrint(w);
+      return;
+    }
+    // pop-ups blocked (an embedded frame): print from a hidden frame instead
+    const f = document.createElement("iframe");
+    f.setAttribute("aria-hidden", "true");
+    f.style.cssText = "position:fixed;right:0;bottom:0;width:1200px;height:900px;border:0;opacity:0;pointer-events:none;";
+    document.body.appendChild(f);
+    f.contentDocument.open(); f.contentDocument.write(html); f.contentDocument.close();
+    fitAndPrint(f.contentWindow);
+    setTimeout(() => f.remove(), 60000);
+  } catch (e) {
+    console.error(e);
+    window.print();
+  } finally {
+    printStore.set(false);
+  }
+};
+const PrintButton = ({ title, subtitle }) =>
+  React.createElement(
+    "button",
+    {
+      onClick: () => printCurrentView({ title, subtitle }),
+      title: "Print this view (just the view: no toolbar, filters or sort controls)",
+      className: `${TB_BTN} px-2.5 border border-slate-200 dark:border-neutral-700 text-slate-500 dark:text-neutral-400 hover:bg-slate-50 dark:hover:bg-neutral-800`,
+    },
+    React.createElement(Icon, { name: "printer", className: "w-3.5 h-3.5" }),
+    React.createElement("span", { className: "hidden 2xl:inline" }, "Print"),
+  );
+
+// Same-colour pins (one colour in several door profiles) share notes: a pin
+// without its own shows its twin's.
+const pinTwinKey = (sc) =>
+  `${Math.round((sc.L || 0) * 1e4)}|${Math.round((sc.C || 0) * 1e4)}|${(sc.C || 0) < 1e-4 ? 0 : Math.round((sc.H || 0) * 100)}`;
+const pinTwinNotesIndex = (savedColors) => {
+  const m = new Map();
+  Object.values(savedColors || {}).forEach((sc) => {
+    if (!sc || sc.type !== "pin") return;
+    const n = typeof sc.notes === "string" ? sc.notes.trim() : "";
+    if (!n || isImageRef(n)) return;
+    const k = pinTwinKey(sc);
+    if (!m.has(k)) m.set(k, n);
+  });
+  return m;
+};
+
 const ViewportSwatches = ({
   items,
   layout,
@@ -8336,8 +8773,9 @@ const ViewportSwatches = ({
     const cellPx = baseMatrixSize * swatchZoom;
     return React.createElement(
       "div",
-      { className: "absolute inset-0 flex flex-col bg-slate-50/50 dark:bg-neutral-900/50" },
+      { "data-print-flow": "wide", className: "absolute inset-0 flex flex-col bg-slate-50/50 dark:bg-neutral-900/50" },
       React.createElement(MatrixAxisBar, { scope: groupScope || "pins", axes, more: matrixMore }),
+      React.createElement("div", { "data-print-only": "", className: "hidden csam-print-caption" }, matrixAxesCaption(axes)),
       React.createElement(
       "div",
       { className: "flex-1 min-h-0 overflow-auto custom-scrollbar p-4" },
@@ -8362,7 +8800,7 @@ const ViewportSwatches = ({
                   className:
                     "p-1 text-center text-[9px] font-mono text-slate-400 dark:text-neutral-500 whitespace-nowrap sticky top-0 bg-slate-50/90 dark:bg-neutral-900/90 backdrop-blur z-40 border-b border-slate-200 dark:border-neutral-800",
                 },
-                col.label,
+                col.empty ? React.createElement("span", { title: `${col.label} (empty)`, className: "opacity-60" }, "\u22ef") : col.label,
               ),
             ),
           ),
@@ -8380,7 +8818,7 @@ const ViewportSwatches = ({
                   className:
                     "p-1 text-right text-[9px] font-mono text-slate-400 dark:text-neutral-500 whitespace-nowrap sticky left-0 bg-slate-50/90 dark:bg-neutral-900/90 backdrop-blur z-40 relative border-r border-slate-200 dark:border-neutral-800",
                 },
-                row.label,
+                row.empty ? React.createElement("span", { title: `${row.label} (empty)`, className: "opacity-60" }, "\u22ef") : row.label,
               ),
               matrix.cols.map((col) => {
                 const cellItems = matrix.cells.get(`${row.key}\u0001${col.key}`) || [];
@@ -8392,8 +8830,8 @@ const ViewportSwatches = ({
                     className:
                       "p-1 text-center align-middle hover:bg-slate-100 dark:hover:bg-neutral-800/50 rounded transition-colors relative",
                     style: {
-                      minWidth: `${Math.max((baseMatrixSize + 12) * swatchZoom, blockPx + 8)}px`,
-                      height: `${(baseMatrixSize + 12) * swatchZoom}px`,
+                      minWidth: col.empty ? "14px" : `${Math.max((baseMatrixSize + 12) * swatchZoom, blockPx + 8)}px`,
+                      height: row.empty ? "10px" : `${(baseMatrixSize + 12) * swatchZoom}px`,
                     },
                   },
                   React.createElement(
@@ -8870,6 +9308,7 @@ ${item.erpCode}`,
     {
       className:
         "absolute inset-0 overflow-y-auto custom-scrollbar p-6 bg-slate-50/50 dark:bg-neutral-900/50 col-span-full",
+      "data-print-flow": "",
     },
     !externalSort &&
       React.createElement(
@@ -9263,7 +9702,7 @@ const LoadMoreSentinel = ({ onMore, left }) => {
   }, [left]);
   return React.createElement(
     "button",
-    { ref, onClick: () => cb.current(), className: "w-full py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-slate-700 dark:hover:text-neutral-200" },
+    { ref, "data-no-print": "", onClick: () => cb.current(), className: "w-full py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-slate-700 dark:hover:text-neutral-200" },
     `Show more (${left} more)`,
   );
 };
@@ -9380,6 +9819,7 @@ const ViewPinsInner = ({
       };
     });
   };
+  const twinNotes = useMemo(() => pinTwinNotesIndex(savedColors), [savedColors]);
   const pinItems = useMemo(() => {
     return Object.values(savedColors)
       .filter((sc) => sc.type === "pin")
@@ -9389,11 +9829,12 @@ const ViewPinsInner = ({
           ...sc,
           displayName: (displayName || "Unnamed").trim(),
           isNameOverridden: !!sc.nameOverride,
-          displayNotes: sc.notes || dictNotes[sc.anchorId] || "",
+          displayNotes:
+            (sc.notes && !isImageRef(sc.notes) ? sc.notes : "") || twinNotes.get(pinTwinKey(sc)) || dictNotes[sc.anchorId] || "",
           tags: dictTags[sc.id] || [],
         };
       });
-  }, [savedColors, names, dictNotes, dictTags]);
+  }, [savedColors, names, dictNotes, dictTags, twinNotes]);
 
   // The global filter bar has to reach the catalog too; pins were previously
   // the only surface it never touched. Pins are not DB rows, so this runs in
@@ -9415,7 +9856,7 @@ const ViewPinsInner = ({
     ).items.map((k) => pinItems[k.__idx]);
   }, [pinItems, globalFilters, globalFilterMode, sameGroupContext]);
 
-  const sortedItems = useMemo(() => {
+  const sortedItemsBase = useMemo(() => {
     let items = [...filteredPinItems];
     if (tagFilter) {
       // Tags are compared case-insensitively everywhere else; an exact
@@ -9494,6 +9935,7 @@ const ViewPinsInner = ({
       return sortAsc ? (valA < valB ? -1 : 1) : valB < valA ? -1 : 1;
     });
   }, [filteredPinItems, sortBy, sortAsc, tagFilter, searchTerm]);
+  const sortedItems = useMultiSort("pins", sortedItemsBase, sortBy, sortAsc);
   const grp = useGrouping("pins", sortedItems);
   const fvT = useViewFields("pins", "table");
   const handleUnlock = (id) => {
@@ -9620,6 +10062,7 @@ const ViewPinsInner = ({
       {
         // In swatch modes ViewportSwatches owns the scrolling, so this
         // container must not scroll too or the grid gets clipped.
+        "data-print-view": "pins",
         className: `flex-1 custom-scrollbar px-4 pb-10 ${
           catalogView === "table"
             ? "overflow-y-auto"
@@ -15571,7 +16014,7 @@ const App = () => {
       const inherited = getInheritedData(pinSc);
       return {
         name: cleanName(pinSc.nameOverride) || inherited.name,
-        notes: pinSc.notes || inherited.notes,
+        notes: pinSc.notes || pinTwinNotesIndex(savedColors).get(pinTwinKey(pinSc)) || inherited.notes,
         inherited,
       };
     }
@@ -16758,7 +17201,7 @@ const ViewDatabase = ({
     );
   };
 
-  const sortedItems = useMemo(() => {
+  const sortedItemsBase = useMemo(() => {
     let items = [...allDbItems];
     // Track which stage took the list to zero, so the empty state can name it
     // instead of leaving you to guess across seven stacked filters.
@@ -16922,6 +17365,7 @@ const ViewDatabase = ({
     crosshair,
     columnFilters,
   ]);
+  const sortedItems = useMultiSort("db", sortedItemsBase, sortBy, sortAsc);
   const handleSaveEdit = (e) => {
     e.preventDefault();
     const updated = { ...dataForUpdates };
@@ -17345,13 +17789,13 @@ const ViewDatabase = ({
       }),
     React.createElement(
       "div",
-      { className: "flex-1 overflow-y-auto custom-scrollbar relative p-4" },
+      { "data-print-view": "db", className: "flex-1 overflow-y-auto custom-scrollbar relative p-4" },
       (() => {
         const activeCols = Object.keys(columnFilters).filter(isColumnFiltered);
         if (activeCols.length === 0) return null;
         return React.createElement(
           "div",
-          { className: "flex flex-wrap items-center gap-2 mb-3 p-2 bg-sky-50/80 dark:bg-sky-950/40 border border-sky-200/80 dark:border-sky-800/60 rounded-lg text-xs" },
+          { "data-no-print": "", className: "flex flex-wrap items-center gap-2 mb-3 p-2 bg-sky-50/80 dark:bg-sky-950/40 border border-sky-200/80 dark:border-sky-800/60 rounded-lg text-xs" },
           React.createElement("span", { className: "font-bold text-sky-900 dark:text-sky-200 text-[11px] uppercase tracking-wider flex items-center gap-1" },
             React.createElement(Icon, { name: "filter", className: "w-3 h-3 text-sky-600 dark:text-sky-400" }),
             "Active Column Filters:"
@@ -21553,7 +21997,11 @@ const AppUI = ({
                 value: activeTab === "pins" ? pinsZoom : activeTab === "anchors" ? anchorsZoom : swatchZoom,
                 onChange: activeTab === "pins" ? setPinsZoom : activeTab === "anchors" ? setAnchorsZoom : setSwatchZoom,
               },
-              sort: { enabled: listTab, ...srt },
+              sort: { enabled: listTab, scope: listTab ? activeTab : null, ...srt },
+              print: {
+                title: `The ColorSAMIficator · ${({ db: "Match", pins: "Catalog", anchors: "Anchors" })[activeTab] || "Explore"}`,
+                subtitle: listTab ? `${lay[0]} view` : "colour space",
+              },
               fields: { enabled: listTab, scope: activeTab, layout: listTab ? lay[0] : "gallery" },
               group: {
                 enabled: listTab && lay[0] !== "matrix",
