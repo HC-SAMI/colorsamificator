@@ -63,39 +63,6 @@ const LABEL_OPTIONS = {
   doorProfile: ['-', 'SL (Slab)', 'CS (Shaker)', 'SS (Slim)', 'RD (Reeded)', 'CT (Countertop)', 'WG (Wood-Framed Glass)', 'MG (Metal-framed Glass)'],
   material: ['-', 'Solid Laminate', 'Textured Laminate', 'Lacquered MDF', 'Natural Oak', 'Natural Maple']
 };
-// The option a stored spec value means: exact, or by its leading code.
-const specOption = (options, value) => {
-  const v = String(value || "").trim();
-  if (!v || v === "-") return "";
-  if (options.indexOf(v) !== -1) return v;
-  const code = v.split(/[\s(]/)[0].toUpperCase();
-  const hit = options.find((o) => o !== "-" && o.split(" ")[0].toUpperCase() === code);
-  if (hit) return hit;
-  const low = v.toLowerCase();
-  return options.find((o) => o.toLowerCase() === low) || v;
-};
-const specOptions = (options, value) => {
-  const v = specOption(options, value);
-  return v && options.indexOf(v) === -1 ? [...options, v] : options;
-};
-// A NOUN row's OKLCH_L: one lightness, or a legacy "min-max" range. "0"
-// stays 0 (it used to become the whole 0–1 axis, splitting black across the
-// neutral scale), and exponent notation is a number, not a range.
-const parseAnchorL = (raw, fallbackL) => {
-  const s = String(raw === undefined || raw === null ? "" : raw).trim();
-  const num = "(\\d*\\.?\\d+(?:[eE][-+]?\\d+)?)";
-  const m = s.match(new RegExp(`^${num}\\s*-\\s*${num}$`));
-  if (m) {
-    const a = parseFloat(m[1]), b = parseFloat(m[2]);
-    if (isFinite(a) && isFinite(b)) return [Math.min(a, b), Math.max(a, b)];
-  }
-  const n = parseFloat(s);
-  if (s !== "" && isFinite(n)) return [n, n];
-  if (fallbackL !== null && fallbackL !== undefined && isFinite(fallbackL)) return [fallbackL, fallbackL];
-  return [0, 1];
-};
-// Numbers written to CSV never in exponent notation (6.5e-7 read back as a range).
-const csvNum = (v) => (typeof v === "number" && isFinite(v) ? String(Math.round(v * 1e6) / 1e6) : v);
 const defaultGroupSettings = {
   lightL: 0.5,
   neutralC: 0.02,
@@ -133,6 +100,18 @@ const hueCenterOf = (hue, all) => {
   const prev = i > 0 ? sorted[i - 1].maxH : (sorted[sorted.length - 1]?.maxH ?? 0) - 360;
   const mid = (prev + hue.maxH) / 2;
   return ((mid % 360) + 360) % 360;
+};
+// The visible edge between two regions is halfway between their midpoints.
+const hueBoundaries = (hues) => {
+  const list = (hues || [])
+    .map((x) => hueCenterOf(x, hues))
+    .sort((a, b) => a - b);
+  if (list.length < 2) return [];
+  return list.map((c, i) => {
+    const next = list[(i + 1) % list.length];
+    const span = (((next - c) % 360) + 360) % 360;
+    return ((c + span / 2) % 360 + 360) % 360;
+  });
 };
 const hueArcDistance = (a, b) => {
   const d = Math.abs((((a - b) % 360) + 360) % 360);
@@ -205,8 +184,44 @@ function getExactErpCode(L, C, H) {
   const hStr = Math.round(hVal).toString().padStart(3, "0");
   return `${lStr}${cStr}${hStr}`;
 }
+function applyJitter(items, xKey, yKey, zKey = null, jitterAmt = 0.003) {
+  const placed = [];
+  return items.map((item) => {
+    let x = item[xKey],
+      y = item[yKey],
+      z = zKey ? item[zKey] : 0;
+    if (isNaN(x) || isNaN(y)) return { ...item, _jX: x, _jY: y, _jZ: z };
+    let overlapIdx = -1;
+    for (let i = 0; i < placed.length; i++) {
+      const p = placed[i];
+      const dx = p.x - x,
+        dy = p.y - y,
+        dz = zKey ? p.z - z : 0;
+      if (
+        Math.abs(dx) < 0.001 &&
+        Math.abs(dy) < 0.001 &&
+        Math.abs(dz) < 0.001
+      ) {
+        overlapIdx = i;
+        break;
+      }
+    }
+    if (overlapIdx >= 0) {
+      placed[overlapIdx].collisions = (placed[overlapIdx].collisions || 0) + 1;
+      const c = placed[overlapIdx].collisions;
+      const angle = c * Math.PI * 0.5;
+      const rad = Math.ceil(c / 4) * jitterAmt;
+      x += Math.cos(angle) * rad;
+      y += Math.sin(angle) * rad;
+      if (zKey && c % 2 === 0) z += (c % 4 === 2 ? 1 : -1) * rad * 0.5;
+    }
+    placed.push({ x, y, z, collisions: 0 });
+    return { ...item, _jX: x, _jY: y, _jZ: z };
+  });
+}
 function getGlobalDuplicate(
   names,
+  adjectives,
   currentKey,
   value,
   savedColors = {},
@@ -216,14 +231,31 @@ function getGlobalDuplicate(
   if (!value || !isOverride) return null;
   const normalizedVal = value.trim().toLowerCase();
   if (!normalizedVal) return null;
+  // A deleted column can leave its entry behind in the names dictionary.
+  // Those orphans are not real conflicts, so skip any column key with no
+  // surviving saved colour.
+  const hasColumns = savedColors && Object.keys(savedColors).length > 0;
+  const isOrphan = (key) =>
+    hasColumns && String(key).startsWith("col-") && !savedColors[key];
   for (const [key, val] of Object.entries(names)) {
+    if (
+      key !== currentKey &&
+      key !== ignoreAnchorId &&
+      !isOrphan(key) &&
+      val &&
+      val.trim().toLowerCase() === normalizedVal
+    ) {
+      return `Noun (${key})`;
+    }
+  }
+  for (const [key, val] of Object.entries(adjectives)) {
     if (
       key !== currentKey &&
       key !== ignoreAnchorId &&
       val &&
       val.trim().toLowerCase() === normalizedVal
     ) {
-      return `Anchor (${key})`;
+      return `Layer Adj (${key})`;
     }
   }
   for (const [id, pt] of Object.entries(savedColors)) {
@@ -234,11 +266,24 @@ function getGlobalDuplicate(
       ) {
         if (pt.anchorId === currentKey || pt.anchorId === ignoreAnchorId)
           continue;
-        return `Pin (${pt.erpCode})`;
+        return `Pin Noun (${pt.erpCode})`;
+      }
+      if (
+        pt.adjOverride &&
+        pt.adjOverride.trim().toLowerCase() === normalizedVal
+      ) {
+        if (pt.adjId === currentKey || pt.adjId === ignoreAnchorId) continue;
+        return `Pin Adj (${pt.erpCode})`;
       }
     }
   }
   return null;
+}
+function generateGridPoints(maxC = 0.3, maxL = 1) {
+  return { baseAnchors: [], allPoints: [] };
+}
+function generateGridData() {
+  return generateGridPoints(0.3, 1);
 }
 const SliderGroup = ({ label, value, min, max, step, onChange, icon }) =>
   React.createElement(
@@ -560,148 +605,6 @@ const createColorFromHex = (hex) => {
   return new Color("xyz-d65", xyz);
 };
 
-// ─── Fast colour math ───────────────────────────────────────────────────────
-// The same numbers colorjs gives for xyz-d65 → OkLab/OkLCH and ΔE OK (plain
-// OkLab distance), without building Color objects. Bulk loops (imports,
-// matches, filters) used to allocate several objects per colour per frame.
-const FAST_XYZ_LMS = [
-  0.819022437996703, 0.3619062600528904, -0.1288737815209879,
-  0.0329836539323885, 0.9292868615863434, 0.0361446663506424,
-  0.0481771893596242, 0.2642395317527308, 0.6335478284694309,
-];
-const FAST_LMS_LAB = [
-  0.210454268309314, 0.7936177747023054, -0.0040720430116193,
-  1.9779985324311684, -2.42859224204858, 0.450593709617411,
-  0.0259040424655478, 0.7827717124575296, -0.8086757549230774,
-];
-// → [L, C, H] with H = NaN for achromatic colours, exactly like colorjs.
-const fastXyzToOklch = (x, y, z) => {
-  const M = FAST_XYZ_LMS, N = FAST_LMS_LAB;
-  const l = Math.cbrt(M[0] * x + M[1] * y + M[2] * z);
-  const m = Math.cbrt(M[3] * x + M[4] * y + M[5] * z);
-  const s = Math.cbrt(M[6] * x + M[7] * y + M[8] * z);
-  const L = N[0] * l + N[1] * m + N[2] * s;
-  const a = N[3] * l + N[4] * m + N[5] * s;
-  const b = N[6] * l + N[7] * m + N[8] * s;
-  const C = Math.sqrt(a * a + b * b);
-  let H = NaN;
-  if (!(Math.abs(a) < 0.0002 && Math.abs(b) < 0.0002)) {
-    H = (Math.atan2(b, a) * 180) / Math.PI;
-    if (H < 0) H += 360;
-  }
-  return [L, C, H];
-};
-// "#rgb" / "#rrggbb" → [L, C, H] (null when it isn't a hex colour).
-const fastHexToOklch = (hex) => {
-  let ch = String(hex || "").replace("#", "").trim();
-  if (ch.length === 3) ch = ch[0] + ch[0] + ch[1] + ch[1] + ch[2] + ch[2];
-  const r = parseInt(ch.substring(0, 2), 16), g = parseInt(ch.substring(2, 4), 16), b = parseInt(ch.substring(4, 6), 16);
-  if (isNaN(r) || isNaN(g) || isNaN(b)) return null;
-  const xyz = srgbToXyzD65Raw(r, g, b);
-  return fastXyzToOklch(xyz[0], xyz[1], xyz[2]);
-};
-// ΔE OK ×100 between two OkLCH colours (H in degrees; NaN hue counts as 0).
-const fastDeltaEOK = (L1, C1, H1, L2, C2, H2) => {
-  const h1 = ((isNaN(H1) ? 0 : H1) * Math.PI) / 180, h2 = ((isNaN(H2) ? 0 : H2) * Math.PI) / 180;
-  const da = C1 * Math.cos(h1) - C2 * Math.cos(h2), db = C1 * Math.sin(h1) - C2 * Math.sin(h2), dL = L1 - L2;
-  return Math.sqrt(dL * dL + da * da + db * db) * 100;
-};
-// A commercial colour's OkLCH (and display hex), worked out once per record:
-// spectral data first, then stored L/C/H, then the hex.
-const FAST_ITEM_LCH = new WeakMap();
-const fastItemLch = (item) => {
-  if (!item || typeof item !== "object") return null;
-  let hit = FAST_ITEM_LCH.get(item);
-  if (hit) return hit;
-  let L, C, H, hex = item.hex || "#000000";
-  try {
-    if (item.spectral && item.spectral.length === 31) {
-      const xyz = calculateXYZFromSpectral(item.spectral, 2, "D65");
-      [L, C, H] = fastXyzToOklch(xyz[0], xyz[1], xyz[2]);
-      hex = new Color("xyz-d65", xyz).to("srgb").toString({ format: "hex" });
-    } else if (item.L !== undefined && item.C !== undefined && item.H !== undefined) {
-      L = item.L; C = item.C; H = item.H;
-    } else {
-      const o = fastHexToOklch(item.hex);
-      if (!o) return null;
-      [L, C, H] = o;
-    }
-  } catch (e) {
-    return null;
-  }
-  if (typeof L !== "number" || typeof C !== "number" || !isFinite(L) || !isFinite(C)) return null;
-  hit = { L, C, H: isNaN(H) ? 0 : H, hex };
-  FAST_ITEM_LCH.set(item, hit);
-  return hit;
-};
-// Gamut test and display hex for an OkLCH point, via colorjs once per distinct
-// coordinate (anchors are re-listed on every edit; their colours don't change).
-const LCH_GAMUT_HEX = new Map();
-setTimeout(() => DisplayGamut.subscribe(() => { LCH_GAMUT_HEX.clear(); }), 0);
-const lchGamutHex = (L, C, H) => {
-  const k = L + "|" + C + "|" + H;
-  let hit = LCH_GAMUT_HEX.get(k);
-  if (!hit) {
-    const c = new Color("oklch", [L, C, H]);
-    const inGamut = c.inGamut(DisplayGamut.space);
-    hit = { inGamut, hex: inGamut ? c.clone().toGamut({ space: "srgb" }).toString({ format: "hex" }) : null };
-    if (LCH_GAMUT_HEX.size > 50000) LCH_GAMUT_HEX.clear();
-    LCH_GAMUT_HEX.set(k, hit);
-  }
-  return hit;
-};
-// colorjs's inGamut("srgb") (ε = 0.000075 on encoded channels) in plain maths.
-const FAST_INV3 = (m) => {
-  const [a, b, c, d, e, f, g, h, i] = m, A = e * i - f * h, B = -(d * i - f * g), Cc = d * h - e * g, det = a * A + b * B + c * Cc;
-  return [A / det, -(b * i - c * h) / det, (b * f - c * e) / det, B / det, (a * i - c * g) / det, -(a * f - c * d) / det, Cc / det, -(a * h - b * g) / det, (a * e - b * d) / det];
-};
-const FAST_LAB_LMS = FAST_INV3(FAST_LMS_LAB), FAST_LMS_XYZ = FAST_INV3(FAST_XYZ_LMS);
-const FAST_XYZ_RGB = [
-  3.2409699419045226, -1.537383177570094, -0.4986107602930034,
-  -0.9692436362808796, 1.8759675015077202, 0.04155505740717559,
-  0.05563007969699366, -0.20397695888897652, 1.0569715142428786,
-];
-// (now the screen's working gamut: sRGB, or Display P3 on a wide-gamut screen)
-const fastInGamutSrgb = (L, C, H) => {
-  if (DisplayGamut.id !== "srgb") return DisplayGamut.inGamut(L, C, H);
-  if (![L, C, H].every((v) => typeof v === "number" && isFinite(v))) return new Color("oklch", [L, C, H]).inGamut(DisplayGamut.space);
-  const h = (H * Math.PI) / 180, A = C * Math.cos(h), B = C * Math.sin(h), M = FAST_LAB_LMS, X = FAST_LMS_XYZ, R = FAST_XYZ_RGB;
-  let l = M[0] * L + M[1] * A + M[2] * B, m = M[3] * L + M[4] * A + M[5] * B, s = M[6] * L + M[7] * A + M[8] * B;
-  l = l * l * l; m = m * m * m; s = s * s * s;
-  const x = X[0] * l + X[1] * m + X[2] * s, y = X[3] * l + X[4] * m + X[5] * s, z = X[6] * l + X[7] * m + X[8] * s;
-  const e = 0.000075;
-  for (let k = 0; k < 3; k++) {
-    const v = R[k * 3] * x + R[k * 3 + 1] * y + R[k * 3 + 2] * z, a = Math.abs(v);
-    const g = a > 0.0031308 ? Math.sign(v) * (1.055 * Math.pow(a, 1 / 2.4) - 0.055) : 12.92 * v;
-    if (g < -e || g > 1 + e) return false;
-  }
-  return true;
-};
-// toGamut(srgb) hex for an OkLCH point, cached per coordinate.
-const LCH_DISPLAY_HEX = new Map();
-const lchDisplayHex = (L, C, H) => {
-  const k = L + "|" + C + "|" + H;
-  let hex = LCH_DISPLAY_HEX.get(k);
-  if (hex === undefined) {
-    try {
-      hex = new Color("oklch", [L, C, H]).toGamut({ space: "srgb" }).toString({ format: "hex" });
-    } catch (e) {
-      hex = "#cccccc";
-    }
-    if (LCH_DISPLAY_HEX.size > 50000) LCH_DISPLAY_HEX.clear();
-    LCH_DISPLAY_HEX.set(k, hex);
-  }
-  return hex;
-};
-
-// History records never change once stored, so their JSON is cached.
-const HISTORY_STR = new WeakMap();
-const historyRecordStr = (rec) => {
-  if (!rec || typeof rec !== "object") return JSON.stringify(rec);
-  let s = HISTORY_STR.get(rec);
-  if (s === undefined) { s = JSON.stringify(rec); HISTORY_STR.set(rec, s); }
-  return s;
-};
 const ColorConverter = ({
   crosshair,
   onEdit,
@@ -1103,7 +1006,7 @@ const MatchRow = ({ label, match, onSelectColor, setFullscreenImage, fmt }) => {
             {
               className:
                 "relative group w-8 h-8 rounded shadow-sm shrink-0 border border-slate-200 dark:border-neutral-700 overflow-hidden",
-              style: { backgroundColor: DisplayGamut.css(match.L, match.C, match.H, match.hex) },
+              style: { backgroundColor: match.hex },
             },
             React.createElement("div", {
               className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
@@ -1132,7 +1035,7 @@ const MatchRow = ({ label, match, onSelectColor, setFullscreenImage, fmt }) => {
         : React.createElement("div", {
             className:
               "w-8 h-8 rounded shadow-sm shrink-0 border border-slate-200 dark:border-neutral-700",
-            style: { backgroundColor: DisplayGamut.css(match.L, match.C, match.H, match.hex) },
+            style: { backgroundColor: match.hex },
           }),
       React.createElement(
         "div",
@@ -1184,8 +1087,11 @@ const MatchRow = ({ label, match, onSelectColor, setFullscreenImage, fmt }) => {
 const CommercialMatches = ({
   crosshair,
   colorData,
+  filterSameAdjective,
   filterSameNoun,
   names,
+  adjectives,
+  gridData,
   onSelectColor,
   savedColors = {},
 }) => {
@@ -1207,29 +1113,53 @@ const CommercialMatches = ({
     if (!colorData || Object.keys(colorData).length === 0) return null;
 
     let sameGroup = null;
-    if (filterSameNoun) {
-      sameGroup = getSameGroupContext(crosshair.rawL, crosshair.rawC, crosshair.rawH, savedColors, names);
+    if (filterSameAdjective || filterSameNoun) {
+      sameGroup = getSameGroupContext(
+        crosshair.rawL,
+        crosshair.rawC,
+        crosshair.rawH,
+        gridData,
+        savedColors,
+        names,
+        adjectives,
+      );
     }
 
     const allMatches = [];
-    const cL = c.coords[0], cC = c.coords[1], cH = c.coords[2];
     const processList = (list, label, brandKey) => {
       if (!list || !Array.isArray(list)) return;
       for (let listIdx = 0; listIdx < list.length; listIdx++) {
         const item = list[listIdx];
         try {
-          // Each record's OkLCH is worked out once and cached; ΔE OK is the
-          // plain OkLab distance, so no Color objects per record per move.
-          const lch = fastItemLch(item);
-          if (!lch) continue;
-          const hexVal = lch.hex;
-          const d = fastDeltaEOK(cL, cC, cH, lch.L, lch.C, lch.H);
+          let hexVal = item.hex || "#000000";
+          let targetColor;
+          if (item.spectral && item.spectral.length === 31) {
+            const xyzStandard = calculateXYZFromSpectral(
+              item.spectral,
+              2,
+              "D65",
+            );
+            targetColor = new Color("xyz-d65", xyzStandard).to("oklch");
+            hexVal = targetColor.to("srgb").toString({ format: "hex" });
+          } else if (
+            item.L !== void 0 &&
+            item.C !== void 0 &&
+            item.H !== void 0
+          ) {
+            targetColor = new Color("oklch", [item.L, item.C, item.H]);
+          } else {
+            targetColor = createColorFromHex(item.hex).to("oklch");
+          }
+          const d = c.deltaE(targetColor, "OK") * 100;
           if (d <= maxDeltaE) {
-            if (filterSameNoun && sameGroup) {
-              const itemL = lch.L;
-              const itemC = lch.C;
-              const itemH = lch.H;
+            if ((filterSameAdjective || filterSameNoun) && sameGroup) {
+              const itemL = targetColor.coords[0];
+              const itemC = targetColor.coords[1];
+              const itemH = isNaN(targetColor.coords[2]) ? 0 : targetColor.coords[2];
 
+              if (filterSameAdjective && !matchesSameAdjective(sameGroup, itemL)) {
+                continue;
+              }
               if (filterSameNoun && !matchesSameNoun(sameGroup, itemL, itemC, itemH)) {
                 continue;
               }
@@ -1240,9 +1170,9 @@ const CommercialMatches = ({
               match: {
                 ...item,
                 hex: hexVal,
-                L: lch.L,
-                C: lch.C,
-                H: lch.H,
+                L: targetColor.coords[0],
+                C: targetColor.coords[1],
+                H: isNaN(targetColor.coords[2]) ? 0 : targetColor.coords[2],
                 d,
                 brand: brandKey,
                 originalIndex: listIdx,
@@ -1289,8 +1219,11 @@ const CommercialMatches = ({
     colorData,
     maxDeltaE,
     searchQuery,
+    filterSameAdjective,
     filterSameNoun,
     names,
+    adjectives,
+    gridData,
     savedColors,
   ]);
 
@@ -1685,4431 +1618,2164 @@ const PlotlyChart = ({
   });
 };
 
+// sRGB -> OKLab, returned in the app's axis convention (a = C sinH, b = C cosH,
+// i.e. the standard OKLab a/b swapped) so the solid registers with the points.
+const srgbToAppOklab = (r, g, b) => {
+  const lin = (v) =>
+    v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  const R = lin(r), G = lin(g), B = lin(b);
+  const l = 0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B;
+  const m = 0.2119034982 * R + 0.6806995451 * G + 0.1073969566 * B;
+  const s = 0.0883024619 * R + 0.2817188376 * G + 0.6299787005 * B;
+  const l_ = Math.cbrt(l), m_ = Math.cbrt(m), s_ = Math.cbrt(s);
+  const L = 0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_;
+  const aStd = 1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_;
+  const bStd = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_;
+  return { L, a: bStd, b: aStd };
+};
 
+// The sRGB gamut as a closed solid in OKLCH space: sample the six faces of the
+// RGB cube, map each to OKLab, and stitch them into one mesh. Every vertex
+// carries its own colour, so the solid is the gamut rather than a tinted blob.
+const buildGamutSolid = (M = 14) => {
+  const xs = [], ys = [], zs = [], vc = [];
+  const ti = [], tj = [], tk = [];
+  const faces = [
+    (u, v) => [0, u, v], (u, v) => [1, u, v],
+    (u, v) => [u, 0, v], (u, v) => [u, 1, v],
+    (u, v) => [u, v, 0], (u, v) => [u, v, 1],
+  ];
+  faces.forEach((f) => {
+    const base = xs.length;
+    for (let iv = 0; iv < M; iv++) {
+      for (let iu = 0; iu < M; iu++) {
+        const rgb = f(iu / (M - 1), iv / (M - 1));
+        const p = srgbToAppOklab(rgb[0], rgb[1], rgb[2]);
+        xs.push(p.a); ys.push(p.b); zs.push(p.L);
+        vc.push(
+          `rgb(${Math.round(rgb[0] * 255)},${Math.round(rgb[1] * 255)},${Math.round(rgb[2] * 255)})`,
+        );
+      }
+    }
+    for (let iv = 0; iv < M - 1; iv++) {
+      for (let iu = 0; iu < M - 1; iu++) {
+        const p = base + iv * M + iu;
+        ti.push(p, p + 1);
+        tj.push(p + 1, p + M + 1);
+        tk.push(p + M, p + M);
+      }
+    }
+  });
+  return { x: xs, y: ys, z: zs, i: ti, j: tj, k: tk, vertexcolor: vc };
+};
+let GAMUT_SOLID = null;
 
-
-
-
-// ─── Explore: OkLCH colour-space viewer ──────────────────────────────────────
-// One 3D view and three 2D sections (L, C, H) of the anchors' cells. Each
-// anchor owns the region of colour space that is nearer to it than to any
-// other anchor (its Voronoi cell), clipped to the sRGB gamut. At 0% inflation
-// each anchor is a dot; above it, each is its own cell scaled about the anchor,
-// up to that full region at 100%; the viewport tolerance
-// sliders cut true sections through the solid.
-//
-// Coordinates follow the rest of the app: a = C·sin H, b = C·cos H, so hue 0°
-// points up in the L section, as in the old Light layers view.
-const SPACE_THREE_URL =
-  "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js";
-let SPACE_THREE_PROMISE = null;
-const loadSpaceThree = () => {
-  if (window.THREE) return Promise.resolve(window.THREE);
-  if (!SPACE_THREE_PROMISE) {
-    SPACE_THREE_PROMISE = new Promise((resolve, reject) => {
-      const s = document.createElement("script");
-      s.src = SPACE_THREE_URL;
-      s.async = true;
-      s.onload = () =>
-        window.THREE ? resolve(window.THREE) : reject(new Error("three.js did not load"));
-      s.onerror = () => {
-        SPACE_THREE_PROMISE = null;
-        reject(new Error("Could not load three.js"));
-      };
-      document.head.appendChild(s);
-    });
+// The gamut solid is built once; the view filters then carve it down to the
+// window around the cursor, so it responds like the points do.
+const clipSolidToFilter = (solid, filterPt) => {
+  if (!filterPt) return solid;
+  const keep = new Array(solid.x.length);
+  for (let v = 0; v < solid.x.length; v++) {
+    const a = solid.x[v], b = solid.y[v], L = solid.z[v];
+    const C = Math.hypot(a, b);
+    const H = ((Math.atan2(a, b) * 180) / Math.PI + 360) % 360;
+    keep[v] = filterPt({ L, C, H });
   }
-  return SPACE_THREE_PROMISE;
+  const i = [], j = [], k = [];
+  for (let t = 0; t < solid.i.length; t++) {
+    if (keep[solid.i[t]] && keep[solid.j[t]] && keep[solid.k[t]]) {
+      i.push(solid.i[t]); j.push(solid.j[t]); k.push(solid.k[t]);
+    }
+  }
+  return { ...solid, i, j, k };
 };
 
 
-// ─── Display gamut ──────────────────────────────────────────────────────────
-// Which colours this screen can actually show. The screen reports its gamut
-// through the color-gamut media query (sRGB, P3 or Rec. 2020); the app can
-// only draw beyond sRGB where the browser paints canvases and CSS in Display
-// P3, so the working gamut is Display P3 on a wide-gamut screen in such a
-// browser, and sRGB everywhere else. It follows the window to another screen,
-// and can be held to sRGB by choice (colours safe on any screen).
-const DisplayGamut = (() => {
-  const KEY = "colorsamificator-gamut";
-  const mq = (q) => { try { return !!(window.matchMedia && window.matchMedia(q).matches); } catch (e) { return false; } };
-  // linear sRGB → linear target RGB (D65 throughout)
-  const M = {
-    p3: [0.8224621209, 0.1775378791, 0, 0.0331941989, 0.9668058011, 0, 0.0170826307, 0.0723974407, 0.9105199286],
-    rec2020: [0.6274038959, 0.3292830384, 0.0433130657, 0.0690972894, 0.9195403951, 0.0113623156, 0.0163914389, 0.0880133079, 0.8955952532],
-  };
-  const LABEL = { srgb: "sRGB", p3: "Display P3", rec2020: "Rec. 2020" };
-  let canvasP3 = false;
-  try {
-    const c = document.createElement("canvas"), x = c.getContext("2d", { colorSpace: "display-p3" });
-    canvasP3 = !!x && (!x.getContextAttributes || x.getContextAttributes().colorSpace === "display-p3") &&
-      typeof WebGLRenderingContext !== "undefined" && "drawingBufferColorSpace" in WebGLRenderingContext.prototype &&
-      !!(window.CSS && CSS.supports && CSS.supports("color", "color(display-p3 1 0 0)"));
-  } catch (e) {}
-  const st = { screen: "srgb", id: "srgb", pref: "auto" };
-  const listeners = new Set();
-  const compute = () => {
-    st.screen = mq("(color-gamut: rec2020)") ? "rec2020" : mq("(color-gamut: p3)") ? "p3" : "srgb";
-    try { st.pref = localStorage.getItem(KEY) === "srgb" ? "srgb" : "auto"; } catch (e) { st.pref = "auto"; }
-    st.id = st.pref === "auto" && st.screen !== "srgb" && canvasP3 ? "p3" : "srgb";
-  };
-  compute();
-  const changed = () => { const before = st.id; compute(); if (st.id !== before) listeners.forEach((fn) => { try { fn(st.id); } catch (e) {} }); };
-  try {
-    ["(color-gamut: p3)", "(color-gamut: rec2020)"].forEach((q) => {
-      const m = window.matchMedia && window.matchMedia(q);
-      if (m && m.addEventListener) m.addEventListener("change", changed); else if (m && m.addListener) m.addListener(changed);
+// Bins in 3D: each noun column's Voronoi cell in the a/b plane, extruded over
+// the lightness range the column actually spans. One merged mesh for the
+// inactive bins, a second opaque one plus an outline for the bin under the
+// cursor.
+const buildBinPrisms = (points, crosshair) => {
+  const cols = new Map();
+  points.forEach((p) => {
+    if (p.isPin || p.a === undefined || p.b === undefined) return;
+    const key = `${p.a.toFixed(4)}|${p.b.toFixed(4)}`;
+    let c = cols.get(key);
+    if (!c) {
+      c = { a: p.a, b: p.b, levels: [], hex: p.hex || p.color };
+      cols.set(key, c);
+    }
+    // Each adjective level in the column is its own chunk, so the highlight
+    // can be one lightness band rather than the whole column.
+    c.levels.push({ L: p.L, hex: p.hex || p.color });
+    if (!c.hex) c.hex = p.hex || p.color;
+  });
+  cols.forEach((c) => {
+    c.levels.sort((x, y) => x.L - y.L);
+    const seen = new Set();
+    c.levels = c.levels.filter((lv) => {
+      const k = lv.L.toFixed(4);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
     });
-  } catch (e) {}
-  const enc = (v) => { const x = Math.max(0, Math.min(1, v)); return x <= 0.0031308 ? 12.92 * x : 1.055 * Math.pow(x, 1 / 2.4) - 0.055; };
-  const dec = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
-  const mul = (m, r, g, b) => [m[0] * r + m[1] * g + m[2] * b, m[3] * r + m[4] * g + m[5] * b, m[6] * r + m[7] * g + m[8] * b];
-  const oklabLin = (L, A, B) => {
-    const l_ = L + 0.3963377774 * A + 0.2158037573 * B, m_ = L - 0.1055613458 * A - 0.0638541728 * B, s_ = L - 0.0894841775 * A - 1.291485548 * B;
-    const l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_;
-    return [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s, -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s];
+    c.minL = c.levels[0].L;
+    c.maxL = c.levels[c.levels.length - 1].L;
+  });
+  const list = [...cols.values()].filter((c) => isFinite(c.a) && isFinite(c.b));
+  if (list.length < 3 || !window.d3 || !window.d3.Delaunay) return null;
+
+  let vor;
+  try {
+    vor = window.d3.Delaunay.from(list.map((c) => [c.a, c.b])).voronoi([
+      -0.45, -0.45, 0.45, 0.45,
+    ]);
+  } catch (e) {
+    return null;
+  }
+
+  // which bin is the cursor in
+  let active = -1, best = Infinity;
+  if (crosshair) {
+    const ca = crosshair.rawC * Math.sin((crosshair.rawH * Math.PI) / 180);
+    const cb = crosshair.rawC * Math.cos((crosshair.rawH * Math.PI) / 180);
+    list.forEach((c, i) => {
+      const d = (c.a - ca) ** 2 + (c.b - cb) ** 2;
+      if (d < best) { best = d; active = i; }
+    });
+  }
+
+  const mk = () => ({ x: [], y: [], z: [], i: [], j: [], k: [], vertexcolor: [] });
+  const dim = mk(), hot = mk();
+  const outline = { x: [], y: [], z: [] };
+
+  list.forEach((c, idx) => {
+    let poly;
+    try { poly = vor.cellPolygon(idx); } catch (e) { poly = null; }
+    if (!poly || poly.length < 4) return;
+    // Hull cells run out to the clip box, which produced huge wedges. Clamp
+    // each vertex to a radius around its seed, then shrink slightly so
+    // neighbouring prisms leave a gap instead of z-fighting.
+    const MAX_R = 0.075, SHRINK = 0.88;
+    const ring = poly.slice(0, -1).map((pt) => {
+      let dx = pt[0] - c.a, dy = pt[1] - c.b;
+      const d = Math.hypot(dx, dy);
+      if (d > MAX_R) { dx = (dx / d) * MAX_R; dy = (dy / d) * MAX_R; }
+      return [c.a + dx * SHRINK, c.b + dy * SHRINK];
+    });
+    const n = ring.length;
+    const isActiveCol = idx === active;
+
+    // Split the column into one chunk per adjective level.
+    const lv = c.levels;
+    const chunks = [];
+    for (let s = 0; s < lv.length; s++) {
+      const prev = s > 0 ? lv[s - 1].L : lv[s].L - 0.02;
+      const next = s < lv.length - 1 ? lv[s + 1].L : lv[s].L + 0.02;
+      chunks.push({
+        lo: Math.max(0, (prev + lv[s].L) / 2),
+        hi: Math.min(1, (lv[s].L + next) / 2),
+        hex: lv[s].hex || c.hex || "#888888",
+        L: lv[s].L,
+      });
+    }
+
+    // Only the chunk containing the cursor's lightness is highlighted.
+    let hotChunk = -1;
+    if (isActiveCol && crosshair) {
+      let bestD = Infinity;
+      chunks.forEach((ck, ci) => {
+        const d = Math.abs(ck.L - crosshair.rawL);
+        if (d < bestD) { bestD = d; hotChunk = ci; }
+      });
+    }
+
+    chunks.forEach((ck, ci) => {
+      const m = ci === hotChunk ? hot : dim;
+      const base = m.x.length;
+      for (const z of [ck.lo, ck.hi]) {
+        ring.forEach((pt) => {
+          m.x.push(pt[0]); m.y.push(pt[1]); m.z.push(z); m.vertexcolor.push(ck.hex);
+        });
+      }
+      for (let v = 0; v < n; v++) {            // sides
+        const v2 = (v + 1) % n;
+        m.i.push(base + v, base + v2);
+        m.j.push(base + v2, base + n + v2);
+        m.k.push(base + n + v, base + n + v);
+      }
+      for (let v = 1; v < n - 1; v++) {        // caps
+        m.i.push(base, base + n);
+        m.j.push(base + v, base + n + v);
+        m.k.push(base + v + 1, base + n + v + 1);
+      }
+      if (ci === hotChunk) {                   // outline just that chunk
+        [ck.lo, ck.hi].forEach((z) => {
+          ring.forEach((pt) => { outline.x.push(pt[0]); outline.y.push(pt[1]); outline.z.push(z); });
+          outline.x.push(ring[0][0]); outline.y.push(ring[0][1]); outline.z.push(z);
+          outline.x.push(null); outline.y.push(null); outline.z.push(null);
+        });
+      }
+    });
+  });
+
+  return { dim, hot, outline };
+};
+
+const View3D = ({
+  colorData,
+  points,
+  crosshair,
+  viewMode,
+  handlePointClick,
+  theme,
+  names,
+  adjectives,
+  savedColors = {},
+  lockedNouns,
+  lockedAdjectives,
+  tetheringPinId,
+  filterPt,
+}) => {
+  const isDark = theme === "dark";
+  const baseTraces = useMemo(() => {
+    const traces = [];
+    const filteredPoints = points.filter(filterPt);
+    traces.push({
+      type: "scatter3d",
+      mode: "markers",
+      x: filteredPoints.map((p) => p.a),
+      y: filteredPoints.map((p) => p.b),
+      z: filteredPoints.map((p) => p.L),
+      text: filteredPoints.map((p) => {
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+        const name =
+          `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
+          "Unnamed";
+        return `<b>${name}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`;
+      }),
+      hovertemplate: "%{text}<extra></extra>",
+      customdata: filteredPoints.map((p) => {
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+        const name =
+          `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
+          "Unnamed";
+        return [
+          p.L,
+          p.C,
+          p.H,
+          { anchorId: nounId, adjId: p.lStr, fullName: name },
+        ];
+      }),
+      marker: {
+        size: 4,
+        color: filteredPoints.map((p) => p.color),
+        opacity: 0.8,
+        line: { width: 0 },
+      },
+    });
+    const gridLockedNodes = points
+      .filter((p) => !p.isCustomAnchor && filterPt(p))
+      .filter((p) => {
+        return (
+          !p.isPin &&
+          lockedNouns[p.parentNounId || `${p.cStr}-${p.hStr}`] &&
+          lockedAdjectives[p.lStr]
+        );
+      })
+      .map((p) => {
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+        return {
+          ...p,
+          displayName:
+            `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
+            "Unnamed",
+        };
+      });
+    const customLockedNodes = Object.values(savedColors)
+      .filter((sc) => sc.type === "anchor" && filterPt(sc))
+      .map((p) => {
+        const displayName =
+          `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
+          p.id ||
+          "Custom Anchor";
+        return {
+          ...p,
+          a: p.C * Math.sin((p.H * Math.PI) / 180),
+          b: p.C * Math.cos((p.H * Math.PI) / 180),
+          displayName,
+        };
+      });
+    const lockedNodes = [...gridLockedNodes, ...customLockedNodes];
+    Object.values(savedColors)
+      .filter((sc) => {
+        if (sc.type !== "nounColumn") return false;
+        let H = Math.atan2(sc.a, sc.b) * (180 / Math.PI);
+        if (H < 0) H += 360;
+        return filterPt({
+          L: (sc.minL + sc.maxL) / 2,
+          C: Math.sqrt(sc.a * sc.a + sc.b * sc.b),
+          H,
+        });
+      })
+      .forEach((nc) => {
+        const ncName = `${nc.nameOverride || names[nc.id] || "Custom Noun"}`;
+        traces.push({
+          type: "scatter3d",
+          mode: "lines",
+          x: [nc.a, nc.a],
+          y: [nc.b, nc.b],
+          z: [nc.minL, nc.maxL],
+          line: {
+            color: isDark ? "rgba(242, 232, 223, 0)" : "rgba(1, 13, 0, 0)",
+            width: 0,
+          },
+          hoverinfo: "text",
+          text: [
+            `<b>[Range] ${ncName}</b><br>L: ${nc.minL.toFixed(2)} - ${nc.maxL.toFixed(2)}`,
+            `<b>[Range] ${ncName}</b><br>L: ${nc.minL.toFixed(2)} - ${nc.maxL.toFixed(2)}`,
+          ],
+        });
+      });
+    const pinNodes = Object.values(savedColors)
+      .filter((sc) => sc.type === "pin" && filterPt(sc))
+      .map((p) => {
+        const displayName =
+          (`${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
+          "Unnamed Pin").toUpperCase();
+        return {
+          ...p,
+          a: p.C * Math.sin((p.H * Math.PI) / 180),
+          b: p.C * Math.cos((p.H * Math.PI) / 180),
+          displayName,
+        };
+      });
+    traces.push({
+      type: "scatter3d",
+      mode: "markers",
+      x: lockedNodes.map((p) => p.a),
+      y: lockedNodes.map((p) => p.b),
+      z: lockedNodes.map((p) => p.L),
+      text: lockedNodes.map(
+        (p) =>
+          `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
+      ),
+      hovertemplate: "%{text}<extra></extra>",
+      customdata: lockedNodes.map((p) => [
+        p.L,
+        p.C,
+        p.H,
+        { anchorId: p.anchorId || p.id, adjId: p.adjId },
+      ]),
+      marker: {
+        symbol: "square",
+        size: 6,
+        color: lockedNodes.map((p) => p.color),
+        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
+      },
+    });
+    traces.push({
+      type: "scatter3d",
+      mode: "markers",
+      x: pinNodes.map((p) => p.a),
+      y: pinNodes.map((p) => p.b),
+      z: pinNodes.map((p) => p.L),
+      text: pinNodes.map(
+        (p) =>
+          `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
+      ),
+      hovertemplate: "%{text}<extra></extra>",
+      customdata: pinNodes.map((p) => [p.L, p.C, p.H, { pinId: p.id }]),
+      marker: {
+        symbol: "x",
+        size: 6,
+        color: pinNodes.map((p) => p.color),
+        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
+      },
+    });
+    const commercialNodes = [];
+    if (colorData) {
+      Object.keys(colorData).forEach((brand) => {
+        colorData[brand].forEach((c) => {
+          if (filterPt(c)) {
+            commercialNodes.push({
+              ...c,
+              a: c.C * Math.sin((c.H * Math.PI) / 180),
+              b: c.C * Math.cos((c.H * Math.PI) / 180),
+              color: new Color("oklch", [c.L, c.C, c.H])
+                .to("srgb")
+                .toString({ format: "hex" }),
+              displayName: `${brand} - ${c.name}`,
+            });
+          }
+        });
+      });
+    }
+    if (commercialNodes.length > 0) {
+      const jitteredCommercial = applyJitter(
+        commercialNodes,
+        "a",
+        "b",
+        "L",
+        0.006,
+      );
+      traces.push({
+        type: "scatter3d",
+        mode: "markers",
+        x: jitteredCommercial.map((p) => p._jX),
+        y: jitteredCommercial.map((p) => p._jY),
+        z: jitteredCommercial.map((p) => p._jZ),
+        text: jitteredCommercial.map(
+          (p) =>
+            `<b>[Commercial] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
+        ),
+        hovertemplate: "%{text}<extra></extra>",
+        customdata: jitteredCommercial.map((p) => [
+          p.L,
+          p.C,
+          p.H,
+          { brand: p.brand, originalIndex: p.originalIndex },
+        ]),
+        marker: {
+          symbol: "diamond",
+          size: 6,
+          color: jitteredCommercial.map((p) => p.color),
+          line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
+        },
+      });
+    }
+    if (viewMode === "bins") {
+      const bins = buildBinPrisms(points.filter(filterPt), crosshair);
+      if (bins) {
+        if (bins.dim.x.length) {
+          traces.push({
+            type: "mesh3d",
+            ...bins.dim,
+            opacity: 0.22,
+            hoverinfo: "skip",
+            showscale: false,
+            flatshading: true,
+            lighting: { ambient: 1, diffuse: 0, specular: 0 },
+          });
+        }
+        if (bins.hot.x.length) {
+          traces.push({
+            type: "mesh3d",
+            ...bins.hot,
+            opacity: 0.85,
+            hoverinfo: "skip",
+            showscale: false,
+            flatshading: true,
+            lighting: { ambient: 1, diffuse: 0, specular: 0 },
+          });
+        }
+        if (bins.outline.x.length) {
+          traces.push({
+            type: "scatter3d",
+            mode: "lines",
+            x: bins.outline.x, y: bins.outline.y, z: bins.outline.z,
+            line: { color: isDark ? "#F2E8DF" : "#010D00", width: 4 },
+            hoverinfo: "skip",
+            showlegend: false,
+          });
+        }
+      }
+    }
+
+    // The sRGB gamut as one smooth, semi-transparent solid behind the points.
+    // Built once and reused; it does not depend on where the cursor is.
+    if (viewMode === "dots") {
+      if (!GAMUT_SOLID) GAMUT_SOLID = buildGamutSolid(16);
+      const solid = clipSolidToFilter(GAMUT_SOLID, filterPt);
+      if (solid.i.length) traces.push({
+        type: "mesh3d",
+        ...solid,
+        opacity: 0.25,
+        // Fallback fill if a Plotly build ignores vertexcolor, so the solid
+        // still reads as a solid rather than a wireframe.
+        color: "#9aa0a6",
+        hoverinfo: "skip",
+        showscale: false,
+        flatshading: false,
+        lighting: { ambient: 1, diffuse: 0, specular: 0, roughness: 1 },
+      });
+    }
+
+    return traces;
+  }, [
+    viewMode,
+    crosshair,
+    crosshair?.rawL,
+    filterPt,
+    points,
+    isDark,
+    names,
+    adjectives,
+    savedColors,
+    lockedNouns,
+    lockedAdjectives,
+    colorData,
+    filterPt,
+  ]);
+  const data = useMemo(() => {
+    return [
+      ...baseTraces,
+      {
+        type: "scatter3d",
+        mode: "lines",
+        x: crosshair?.snapTarget ? [crosshair.a, crosshair.snapTarget.a] : [],
+        y: crosshair?.snapTarget ? [crosshair.b, crosshair.snapTarget.b] : [],
+        z: crosshair?.snapTarget
+          ? [crosshair.rawL, crosshair.snapTarget.L]
+          : [],
+        line: {
+          color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
+          width: 2,
+          dash: "dot",
+        },
+        hoverinfo: "skip",
+      },
+      {
+        type: "scatter3d",
+        mode: "markers",
+        x: [crosshair?.a],
+        y: [crosshair?.b],
+        z: [crosshair?.rawL],
+        text: [
+          `<b>Cursor</b><br>L: ${crosshair?.rawL?.toFixed(3)} C: ${crosshair?.rawC?.toFixed(3)} H: ${crosshair?.rawH?.toFixed(1)}\xB0`,
+        ],
+        hovertemplate: "%{text}<extra></extra>",
+        marker: {
+          symbol: "cross",
+          size: 8,
+          color: isDark ? "#F2E8DF" : "#010D00",
+          line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
+        },
+        hoverinfo: "skip",
+      },
+    ];
+  }, [baseTraces, crosshair, isDark]);
+  const layout = useMemo(
+    () => ({
+      uirevision: "true",
+      paper_bgcolor: "rgba(0,0,0,0)",
+      margin: { l: 0, r: 0, b: 0, t: 0 },
+      scene: {
+        xaxis: {
+          title: { text: "a" },
+          range: [-0.4, 0.4],
+          backgroundcolor: isDark ? "#052212" : "#F2E8DF",
+          gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
+          zerolinecolor: isDark
+            ? "rgba(177,188,131,0.25)"
+            : "rgba(43,64,50,0.15)",
+          showspikes: false,
+          titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
+          tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
+        },
+        yaxis: {
+          title: { text: "b" },
+          range: [-0.4, 0.4],
+          backgroundcolor: isDark ? "#052212" : "#F2E8DF",
+          gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
+          zerolinecolor: isDark
+            ? "rgba(177,188,131,0.25)"
+            : "rgba(43,64,50,0.15)",
+          showspikes: false,
+          titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
+          tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
+        },
+        zaxis: {
+          title: { text: "L" },
+          range: [0, 1],
+          backgroundcolor: isDark ? "#052212" : "#F2E8DF",
+          gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
+          zerolinecolor: isDark
+            ? "rgba(177,188,131,0.25)"
+            : "rgba(43,64,50,0.15)",
+          showspikes: false,
+          titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
+          tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
+        },
+        // Lightness spans 0..1 while a and b span 0.8, so on the default cube
+        // the solid looks stretched upward. Half-height flattens it out.
+        aspectmode: "manual",
+        aspectratio: { x: 1, y: 1, z: 0.5 },
+        camera: { eye: { x: 1.5, y: 1.5, z: 0.5 } },
+      },
+      showlegend: false,
+    }),
+    [isDark],
+  );
+  return React.createElement(
+    "div",
+    { className: "relative w-full h-full" },
+    React.createElement(PlotlyChart, {
+      data,
+      layout,
+      onPointClick: handlePointClick,
+      theme,
+    }),
+  );
+};
+const ViewVertical = ({
+  colorData,
+  points,
+  crosshair,
+  handlePointClick,
+  theme,
+  names,
+  adjectives,
+  savedColors = {},
+  lockedNouns,
+  lockedAdjectives,
+  viewMode,
+  tetheringPinId,
+  swatchLayout,
+  swatchZoom,
+  viewportFilter,
+  viewportSearchQuery,
+  viewportTagFilter,
+  filterPt,
+  filterL,
+  filterC,
+  filterH,
+  groupSettings,
+}) => {
+  const isDark = theme === "dark";
+  const [showText, setShowText] = useState(false);
+  const handleRelayout = (e) => {
+    if (e["xaxis.range[0]"] !== void 0 && e["xaxis.range[1]"] !== void 0) {
+      setShowText(e["xaxis.range[1]"] - e["xaxis.range[0]"] < 0.15);
+    } else if (e["xaxis.autorange"]) {
+      setShowText(false);
+    }
   };
-  const lchLin = (L, C, H) => { const h = (H * Math.PI) / 180; return oklabLin(L, C * Math.cos(h), C * Math.sin(h)); };
-  const api = {
-    get id() { return st.id; },
-    get screen() { return st.screen; },
-    get pref() { return st.pref; },
-    get label() { return LABEL[st.id]; },
-    get screenLabel() { return LABEL[st.screen]; },
-    get space() { return st.id === "p3" ? "p3" : "srgb"; },    // colorjs space id
-    get canvasP3() { return canvasP3; },
-    get maxChroma() { return st.id === "p3" ? 0.37 : 0.325; },
-    M, mul, enc, dec, oklabLin, lchLin,
-    // linear sRGB → linear RGB of the working gamut
-    toGamut(r, g, b) { return st.id === "p3" ? mul(M.p3, r, g, b) : [r, g, b]; },
-    // does an OkLCH colour fit the working gamut (colorjs-like ε on encoded channels)
-    inGamut(L, C, H, eps = 0.000075) {
-      if (![L, C, H].every((v) => typeof v === "number" && isFinite(v))) return true;
-      const v = api.toGamut(...lchLin(L, C, H));
-      for (let k = 0; k < 3; k++) {
-        const a = Math.abs(v[k]), g = a > 0.0031308 ? Math.sign(v[k]) * (1.055 * Math.pow(a, 1 / 2.4) - 0.055) : 12.92 * v[k];
-        if (g < -eps || g > 1 + eps) return false;
+  const targetH = crosshair?.rawH || 0;
+  const filterFn = useCallback(
+    (p, isCommercial = false) => {
+      if (filterPt && !filterPt(p)) return false;
+      if (p.C === 0) return true;
+      const allowedHueDiff = filterH !== void 0 ? Math.max(5, filterH) : 5;
+      if (
+        p.isPin ||
+        p.isCustomAnchor ||
+        p.type === "pin" ||
+        p.type === "anchor" ||
+        p.url !== void 0 ||
+        p.hex !== void 0 ||
+        isCommercial
+      ) {
+        let hDiff = Math.abs(p.H - targetH);
+        hDiff = Math.min(hDiff, 360 - hDiff);
+        return hDiff <= allowedHueDiff;
       }
       return true;
     },
-    // CSS for an OkLCH colour as this screen can show it: its own hex inside
-    // sRGB, and Display P3 beyond it when the working gamut is P3
-    css(L, C, H, hex) {
-      if (st.id !== "p3" || ![L, C, H].every((v) => typeof v === "number" && isFinite(v))) return hex;
-      const lin = lchLin(L, C, H);
-      if (lin.every((v) => v >= -0.0001 && v <= 1.0001) && hex) return hex;
-      const p = mul(M.p3, ...lin).map((v) => enc(v).toFixed(4));
-      return `color(display-p3 ${p[0]} ${p[1]} ${p[2]})`;
-    },
-    setPref(pref) {
-      try { if (pref === "srgb") localStorage.setItem(KEY, "srgb"); else localStorage.removeItem(KEY); } catch (e) {}
-      compute(); listeners.forEach((fn) => { try { fn(st.id); } catch (e) {} });
-    },
-    subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
-  };
-  return api;
-})();
-
-// World units: chroma ×10 across, lightness ×7 up (the solid's familiar shape).
-// The views frame the widest chroma the working gamut reaches.
-const SPACE_CW = 10, SPACE_LW = 7, SPACE_LC = 0.5, SPACE_AMAX = DisplayGamut.id === "p3" ? 0.39 : 0.34;
-// The colour pipeline for drawing: canvases (2D and WebGL) are Display P3
-// wherever the browser can do that, so every colour handed to them is encoded
-// for the canvas, after being held to the working gamut.
-const spaceCanvasOpts = () => (DisplayGamut.canvasP3 ? { colorSpace: "display-p3" } : undefined);
-const spaceOutLin = (r, g, b, out = [0, 0, 0]) => {
-  const D = DisplayGamut, cl = (x) => Math.max(0, Math.min(1, x));
-  let v;
-  if (D.id === "p3") v = D.mul(D.M.p3, r, g, b).map(cl);
-  else { v = [cl(r), cl(g), cl(b)]; if (D.canvasP3) v = D.mul(D.M.p3, v[0], v[1], v[2]); }
-  out[0] = D.enc(v[0]); out[1] = D.enc(v[1]); out[2] = D.enc(v[2]);
-  return out;
-};
-// An sRGB colour (0–1, encoded) re-encoded for the canvas (same colour).
-const spaceSrgbToCanvas = (rgb) => {
-  if (!DisplayGamut.canvasP3) return rgb.slice(0, 3);
-  const D = DisplayGamut, v = D.mul(D.M.p3, D.dec(rgb[0]), D.dec(rgb[1]), D.dec(rgb[2]));
-  return v.map((x) => D.enc(x));
-};
-// A point's canvas colour: from its OkLCH beyond sRGB on a P3 screen, else its hex.
-const spaceDisplayRgb = (hex, L, C, H) => {
-  const D = DisplayGamut;
-  if (D.id === "p3" && [L, C, H].every((v) => typeof v === "number" && isFinite(v))) return spaceOutLin(...D.lchLin(L, C, H));
-  const s = spaceHexToRgb(spaceHexFor(hex, L, C, H));
-  return spaceOutLin(D.dec(s[0]), D.dec(s[1]), D.dec(s[2]));
-};
-// CSS for a canvas colour (0–1, canvas-encoded).
-const spaceCss = (rgb, a = 1) => {
-  const f = (x) => Math.max(0, Math.min(1, x)).toFixed(4);
-  if (DisplayGamut.canvasP3) return `color(display-p3 ${f(rgb[0])} ${f(rgb[1])} ${f(rgb[2])}${a < 1 ? ` / ${a}` : ""})`;
-  const b = (x) => Math.round(Math.max(0, Math.min(1, x)) * 255);
-  return `rgba(${b(rgb[0])},${b(rgb[1])},${b(rgb[2])},${a})`;
-};
-const spaceHueDist = (a, b) => {
-  const d = Math.abs((((a - b) % 360) + 360) % 360);
-  return d > 180 ? 360 - d : d;
-};
-const spaceToWorld = (L, C, H) => {
-  const h = (H * Math.PI) / 180;
-  return [C * Math.sin(h) * SPACE_CW, (L - SPACE_LC) * SPACE_LW, -C * Math.cos(h) * SPACE_CW];
-};
-const spaceWorldToLCH = (x, y, z) => {
-  const a = x / SPACE_CW, b = -z / SPACE_CW;
-  let H = (Math.atan2(a, b) * 180) / Math.PI;
-  if (H < 0) H += 360;
-  return [y / SPACE_LW + SPACE_LC, Math.hypot(a, b), H];
-};
-// Is a world point a colour this screen can show? (OkLab a = C·cos H = b_app.)
-// sRGB (0–255) of a world point, clipped; `out` gets [r, g, b].
-// (bytes 0–255, encoded for the canvas and held to the working gamut)
-const spaceWorldSrgb = (x, y, z, out) => {
-  const L = y / SPACE_LW + SPACE_LC, A = -z / SPACE_CW, B = x / SPACE_CW;
-  const lin = DisplayGamut.oklabLin(L, A, B), c = spaceOutLin(lin[0], lin[1], lin[2]);
-  out[0] = Math.round(c[0] * 255); out[1] = Math.round(c[1] * 255); out[2] = Math.round(c[2] * 255);
-  return out;
-};
-const spaceInGamut = (x, y, z) => {
-  const L = y / SPACE_LW + SPACE_LC;
-  if (L < 0 || L > 1) return false;
-  const A = -z / SPACE_CW, B = x / SPACE_CW;
-  const l_ = L + 0.3963377774 * A + 0.2158037573 * B;
-  const m_ = L - 0.1055613458 * A - 0.0638541728 * B;
-  const s_ = L - 0.0894841775 * A - 1.291485548 * B;
-  const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
-  let r = 4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3;
-  let g = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3;
-  let bl = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3;
-  if (DisplayGamut.id === "p3") [r, g, bl] = DisplayGamut.mul(DisplayGamut.M.p3, r, g, bl);
-  const e = 0.002;
-  return r >= -e && r <= 1 + e && g >= -e && g <= 1 + e && bl >= -e && bl <= 1 + e;
-};
-// The same test held tight (about colorjs's own ε near black): for drawing the
-// gamut itself. The loose one above keeps anchors that sit right on the edge
-// (pure green, yellow…) from collapsing; in linear light it also lets near-
-// black colours far outside the gamut through, which would bloat the solid.
-const spaceInGamutStrict = (x, y, z) => {
-  const L = y / SPACE_LW + SPACE_LC;
-  if (L < 0 || L > 1) return false;
-  const A = -z / SPACE_CW, B = x / SPACE_CW;
-  const l_ = L + 0.3963377774 * A + 0.2158037573 * B;
-  const m_ = L - 0.1055613458 * A - 0.0638541728 * B;
-  const s_ = L - 0.0894841775 * A - 1.291485548 * B;
-  const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
-  let r = 4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3;
-  let g = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3;
-  let bl = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3;
-  if (DisplayGamut.id === "p3") [r, g, bl] = DisplayGamut.mul(DisplayGamut.M.p3, r, g, bl);
-  // the slack scales with brightness: near black the whole gamut shrinks to a
-  // point, and any fixed slack would let dark colours far outside through
-  const lo = -1e-9 - 0.0004 * Math.max(r, g, bl, 0), hi = 1.0002;
-  return r >= lo && r <= hi && g >= lo && g <= hi && bl >= lo && bl <= hi;
-};
-// OkLCH → gamma-encoded sRGB, clipped. Used whenever a point has no usable hex.
-const spaceLchToRgb = (L, C, H) => {
-  const h = (H * Math.PI) / 180, A = C * Math.cos(h), B = C * Math.sin(h);
-  const l_ = L + 0.3963377774 * A + 0.2158037573 * B;
-  const m_ = L - 0.1055613458 * A - 0.0638541728 * B;
-  const s_ = L - 0.0894841775 * A - 1.291485548 * B;
-  const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
-  const enc = (v) => { const x = Math.max(0, Math.min(1, v)); return x <= 0.0031308 ? 12.92 * x : 1.055 * Math.pow(x, 1 / 2.4) - 0.055; };
-  return [
-    enc(4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3),
-    enc(-1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3),
-    enc(-0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3),
-  ];
-};
-// A point's display colour as #rrggbb: its own hex when it has one, else computed.
-const spaceHexFor = (hex, L, C, H) => {
-  if (typeof hex === "string" && /^#?[0-9a-f]{6}$|^#?[0-9a-f]{3}$/i.test(hex.trim()))
-    return hex.trim().startsWith("#") ? hex.trim() : "#" + hex.trim();
-  const rgb = spaceLchToRgb(L, C, H);
-  return "#" + rgb.map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("");
-};
-const spaceHexToRgb = (hex) => {
-  let h = String(hex || "").replace("#", "");
-  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
-  const n = parseInt(h.slice(0, 6), 16);
-  if (!isFinite(n)) return [0.6, 0.6, 0.6];
-  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
-};
-const spaceParseCss = (css, fallback) => {
-  const m = String(css || "").match(/rgba?\(([^)]+)\)/);
-  if (!m) return fallback;
-  const p = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);
-  if (p.length >= 4 && p[3] === 0) return fallback; // transparent → use fallback
-  return [p[0] / 255, p[1] / 255, p[2] / 255];
-};
-
-const SPACE_TEMPLATES = {};
-// An evenly spread unit sphere: each icosahedron face split into n² triangles
-// (10n² + 2 points). Unlike a latitude/longitude sphere, no points bunch at
-// the poles, so the same vertex count looks much smoother everywhere.
-const spaceGeodesic = (n) => {
-  const key = "g" + n;
-  if (SPACE_TEMPLATES[key]) return SPACE_TEMPLATES[key];
-  const t = (1 + Math.sqrt(5)) / 2;
-  const ico = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t], [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]];
-  const faces = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
-    [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
-  const dirs = [], index = new Map(), tris = [];
-  const vert = (x, y, z) => {
-    const l = Math.hypot(x, y, z); x /= l; y /= l; z /= l;
-    const k = Math.round(x * 1e6) + "," + Math.round(y * 1e6) + "," + Math.round(z * 1e6);
-    let id = index.get(k);
-    if (id === undefined) { id = dirs.length / 3; dirs.push(x, y, z); index.set(k, id); }
-    return id;
-  };
-  for (const [ia, ib, ic] of faces) {
-    const A = ico[ia], B = ico[ib], C = ico[ic], ids = [];
-    for (let i = 0; i <= n; i++) {
-      ids.push([]);
-      for (let j = 0; j <= n - i; j++)
-        ids[i].push(vert(
-          A[0] + ((B[0] - A[0]) * i) / n + ((C[0] - A[0]) * j) / n,
-          A[1] + ((B[1] - A[1]) * i) / n + ((C[1] - A[1]) * j) / n,
-          A[2] + ((B[2] - A[2]) * i) / n + ((C[2] - A[2]) * j) / n,
-        ));
-    }
-    const tri = (a, b, c) => {
-      // keep every triangle facing outward
-      const ax = dirs[a * 3], ay = dirs[a * 3 + 1], az = dirs[a * 3 + 2];
-      const ux = dirs[b * 3] - ax, uy = dirs[b * 3 + 1] - ay, uz = dirs[b * 3 + 2] - az;
-      const vx = dirs[c * 3] - ax, vy = dirs[c * 3 + 1] - ay, vz = dirs[c * 3 + 2] - az;
-      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-      if (nx * ax + ny * ay + nz * az >= 0) tris.push(a, b, c); else tris.push(a, c, b);
-    };
-    for (let i = 0; i < n; i++)
-      for (let j = 0; j < n - i; j++) {
-        tri(ids[i][j], ids[i + 1][j], ids[i][j + 1]);
-        if (j < n - i - 1) tri(ids[i + 1][j], ids[i + 1][j + 1], ids[i][j + 1]);
-      }
-  }
-  return (SPACE_TEMPLATES[key] = { dirs: new Float32Array(dirs), tris, count: dirs.length / 3 });
-};
-// Detail for N cells: about 240k vertices in all (the old meshes used ~160k
-// in far less even spacing), between 162 and 1002 points per cell.
-const spaceTemplateFor = (N) => spaceGeodesic(Math.max(4, Math.min(10, Math.floor(Math.sqrt((240000 / Math.max(1, N) - 2) / 10)))));
-
-// Clip a closed mesh against f(p) <= 0 and seal the opening with a flat cap.
-// mesh = { P: [x,y,z,...], K: [1 = cap vertex], T: [triangle indices] }
-const spaceClipMesh = (m, f) => {
-  const nv = m.K.length, fv = new Float64Array(nv);
-  let anyIn = false, anyOut = false;
-  for (let v = 0; v < nv; v++) {
-    const d = f(m.P[v * 3], m.P[v * 3 + 1], m.P[v * 3 + 2]);
-    fv[v] = d;
-    if (d <= 0) anyIn = true; else anyOut = true;
-  }
-  if (!anyOut) return m;
-  if (!anyIn) return null;
-  const P = [], K = [], T = [], remap = new Int32Array(nv).fill(-1), edge = new Map(), segs = [];
-  const keep = (v) => {
-    if (remap[v] < 0) {
-      remap[v] = K.length;
-      P.push(m.P[v * 3], m.P[v * 3 + 1], m.P[v * 3 + 2]);
-      K.push(m.K[v]);
-    }
-    return remap[v];
-  };
-  const cut = (u, v) => {
-    const key = u < v ? u * 1e6 + v : v * 1e6 + u;
-    let id = edge.get(key);
-    if (id === undefined) {
-      const t = fv[u] / (fv[u] - fv[v]);
-      id = K.length;
-      P.push(
-        m.P[u * 3] + t * (m.P[v * 3] - m.P[u * 3]),
-        m.P[u * 3 + 1] + t * (m.P[v * 3 + 1] - m.P[u * 3 + 1]),
-        m.P[u * 3 + 2] + t * (m.P[v * 3 + 2] - m.P[u * 3 + 2]),
-      );
-      K.push(m.K[u]);
-      edge.set(key, id);
-    }
-    return id;
-  };
-  for (let q = 0; q < m.T.length; q += 3) {
-    const tri = [m.T[q], m.T[q + 1], m.T[q + 2]];
-    const ins = [fv[tri[0]] <= 0, fv[tri[1]] <= 0, fv[tri[2]] <= 0];
-    const nIn = ins[0] + ins[1] + ins[2];
-    if (nIn === 3) { T.push(keep(tri[0]), keep(tri[1]), keep(tri[2])); continue; }
-    if (nIn === 0) continue;
-    const poly = [], cuts = [];
-    for (let e = 0; e < 3; e++) {
-      const u = tri[e], v = tri[(e + 1) % 3];
-      if (ins[e]) poly.push(keep(u));
-      if (ins[e] !== ins[(e + 1) % 3]) { const c = cut(u, v); poly.push(c); cuts.push(c); }
-    }
-    for (let k = 1; k + 1 < poly.length; k++) T.push(poly[0], poly[k], poly[k + 1]);
-    if (cuts.length === 2) segs.push(cuts[0], cuts[1]);
-  }
-  if (segs.length) {
-    let cx = 0, cy = 0, cz = 0;
-    for (const id of segs) { cx += P[id * 3]; cy += P[id * 3 + 1]; cz += P[id * 3 + 2]; }
-    cx /= segs.length; cy /= segs.length; cz /= segs.length;
-    const c0 = K.length;
-    P.push(cx, cy, cz); K.push(1);
-    const dup = new Map();
-    const capV = (id) => {
-      let d = dup.get(id);
-      if (d === undefined) { d = K.length; P.push(P[id * 3], P[id * 3 + 1], P[id * 3 + 2]); K.push(1); dup.set(id, d); }
-      return d;
-    };
-    for (let k = 0; k < segs.length; k += 2) T.push(c0, capV(segs[k]), capV(segs[k + 1]));
-  }
-  return { P, K, T };
-};
-
-// Uniform grid for nearest-anchor queries in world space.
-const spaceMakeGrid = (px, py, pz, n) => {
-  const G = 0.6, MIN = -5, GD = Math.ceil(10 / G);
-  const cells = Array.from({ length: GD * GD * GD }, () => []);
-  const gi = (v) => Math.max(0, Math.min(GD - 1, Math.floor((v - MIN) / G)));
-  for (let i = 0; i < n; i++) cells[(gi(px[i]) * GD + gi(py[i])) * GD + gi(pz[i])].push(i);
-  // Exact nearest via per-cell candidate lists: the nearest anchor of any
-  // point in a cell lies within (centre's nearest distance + cell diagonal) of
-  // the centre. Built lazily, so a query costs a short scan instead of a
-  // growing shell search (sections ask this for every pixel).
-  const HALF_DIAG = (G * Math.sqrt(3)) / 2, MAX = MIN + GD * G;
-  const cand = new Array(GD * GD * GD);
-  const nearest = (x, y, z, skip = -1) => {
-    if (skip < 0 && x >= MIN && x < MAX && y >= MIN && y < MAX && z >= MIN && z < MAX) {
-      const ci = (gi(x) * GD + gi(y)) * GD + gi(z);
-      let list = cand[ci];
-      if (!list) {
-        const ix = Math.floor(ci / (GD * GD)), iy = Math.floor(ci / GD) % GD, iz = ci % GD;
-        const ox = MIN + (ix + 0.5) * G, oy = MIN + (iy + 0.5) * G, oz = MIN + (iz + 0.5) * G;
-        const a0 = shellNearest(ox, oy, oz, -1);
-        if (a0 < 0) list = [];
-        else {
-          const d0 = Math.hypot(px[a0] - ox, py[a0] - oy, pz[a0] - oz);
-          list = within(ox, oy, oz, d0 + 2 * HALF_DIAG + 1e-6, -1).map((e) => e[1]);
-        }
-        cand[ci] = list;
-      }
-      let best = -1, bd = 1e18;
-      for (let q = 0; q < list.length; q++) {
-        const a = list[q], dx = px[a] - x, dy = py[a] - y, dz = pz[a] - z, d = dx * dx + dy * dy + dz * dz;
-        if (d < bd) { bd = d; best = a; }
-      }
-      return best;
-    }
-    return shellNearest(x, y, z, skip);
-  };
-  const shellNearest = (x, y, z, skip = -1) => {
-    const cx = gi(x), cy = gi(y), cz = gi(z);
-    let best = -1, bd = 1e18;
-    for (let k = 0; k < GD; k++) {
-      for (let i = cx - k; i <= cx + k; i++) {
-        if (i < 0 || i >= GD) continue;
-        for (let j = cy - k; j <= cy + k; j++) {
-          if (j < 0 || j >= GD) continue;
-          for (let l = cz - k; l <= cz + k; l++) {
-            if (l < 0 || l >= GD) continue;
-            if (Math.max(Math.abs(i - cx), Math.abs(j - cy), Math.abs(l - cz)) !== k) continue;
-            for (const a of cells[(i * GD + j) * GD + l]) {
-              if (a === skip) continue;
-              const dx = px[a] - x, dy = py[a] - y, dz = pz[a] - z, d = dx * dx + dy * dy + dz * dz;
-              if (d < bd) { bd = d; best = a; }
-            }
-          }
-        }
-      }
-      if (best >= 0 && Math.sqrt(bd) <= k * G) break;
-    }
-    return best;
-  };
-  // Every anchor within radius R of a point, sorted nearest first.
-  const within = (x, y, z, R, skip) => {
-    const out = [], k = Math.ceil(R / G), cx = gi(x), cy = gi(y), cz = gi(z), R2 = R * R;
-    for (let i = Math.max(0, cx - k); i <= Math.min(GD - 1, cx + k); i++)
-      for (let j = Math.max(0, cy - k); j <= Math.min(GD - 1, cy + k); j++)
-        for (let l = Math.max(0, cz - k); l <= Math.min(GD - 1, cz + k); l++)
-          for (const a of cells[(i * GD + j) * GD + l]) {
-            if (a === skip) continue;
-            const dx = px[a] - x, dy = py[a] - y, dz = pz[a] - z, d = dx * dx + dy * dy + dz * dz;
-            if (d <= R2) out.push([d, a]);
-          }
-    out.sort((p, q) => p[0] - q[0]);
-    return out;
-  };
-  return { nearest, within };
-};
-
-function createSpaceEngine(opts) {
-  const THREE = window.THREE;
-  const { onCursor, onHover, onPick, onStatus } = opts;
-  // Four fixed on-page canvases (one per slot). Any view can be shown in any
-  // of them: the 3D renders offscreen and is copied into its slot, so views
-  // can swap places without touching WebGL.
-  const slot = { ...opts.canvases };            // view key ("3d", "l", "c", "h") → canvas
-  const slotCanvases = Object.values(slot);
-  const glCanvas = document.createElement("canvas");
-  const viewOf = (el) => Object.keys(slot).find((k) => slot[k] === el);
-  const FONT = "Inter, ui-sans-serif, system-ui, sans-serif";
-  const CARD_W = 0.14, CARD_H = CARD_W * 1.3;   // swatch card, world units (square swatch + label strip)
-  const CARD_ROUND = 0.07;   // corner radius, as a share of the card's width (Tailwind's "rounded" on a tile)
-  const SLAB = 0.18;                            // sections show anchors this close to the plane (world units)
-  const NAME_PX = 46;                           // names appear once neighbours are this far apart on screen
-  const CARD_NAME_PX = 34;                      // …or a swatch card is this wide
-  // …and only once the view is zoomed in this far (CSS px per world unit;
-  // the default 3D view is ~75, a default section ~32)
-  const NAME_ZOOM_3D = 150, NAME_ZOOM_2D = 85;
-  const CW = SPACE_CW, LW = SPACE_LW, LC = SPACE_LC, AMAX = SPACE_AMAX;
-  let TPL = spaceTemplateFor(300), NV = TPL.count;
-
-  // ── State ────────────────────────────────────────────────────────────────
-  const S = {
-    anchors: [], markers: [],
-    modes: { "3d": "cells", l: "bins", c: "bins", h: "bins" },
-    cursor: [0.65, 0.12, 0],
-    // per view: visible range around the cursor (half-widths; null = all) and opacity
-    // Half-widths around the cursor (null = everything). A section's own axis
-    // (L for the L section, C for C, H for H) is its depth: how far above and
-    // below its plane colours are projected onto it (0 = only the plane).
-    ranges: { "3d": { hl: null, hc: null, hh: null }, l: { hl: null, hc: null, hh: null, depth: 0 }, c: { hl: null, hc: null, hh: null, depth: 0 }, h: { hl: null, hc: null, hh: null, depth: 0 } },
-    alpha: { l: 1, c: 1, h: 1 },
-    gamut: { "3d": 0, l: 0, c: 0, h: 0 },
-    tether: null,   // { L, C, H, kind } of what names the cursor   // per view: opacity of the seamless gamut solid beneath everything
-    fill: 0.5, sep: 0, opacity: 1,
-    dark: false, fg: [0.1, 0.1, 0.1], bg: [1, 1, 1],
-    guide: { l: "#b7791f", c: "#0e7490", h: "#be185d" },
-  };
-  let N = 0, px, py, pz, cols, rCell, meanR, maxR, dotR, nnW, grid = null, ready = false, buildToken = 0;
-  let selIdx = -1, disposed = false, anchorSig = null, markerSig = null;
-
-  // ── Renderer ─────────────────────────────────────────────────────────────
-  const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true, alpha: true });
-  renderer.setPixelRatio(1);   // the slot canvas is sized in device pixels already
-  if (DisplayGamut.canvasP3) { try { renderer.getContext().drawingBufferColorSpace = "display-p3"; } catch (e) {} }
-  renderer.setClearColor(0x000000, 0);
-  renderer.autoClear = false;
-  const scene = new THREE.Scene(), overlay = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 200);
-  const axis = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, -LC * LW - 0.6, 0), new THREE.Vector3(0, (1 - LC) * LW + 0.6, 0)]),
-    new THREE.LineBasicMaterial({ color: 0x888888, transparent: true, opacity: 0.35 }),
+    [targetH, filterPt, filterH],
   );
-  scene.add(axis);
-
-  const cellVert = `
-    attribute vec3 aCenter; attribute vec3 aColor; attribute float aCap; attribute vec3 aNormal;
-    uniform float uSep;
-    varying vec3 vColor; varying float vCap; varying vec3 vViewPos; varying vec3 vNormal;
-    void main() {
-      vec4 mv = modelViewMatrix * vec4(position + aCenter * (uSep - 1.0), 1.0);
-      gl_Position = projectionMatrix * mv;
-      vViewPos = mv.xyz; vColor = aColor; vCap = aCap; vNormal = normalMatrix * aNormal;
-    }`;
-  const cellFrag = `
-    precision highp float;
-    varying vec3 vColor; varying float vCap; varying vec3 vViewPos; varying vec3 vNormal;
-    uniform vec3 uL1, uL2; uniform float uAlpha;
-    void main() {
-      vec3 col;
-      if (vCap > 0.5) {
-        col = vColor;                       // a cut face shows the anchor's exact colour
-      } else {
-        // Smooth (per-vertex) shading on curved parts, the facet's own normal
-        // where the surface really creases (cell walls meeting), so round
-        // bodies look round and edges stay crisp.
-        vec3 Nf = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
-        vec3 Ns = length(vNormal) > 1e-6 ? normalize(vNormal) : Nf;
-        if (dot(Ns, Nf) < 0.0) Ns = -Ns;
-        vec3 N = normalize(mix(Nf, Ns, smoothstep(0.82, 0.96, dot(Ns, Nf))));
-        vec3 V = normalize(-vViewPos);
-        // Shading stays close to the true colour: a face turned to you shows
-        // it as is (a touch brighter under the key light), edges and faces
-        // turned away dim by at most about a fifth. The old lighting took
-        // unlit faces down to a third of their colour, so cells read too dark.
-        float d1 = max(dot(N, uL1), 0.0), dv = max(dot(N, V), 0.0);
-        float sp = pow(max(dot(N, normalize(uL1 + V)), 0.0), 60.0) * 0.08;
-        col = vColor * (0.80 + 0.17 * dv + 0.07 * d1) + sp;
-      }
-      gl_FragColor = vec4(col, uAlpha);
-    }`;
-  const shared = { uSep: { value: 1 }, uL1: { value: new THREE.Vector3() }, uL2: { value: new THREE.Vector3() } };
-  const cellMat = new THREE.ShaderMaterial({
-    vertexShader: cellVert, fragmentShader: cellFrag,
-    uniforms: { ...shared, uAlpha: { value: 1 } },
-    transparent: true, depthWrite: true, side: THREE.DoubleSide, extensions: { derivatives: true },
-  });
-  const activeMat = new THREE.ShaderMaterial({
-    vertexShader: cellVert, fragmentShader: cellFrag,
-    uniforms: { ...shared, uAlpha: { value: 1 } },
-    side: THREE.DoubleSide, extensions: { derivatives: true },
-  });
-  const rimMat = new THREE.ShaderMaterial({
-    vertexShader: `attribute vec3 aCenter; uniform float uSep, uGrow;
-      void main() { vec3 d = position - aCenter; float l = length(d);
-        vec3 p = position + (l > 1e-5 ? d / l : vec3(0.0)) * uGrow + aCenter * (uSep - 1.0);
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }`,
-    fragmentShader: `uniform vec3 uColor; void main() { gl_FragColor = vec4(uColor, 1.0); }`,
-    uniforms: { uSep: shared.uSep, uGrow: { value: 0.045 }, uColor: { value: new THREE.Color(0, 0, 0) } },
-    // Outline = a slightly grown copy painted flat first; the cell then covers
-    // all but its rim. No depth use, so it works for any triangle winding.
-    side: THREE.DoubleSide, depthTest: false, depthWrite: false,
-  });
-
-  // The gamut solid: a true solid, ray-marched per pixel. Each pixel follows
-  // its view ray (clipped to the 3D view's visible range: L slab, C shell,
-  // hue wedge) to the first point that is both in gamut and in range, and
-  // shows that point's own colour, so a slice shows its filled cut face, not
-  // a hollow shell. Drawn first, in its own scene, so cells, dots and cards
-  // always sit on top. The proxy is a box's back faces: one fragment per pixel.
-  const gamutScene = new THREE.Scene();
-  const gamutU = { uSep: shared.uSep, uAlpha: { value: 0 }, uCur: { value: new THREE.Vector3(0.65, 0.12, 0) }, uRange: { value: new THREE.Vector3(-1, -1, -1) },
-    uToGamut: { value: new THREE.Matrix3() }, uToCanvas: { value: new THREE.Matrix3() }, uRmax: { value: 0.325 * CW } };
-  // linear sRGB → working gamut, and working gamut → canvas (both linear)
-  const syncGamutSpace = () => {
-    const P = DisplayGamut.M.p3, I = [1, 0, 0, 0, 1, 0, 0, 0, 1], p3 = DisplayGamut.id === "p3";
-    gamutU.uToGamut.value.set(...(p3 ? P : I));
-    gamutU.uToCanvas.value.set(...(!p3 && DisplayGamut.canvasP3 ? P : I));
-    gamutU.uRmax.value = (p3 ? 0.375 : 0.325) * CW;
-  };
-  syncGamutSpace();
-  {
-    const BX = 0.4 * CW + 0.1, BY = LW / 2 + 0.05;   // room for any working gamut
-    const f = (x) => x.toFixed(4);
-    const vert = `uniform float uSep; varying vec3 vW;
-      void main() { vec4 w = modelMatrix * vec4(position * uSep, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`;
-    const frag = `precision highp float;
-      uniform float uAlpha, uSep, uRmax; uniform vec3 uCur, uRange; uniform mat3 uToGamut, uToCanvas; varying vec3 vW;
-      vec3 linRgb(vec3 p) {
-        float L = p.y / ${f(LW)} + ${f(LC)}, A = -p.z / ${f(CW)}, B = p.x / ${f(CW)};
-        float l = L + 0.3963377774 * A + 0.2158037573 * B, m = L - 0.1055613458 * A - 0.0638541728 * B, s = L - 0.0894841775 * A - 1.291485548 * B;
-        l = l * l * l; m = m * m * m; s = s * s * s;
-        return uToGamut * vec3(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
-                    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
-                    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s);
-      }
-      bool inside(vec3 p) {
-        float L = p.y / ${f(LW)} + ${f(LC)};
-        if (L < 0.0 || L > 1.0) return false;
-        float C = length(p.xz) / ${f(CW)};
-        if (uRange.x >= 0.0 && abs(L - uCur.x) > uRange.x) return false;
-        if (uRange.y >= 0.0 && abs(C - uCur.y) > uRange.y) return false;
-        if (uRange.z >= 0.0 && C >= 0.004) {
-          float H = degrees(atan(p.x, -p.z)); if (H < 0.0) H += 360.0;
-          if (abs(mod(H - uCur.z + 540.0, 360.0) - 180.0) > uRange.z) return false;
-        }
-        vec3 c = linRgb(p);
-        float lo = -1e-9 - 0.0004 * max(max(c.r, c.g), max(c.b, 0.0));
-        return all(greaterThanEqual(c, vec3(lo))) && all(lessThanEqual(c, vec3(1.0002)));
-      }
-      // first inside point on [a, b], or -1. A cut face sits exactly at a; past
-      // it the steps start at a per-pixel offset, so a thin edge missed
-      // between steps shows as fine grain rather than a regular sawtooth.
-      float march(vec3 o, vec3 d, float a, float b, float jit) {
-        if (b <= a) return -1.0;
-        if (inside(o + d * a)) return a;
-        float dt = (b - a) / 160.0;
-        for (int i = 0; i <= 160; i++) {
-          float t = min(b, a + dt * (float(i) + jit));
-          if (inside(o + d * t)) {
-            float lo = max(a, t - dt), hi = t;
-            for (int k = 0; k < 10; k++) { float mid = 0.5 * (lo + hi); if (inside(o + d * mid)) hi = mid; else lo = mid; }
-            return hi;
-          }
-        }
-        return -1.0;
-      }
-      // t-interval where |(o + t d).xz| <= R; false if never
-      bool cyl(vec3 o, vec3 d, float R, out float ta, out float tb) {
-        float a = dot(d.xz, d.xz), b = dot(o.xz, d.xz), c = dot(o.xz, o.xz) - R * R;
-        if (a < 1e-9) { ta = -1e9; tb = 1e9; return c <= 0.0; }
-        float disc = b * b - a * c;
-        if (disc < 0.0) return false;
-        float q = sqrt(disc); ta = (-b - q) / a; tb = (-b + q) / a; return true;
-      }
-      void clipHalf(vec3 o, vec3 d, vec2 n, inout float t0, inout float t1) {   // keep n·p.xz >= 0
-        float s = dot(n, o.xz), v = dot(n, d.xz);
-        if (abs(v) < 1e-9) { if (s < 0.0) t1 = -1.0; return; }
-        float t = -s / v;
-        if (v > 0.0) t0 = max(t0, t); else t1 = min(t1, t);
-      }
-      void main() {
-        vec3 o = cameraPosition / uSep, d = normalize(vW / uSep - o);
-        // the box
-        vec3 inv = 1.0 / d, lo = (vec3(-${f(BX)}, -${f(BY)}, -${f(BX)}) - o) * inv, hi = (vec3(${f(BX)}, ${f(BY)}, ${f(BX)}) - o) * inv;
-        vec3 tmin = min(lo, hi), tmax = max(lo, hi);
-        float t0 = max(max(max(tmin.x, tmin.y), tmin.z), 0.0), t1 = min(min(tmax.x, tmax.y), tmax.z);
-        // lightness slab
-        if (uRange.x >= 0.0) {
-          float ya = (uCur.x - uRange.x - ${f(LC)}) * ${f(LW)}, yb = (uCur.x + uRange.x - ${f(LC)}) * ${f(LW)};
-          if (abs(d.y) < 1e-9) { if (o.y < ya || o.y > yb) discard; }
-          else { float a = (ya - o.y) / d.y, b = (yb - o.y) / d.y; t0 = max(t0, min(a, b)); t1 = min(t1, max(a, b)); }
-        }
-        // chroma shell: outer cylinder clips, inner one splits the run in two
-        float ia = 1e9, ib = -1e9;
-        if (uRange.y >= 0.0) {
-          float a, b;
-          if (!cyl(o, d, (uCur.y + uRange.y) * ${f(CW)}, a, b)) discard;
-          t0 = max(t0, a); t1 = min(t1, b);
-          float Ri = (uCur.y - uRange.y) * ${f(CW)};
-          if (Ri > 0.0 && cyl(o, d, Ri, a, b)) { ia = a; ib = b; }
-        }
-        // hue wedge (narrower than a half-turn: two half-planes through the axis)
-        if (uRange.z >= 0.0 && uRange.z < 90.0) {
-          float h1 = radians(uCur.z - uRange.z), h2 = radians(uCur.z + uRange.z);
-          clipHalf(o, d, vec2(cos(h1), sin(h1)), t0, t1);
-          clipHalf(o, d, -vec2(cos(h2), sin(h2)), t0, t1);
-        }
-        // and always the gamut's own bounding cylinder, so the steps stay fine
-        { float a, b; if (!cyl(o, d, uRmax, a, b)) discard; t0 = max(t0, a); t1 = min(t1, b); }
-        if (t1 <= t0) discard;
-        float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
-        float t = ib > ia ? march(o, d, t0, min(t1, ia), jit) : march(o, d, t0, t1, jit);
-        if (t < 0.0 && ib > ia) t = march(o, d, max(t0, ib), t1, jit);
-        if (t < 0.0) discard;
-        vec3 c = clamp(uToCanvas * clamp(linRgb(o + d * t), 0.0, 1.0), 0.0, 1.0);
-        c = mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
-        gl_FragColor = vec4(c, uAlpha);
-      }`;
-    const box = new THREE.Mesh(new THREE.BoxGeometry(2 * BX, 2 * BY, 2 * BX), new THREE.ShaderMaterial({
-      vertexShader: vert, fragmentShader: frag, uniforms: gamutU, side: THREE.BackSide,
-      transparent: true, depthTest: false, depthWrite: false,
-    }));
-    box.frustumCulled = false;
-    gamutScene.add(box);
-  }
-  // Separated, the solid is drawn as every anchor's full zone (its cell at
-  // full inflation, cut by the visible range like the cells) moved exactly as
-  // the cells move, each vertex in its own true colour. Unseparated, the
-  // ray-marched solid above is exact and seamless, so that's used instead.
-  const gzGeo = new THREE.BufferGeometry();
-  const gzVert = `attribute vec3 aCenter; attribute vec3 aColor; uniform float uSep; varying vec3 vColor;
-    void main() { vColor = aColor; gl_Position = projectionMatrix * modelViewMatrix * vec4(position + aCenter * (uSep - 1.0), 1.0); }`;
-  const gzPre = new THREE.Mesh(gzGeo, new THREE.ShaderMaterial({ vertexShader: gzVert, fragmentShader: `void main() { gl_FragColor = vec4(0.0); }`, uniforms: gamutU, side: THREE.DoubleSide, colorWrite: false }));
-  const gzPaint = new THREE.Mesh(gzGeo, new THREE.ShaderMaterial({
-    vertexShader: gzVert, fragmentShader: `uniform float uAlpha; varying vec3 vColor; void main() { gl_FragColor = vec4(vColor, uAlpha); }`,
-    uniforms: gamutU, side: THREE.DoubleSide, transparent: true, depthWrite: false, depthFunc: THREE.LessEqualDepth,
-  }));
-  gzPre.frustumCulled = gzPaint.frustumCulled = false;
-  gzPre.renderOrder = 0; gzPaint.renderOrder = 1;
-  gzPre.visible = gzPaint.visible = false;
-  gamutScene.add(gzPre, gzPaint);
-  let gzKey = null;
-  const gamutZonesNeeded = () => S.gamut["3d"] > 0 && S.sep > 0.0005;
-  const buildGamutZones = () => {
-    const on = gamutZonesNeeded() && ready && N > 0;
-    gzPre.visible = gzPaint.visible = on;
-    gamutScene.children.forEach((o) => { if (o !== gzPre && o !== gzPaint) o.visible = !on; });
-    if (!on) return;
-    const r3 = S.ranges["3d"], sliced = r3.hl !== null || r3.hc !== null || r3.hh !== null;
-    const key = buildToken + "|" + NV + "|" + (sliced ? [r3.hl, r3.hc, r3.hh, ...S.cursor].join(",") : "all");
-    if (key === gzKey) return;
-    gzKey = key;
-    const cons = constraints(), parts = [], D = TPL.dirs;
-    let nV = 0, nI = 0;
-    for (let i = 0; i < N; i++) {
-      const X = px[i], Y = py[i], Z = pz[i], R = maxR[i] * 2 + 1e-4, active = [];
-      let skip = false;
-      for (const f of cons) { const fc = f(X, Y, Z); if (fc > R) { skip = true; break; } if (fc >= -R) active.push(f); }
-      if (skip) continue;
-      const P = new Array(NV * 3);
-      for (let v = 0; v < NV; v++) { const r = rCell[i * NV + v]; P[v * 3] = X + D[v * 3] * r; P[v * 3 + 1] = Y + D[v * 3 + 1] * r; P[v * 3 + 2] = Z + D[v * 3 + 2] * r; }
-      let m = { P, K: new Array(NV).fill(0), T: TPL.tris };
-      for (const f of active) { m = spaceClipMesh(m, f); if (!m) break; }
-      if (!m) continue;
-      parts.push([i, m]); nV += m.K.length; nI += m.T.length;
-    }
-    const pos = new Float32Array(nV * 3), cen = new Float32Array(nV * 3), col = new Float32Array(nV * 3), idx = new Uint32Array(nI), rgb = [0, 0, 0];
-    let vo = 0, io = 0;
-    for (const [i, m] of parts) {
-      const n = m.K.length;
-      for (let v = 0; v < n; v++) {
-        const o = (vo + v) * 3, x = m.P[v * 3], y = m.P[v * 3 + 1], z = m.P[v * 3 + 2];
-        pos[o] = x; pos[o + 1] = y; pos[o + 2] = z;
-        cen[o] = px[i]; cen[o + 1] = py[i]; cen[o + 2] = pz[i];
-        spaceWorldSrgb(x, y, z, rgb); col[o] = rgb[0] / 255; col[o + 1] = rgb[1] / 255; col[o + 2] = rgb[2] / 255;
-      }
-      for (let q = 0; q < m.T.length; q++) idx[io + q] = m.T[q] + vo;
-      vo += n; io += m.T.length;
-    }
-    if (gzGeo.attributes.position) gzGeo.dispose();
-    gzGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    gzGeo.setAttribute("aCenter", new THREE.BufferAttribute(cen, 3));
-    gzGeo.setAttribute("aColor", new THREE.BufferAttribute(col, 3));
-    gzGeo.setIndex(new THREE.BufferAttribute(idx, 1));
-    requestRender();
-  };
-  const syncGamutRange = () => {
-    const r = S.ranges["3d"];
-    gamutU.uCur.value.set(S.cursor[0], S.cursor[1], S.cursor[2]);
-    gamutU.uRange.value.set(r.hl === null ? -1 : r.hl, r.hc === null ? -1 : r.hc, r.hh === null ? -1 : r.hh);
-  };
-
-  // Main cells: one merged, re-sliced geometry
-  const geo = new THREE.BufferGeometry();
-  const mesh = new THREE.Mesh(geo, cellMat);
-  mesh.frustumCulled = false;
-  scene.add(mesh);
-  let capV = 0, capI = 0, bPos, bCen, bCol, bCap, bIdx, bNor;
-  // Buffers are made on first use even when there's nothing to draw yet (no
-  // anchors loaded, or all of them hidden or sliced away): every rebuild
-  // writes into them, and with none allocated the first upload crashed.
-  const ensure = (nV, nI) => {
-    if (bPos && nV <= capV && nI <= capI) return;
-    capV = Math.max(nV, capV, 1024) * 1.5 | 0;
-    capI = Math.max(nI, capI, 1024) * 1.5 | 0;
-    bPos = new Float32Array(capV * 3); bCen = new Float32Array(capV * 3); bCol = new Float32Array(capV * 3); bNor = new Float32Array(capV * 3);
-    bCap = new Float32Array(capV); bIdx = new Uint32Array(capI);
-    const dyn = (arr, n) => { const a = new THREE.BufferAttribute(arr, n); a.setUsage(THREE.DynamicDrawUsage); return a; };
-    geo.setAttribute("position", dyn(bPos, 3));
-    geo.setAttribute("aCenter", dyn(bCen, 3));
-    geo.setAttribute("aColor", dyn(bCol, 3));
-    geo.setAttribute("aCap", dyn(bCap, 1));
-    geo.setAttribute("aNormal", dyn(bNor, 3));
-    geo.setIndex(dyn(bIdx, 1));
-  };
-
-  // Active cell: drawn after a depth clear so it is never hidden
-  const activeGeo = new THREE.BufferGeometry();
-  let aCapV = 0, aCapI = 0;
-  const activeMesh = new THREE.Mesh(activeGeo, activeMat);
-  const activeRim = new THREE.Mesh(activeGeo, rimMat);
-  activeMesh.frustumCulled = activeRim.frustumCulled = false;
-  activeRim.renderOrder = 1; activeMesh.renderOrder = 2;
-  overlay.add(activeRim, activeMesh);
-
-  // Cursor marker
-  const marker = new THREE.Group();
-  const markerMats = [];
-  {
-    const m1 = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.9, depthTest: false });
-    const m2 = new THREE.MeshBasicMaterial({ depthTest: false });
-    markerMats.push(m1, m2);
-    const ring = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.SphereGeometry(0.11, 12, 8)), m1);
-    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.035, 10, 8), m2);
-    const ax = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(-0.22, 0, 0), new THREE.Vector3(0.22, 0, 0), new THREE.Vector3(0, -0.22, 0),
-      new THREE.Vector3(0, 0.22, 0), new THREE.Vector3(0, 0, -0.22), new THREE.Vector3(0, 0, 0.22)]), m1);
-    marker.add(ring, dot, ax);
-    marker.traverse((o) => (o.renderOrder = 999));
-  }
-  overlay.add(marker);
-  // The tether: a dashed line from the cursor to what names it (its pin, or
-  // the nearest anchor). Drawn over everything so it never hides in a cell.
-  const tetherMat = new THREE.LineDashedMaterial({ color: 0x000000, dashSize: 0.07, gapSize: 0.05, depthTest: false, transparent: true, opacity: 0.9 });
-  const tetherGeo = new THREE.BufferGeometry();
-  tetherGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3));
-  const tetherLine = new THREE.Line(tetherGeo, tetherMat);
-  tetherLine.frustumCulled = false; tetherLine.renderOrder = 5; tetherLine.visible = false;
-  overlay.add(tetherLine);
-  const updateTether3D = () => {
-    const t = S.tether;
-    if (!t) { tetherLine.visible = false; return; }
-    const w = spaceToWorld(t.L, t.C, t.H), P = tetherGeo.attributes.position.array, e = sepOffset(w[0], w[1], w[2], [0, 0, 0]);
-    P[0] = marker.position.x; P[1] = marker.position.y; P[2] = marker.position.z;
-    P[3] = e[0]; P[4] = e[1]; P[5] = e[2];
-    tetherLine.visible = Math.hypot(P[3] - P[0], P[4] - P[1], P[5] - P[2]) > 0.01;
-    tetherGeo.attributes.position.needsUpdate = true;
-    tetherGeo.computeBoundingSphere();
-    tetherLine.computeLineDistances();
-  };
-
-  // Plane outlines (L, C, H)
-  const planes = new THREE.Group();
-  const lineMat = () => new THREE.LineBasicMaterial({ transparent: true, opacity: 0.55, depthTest: false, depthWrite: false });
-  const PN = 96;
-  const fixedGeo = (n) => {
-    const g = new THREE.BufferGeometry(), a = new THREE.BufferAttribute(new Float32Array(n * 3), 3);
-    a.setUsage(THREE.DynamicDrawUsage); g.setAttribute("position", a); return g;
-  };
-  const plL = new THREE.LineLoop(fixedGeo(PN), lineMat());
-  const plC = new THREE.LineSegments(fixedGeo(PN * 4 + 2), lineMat());
-  const plH = new THREE.LineLoop(fixedGeo(4), lineMat());
-  [plL, plC, plH].forEach((o) => { o.renderOrder = 998; planes.add(o); });
-  overlay.add(planes);
-
-  // Pins and commercial colours: round dots drawn before the cells
-  const dotGeo = new THREE.BufferGeometry();
-  const dotMat = new THREE.ShaderMaterial({
-    // aOwner: the centre of the anchor cell the colour sits in. Separation
-    // moves every cell by its centre × sep, so the dot rides along with its
-    // cell and stays inside it instead of drifting into the gaps.
-    vertexShader: `attribute vec3 aColor; attribute float aKind; attribute float aVis; attribute vec3 aOwner;
-      uniform float uSep, uSize; varying vec3 vColor; varying float vKind;
-      void main() { vColor = aColor; vKind = aKind;
-        vec4 mv = modelViewMatrix * vec4(position + aOwner * (uSep - 1.0), 1.0);
-        gl_Position = aVis < 0.5 ? vec4(2.0, 2.0, 2.0, 1.0) : projectionMatrix * mv;
-        gl_PointSize = uSize; }`,
-    fragmentShader: `precision highp float; varying vec3 vColor; varying float vKind; uniform vec3 uRing;
-      void main() { vec2 p = gl_PointCoord * 2.0 - 1.0;
-        float d = vKind > 0.5 ? abs(p.x) + abs(p.y) : length(p);   // pins round, commercial diamonds
-        if (d > 1.0) discard;
-        gl_FragColor = vec4(d > 0.62 ? uRing : vColor, 1.0); }`,
-    uniforms: { uSep: shared.uSep, uSize: { value: 12 * Math.min(window.devicePixelRatio || 1, 2) }, uRing: { value: new THREE.Color(0, 0, 0) } },
-  });
-  const dots = new THREE.Points(dotGeo, dotMat);
-  dots.frustumCulled = false;
-  dots.renderOrder = -1;
-  scene.add(dots);
-  // A faint copy drawn over everything, so pins buried inside the solid stay findable.
-  const ghostMat = dotMat.clone();
-  ghostMat.uniforms = { uSep: shared.uSep, uSize: dotMat.uniforms.uSize, uRing: dotMat.uniforms.uRing };
-  ghostMat.fragmentShader = dotMat.fragmentShader.replace("gl_FragColor = vec4(d > 0.62 ? uRing : vColor, 1.0);", "gl_FragColor = vec4(d > 0.62 ? uRing : vColor, 0.8);");
-  ghostMat.transparent = true; ghostMat.depthTest = false; ghostMat.depthWrite = false;
-  const ghostDots = new THREE.Points(dotGeo, ghostMat);
-  ghostDots.frustumCulled = false;
-  ghostDots.renderOrder = -1;
-  overlay.add(ghostDots);
-
-  // Swatch cards: a square of the anchor's colour over a label strip, always
-  // facing the camera. Far away the strip takes the colour too, so the space
-  // reads as a cloud; close up it turns to paper and carries the name.
-  const cardGeo = new THREE.InstancedBufferGeometry();
-  cardGeo.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0], 3));
-  cardGeo.setIndex([0, 1, 2, 2, 1, 3]);
-  const cardMat = new THREE.ShaderMaterial({
-    vertexShader: `attribute vec3 iPos; attribute vec3 iColor; attribute float iVis; attribute float iSel;
-      uniform float uSep, uW, uH, uViewH;
-      varying vec2 vUv; varying vec3 vColor; varying float vPx; varying float vSel;
-      void main() {
-        vec4 mv = viewMatrix * vec4(iPos * uSep, 1.0);
-        vec2 c = position.xy;
-        mv.xy += vec2((c.x - 0.5) * uW, uW * 0.5 - (1.0 - c.y) * uH);
-        gl_Position = iVis < 0.5 ? vec4(2.0, 2.0, 2.0, 1.0) : projectionMatrix * mv;
-        vUv = vec2(c.x, (1.0 - c.y) * uH / uW);
-        vColor = iColor; vSel = iSel;
-        vPx = uW * projectionMatrix[1][1] * uViewH * 0.5 / max(-mv.z, 0.001);
-      }`,
-    fragmentShader: `precision highp float;
-      #define CARD_R ${CARD_ROUND.toFixed(3)}
-      varying vec2 vUv; varying vec3 vColor; varying float vPx; varying float vSel;
-      uniform vec3 uPaper, uEdge; uniform float uH, uW, uAlpha;
-      void main() {
-        vec3 paper = mix(vColor, uPaper, smoothstep(10.0, 34.0, vPx));
-        vec3 c = vUv.y < 1.0 ? vColor : paper;
-        // slightly rounded corners, like the swatches in the other tabs
-        vec2 hs = vec2(0.5, 0.5 * uH / uW), q = abs(vUv - hs) - hs + CARD_R;
-        float e = (CARD_R - length(max(q, 0.0)) - min(max(q.x, q.y), 0.0)) * vPx;
-        if (e < 0.0) discard;
-        if (vSel > 0.5 && e < 2.0) c = uEdge;
-        else if (e < 0.8 && vPx > 12.0) c = mix(c, uEdge, 0.3);
-        gl_FragColor = vec4(c, vSel > 0.5 ? 1.0 : uAlpha);
-      }`,
-    transparent: true, depthWrite: true,
-    uniforms: { uSep: shared.uSep, uW: { value: CARD_W }, uH: { value: CARD_H }, uViewH: { value: 800 }, uAlpha: { value: 1 },
-      uPaper: { value: new THREE.Color(1, 1, 1) }, uEdge: { value: new THREE.Color(0, 0, 0) } },
-  });
-  const cards = new THREE.Mesh(cardGeo, cardMat);
-  cards.frustumCulled = false;
-  cards.visible = false;
-  scene.add(cards);
-  let cVis = null, cSel = null;
-  const setCardGeometry = () => {
-    const pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
-    cVis = new Float32Array(N).fill(1); cSel = new Float32Array(N);
-    for (let i = 0; i < N; i++) { pos[i * 3] = px[i]; pos[i * 3 + 1] = py[i]; pos[i * 3 + 2] = pz[i]; col.set(cols.subarray(i * 3, i * 3 + 3), i * 3); }
-    if (cardGeo.attributes.iPos) cardGeo.dispose();   // release the previous GPU buffers
-    cardGeo.setAttribute("iPos", new THREE.InstancedBufferAttribute(pos, 3));
-    cardGeo.setAttribute("iColor", new THREE.InstancedBufferAttribute(col, 3));
-    cardGeo.setAttribute("iVis", new THREE.InstancedBufferAttribute(cVis, 1));
-    cardGeo.setAttribute("iSel", new THREE.InstancedBufferAttribute(cSel, 1));
-    cardGeo.instanceCount = N;
-    updateCardState();
-  };
-  const updateCardState = () => {
-    if (!cVis || cVis.length !== N) return;
-    for (let i = 0; i < N; i++) {
-      const a = S.anchors[i];
-      cVis[i] = !a || i === selIdx || inRangeLCH(a.L, a.C, a.H) ? 1 : 0;
-      cSel[i] = i === selIdx ? 1 : 0;
-    }
-    cardGeo.attributes.iVis.needsUpdate = true;
-    cardGeo.attributes.iSel.needsUpdate = true;
-    requestRender();
-  };
-  // Pins and commercial colours as swatch cards too (in swatches mode): the
-  // same card, a little smaller — pins at 0.62 of an anchor's, commercial
-  // colours at 0.5 — moved with their cell under separation like their dots.
-  const MCARD_SCALE = { pin: 0.62, brand: 0.5 };
-  const mcardGeo = new THREE.InstancedBufferGeometry();
-  mcardGeo.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0], 3));
-  mcardGeo.setIndex([0, 1, 2, 2, 1, 3]);
-  const mcardMat = new THREE.ShaderMaterial({
-    vertexShader: `attribute vec3 iPos; attribute vec3 iOwner; attribute vec3 iColor; attribute float iVis; attribute float iScale;
-      attribute vec3 iLook; attribute float iImg;
-      uniform float uSep, uW, uH, uViewH;
-      varying vec2 vUv; varying vec3 vColor; varying float vPx; varying float vSel; varying vec3 vLook; varying float vImg;
-      void main() {
-        vec4 mv = viewMatrix * vec4(iPos + iOwner * (uSep - 1.0), 1.0);
-        float W = uW * iScale, Hc = uH * iScale;
-        vec2 c = position.xy;
-        mv.xy += vec2((c.x - 0.5) * W, W * 0.5 - (1.0 - c.y) * Hc);
-        gl_Position = iVis < 0.5 ? vec4(2.0, 2.0, 2.0, 1.0) : projectionMatrix * mv;
-        vUv = vec2(c.x, (1.0 - c.y) * Hc / W);
-        vColor = iColor; vSel = 0.0; vLook = iLook; vImg = iImg;
-        vPx = W * projectionMatrix[1][1] * uViewH * 0.5 / max(-mv.z, 0.001);
-      }`,
-    // The Match and Catalog swatch: wood/texture grain as soft wavy strokes,
-    // a Shaker or Slim frame inset from the edge, and the product photo laid
-    // faintly over the top two-thirds — all in ink that suits the colour.
-    fragmentShader: `precision highp float;
-      #define CARD_R ${CARD_ROUND.toFixed(3)}
-      varying vec2 vUv; varying vec3 vColor; varying float vPx; varying float vSel; varying vec3 vLook; varying float vImg;
-      uniform vec3 uPaper, uEdge; uniform float uH, uW, uAlpha, uTiles; uniform sampler2D uAtlas;
-      void main() {
-        vec3 paper = mix(vColor, uPaper, smoothstep(10.0, 34.0, vPx));
-        vec3 c = vUv.y < 1.0 ? vColor : paper;
-        if (vUv.y < 1.0 && vPx > 9.0) {
-          vec3 ink = vLook.z > 0.5 ? vec3(0.0) : vec3(1.0);
-          if (vLook.x > 0.5) {
-            float n = clamp(floor(vPx / 14.0 + 0.5), 2.0, 9.0), st = 1.0 / (n + 1.0);
-            float k = floor(vUv.x / st + 0.5);
-            if (k >= 1.0 && k <= n) {
-              float wob = sin(vUv.y * 6.2832 + k * 2.7) * 0.022 + sin(vUv.y * 15.7 + k * 5.1) * 0.008;
-              float d = abs(vUv.x - k * st - wob) * vPx;
-              c = mix(c, ink, (1.0 - smoothstep(0.3, 0.9, d)) * (vLook.z > 0.5 ? 0.2 : 0.22));
-            }
-          }
-          if (vLook.y > 0.5) {
-            float ins = vLook.y < 1.5 ? max(0.20, 5.0 / vPx) : max(0.06, 2.0 / vPx);
-            float dx = max(ins - vUv.x, vUv.x - (1.0 - ins)), dy = max(ins - vUv.y, vUv.y - (1.0 - ins));
-            float d = abs(max(dx, dy)) * vPx;
-            c = mix(c, ink, (1.0 - smoothstep(0.45, 1.1, d)) * (vLook.z > 0.5 ? 0.45 : 0.55));
-          }
-          if (vImg > -0.5) {
-            float m = max(0.0, 1.0 - vUv.y / 0.66);
-            vec2 t = vec2(mod(vImg, uTiles), floor(vImg / uTiles));
-            vec3 ph = texture2D(uAtlas, vec2((t.x + vUv.x) / uTiles, 1.0 - (t.y + vUv.y) / uTiles)).rgb;
-            c = mix(c, ph, 0.38 * m);
-          }
-        }
-        // slightly rounded corners, like the swatches in the other tabs
-        vec2 hs = vec2(0.5, 0.5 * uH / uW), q = abs(vUv - hs) - hs + CARD_R;
-        float e = (CARD_R - length(max(q, 0.0)) - min(max(q.x, q.y), 0.0)) * vPx;
-        if (e < 0.0) discard;
-        if (e < 0.8 && vPx > 12.0) c = mix(c, uEdge, 0.3);
-        gl_FragColor = vec4(c, uAlpha);
-      }`,
-    uniforms: { ...cardMat.uniforms, uAtlas: { value: null }, uTiles: { value: 32 } },
-    transparent: true, depthWrite: true,
-  });
-  // Product photos: one cache for every view. The 2D sections draw any photo
-  // the browser can load; the 3D cards need a CORS-readable copy, packed into
-  // a 32×32 atlas of 64 px tiles (photos that won't share skip the 3D cards).
-  const ATLAS_TILES = 32, ATLAS_PX = 64;
-  const atlasCanvas = document.createElement("canvas");
-  atlasCanvas.width = atlasCanvas.height = ATLAS_TILES * ATLAS_PX;
-  const atlasCtx = atlasCanvas.getContext("2d");
-  const atlasTex = new THREE.CanvasTexture(atlasCanvas);
-  atlasTex.minFilter = THREE.LinearMipmapLinearFilter;
-  mcardMat.uniforms.uAtlas.value = atlasTex;
-  const photos = new Map();   // url → { img, ok, cors, slot }
-  let photoQueue = [], photoBusy = 0, atlasNext = 0, mImg = null;
-  const coverCrop = (img) => {
-    const iw = img.naturalWidth, ih = img.naturalHeight, sz = Math.min(iw, ih);
-    return [(iw - sz) / 2, (ih - sz) / 2, sz];
-  };
-  const photoReady = (url, ent) => {
-    if (ent.cors && atlasNext < ATLAS_TILES * ATLAS_TILES) {
-      const slot = atlasNext++, [sx, sy, sz] = coverCrop(ent.img);
-      try {
-        atlasCtx.drawImage(ent.img, sx, sy, sz, sz, (slot % ATLAS_TILES) * ATLAS_PX, Math.floor(slot / ATLAS_TILES) * ATLAS_PX, ATLAS_PX, ATLAS_PX);
-        atlasCtx.getImageData(0, 0, 1, 1);   // throws if the copy is not readable
-        ent.slot = slot; atlasTex.needsUpdate = true;
-      } catch (e) { ent.cors = false; }
-      if (ent.slot !== undefined && mImg) {
-        S.markers.forEach((m, i) => { if (m.look && m.look.image === url) mImg[i] = ent.slot; });
-        if (mcardGeo.attributes.iImg) mcardGeo.attributes.iImg.needsUpdate = true;
-      }
-    }
-    requestRender(); scheduleSections();
-  };
-  const pumpPhotos = () => {
-    while (photoBusy < 6 && photoQueue.length) {
-      const url = photoQueue.shift(), ent = photos.get(url);
-      photoBusy++;
-      const tryLoad = (cors) => {
-        const img = new Image();
-        if (cors) img.crossOrigin = "anonymous";
-        img.decoding = "async";
-        img.onload = () => { if (disposed) return; photoBusy--; ent.img = img; ent.ok = true; ent.cors = cors; photoReady(url, ent); pumpPhotos(); };
-        img.onerror = () => { if (disposed) return; if (cors) return tryLoad(false); photoBusy--; ent.ok = false; pumpPhotos(); };
-        img.src = url;
-      };
-      tryLoad(true);
-    }
-  };
-  // The photo for a url once it has loaded (null until then; asks for it).
-  const photoFor = (url) => {
-    if (!url) return null;
-    let ent = photos.get(url);
-    if (!ent) { ent = { ok: null }; photos.set(url, ent); photoQueue.push(url); pumpPhotos(); }
-    return ent.ok ? ent.img : null;
-  };
-  const mcards = new THREE.Mesh(mcardGeo, mcardMat);
-  mcards.frustumCulled = false;
-  mcards.visible = false;
-  scene.add(mcards);
-  const cardsOn = () => S.modes["3d"] === "swatches";
-  const applyMode3D = () => {
-    const sw = cardsOn();
-    cards.visible = sw && ready;
-    mcards.visible = sw && mcardGeo.instanceCount > 0;
-    if (sw) S.markers.forEach((m) => m.look && m.look.image && photoFor(m.look.image));
-    dots.visible = ghostDots.visible = !sw;
-    mesh.visible = !sw;
-    if (sw) activeMesh.visible = activeRim.visible = false;
-    requestRender();
-  };
-
-  // ── Orbit camera ─────────────────────────────────────────────────────────
-  // The pivot (t) follows the cursor; a right-drag pan adds an offset (o) that
-  // clears as soon as the cursor moves, so the cursor is always back in view.
-  const orb = { theta: 0.75, phi: 1.12, r: 14, tx: 0, ty: 0, tz: 0, ox: 0, oy: 0, oz: 0, rGoal: null };
-  const goal = new THREE.Vector3();
-  let camSnap = true, lastFrame = 0;
-  const setGoal = () => {
-    goal.set(marker.position.x + orb.ox, marker.position.y + orb.oy, marker.position.z + orb.oz);
-    requestRender();
-  };
-  const placeCamera = () => {
-    const sp = Math.sin(orb.phi);
-    camera.position.set(orb.tx + orb.r * sp * Math.cos(orb.theta), orb.ty + orb.r * Math.cos(orb.phi), orb.tz + orb.r * sp * Math.sin(orb.theta));
-    camera.lookAt(orb.tx, orb.ty, orb.tz);
-    camera.updateMatrixWorld();
-    const m3 = new THREE.Matrix3().setFromMatrix4(camera.matrixWorldInverse);
-    shared.uL1.value.set(8, 16, 6).normalize().applyMatrix3(m3).normalize();
-    shared.uL2.value.set(-6, -3, -5).normalize().applyMatrix3(m3).normalize();
-  };
-  const applyOrbit = () => {
-    orb.phi = Math.max(0.12, Math.min(Math.PI - 0.12, orb.phi));
-    requestRender();
-  };
-
-  // ── Render scheduling (only when something changed) ──────────────────────
-  let rafId = 0;
-  const frame = () => {
-    rafId = 0;
-    if (disposed) return;
-    // Ease the pivot toward the cursor (snaps on first draw).
-    const dx = goal.x - orb.tx, dy = goal.y - orb.ty, dz = goal.z - orb.tz;
-    const now = performance.now(), dt = Math.min(200, now - (lastFrame || now));
-    lastFrame = now;
-    let far = dx * dx + dy * dy + dz * dz > 1e-8;
-    const k = camSnap ? 1 : 1 - Math.exp(-dt / 80);   // time-based, so slow machines settle as fast
-    orb.tx += dx * k; orb.ty += dy * k; orb.tz += dz * k;
-    // a focus zoom glides the camera in or out (in ratio, so it feels even)
-    if (orb.rGoal !== null) {
-      const lr = Math.log(orb.r), lg = Math.log(orb.rGoal), kz = 1 - Math.exp(-dt / 110);
-      if (Math.abs(lg - lr) < 0.004) { orb.r = orb.rGoal; orb.rGoal = null; }
-      else { orb.r = Math.exp(lr + (lg - lr) * kz); far = true; }
-      marker.scale.setScalar(orb.r / 14);
-    }
-    camSnap = false;
-    placeCamera();
-    renderer.clear();
-    if (S.gamut["3d"] > 0) { renderer.render(gamutScene, camera); renderer.clearDepth(); }
-    renderer.render(scene, camera);
-    renderer.clearDepth();
-    renderer.render(overlay, camera);
-    const cv = slot["3d"];
-    if (cv && cv.width === glCanvas.width && cv.height === glCanvas.height) {
-      const ctx = cv.getContext("2d", spaceCanvasOpts());
-      ctx.clearRect(0, 0, cv.width, cv.height);
-      ctx.drawImage(glCanvas, 0, 0);
-      drawLabels3D(ctx);
-    } else resize();
-    if (far) requestRender(); else lastFrame = 0;
-  };
-  function requestRender() { if (!rafId && !disposed) rafId = requestAnimationFrame(frame); }
-
-  const DPR = () => Math.min(window.devicePixelRatio || 1, 2);
-  const resize = () => {
-    const cv = slot["3d"];
-    if (!cv || cv.clientWidth === 0) return;
-    const w = Math.max(10, Math.round(cv.clientWidth * DPR())), h = Math.max(10, Math.round(cv.clientHeight * DPR()));
-    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
-    renderer.setSize(w, h, false);
-    cardMat.uniforms.uViewH.value = h;
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
-    requestRender();
-  };
-
-  // ── Cells ────────────────────────────────────────────────────────────────
-  // At 0% every anchor is a round dot. Above that the dot is gone: each bin is
-  // its own cell — the true chunk of colour space it owns — scaled about its
-  // anchor, from a sliver at the low end to the whole cell at 100%, so no
-  // sphere ever bulges past a cell wall.
-  const DOT_FILL = 0.005, CELL_MIN = 0.06;
-  const cellScale = () => CELL_MIN + (1 - CELL_MIN) * Math.min(1, (S.fill - DOT_FILL) / (1 - DOT_FILL));
-  const inflR = (i, r) => (S.fill < DOT_FILL ? dotR[i] : r * cellScale());
-  const buildCells = () => {
-    const token = ++buildToken;
-    ready = false;
-    cards.visible = false;   // the old anchors' cards go until the new ones are ready
-    const list = S.anchors;
-    N = list.length;
-    px = new Float32Array(N); py = new Float32Array(N); pz = new Float32Array(N); cols = new Float32Array(N * 3);
-    for (let i = 0; i < N; i++) {
-      const a = list[i], w = spaceToWorld(a.L, a.C, a.H);
-      px[i] = w[0]; py[i] = w[1]; pz[i] = w[2];
-      const c = spaceDisplayRgb(a.hex, a.L, a.C, a.H);
-      cols[i * 3] = c[0]; cols[i * 3 + 1] = c[1]; cols[i * 3 + 2] = c[2];
-    }
-    grid = spaceMakeGrid(px, py, pz, N);
-    TPL = spaceTemplateFor(N);
-    NV = TPL.count;
-    rCell = new Float32Array(N * NV); meanR = new Float32Array(N); maxR = new Float32Array(N); dotR = new Float32Array(N); nnW = new Float32Array(N);
-    selIdx = -1;
-    if (!N) {
-      // nothing left of the old anchors: no cells, no cards (markers stay)
-      ready = true; onStatus({ phase: "empty" });
-      setCardGeometry(); updateMarkerOwners(); rebuild(); rebuildActive(); applyMode3D(); scheduleSections();
-      return;
-    }
-    const D = TPL.dirs;
-    let i = 0;
-    const step = () => {
-      if (token !== buildToken || disposed) return;
-      const t0 = performance.now();
-      for (; i < N && performance.now() - t0 < 14; i++) {
-        const X = px[i], Y = py[i], Z = pz[i];
-        let near = grid.within(X, Y, Z, 1.2, i);
-        nnW[i] = near.length ? Math.sqrt(near[0][0]) : 1.2;
-        dotR[i] = Math.max(0.035, Math.min(0.1, nnW[i] * 0.45));
-        const radii = rCell.subarray(i * NV, (i + 1) * NV);
-        // Distance to the nearest bisector plane along direction v, starting from cap r0
-        const voronoi = (v, cand, r0) => {
-          const dx = D[v * 3], dy = D[v * 3 + 1], dz = D[v * 3 + 2];
-          let r = r0;
-          for (const [d2, j] of cand) {
-            if (Math.sqrt(d2) * 0.5 >= r) break; // nobody further away can cut closer
-            const den = (px[j] - X) * dx + (py[j] - Y) * dy + (pz[j] - Z) * dz;
-            if (den > 1e-6) { const rv = d2 / (2 * den); if (rv < r) r = rv; }
-          }
-          return r;
-        };
-        // Pull r back inside the sRGB gamut (the gamut is star-shaped from inside)
-        const gamut = (v, r) => {
-          const dx = D[v * 3], dy = D[v * 3 + 1], dz = D[v * 3 + 2];
-          if (spaceInGamut(X + dx * r, Y + dy * r, Z + dz * r)) return r;
-          let lo = 0, hi = r;
-          for (let k = 0; k < 15; k++) { const m = (lo + hi) / 2; if (spaceInGamut(X + dx * m, Y + dy * m, Z + dz * m)) lo = m; else hi = m; }
-          return lo;
-        };
-        let need = 0;
-        for (let v = 0; v < NV; v++) {
-          let r = voronoi(v, near, 8);
-          if (r > 0.6) { r = gamut(v, r); if (r > 0.6) need = Math.max(need, r); }
-          radii[v] = r;
-        }
-        if (need) { // a few directions reach past the first search radius: widen it for those
-          near = grid.within(X, Y, Z, 2 * need + 0.01, i);
-          for (let v = 0; v < NV; v++) if (radii[v] > 0.6) radii[v] = voronoi(v, near, radii[v]);
-        }
-        let sum = 0, mx = 0;
-        for (let v = 0; v < NV; v++) {
-          const r = Math.max(gamut(v, radii[v]), 0.002);
-          radii[v] = r; sum += r; if (r > mx) mx = r;
-        }
-        meanR[i] = sum / NV; maxR[i] = mx;
-      }
-      if (i < N) { onStatus({ phase: "building", progress: i / N }); setTimeout(step, 0); return; }
-      ready = true;
-      onStatus({ phase: "ready" });
-      updateMarkerOwners();
-      updateCursor();
-      setCardGeometry();
-      rebuild();
-      rebuildActive();
-      applyMode3D();
-    };
-    onStatus({ phase: "building", progress: 0 });
-    setTimeout(step, 0);
-  };
-
-  const constraints = () => {
-    const cons = [], [lc, cc, hc] = S.cursor, { hl, hc: dc, hh } = S.ranges["3d"];
-    if (hl !== null) {
-      const lo = (lc - hl - LC) * LW, hi = (lc + hl - LC) * LW;
-      cons.push((x, y) => lo - y, (x, y) => y - hi);
-    }
-    if (dc !== null) {
-      const outer = (cc + dc) * CW, inner = (cc - dc) * CW;
-      cons.push((x, y, z) => Math.hypot(x, z) - outer);
-      if (inner > 0) cons.push((x, y, z) => inner - Math.hypot(x, z));
-    }
-    if (hh !== null) {
-      // Hue direction θ points along (sin θ, −cos θ) in x/z
-      if (hh < 90) {
-        const t1 = ((hc - hh) * Math.PI) / 180, t2 = ((hc + hh) * Math.PI) / 180;
-        cons.push((x, y, z) => -(Math.cos(t1) * x + Math.sin(t1) * z));
-        cons.push((x, y, z) => Math.cos(t2) * x + Math.sin(t2) * z);
-      } else {
-        const t = (hc * Math.PI) / 180, ux = Math.sin(t), uz = -Math.cos(t), k = Math.cos((hh * Math.PI) / 180);
-        cons.push((x, y, z) => k * Math.hypot(x, z) - (ux * x + uz * z));
-      }
-    }
-    return cons;
-  };
-  // In a section, its own axis is the depth (handled by the projection), so
-  // only the other two filter.
-  const inRangeLCH = (L, C, H, k = "3d") => {
-    const [lc, cc, hc] = S.cursor, { hl, hc: dc, hh } = S.ranges[k];
-    return (hl === null || k === "l" || Math.abs(L - lc) <= hl) && (dc === null || k === "c" || Math.abs(C - cc) <= dc) &&
-      (hh === null || k === "h" || C < 0.004 || spaceHueDist(H, hc) <= hh);
-  };
-  const DEPTH_ALL = { l: 1, c: 0.4, h: 180 };
-  const depthOf = (k) => (S.ranges[k].depth === null ? DEPTH_ALL[k] : S.ranges[k].depth);
-
-  // A cell after inflation and slicing: null (sliced away), "whole" (untouched
-  // template, written straight into the buffers) or a clipped mesh.
-  // Every section function is at most 2-Lipschitz, so a cell whose bounding
-  // sphere sits clearly on one side of a cut is decided without clipping.
-  const cellMesh = (i, cons) => {
-    const X = px[i], Y = py[i], Z = pz[i], R = inflR(i, maxR[i]) * 2 + 1e-4;
-    const active = [];
-    for (const f of cons) {
-      const fc = f(X, Y, Z);
-      if (fc > R) return null;
-      if (fc >= -R) active.push(f);
-    }
-    if (!active.length) return "whole";
-    const P = new Array(NV * 3), D = TPL.dirs;
-    for (let v = 0; v < NV; v++) {
-      const r = inflR(i, rCell[i * NV + v]);
-      P[v * 3] = X + D[v * 3] * r; P[v * 3 + 1] = Y + D[v * 3 + 1] * r; P[v * 3 + 2] = Z + D[v * 3 + 2] * r;
-    }
-    let m = { P, K: new Array(NV).fill(0), T: TPL.tris };
-    for (const f of active) { m = spaceClipMesh(m, f); if (!m) return null; }
-    return m;
-  };
-  const wholeMesh = (i) => {
-    const P = new Float32Array(NV * 3), D = TPL.dirs, X = px[i], Y = py[i], Z = pz[i];
-    for (let v = 0; v < NV; v++) {
-      const r = inflR(i, rCell[i * NV + v]);
-      P[v * 3] = X + D[v * 3] * r; P[v * 3 + 1] = Y + D[v * 3 + 1] * r; P[v * 3 + 2] = Z + D[v * 3 + 2] * r;
-    }
-    return { P, K: new Float32Array(NV), T: TPL.tris };
-  };
-
-  // Area-weighted vertex normals for one cell's triangles (local indices T)
-  // over positions pos[(base + v) * 3], written to nor at the same places.
-  const cellNormals = (pos, nor, base, nv, T, nt) => {
-    nor.fill(0, base * 3, (base + nv) * 3);
-    for (let q = 0; q < nt; q += 3) {
-      const a = (base + T[q]) * 3, b = (base + T[q + 1]) * 3, c = (base + T[q + 2]) * 3;
-      const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2];
-      const vx = pos[c] - pos[a], vy = pos[c + 1] - pos[a + 1], vz = pos[c + 2] - pos[a + 2];
-      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-      nor[a] += nx; nor[a + 1] += ny; nor[a + 2] += nz;
-      nor[b] += nx; nor[b + 1] += ny; nor[b + 2] += nz;
-      nor[c] += nx; nor[c + 1] += ny; nor[c + 2] += nz;
-    }
-  };
-
-  // Every cell, sliced, in one buffer. The active cell is also in here; the
-  // overlay draws it again on top.
-  // `defer`: while the inflation slider moves (and nothing is sliced, so every
-  // cell keeps its vertex layout) the previous normals still fit closely;
-  // they're recomputed once it pauses, keeping each drag step cheap.
-  let normalsTimer = 0, normalJobs = null;
-  const normalsPass = () => {
-    if (!normalJobs || disposed) return;
-    for (const [vo, nv, T, nt] of normalJobs) cellNormals(bPos, bNor, vo, nv, T, nt);
-    const a = geo.attributes.aNormal;
-    if (a) { a.updateRange = { offset: 0, count: normalJobs.vo * 3 }; a.needsUpdate = true; }
-    normalJobs = null;
-    requestRender();
-  };
-  function rebuild(defer = false) {
-    if (!ready) return;
-    const parts = [], cons = constraints();
-    defer = defer && !cons.length && !!bNor;
-    const jobs = [];
-    let nV = 0, nI = 0;
-    const tl = TPL.tris.length;
-    for (let i = 0; i < N; i++) {
-      const m = cellMesh(i, cons);
-      if (!m) continue;
-      parts.push([i, m]);
-      if (m === "whole") { nV += NV; nI += tl; } else { nV += m.K.length; nI += m.T.length; }
-    }
-    ensure(nV, nI);
-    let vo = 0, io = 0;
-    const D = TPL.dirs, T = TPL.tris;
-    for (const [i, m] of parts) {
-      const r = cols[i * 3], g = cols[i * 3 + 1], b = cols[i * 3 + 2], X = px[i], Y = py[i], Z = pz[i];
-      if (m === "whole") {
-        for (let v = 0; v < NV; v++) {
-          const o = (vo + v) * 3, rr = inflR(i, rCell[i * NV + v]);
-          bPos[o] = X + D[v * 3] * rr; bPos[o + 1] = Y + D[v * 3 + 1] * rr; bPos[o + 2] = Z + D[v * 3 + 2] * rr;
-          bCen[o] = X; bCen[o + 1] = Y; bCen[o + 2] = Z;
-          bCol[o] = r; bCol[o + 1] = g; bCol[o + 2] = b;
-          bCap[vo + v] = 0;
-        }
-        for (let q = 0; q < tl; q++) bIdx[io + q] = T[q] + vo;
-        jobs.push([vo, NV, T, tl]);
-        vo += NV; io += tl;
-        continue;
-      }
-      const nv = m.K.length;
-      for (let v = 0; v < nv; v++) {
-        const o = (vo + v) * 3;
-        bPos[o] = m.P[v * 3]; bPos[o + 1] = m.P[v * 3 + 1]; bPos[o + 2] = m.P[v * 3 + 2];
-        bCen[o] = X; bCen[o + 1] = Y; bCen[o + 2] = Z;
-        bCol[o] = r; bCol[o + 1] = g; bCol[o + 2] = b;
-        bCap[vo + v] = m.K[v];
-      }
-      for (let q = 0; q < m.T.length; q++) bIdx[io + q] = m.T[q] + vo;
-      jobs.push([vo, nv, m.T, m.T.length]);
-      vo += nv; io += m.T.length;
-    }
-    jobs.vo = vo;
-    clearTimeout(normalsTimer);
-    normalJobs = jobs;
-    if (defer) normalsTimer = setTimeout(normalsPass, 140);
-    else for (const [o, nv, T, nt] of jobs) cellNormals(bPos, bNor, o, nv, T, nt), (normalJobs = null);
-    ["position", "aCenter", "aColor", "aCap"].concat(defer ? [] : ["aNormal"]).forEach((k) => {
-      const a = geo.attributes[k];
-      if (!a) return;
-      a.updateRange = { offset: 0, count: vo * a.itemSize };   // upload only what changed
-      a.needsUpdate = true;
-    });
-    geo.index.updateRange = { offset: 0, count: io };
-    geo.index.needsUpdate = true;
-    geo.setDrawRange(0, io);
-    buildGamutZones();
-    updateDotVisibility();
-    requestRender();
-    scheduleSections();
-  }
-  // Just the highlighted cell (cheap: runs on every cursor move).
-  function rebuildActive() {
-    let m = ready && selIdx >= 0 ? cellMesh(selIdx, constraints()) : null;
-    if (m === "whole") m = wholeMesh(selIdx);
-    activeMesh.visible = activeRim.visible = !!m && !cardsOn();
-    if (m) {
-      const nv = m.K.length, ni = m.T.length;
-      if (nv > aCapV || ni > aCapI) {
-        if (activeGeo.attributes.position) activeGeo.dispose();   // frees the old GPU buffers
-        aCapV = Math.max(nv, aCapV) * 1.5 | 0; aCapI = Math.max(ni, aCapI) * 1.5 | 0;
-        const dyn = (arr, n) => { const a = new THREE.BufferAttribute(arr, n); a.setUsage(THREE.DynamicDrawUsage); return a; };
-        activeGeo.setAttribute("position", dyn(new Float32Array(aCapV * 3), 3));
-        activeGeo.setAttribute("aCenter", dyn(new Float32Array(aCapV * 3), 3));
-        activeGeo.setAttribute("aColor", dyn(new Float32Array(aCapV * 3), 3));
-        activeGeo.setAttribute("aCap", dyn(new Float32Array(aCapV), 1));
-        activeGeo.setAttribute("aNormal", dyn(new Float32Array(aCapV * 3), 3));
-        activeGeo.setIndex(dyn(new Uint32Array(aCapI), 1));
-      }
-      const A = activeGeo.attributes, pos = A.position.array, cen = A.aCenter.array, col = A.aColor.array, cap = A.aCap.array, idx = activeGeo.index.array;
-      const X = px[selIdx], Y = py[selIdx], Z = pz[selIdx], r = cols[selIdx * 3], g = cols[selIdx * 3 + 1], b = cols[selIdx * 3 + 2];
-      for (let v = 0; v < nv; v++) {
-        pos[v * 3] = m.P[v * 3]; pos[v * 3 + 1] = m.P[v * 3 + 1]; pos[v * 3 + 2] = m.P[v * 3 + 2];
-        cen[v * 3] = X; cen[v * 3 + 1] = Y; cen[v * 3 + 2] = Z;
-        col[v * 3] = r; col[v * 3 + 1] = g; col[v * 3 + 2] = b;
-        cap[v] = m.K[v];
-      }
-      for (let q = 0; q < ni; q++) idx[q] = m.T[q];
-      cellNormals(pos, A.aNormal.array, 0, nv, m.T, ni);
-      ["position", "aCenter", "aColor", "aCap", "aNormal"].forEach((k) => { if (A[k]) { A[k].updateRange = { offset: 0, count: nv * A[k].itemSize }; A[k].needsUpdate = true; } });
-      activeGeo.index.updateRange = { offset: 0, count: ni };
-      activeGeo.index.needsUpdate = true;
-      activeGeo.setDrawRange(0, ni);
-    }
-    requestRender();
-  }
-
-  // ── Cursor ───────────────────────────────────────────────────────────────
-  const cursorWorld = new THREE.Vector3();
-  function updateCursor() {
-    const [L, C, H] = S.cursor, w = spaceToWorld(L, C, H);
-    cursorWorld.set(w[0], w[1], w[2]);
-    const prev = selIdx;
-    selIdx = ready && N ? grid.nearest(w[0], w[1], w[2]) : -1;
-    orb.ox = orb.oy = orb.oz = 0;
-    placeMarker();
-    updatePlanes();
-    return prev !== selIdx;
-  }
-  const placeMarker = () => {
-    const k = S.sep, c = selIdx >= 0 ? [px[selIdx], py[selIdx], pz[selIdx]] : [0, 0, 0];
-    marker.position.set(cursorWorld.x + c[0] * k, cursorWorld.y + c[1] * k, cursorWorld.z + c[2] * k);
-    marker.scale.setScalar(orb.r / 14);
-    updateTether3D();
-    setGoal();
-  };
-  const updatePlanes = () => {
-    const [L, C, H] = S.cursor, R = AMAX * CW, y = (L - LC) * LW, y0 = -LC * LW, y1 = (1 - LC) * LW, n = PN;
-    const hr = (H * Math.PI) / 180, sx = Math.sin(hr), cz = -Math.cos(hr);
-    const put = (obj, arr) => { const a = obj.geometry.attributes.position; a.array.set(arr); a.needsUpdate = true; };
-    const ring = (r, yy) => { const a = []; for (let i = 0; i < n; i++) { const t = (i / n) * Math.PI * 2; a.push(r * Math.sin(t), yy, -r * Math.cos(t)); } return a; };
-    put(plL, ring(R, y));
-    const rc = Math.max(C * CW, 0.001), segs = [];
-    for (const yy of [y0, y1]) { const r = ring(rc, yy); for (let i = 0; i < n; i++) { const j = (i + 1) % n; segs.push(r[i * 3], r[i * 3 + 1], r[i * 3 + 2], r[j * 3], r[j * 3 + 1], r[j * 3 + 2]); } }
-    segs.push(rc * sx, y0, rc * cz, rc * sx, y1, rc * cz);
-    put(plC, segs);
-    plC.visible = C > 0.002;
-    put(plH, [0, y0, 0, R * sx, y0, R * cz, R * sx, y1, R * cz, 0, y1, 0]);
-    planes.scale.setScalar(1 + S.sep);
-    requestRender();
-  };
-
-  // ── Markers (pins, commercial) ───────────────────────────────────────────
-  let mVis = null, markerPos = null, mVisAll = false, mOwner = null;
-  // Which cell each marker sits in (its centre), for separation.
-  const updateMarkerOwners = () => {
-    if (!mOwner || !markerPos) return;
-    const n = mOwner.length / 3;
-    for (let i = 0; i < n; i++) {
-      if (!ready || !N) { mOwner[i * 3] = mOwner[i * 3 + 1] = mOwner[i * 3 + 2] = 0; continue; }
-      const j = grid.nearest(markerPos[i * 3], markerPos[i * 3 + 1], markerPos[i * 3 + 2]);
-      mOwner[i * 3] = px[j]; mOwner[i * 3 + 1] = py[j]; mOwner[i * 3 + 2] = pz[j];
-    }
-    if (dotGeo.attributes.aOwner) dotGeo.attributes.aOwner.needsUpdate = true;
-    if (mcardGeo.attributes.iOwner) mcardGeo.attributes.iOwner.needsUpdate = true;
-    requestRender();
-  };
-  // Where a world point is drawn once separated: moved with its cell.
-  const sepOffset = (x, y, z, out) => {
-    const s = S.sep;
-    if (s && ready && N) { const j = grid.nearest(x, y, z); out[0] = x + px[j] * s; out[1] = y + py[j] * s; out[2] = z + pz[j] * s; }
-    else { out[0] = x; out[1] = y; out[2] = z; }
-    return out;
-  };
-  const setMarkerGeometry = () => {
-    const M = S.markers, n = M.length, pos = new Float32Array(n * 3), col = new Float32Array(n * 3), kind = new Float32Array(n);
-    markerPos = pos;
-    if (dotGeo.attributes.position) dotGeo.dispose();   // release the previous GPU buffers
-    mVis = new Float32Array(n).fill(1); mVisAll = false;
-    M.forEach((m, i) => {
-      const w = spaceToWorld(m.L, m.C, m.H), c = spaceDisplayRgb(m.hex, m.L, m.C, m.H);
-      pos.set(w, i * 3); col.set(c, i * 3); kind[i] = m.kind === "brand" ? 1 : 0;
-    });
-    dotGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    dotGeo.setAttribute("aColor", new THREE.BufferAttribute(col, 3));
-    dotGeo.setAttribute("aKind", new THREE.BufferAttribute(kind, 1));
-    dotGeo.setAttribute("aVis", new THREE.BufferAttribute(mVis, 1));
-    mOwner = new Float32Array(n * 3);
-    dotGeo.setAttribute("aOwner", new THREE.BufferAttribute(mOwner, 3));
-    // the same markers as cards
-    const scale = new Float32Array(n);
-    M.forEach((m, i) => (scale[i] = m.kind === "brand" ? MCARD_SCALE.brand : MCARD_SCALE.pin));
-    if (mcardGeo.attributes.iPos) mcardGeo.dispose();
-    mcardGeo.setAttribute("iPos", new THREE.InstancedBufferAttribute(pos, 3));
-    mcardGeo.setAttribute("iOwner", new THREE.InstancedBufferAttribute(mOwner, 3));
-    mcardGeo.setAttribute("iColor", new THREE.InstancedBufferAttribute(col, 3));
-    mcardGeo.setAttribute("iVis", new THREE.InstancedBufferAttribute(mVis, 1));
-    mcardGeo.setAttribute("iScale", new THREE.InstancedBufferAttribute(scale, 1));
-    const look = new Float32Array(n * 3);
-    mImg = new Float32Array(n).fill(-1);
-    M.forEach((m, i) => {
-      const lk = m.look || {};
-      look[i * 3] = lk.hatch ? 1 : 0;
-      look[i * 3 + 1] = lk.profile === "CS" ? 1 : lk.profile === "SS" ? 2 : 0;
-      look[i * 3 + 2] = lk.light === false ? 0 : 1;
-      const ent = lk.image && photos.get(lk.image);
-      if (ent && ent.slot !== undefined) mImg[i] = ent.slot;
-    });
-    mcardGeo.setAttribute("iLook", new THREE.InstancedBufferAttribute(look, 3));
-    mcardGeo.setAttribute("iImg", new THREE.InstancedBufferAttribute(mImg, 1));
-    mcardGeo.instanceCount = n;
-    applyMode3D();
-    updateMarkerOwners();
-    updateDotVisibility();
-  };
-  function updateDotVisibility() {
-    if (!mVis) return;
-    const M = S.markers, { hl, hc, hh } = S.ranges["3d"];
-    if (hl === null && hc === null && hh === null) { if (mVisAll) return; mVis.fill(1); mVisAll = true; }
-    else { mVisAll = false; for (let i = 0; i < M.length; i++) mVis[i] = inRangeLCH(M[i].L, M[i].C, M[i].H) ? 1 : 0; }
-    dotGeo.attributes.aVis.needsUpdate = true;
-    if (mcardGeo.attributes.iVis) mcardGeo.attributes.iVis.needsUpdate = true;
-    updateCardState();
-    requestRender();
-  }
-
-  // ── Picking ──────────────────────────────────────────────────────────────
-  const rayDir = new THREE.Vector3(), projM = new THREE.Matrix4();
-  const pick3D = (clientX, clientY) => {
-    const rc = slot["3d"].getBoundingClientRect();
-    projM.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    const nx = ((clientX - rc.left) / rc.width) * 2 - 1, ny = -((clientY - rc.top) / rc.height) * 2 + 1;
-    const k = 1 + S.sep;
-    if (cardsOn() && mVis && markerPos && mOwner) {
-      // the nearest marker card under the pointer; anchor cards are checked
-      // below and win only when nearer
-      const e = projM.elements, hw = rc.width / 2, hh = rc.height / 2, fy = camera.projectionMatrix.elements[5];
-      const mx = clientX - rc.left, my = clientY - rc.top, sk = k - 1;
-      let bz = 1e9, bm = null;
-      for (let i = 0, n = S.markers.length; i < n; i++) {
-        if (!mVis[i]) continue;
-        const x = markerPos[i * 3] + mOwner[i * 3] * sk, y = markerPos[i * 3 + 1] + mOwner[i * 3 + 1] * sk, z = markerPos[i * 3 + 2] + mOwner[i * 3 + 2] * sk;
-        const w = e[3] * x + e[7] * y + e[11] * z + e[15];
-        if (w <= 0.001) continue;
-        const sx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w) * hw + hw, sy = hh - ((e[1] * x + e[5] * y + e[9] * z + e[13]) / w) * hh;
-        const cw = (CARD_W * (S.markers[i].kind === "brand" ? MCARD_SCALE.brand : MCARD_SCALE.pin) * fy * hh) / w;
-        if (mx < sx - cw / 2 || mx > sx + cw / 2 || my < sy - cw / 2 || my > sy - cw / 2 + cw * 1.3) continue;
-        if (w < bz) { bz = w; bm = S.markers[i]; }
-      }
-      if (bm) {
-        // an anchor card in front of it takes the click instead
-        if (ready && N) {
-          for (let i = 0; i < N; i++) {
-            if (!cVis || !cVis[i]) continue;
-            const x = px[i] * k, y = py[i] * k, z = pz[i] * k, w = e[3] * x + e[7] * y + e[11] * z + e[15];
-            if (w <= 0.001 || w >= bz) continue;
-            const sx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w) * hw + hw, sy = hh - ((e[1] * x + e[5] * y + e[9] * z + e[13]) / w) * hh;
-            const cw = (CARD_W * fy * hh) / w;
-            if (mx >= sx - cw / 2 && mx <= sx + cw / 2 && my >= sy - cw / 2 && my <= sy - cw / 2 + cw * 1.3) return S.anchors[i];
-          }
-        }
-        return bm;
-      }
-    }
-    // markers first: nearest projected dot within 9px
-    let best = null, bd = 81;
-    if (mVis && markerPos) {
-      const e = projM.elements, hw = rc.width / 2, hh = rc.height / 2;
-      for (let i = 0, n = S.markers.length; i < n; i++) {
-        if (!mVis[i]) continue;
-        const sk = k - 1, x = markerPos[i * 3] + (mOwner ? mOwner[i * 3] * sk : 0), y = markerPos[i * 3 + 1] + (mOwner ? mOwner[i * 3 + 1] * sk : 0), z = markerPos[i * 3 + 2] + (mOwner ? mOwner[i * 3 + 2] * sk : 0);
-        const w = e[3] * x + e[7] * y + e[11] * z + e[15];
-        if (w <= 0) continue;
-        const sz = (e[2] * x + e[6] * y + e[10] * z + e[14]) / w;
-        if (sz > 1) continue;
-        const dx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w - nx) * hw, dy = ((e[1] * x + e[5] * y + e[9] * z + e[13]) / w - ny) * hh;
-        const d = dx * dx + dy * dy;
-        if (d < bd) { bd = d; best = S.markers[i]; }
-      }
-    }
-    if (best) return best;
-    if (!ready || !N) return null;
-    if (cardsOn()) {
-      const e = projM.elements, hw = rc.width / 2, hh = rc.height / 2, fy = camera.projectionMatrix.elements[5];
-      let bz = 1e9, bi = -1;
-      for (let i = 0; i < N; i++) {
-        if (!cVis || !cVis[i]) continue;
-        const x = px[i] * k, y = py[i] * k, z = pz[i] * k, w = e[3] * x + e[7] * y + e[11] * z + e[15];
-        if (w <= 0.001) continue;
-        const sx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w) * hw + hw, sy = hh - ((e[1] * x + e[5] * y + e[9] * z + e[13]) / w) * hh;
-        const cw = (CARD_W * fy * hh) / w, mx = clientX - rc.left, my = clientY - rc.top;
-        if (mx < sx - cw / 2 || mx > sx + cw / 2 || my < sy - cw / 2 || my > sy - cw / 2 + cw * 1.3) continue;
-        if (w < bz) { bz = w; bi = i; }
-      }
-      return bi >= 0 ? S.anchors[bi] : null;
-    }
-    const ro = camera.position;
-    rayDir.set(nx, ny, 0.5).unproject(camera).sub(ro).normalize();
-    let bt = 1e9, bi = -1;
-    const kk = S.sep;
-    for (let i = 0; i < N; i++) {
-      const a = S.anchors[i];
-      if (i !== selIdx && !inRangeLCH(a.L, a.C, a.H)) continue;
-      const r = inflR(i, meanR[i]);
-      const cx = px[i] * (1 + kk) - ro.x, cy = py[i] * (1 + kk) - ro.y, cz = pz[i] * (1 + kk) - ro.z;
-      const b = cx * rayDir.x + cy * rayDir.y + cz * rayDir.z, disc = b * b - (cx * cx + cy * cy + cz * cz - r * r);
-      if (disc < 0) continue;
-      const t = b - Math.sqrt(disc);
-      if (t > 0 && t < bt) { bt = t; bi = i; }
-    }
-    return bi >= 0 ? S.anchors[bi] : null;
-  };
-
-  // ── 3D pointer controls ──────────────────────────────────────────────────
-  const listeners = [];
-  const on = (el, ev, fn, o) => { el.addEventListener(ev, fn, o); listeners.push([el, ev, fn, o]); };
-  const handlers = { "3d": {}, l: {}, c: {}, h: {} };   // view → event → handler
-  const TOUCH_HOLD = 120;   // ms a touch waits for a second finger before acting
-  {
-    const ptrs = new Map();
-    let mode = null, lx = 0, ly = 0, pinch = null, down = null;
-    const pan = (dx, dy) => {
-      const s = orb.r * 0.0016, right = new THREE.Vector3(), up = new THREE.Vector3();
-      camera.matrixWorld.extractBasis(right, up, new THREE.Vector3());
-      orb.ox -= (right.x * dx - up.x * dy) * s; orb.oy -= (right.y * dx - up.y * dy) * s; orb.oz -= (right.z * dx - up.z * dy) * s;
-      setGoal(); camSnap = true;
-    };
-    handlers["3d"]["contextmenu"] = ((e) => e.preventDefault());
-    handlers["3d"]["pointerdown"] = ((e) => {
-      e.currentTarget.setPointerCapture(e.pointerId);
-      ptrs.set(e.pointerId, [e.clientX, e.clientY]);
-      onHover(null);
-      if (ptrs.size === 2) {
-        const [a, b] = [...ptrs.values()];
-        pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] };
-        // undo the first finger's little start of a turn, and never pick
-        if (down && down.orb) { orb.theta = down.orb[0]; orb.phi = down.orb[1]; applyOrbit(); }
-        mode = "pinch"; down = null; return;
-      }
-      if (ptrs.size > 2 || mode === "after") return;
-      mode = e.button === 1 || e.button === 2 || e.shiftKey ? "pan" : "rotate";
-      lx = e.clientX; ly = e.clientY;
-      down = { x: e.clientX, y: e.clientY, t: performance.now(), touch: e.pointerType === "touch", orb: [orb.theta, orb.phi] };
-    });
-    handlers["3d"]["pointermove"] = ((e) => {
-      if (!ptrs.has(e.pointerId)) {
-        if (e.pointerType === "mouse") {
-          const hit = pick3D(e.clientX, e.clientY);
-          onHover(hit ? { item: hit, x: e.clientX, y: e.clientY } : null);
-        }
-        return;
-      }
-      ptrs.set(e.pointerId, [e.clientX, e.clientY]);
-      if (mode === "pinch" && ptrs.size === 2) {
-        const [a, b] = [...ptrs.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]), m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-        orb.rGoal = null;
-        orb.r = Math.max(0.6, Math.min(40, orb.r * (pinch.d / d)));
-        pan(m[0] - pinch.m[0], m[1] - pinch.m[1]);
-        pinch = { d, m }; placeMarker(); applyOrbit(); return;
-      }
-      if (mode !== "pan" && mode !== "rotate") return;
-      const dx = e.clientX - lx, dy = e.clientY - ly;
-      lx = e.clientX; ly = e.clientY;
-      if (mode === "pan") pan(dx, dy);
-      else if (mode === "rotate") { orb.theta += dx * 0.006; orb.phi -= dy * 0.006; }
-      applyOrbit();
-    });
-    const up = (e, cancelled) => {
-      ptrs.delete(e.pointerId);
-      // a tap picks: one pointer, barely moved, quickly lifted, and (for touch)
-      // no other finger joined it
-      if (!cancelled && down && !ptrs.size && Math.hypot(e.clientX - down.x, e.clientY - down.y) < (down.touch ? 10 : 5) && performance.now() - down.t < 400) {
-        const hit = pick3D(e.clientX, e.clientY);
-        if (hit) onPick(hit);
-      }
-      down = null;
-      if (mode === "pinch" || mode === "after") mode = ptrs.size ? "after" : null;   // the finger left after a pinch does nothing
-      else if (!ptrs.size) mode = null;
-    };
-    handlers["3d"]["pointerup"] = ((e) => up(e, false));
-    handlers["3d"]["pointercancel"] = ((e) => up(e, true));
-    handlers["3d"]["pointerleave"] = (() => onHover(null));
-    handlers["3d"]["wheel"] = ((e) => {
-      e.preventDefault();
-      orb.rGoal = null;
-      orb.r = Math.max(0.6, Math.min(40, orb.r * Math.exp(e.deltaY * 0.0012)));   // close enough to read names
-      placeMarker(); applyOrbit();
-    });
-  }
-
-  // ── 2D sections ──────────────────────────────────────────────────────────
-  const SV = {
-    l: { cv: slot.l, def: { x0: -AMAX, x1: AMAX, y0: -AMAX, y1: AMAX }, iso: true },
-    c: { cv: slot.c, def: { x0: -Math.PI * AMAX, x1: Math.PI * AMAX, y0: -0.05, y1: LW / CW + 0.05 }, iso: true },
-    // H section at true proportions (chroma across, lightness up, same scale as 3D)
-    h: { cv: slot.h, def: { x0: -0.02, x1: AMAX + 0.02, y0: -0.03, y1: LW / CW + 0.03 }, iso: true },
-  };
-  // Show the whole default box, whatever the panel's shape.
-  const fitContain = (v) => {
-    const d = v.def, W = v.cv.width, H = v.cv.height;
-    const s = Math.max((d.x1 - d.x0) / W, (d.y1 - d.y0) / H), cx = (d.x0 + d.x1) / 2, cy = (d.y0 + d.y1) / 2;
-    v.dom = { x0: cx - (s * W) / 2, x1: cx + (s * W) / 2, y0: cy - (s * H) / 2, y1: cy + (s * H) / 2 };
-    v.user = false;
-  };
-  const fitIso = (v) => {
-    if (!v.iso) return;
-    if (!v.user) { fitContain(v); return; }
-    const d = v.dom, sx = (d.x1 - d.x0) / v.cv.width, cy = (d.y0 + d.y1) / 2;
-    d.y0 = cy - (sx * v.cv.height) / 2; d.y1 = cy + (sx * v.cv.height) / 2;
-  };
-  const sizeView = (v) => {
-    const W = Math.max(40, Math.round(v.cv.clientWidth)), H = Math.max(40, Math.round(v.cv.clientHeight));
-    if (v.cv.width === W && v.cv.height === H && v.img) return false;
-    v.cv.width = W; v.cv.height = H;
-    v.ctx = v.cv.getContext("2d", spaceCanvasOpts());
-    v.img = v.ctx.createImageData(W, H);
-    v.ids = new Int32Array(W * H); v.dim = new Float32Array(W * H); v.gc = new Uint8Array(W * H * 4);
-    if (!v.dom) v.user = false;
-    fitIso(v);
-    return true;
-  };
-  Object.values(SV).forEach(sizeView);
-  const px2u = (v, x) => v.dom.x0 + (x / v.cv.width) * (v.dom.x1 - v.dom.x0);
-  const py2v = (v, y) => v.dom.y1 - (y / v.cv.height) * (v.dom.y1 - v.dom.y0);
-  const u2px = (v, u) => ((u - v.dom.x0) / (v.dom.x1 - v.dom.x0)) * v.cv.width;
-  const v2py = (v, w) => ((v.dom.y1 - w) / (v.dom.y1 - v.dom.y0)) * v.cv.height;
-
-  const cursorInView = (k) => {
-    const [L, C, H] = S.cursor, hr = (H * Math.PI) / 180;
-    if (k === "l") return [C * Math.sin(hr), C * Math.cos(hr)];
-    if (k === "c") return [((H - 180) * Math.PI / 180) * C, (L * LW) / CW];
-    return [C, (L * LW) / CW];
-  };
-  // Each section glides to keep the cursor at its centre whenever the cursor
-  // moves. A manual pan or zoom is left alone until the cursor next moves; the
-  // section being dragged on waits until the drag ends, so it never slides
-  // out from under the pointer.
-  let dragView = null, glideLast = 0;
-  const followCursor = (k, snap) => {
-    const v = SV[k];
-    v.glide = true;
-    if (snap || !v.user) v.snap = true;   // a fresh or reset view jumps straight there
-    scheduleSections();
-  };
-  const followAll = (snap) => ["l", "c", "h"].forEach((k) => followCursor(k, snap));
-  // How far the cursor sits from a section's centre, in view units.
-  const offCentre = (k) => {
-    const d = SV[k].dom, [u, w] = cursorInView(k);
-    return [u - (d.x0 + d.x1) / 2, w - (d.y0 + d.y1) / 2];
-  };
-  // One easing step for every gliding section; true while any still moves.
-  const glideStep = () => {
-    const now = performance.now(), dt = Math.min(400, glideLast ? now - glideLast : 16);
-    glideLast = now;
-    let moving = false;
-    ["l", "c", "h"].forEach((k) => {
-      const v = SV[k];
-      if (v.zoomTo && v.dom && k !== dragView) {
-        const d = v.dom, span = d.x1 - d.x0, [cu, cw] = cursorInView(k);
-        const kz = 1 - Math.exp(-dt / 110);
-        let ns = Math.exp(Math.log(span) + (Math.log(v.zoomTo) - Math.log(span)) * kz);
-        if (Math.abs(Math.log(v.zoomTo / span)) < 0.004) { ns = v.zoomTo; v.zoomTo = 0; } else moving = true;
-        const f = ns / span;
-        d.x0 = cu + (d.x0 - cu) * f; d.x1 = cu + (d.x1 - cu) * f; d.y0 = cw + (d.y0 - cw) * f; d.y1 = cw + (d.y1 - cw) * f;
-        v.user = true;
-      }
-      if (!v.glide || !v.dom || k === dragView) return;
-      const d = v.dom, [ox, oy] = offCentre(k);
-      const pxOff = Math.hypot((ox / (d.x1 - d.x0)) * v.cv.width, (oy / (d.y1 - d.y0)) * v.cv.height);
-      const f = v.snap || pxOff < 0.5 ? 1 : 1 - Math.exp(-dt / 70);   // time-based, like the 3D pivot
-      d.x0 += ox * f; d.x1 += ox * f; d.y0 += oy * f; d.y1 += oy * f;
-      v.user = true;
-      if (f === 1) { v.glide = false; v.snap = false; v.centred = true; } else moving = true;
-    });
-    if (!moving) glideLast = 0;
-    return moving;
-  };
-
-  // A section pixel moved `off` along the view's own axis (L, C or degrees of
-  // hue), keeping its place in the view: the straight-on projection.
-  const mappingAt = (k, u, w, off, out) => {
-    const [Lc, Cc, Hc] = S.cursor;
-    if (k === "l") {
-      const L = Lc + off;
-      if (L < 0 || L > 1) return false;
-      out[0] = u * CW; out[1] = (L - LC) * LW; out[2] = -w * CW; return true;
-    }
-    const L = (w * CW) / LW;
-    if (L < 0 || L > 1) return false;
-    let C, h;   // written straight into `out` (this runs per pixel and depth step)
-    if (k === "c") {
-      C = Cc + off;
-      if (C < 0 || Cc < 0.002 || Math.abs(u) > Math.PI * Cc) return false;
-      h = u / Cc + Math.PI;
-    } else {
-      if (u < 0) return false;
-      C = u; h = ((Hc + off) * Math.PI) / 180;
-    }
-    out[0] = C * Math.sin(h) * CW; out[1] = (L - LC) * LW; out[2] = -C * Math.cos(h) * CW; return true;
-  };
-  // no colour in the working gamut has more chroma (sRGB 0.33, Display P3 0.37)
-  const maxC = () => (DisplayGamut.id === "p3" ? 0.375 : 0.33);
-  // The bin a section pixel shows: the cell on the plane, or else the nearest
-  // layer within the view's depth. Returns [id, depth fraction].
-  // The in-gamut point a section pixel shows: on the plane, or else the
-  // nearest layer within the view's depth (left in P). Returns its depth
-  // fraction (0 = on the plane), or -1 when there is none.
-  const gamutAt = (k, u, w, P) => {
-    if (mappingAt(k, u, w, 0, P) && spaceInGamutStrict(P[0], P[1], P[2])) return 0;
-    const D = depthOf(k);
-    if (D <= 0) return -1;
-    const MAX_C = maxC();
-    if ((k === "l" && Math.hypot(u, w) > MAX_C) || (k === "h" && u > MAX_C)) return -1;
-    const n = Math.min(40, Math.ceil(D / ({ l: 0.01, c: 0.006, h: 1.5 })[k])), st = D / n;
-    for (let j = 1; j <= n; j++)
-      for (let sgn = 1; sgn >= -1; sgn -= 2) {
-        if (k === "c" && S.cursor[1] + sgn * j * st > MAX_C) continue;
-        if (mappingAt(k, u, w, sgn * j * st, P) && spaceInGamutStrict(P[0], P[1], P[2])) {
-          // close in on the gamut's edge between the last step and this one,
-          // so the projected outline is smooth rather than stepped
-          let lo = (j - 1) * st, hi = j * st;
-          for (let q = 0; q < 6; q++) {
-            const mid = (lo + hi) / 2;
-            if (mappingAt(k, u, w, sgn * mid, P) && spaceInGamutStrict(P[0], P[1], P[2])) hi = mid; else lo = mid;
-          }
-          mappingAt(k, u, w, sgn * hi, P);
-          return hi / D;
-        }
-      }
-    return -1;
-  };
-  const binHit = [0, 0];
-  const binAt = (k, u, w, P) => {
-    const t = gamutAt(k, u, w, P);
-    binHit[0] = t >= 0 && ready && N ? grid.nearest(P[0], P[1], P[2]) : -1;
-    binHit[1] = Math.max(0, t);
-    return binHit;
-  };
-  const toByte = (c) => Math.round(Math.max(0, Math.min(1, c)) * 255);
-  // Classify pixels of rows [y0, y1) at the given block size. `dim` holds how
-  // strongly each pixel shows its cell: 1 on the plane, fading with depth, low
-  // when the other ranges filter it out.
-  // `gc` holds the gamut solid's own colour there (alpha byte = has one).
-  const sampleRows = (k, step, y0, y1) => {
-    const v = SV[k], W = v.cv.width, H = v.cv.height, ids = v.ids, dim = v.dim, gc = v.gc, P = [0, 0, 0], rgb = [0, 0, 0];
-    const bins = S.modes[k] === "bins" && ready && N, gOn = S.gamut[k] > 0;
-    for (let y = y0; y < y1; y += step)
-      for (let x = 0; x < W; x += step) {
-        let id = -1, dm = 0, has = 0;
-        if (bins || gOn) {
-          const t = gamutAt(k, px2u(v, x + step / 2), py2v(v, y + step / 2), P);
-          if (t >= 0) {
-            const [L, C, Hh] = spaceWorldToLCH(P[0], P[1], P[2]);
-            dm = (inRangeLCH(L, C, Hh, k) ? 1 : 0.3) * (1 - 0.45 * t);
-            if (bins) id = grid.nearest(P[0], P[1], P[2]);
-            if (gOn) { spaceWorldSrgb(P[0], P[1], P[2], rgb); has = 1; }
-          }
-        }
-        for (let yy = y; yy < Math.min(y + step, H); yy++)
-          for (let xx = x; xx < Math.min(x + step, W); xx++) {
-            const i = yy * W + xx, o = i * 4;
-            ids[i] = id; dim[i] = dm;
-            gc[o] = rgb[0]; gc[o + 1] = rgb[1]; gc[o + 2] = rgb[2]; gc[o + 3] = has;
-          }
-      }
-  };
-  // Turn classified pixels into colours, then draw the plane guides on top.
-  const present = (k) => {
-    const v = SV[k], W = v.cv.width, H = v.cv.height, d = v.img.data, ids = v.ids, dim = v.dim, gc = v.gc, al = S.alpha[k], ga = S.gamut[k];
-    const bg = S.bg, empty = spaceSrgbToCanvas(S.dark ? [bg[0] * 0.75, bg[1] * 0.75, bg[2] * 0.75] : [bg[0] * 0.94, bg[1] * 0.94, bg[2] * 0.94]);
-    for (let i = 0, n = W * H; i < n; i++) {
-      const id = ids[i], o = i * 4;
-      d[o + 3] = 255;
-      // backdrop: the gamut solid's own colour at its opacity, else the panel
-      let br = empty[0], bgc = empty[1], bb = empty[2];
-      if (ga > 0 && gc[o + 3]) {
-        const f = dim[i] * ga;
-        br += (gc[o] / 255 - br) * f; bgc += (gc[o + 1] / 255 - bgc) * f; bb += (gc[o + 2] / 255 - bb) * f;
-      }
-      if (id < 0) { d[o] = toByte(br); d[o + 1] = toByte(bgc); d[o + 2] = toByte(bb); continue; }
-      const x = i % W, edge = (x > 0 && ids[i - 1] !== id) || (i >= W && ids[i - W] !== id);
-      let r = cols[id * 3], g = cols[id * 3 + 1], b = cols[id * 3 + 2];
-      const f = dim[i];
-      if (f < 1) { r = r * f + empty[0] * (1 - f); g = g * f + empty[1] * (1 - f); b = b * f + empty[2] * (1 - f); }
-      if (al < 1 && id !== selIdx) { r = r * al + br * (1 - al); g = g * al + bgc * (1 - al); b = b * al + bb * (1 - al); }
-      if (edge) { const e = S.dark ? 0.55 : 0.7; r *= e; g *= e; b *= e; }
-      d[o] = toByte(r); d[o + 1] = toByte(g); d[o + 2] = toByte(b);
-    }
-    v.ctx.putImageData(v.img, 0, 0);
-    if (S.modes[k] === "bins" && N) {
-      const cnt = new Float32Array(N), sx = new Float32Array(N), sy = new Float32Array(N);
-      for (let i = 0, n = W * H; i < n; i++) { const id = ids[i]; if (id >= 0) { cnt[id]++; sx[id] += i % W; sy[id] += (i / W) | 0; } }
-      const bins = [];
-      for (let i = 0; i < N; i++) if (cnt[i] > 0) bins.push([sx[i] / cnt[i], sy[i] / cnt[i], i, cnt[i]]);
-      v.bins = bins;
-    } else v.bins = null;
-    drawGuides(k);
-  };
-  const paint = (k, step) => { sampleRows(k, step, 0, SV[k].cv.height); present(k); };
-  const fgCss = () => `rgb(${toByte(S.fg[0])},${toByte(S.fg[1])},${toByte(S.fg[2])})`;
-  const line = (ctx, col, pts, dash) => {
-    ctx.save(); ctx.strokeStyle = col; ctx.globalAlpha = 0.8; ctx.lineWidth = 1.25;
-    if (dash) ctx.setLineDash([4, 3]);
-    ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke(); ctx.restore();
-  };
-  const dot = (ctx, x, y, fill, r = 4.5) => {
-    ctx.save(); ctx.fillStyle = fill; ctx.strokeStyle = S.dark ? "#000" : "#fff"; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.restore();
-  };
-  // Pins: outlined circles; commercial colours: diamonds. Halo keeps them off the cells.
-  const markerShape = (ctx, x, y, fill, diamond) => {
-    const r = 4;
-    const path = () => {
-      ctx.beginPath();
-      if (diamond) { ctx.moveTo(x, y - r - 1); ctx.lineTo(x + r + 1, y); ctx.lineTo(x, y + r + 1); ctx.lineTo(x - r - 1, y); ctx.closePath(); }
-      else ctx.arc(x, y, r, 0, Math.PI * 2);
-    };
-    ctx.save();
-    path(); ctx.lineWidth = 4; ctx.strokeStyle = S.dark ? "rgba(0,0,0,0.75)" : "rgba(255,255,255,0.9)"; ctx.stroke();
-    path(); ctx.fillStyle = fill; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = fgCss(); ctx.stroke();
-    ctx.restore();
-  };
-  // ── names ──────────────────────────────────────────────────────────────
-  const textW = new Map();
-  const measure = (ctx, t, size) => {
-    const key = size + "|" + t;
-    let w = textW.get(key);
-    if (w === undefined) { ctx.font = `600 ${size}px ${FONT}`; w = ctx.measureText(t).width; if (textW.size > 5000) textW.clear(); textW.set(key, w); }
-    return w;
-  };
-  const nameOf = (i) => {
-    const t = S.anchors[i] && S.anchors[i].label;
-    return t && t !== "Unnamed" ? t.toUpperCase() : "";
-  };
-  // Place names greedily (most important first), skipping any that would
-  // overlap one already placed. `cands`: [x, y, i, size, align] with y the
-  // text's baseline centre.
-  const placeNames = (ctx, cands, max = 220, paint) => {
-    const boxes = [];
-    let n = 0;
-    for (const c of cands) {
-      if (n >= max) break;
-      const t = nameOf(c[2]);
-      if (!t) continue;
-      const size = c[3], w = measure(ctx, t, size), x0 = c[0] - w / 2 - 2, x1 = c[0] + w / 2 + 2, y0 = c[1] - size, y1 = c[1] + 3;
-      if (x1 < 0 || x0 > ctx.canvas.width || y1 < 0 || y0 > ctx.canvas.height) continue;
-      if (boxes.some((b) => b[0] < x1 && b[2] > x0 && b[1] < y1 && b[3] > y0)) continue;
-      boxes.push([x0, y0, x1, y1]);
-      (paint || haloText)(ctx, t, c[0], c[1], size, c[2]);
-      n++;
-    }
-  };
-  const haloText = (ctx, t, x, y, size) => {
-    ctx.save();
-    ctx.font = `600 ${size}px ${FONT}`;
-    ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
-    ctx.lineJoin = "round"; ctx.lineWidth = Math.max(2.5, size * 0.3);
-    ctx.strokeStyle = `rgba(${toByte(S.bg[0])},${toByte(S.bg[1])},${toByte(S.bg[2])},0.85)`;
-    ctx.strokeText(t, x, y);
-    ctx.fillStyle = fgCss();
-    ctx.fillText(t, x, y);
-    ctx.restore();
-  };
-  const contrastText = (ctx, t, x, y, size, i) => {
-    const lum = 0.2126 * cols[i * 3] + 0.7152 * cols[i * 3 + 1] + 0.0722 * cols[i * 3 + 2];
-    ctx.save();
-    ctx.font = `600 ${size}px ${FONT}`;
-    ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
-    ctx.fillStyle = lum > 0.45 ? "rgba(0,0,0,0.82)" : "rgba(255,255,255,0.92)";
-    ctx.fillText(t, x, y);
-    ctx.restore();
-  };
-  const cssRgb = (i, a = 1) => spaceCss([cols[i * 3], cols[i * 3 + 1], cols[i * 3 + 2]], a);
-  const paperRgb = () => spaceSrgbToCanvas(S.dark ? [0.13, 0.15, 0.13] : [1, 1, 1]);
-  // A swatch card on a 2D canvas: square swatch centred on (x, y), strip below.
-  const drawCard = (ctx, x, y, w, i, alpha, sel) =>
-    drawCardRGB(ctx, x, y, w, [cols[i * 3], cols[i * 3 + 1], cols[i * 3 + 2]], alpha, sel);
-  const drawCardRGB = (ctx, x, y, w, rgb, alpha, sel) => {
-    const h = w * 1.3, x0 = x - w / 2, y0 = y - w / 2, t = Math.max(0, Math.min(1, (w - 10) / 24));
-    const p = paperRgb(), mix = (a, b) => a + (b - a) * t;
-    const rr = Math.min(w * CARD_ROUND, w / 2);
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    roundRectPath(ctx, x0, y0, w, h, rr);
-    ctx.fillStyle = spaceCss([mix(rgb[0], p[0]), mix(rgb[1], p[1]), mix(rgb[2], p[2])]);
-    ctx.fill();
-    ctx.save();
-    ctx.clip();
-    ctx.fillStyle = spaceCss(rgb);
-    ctx.fillRect(x0, y0, w, w);
-    ctx.restore();
-    ctx.lineWidth = sel ? 2 : 1;
-    ctx.strokeStyle = sel ? fgCss() : S.dark ? "rgba(255,255,255,0.18)" : "rgba(0,0,0,0.18)";
-    roundRectPath(ctx, x0 + 0.5, y0 + 0.5, w - 1, h - 1, Math.max(0, rr - 0.5));
-    ctx.stroke();
-    ctx.restore();
-    return [x0, y0, x0 + w, y0 + h];
-  };
-  const roundRectPath = (ctx, x, y, w, h, r) => {
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r);
-    ctx.closePath();
-  };
-  // A pin or commercial colour's card dressed as in Match and Catalog: grain
-  // hatch, door-profile frame, and its photo faintly over the top two-thirds.
-  const grainWob = (seed, n) => ((((Math.sin(seed * 12.9898 + n * 78.233) * 43758.5453) % 1) + 1) % 1) * 6 - 3;
-  const drawMarkerCard = (ctx, x, y, w, m, alpha) => {
-    const box = drawCardRGB(ctx, x, y, w, spaceDisplayRgb(m.hex, m.L, m.C, m.H), alpha, false);
-    const lk = m.look;
-    if (!lk || w < 10) return box;
-    const x0 = x - w / 2, y0 = y - w / 2, d = DPR(), ink = lk.light === false ? "255,255,255" : "0,0,0";
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    roundRectPath(ctx, x0, y0, w, w * 1.3, Math.min(w * CARD_ROUND, w / 2)); ctx.clip();
-    ctx.beginPath(); ctx.rect(x0, y0, w, w); ctx.clip();
-    if (lk.hatch) {
-      const n = Math.max(2, Math.min(9, Math.round(w / d / 14))), st = 100 / (n + 1), k = w / 100;
-      ctx.strokeStyle = `rgba(${ink},${lk.light === false ? 0.22 : 0.2})`;
-      ctx.lineWidth = 0.67 * d; ctx.lineCap = "round";
-      for (let i = 1; i <= n; i++) {
-        const xx = st * i + grainWob(i, 1) * 0.3, X = (u) => x0 + u * k, Y = (v) => y0 + v * k;
-        ctx.beginPath();
-        ctx.moveTo(X(xx), Y(0));
-        ctx.bezierCurveTo(X(xx + grainWob(i, 2)), Y(20), X(xx + grainWob(i, 3)), Y(30), X(xx + grainWob(i, 4) * 0.6), Y(50));
-        ctx.bezierCurveTo(X(xx + grainWob(i, 5)), Y(68), X(xx + grainWob(i, 6)), Y(78), X(xx + grainWob(i, 7) * 0.4), Y(100));
-        ctx.stroke();
-      }
-    }
-    if (lk.profile === "CS" || lk.profile === "SS") {
-      const ins = Math.max(lk.profile === "CS" ? 0.2 : 0.06, ((lk.profile === "CS" ? 5 : 2) * d) / w) * w;
-      ctx.strokeStyle = `rgba(${ink},${lk.light === false ? 0.55 : 0.45})`;
-      ctx.lineWidth = 1.33 * d;
-      ctx.strokeRect(x0 + ins, y0 + ins, Math.max(0, w - 2 * ins), Math.max(0, w - 2 * ins));
-    }
-    const img = lk.image && photoFor(lk.image);
-    if (img) {
-      // fade from the top edge to nothing two-thirds down, in strips
-      const [sx, sy, sz] = coverCrop(img), STRIPS = 8, fh = 0.66;
-      for (let i = 0; i < STRIPS; i++) {
-        ctx.globalAlpha = alpha * 0.38 * (1 - (i + 0.5) / STRIPS);
-        ctx.drawImage(img, sx, sy + (sz * fh * i) / STRIPS, sz, (sz * fh) / STRIPS, x0, y0 + (w * fh * i) / STRIPS, w, (w * fh) / STRIPS + 0.5);
-      }
-    }
-    ctx.restore();
-    return box;
-  };
-  // The name inside a card's strip, fitted to its width.
-  const cardName = (ctx, i, x, y, w, dpr = 1) => cardText(ctx, nameOf(i), x, y, w, dpr);
-  // A marker's short name: "Behr · behr color 4136" → "BEHR COLOR 4136".
-  const markerName = (m) => String((m && m.label) || "").split(" \u00b7 ").pop().toUpperCase();
-  const cardText = (ctx, text, x, y, w, dpr = 1) => {
-    let t = text;
-    if (!t || w < CARD_NAME_PX * dpr) return;
-    const size = Math.max(7, Math.min(14, w * 0.17));
-    while (t.length > 1 && measure(ctx, t, size) > w - 6) t = t.slice(0, -2) + "…";
-    ctx.save();
-    ctx.font = `600 ${size}px ${FONT}`;
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillStyle = S.dark ? "rgba(242,232,223,0.95)" : "rgba(1,13,0,0.88)";
-    ctx.fillText(t, x, y + w / 2 + w * 0.15);
-    ctx.restore();
-  };
-
-  // Names in the 3D view — under dots, on bins, in swatch strips — only once
-  // they have room on screen, and never through a nearer anchor.
-  const drawLabels3D = (ctx) => {
-    // with anchors hidden, pins and commercial colours still get their names
-    const NA = ready ? N : 0;
-    if (!NA && !(cardsOn() && S.markers.length)) return;
-    const W = ctx.canvas.width, Hc = ctx.canvas.height, hw = W / 2, hh = Hc / 2;
-    projM.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    const e = projM.elements, fy = camera.projectionMatrix.elements[5], k = 1 + S.sep, sw = cardsOn(), dpr = DPR();
-    const items = [];
-    for (let i = 0; i < NA; i++) {
-      const a = S.anchors[i];
-      if (i !== selIdx && a && !inRangeLCH(a.L, a.C, a.H)) continue;
-      const x = px[i] * k, y = py[i] * k, z = pz[i] * k, w = e[3] * x + e[7] * y + e[11] * z + e[15];
-      if (w <= 0.05) continue;
-      const sx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w) * hw + hw, sy = hh - ((e[1] * x + e[5] * y + e[9] * z + e[13]) / w) * hh;
-      if (sx < -300 || sy < -300 || sx > W + 300 || sy > Hc + 300) continue;
-      items.push({ i, sx, sy, w, ppw: (fy * hh) / w });
-    }
-    if (sw && mVis && markerPos && mOwner) {
-      const sk = k - 1;
-      for (let mi = 0, n = S.markers.length; mi < n; mi++) {
-        if (!mVis[mi]) continue;
-        const x = markerPos[mi * 3] + mOwner[mi * 3] * sk, y = markerPos[mi * 3 + 1] + mOwner[mi * 3 + 1] * sk, z = markerPos[mi * 3 + 2] + mOwner[mi * 3 + 2] * sk;
-        const w = e[3] * x + e[7] * y + e[11] * z + e[15];
-        if (w <= 0.05) continue;
-        const sx = ((e[0] * x + e[4] * y + e[8] * z + e[12]) / w) * hw + hw, sy = hh - ((e[1] * x + e[5] * y + e[9] * z + e[13]) / w) * hh;
-        if (sx < -300 || sy < -300 || sx > W + 300 || sy > Hc + 300) continue;
-        items.push({ i: -1, mi, sx, sy, w, ppw: (fy * hh) / w });
-      }
-    }
-    items.sort((p, q) => p.w - q.w);   // nearest first
-    // nearer anchors, bucketed on a coarse screen grid, hide the ones behind
-    const G = 64, occ = new Map();
-    const cellsOf = (x0, y0, x1, y1, fn) => {
-      for (let gx = Math.floor(x0 / G); gx <= Math.floor(x1 / G); gx++)
-        for (let gy = Math.floor(y0 / G); gy <= Math.floor(y1 / G); gy++) fn(gx + "," + gy);
-    };
-    const add = (o) => cellsOf(o[0], o[1], o[2], o[3], (key) => { const l = occ.get(key); if (l) l.push(o); else occ.set(key, [o]); });
-    const hit = (x0, y0, x1, y1, test) => {
-      let found = false;
-      cellsOf(x0, y0, x1, y1, (key) => { if (!found) for (const o of occ.get(key) || []) if (test(o)) { found = true; break; } });
-      return found;
-    };
-    const cands = [], cardsOut = [];
-    for (const it of items) {
-      const { i, sx, sy, ppw } = it;
-      if (sw) {
-        const m = i < 0 ? S.markers[it.mi] : null;
-        const cw = CARD_W * (m ? (m.kind === "brand" ? MCARD_SCALE.brand : MCARD_SCALE.pin) : 1) * ppw;
-        const x0 = sx - cw / 2, x1 = sx + cw / 2, y0 = sy - cw / 2, y1 = sy + cw * 0.8, st = sy + cw / 2;
-        const hidden = hit(x0, st, x1, y1, (o) => o[0] < x1 && o[2] > x0 && o[1] < y1 && o[3] > st);
-        add([x0, y0, x1, y1]);
-        if ((!hidden || (i >= 0 && i === selIdx)) && cw >= CARD_NAME_PX * dpr) cardsOut.push([i, sx, sy, cw, m]);
-      } else {
-        const r = inflR(i, meanR[i]) * ppw;
-        const hidden = hit(sx, sy, sx, sy, (o) => (o[4] - sx) ** 2 + (o[5] - sy) ** 2 < (o[6] * 0.85) ** 2);
-        add([sx - r, sy - r, sx + r, sy + r, sx, sy, r]);
-        // the cursor's own cell is drawn over everything, so its name is too
-        if ((!hidden || i === selIdx) && ppw >= NAME_ZOOM_3D * dpr && nnW[i] * ppw >= NAME_PX * dpr)
-          cands.push([sx, S.fill < DOT_FILL ? sy + Math.min(r, 14 * dpr) + 13 * dpr : sy + 4 * dpr, i, 11 * dpr]);
-      }
-    }
-    for (const [i, sx, sy, cw, m] of cardsOut) (m ? cardText(ctx, markerName(m), sx, sy, cw, dpr) : cardName(ctx, i, sx, sy, cw, dpr));
-    if (cands.length) {
-      const sel = cands.findIndex((c) => c[2] === selIdx);
-      if (sel > 0) cands.unshift(cands.splice(sel, 1)[0]);
-      placeNames(ctx, cands);
-    }
-  };
-
-  // Anchors on or around a section's plane, in the view's pixels. On the
-  // plane means within SLAB world units of it; the view's depth widens that
-  // along its own axis, and every anchor in it is drawn straight onto the
-  // plane (L section: from above; C: onto the cylinder; H: turned onto the
-  // hue's half-plane at its own chroma). `d` = 0 on the plane … 1 at the
-  // depth's edge, used to fade and stack them.
-  const nearPlane = (k) => {
-    const v = SV[k], [L, C, Hh] = S.cursor, out = [];
-    if (!ready) return out;
-    const hr = (Hh * Math.PI) / 180, sh = Math.sin(hr), ch = Math.cos(hr), yPl = (L - LC) * LW, D = depthOf(k);
-    for (let i = 0; i < N; i++) {
-      const X = px[i], Y = py[i], Z = pz[i], a = S.anchors[i];
-      const lch = a ? [a.L, a.C, a.H] : spaceWorldToLCH(X, Y, Z);
-      let u, w, dw, da;   // dw: world distance from the plane; da: along the view's own axis
-      if (k === "l") { dw = Math.abs(Y - yPl); da = Math.abs(lch[0] - L); u = X / CW; w = -Z / CW; }
-      else if (k === "c") {
-        if (C < 0.002) continue;
-        dw = Math.abs(Math.hypot(X, Z) - C * CW); da = Math.abs(lch[1] - C);
-        u = ((lch[2] - 180) * Math.PI / 180) * C; w = (lch[0] * LW) / CW;
-      } else {
-        const along = X * sh - Z * ch;
-        dw = along < -SLAB ? Infinity : Math.abs(X * ch + Z * sh);
-        da = lch[1] < 0.004 ? 0 : spaceHueDist(lch[2], Hh);
-        u = lch[1]; w = (lch[0] * LW) / CW;
-      }
-      const tPlane = dw / SLAB, tDepth = D > 0 ? da / D : Infinity, d = Math.min(tPlane, tDepth);
-      if (d > 1) continue;
-      const x = u2px(v, u), y = v2py(v, w);
-      if (x < -60 || y < -60 || x > v.cv.width + 60 || y > v.cv.height + 60) continue;
-      out.push({ x, y, i, d, on: i === selIdx || inRangeLCH(lch[0], lch[1], lch[2], k) });
-    }
-    return out;
-  };
-  // Dots and swatch cards (and their names) for one section.
-  const drawAnchors2D = (k) => {
-    const v = SV[k], ctx = v.ctx, mode = S.modes[k];
-    const ppw = v.cv.width / (v.dom.x1 - v.dom.x0) / CW;   // pixels per world unit
-    v.dots = null; v.cards = null;
-    if (mode === "bins") {
-      if (v.bins && ppw >= NAME_ZOOM_2D) {
-        const cands = v.bins
-          .filter((b) => b[3] > 2200)
-          .sort((a, b) => b[3] - a[3])
-          .map((b) => [b[0], b[1] + 4, b[2], Math.max(9, Math.min(13, Math.sqrt(b[3]) * 0.16)), Math.sqrt(b[3])])
-          .filter((c) => nameOf(c[2]) && measure(ctx, nameOf(c[2]), c[3]) < c[4] * 1.15);
-        placeNames(ctx, cands, 220, contrastText);
-      }
-      return;
-    }
-    const pts = nearPlane(k);
-    if (mode === "dots") {
-      v.dots = pts.map((p) => [p.x, p.y, p.i]);
-      const empty = S.dark ? "rgba(0,0,0,0.6)" : "rgba(255,255,255,0.85)";
-      pts.sort((a, b) => b.d - a.d);
-      for (const p of pts) {
-        ctx.save();
-        ctx.globalAlpha = (p.on ? 1 : 0.35) * (1 - 0.55 * p.d) * (p.i === selIdx ? 1 : S.alpha[k]);
-        ctx.beginPath(); ctx.arc(p.x, p.y, 4.5, 0, Math.PI * 2);
-        ctx.fillStyle = cssRgb(p.i); ctx.fill();
-        ctx.lineWidth = p.i === selIdx ? 2 : 1.25;
-        ctx.strokeStyle = p.i === selIdx ? fgCss() : empty;
-        ctx.stroke();
-        ctx.restore();
-      }
-      const cands = pts
-        .filter((p) => ppw >= NAME_ZOOM_2D && nnW[p.i] * ppw >= NAME_PX)
-        .sort((a, b) => (b.i === selIdx) - (a.i === selIdx) || a.d - b.d)
-        .map((p) => [p.x, p.y + 17, p.i, 10]);
-      placeNames(ctx, cands);
-      return;
-    }
-    // swatch cards, furthest from the plane first so the nearest sit on top
-    const w = Math.max(10, CARD_W * ppw), list = pts.slice().sort((a, b) => b.d - a.d);
-    v.cards = [];
-    for (const p of list) {
-      const r = drawCard(ctx, p.x, p.y, w, p.i, (p.on ? 1 : 0.35) * (1 - 0.5 * p.d) * (p.i === selIdx ? 1 : S.alpha[k]), p.i === selIdx);
-      v.cards.push([...r, p.i]);
-      cardName(ctx, p.i, p.x, p.y, w);
-    }
-  };
-  // The pin (or commercial colour) under a point of a section, if any.
-  const markerAt = (k, x, y, r = 9) => {
-    let best = null, bd = r * r;
-    for (const [mx, my, mi, cw] of SV[k].mk || []) {
-      if (cw) {   // a card: inside its rectangle (later cards sit on top)
-        if (x >= mx - cw / 2 && x <= mx + cw / 2 && y >= my - cw / 2 && y <= my - cw / 2 + cw * 1.3) best = S.markers[mi];
-        continue;
-      }
-      const d = (mx - x) ** 2 + (my - y) ** 2; if (d <= bd) { bd = d; best = S.markers[mi]; }
-    }
-    return best;
-  };
-  const dotAt = (k, x, y, slack = 0) => {
-    const v = SV[k];
-    if (v.cards) {
-      for (let q = v.cards.length - 1; q >= 0; q--) { const c = v.cards[q]; if (x >= c[0] - slack && x <= c[2] + slack && y >= c[1] - slack && y <= c[3] + slack) return c[4]; }
-      return -1;
-    }
-    let best = -1, bd = (7 + slack) * (7 + slack);
-    for (const [dx, dy, i] of v.dots || []) { const d = (dx - x) ** 2 + (dy - y) ** 2; if (d < bd) { bd = d; best = i; } }
-    return best;
-  };
-  const drawGuides = (k) => {
-    const v = SV[k], ctx = v.ctx, W = v.cv.width, H = v.cv.height, [L, C, Hh] = S.cursor, G = S.guide;
-    // "On the plane" for pins and commercial colours: within half a display
-    // step (0.0005) of it; the view's depth widens that.
-    const hr = (Hh * Math.PI) / 180, TOL = 0.0005;
-    drawAnchors2D(k);
-    // Pins' pull zones (the sphere within which a pin names the cursor), as
-    // dashed outlines in bins view: where the sphere cuts the plane, or its
-    // full outline for a pin seen through the view's depth. The vertical axis
-    // shows lightness at the 3D view's scale, so a zone is an ellipse there.
-    if (S.modes[k] === "bins" && S.markers.length) {
-      const R = typeof PIN_PULL !== "undefined" ? PIN_PULL : 0.01, D = depthOf(k);
-      const sx = W / (v.dom.x1 - v.dom.x0), sy = H / (v.dom.y1 - v.dom.y0), ky = LW / CW;
-      ctx.save();
-      ctx.lineWidth = 1.25; ctx.setLineDash([4, 3]);
-      S.markers.forEach((m) => {
-        if (m.kind !== "pin" || !inRangeLCH(m.L, m.C, m.H, k)) return;
-        let off, u, w;
-        if (k === "l") { off = Math.abs(m.L - L); const h = (m.H * Math.PI) / 180; u = m.C * Math.sin(h); w = m.C * Math.cos(h); }
-        else if (k === "c") { if (C < 0.002) return; off = Math.abs(m.C - C); u = ((m.H - 180) * Math.PI / 180) * C; w = (m.L * LW) / CW; }
-        else { const dh = ((m.H - Hh) * Math.PI) / 180; off = Math.cos(dh) < 0 ? Infinity : Math.abs(m.C * Math.sin(dh)); u = m.C; w = (m.L * LW) / CW;
-          if (D > 0 && (m.C < 0.004 || spaceHueDist(m.H, Hh) <= D)) off = 0; }
-        if (k !== "h" && D > 0 && off <= D) off = 0;   // seen through the depth: its whole zone
-        if (off >= R) return;
-        const r = Math.sqrt(R * R - off * off), x = u2px(v, u), y = v2py(v, w);
-        const rx = r * sx, ry = (k === "l" ? r : r * ky) * sy;
-        if (rx < 2.5 || x + rx < 0 || x - rx > W || y + ry < 0 || y - ry > H) return;
-        ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
-        ctx.strokeStyle = S.dark ? "rgba(0,0,0,0.55)" : "rgba(255,255,255,0.75)"; ctx.lineWidth = 3; ctx.stroke();
-        ctx.strokeStyle = fgCss(); ctx.lineWidth = 1.25; ctx.stroke();
-      });
-      ctx.restore();
-    }
-    // markers lying on this section (positions kept for hover and click)
-    v.mk = [];
-    S.markers.forEach((m, mi) => {
-      if (!inRangeLCH(m.L, m.C, m.H, k)) return;
-      let u, w;
-      const D = depthOf(k);
-      if (k === "l") { if (Math.abs(m.L - L) > Math.max(TOL, D)) return; const h = (m.H * Math.PI) / 180; u = m.C * Math.sin(h); w = m.C * Math.cos(h); }
-      else if (k === "c") { if (Math.abs(m.C - C) > Math.max(TOL, D) || C < 0.002) return; u = ((m.H - 180) * Math.PI / 180) * C; w = (m.L * LW) / CW; }
-      else {
-        const dh = ((m.H - Hh) * Math.PI) / 180, onPlane = Math.abs(m.C * Math.sin(dh)) <= TOL && Math.cos(dh) >= 0;
-        if (!onPlane && !(m.C < 0.004 || spaceHueDist(m.H, Hh) <= D)) return;
-        u = m.C; w = (m.L * LW) / CW;
-      }
-      const mx = u2px(v, u), my = v2py(v, w);
-      if (S.modes[k] === "swatches") {
-        // a small swatch card, like the anchors' (pins a little larger than
-        // commercial colours), with its name once it fits
-        const cw = Math.max(7, CARD_W * (W / (v.dom.x1 - v.dom.x0) / CW)) * (m.kind === "brand" ? MCARD_SCALE.brand : MCARD_SCALE.pin);
-        drawMarkerCard(ctx, mx, my, cw, m, S.alpha[k]);
-        cardText(ctx, markerName(m), mx, my, cw);
-        v.mk.push([mx, my, mi, cw]);
-      } else {
-        markerShape(ctx, mx, my, spaceCss(spaceDisplayRgb(m.hex, m.L, m.C, m.H)), m.kind === "brand");
-        v.mk.push([mx, my, mi]);
-      }
-    });
-    // tether: the cursor to what names it, both seen straight on in this view
-    if (S.tether) {
-      const t = S.tether, th = (t.H * Math.PI) / 180;
-      const tu = k === "l" ? t.C * Math.sin(th) : k === "c" ? ((t.H - 180) * Math.PI / 180) * C : t.C;
-      const tw = k === "l" ? t.C * Math.cos(th) : (t.L * LW) / CW;
-      const [cu, cw] = cursorInView(k), x0 = u2px(v, cu), y0 = v2py(v, cw), x1 = u2px(v, tu), y1 = v2py(v, tw);
-      if (Math.hypot(x1 - x0, y1 - y0) > 3 && !(k === "c" && C < 0.002)) {
-        ctx.save();
-        ctx.strokeStyle = S.dark ? "rgba(0,0,0,0.7)" : "rgba(255,255,255,0.85)"; ctx.lineWidth = 3.5;
-        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-        ctx.strokeStyle = fgCss(); ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
-        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.beginPath(); ctx.arc(x1, y1, t.kind === "pin" ? 6.5 : 5.5, 0, Math.PI * 2); ctx.stroke();
-        ctx.restore();
-      }
-    }
-    if (k === "l") {
-      const ox = u2px(v, 0), oy = v2py(v, 0), sc = W / (v.dom.x1 - v.dom.x0);
-      ctx.save(); ctx.strokeStyle = G.l; ctx.globalAlpha = 0.7; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.arc(ox, oy, AMAX * sc, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
-      if (C > 0.002) { ctx.save(); ctx.strokeStyle = G.c; ctx.globalAlpha = 0.8; ctx.lineWidth = 1.25; ctx.beginPath(); ctx.arc(ox, oy, C * sc, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); }
-      line(ctx, G.h, [[ox, oy], [u2px(v, AMAX * Math.sin(hr)), v2py(v, AMAX * Math.cos(hr))]]);
-      dot(ctx, u2px(v, C * Math.sin(hr)), v2py(v, C * Math.cos(hr)), fgCss());
-    } else if (k === "c") {
-      const half = Math.PI * C, xl = u2px(v, -half), xr = u2px(v, half), yt = v2py(v, LW / CW), yb = v2py(v, 0);
-      const X = u2px(v, ((Hh - 180) * Math.PI / 180) * C), Y = v2py(v, (L * LW) / CW);
-      line(ctx, G.c, [[xl, yb], [xr, yb], [xr, yt], [xl, yt], [xl, yb]], true);
-      line(ctx, G.l, [[xl, Y], [xr, Y]]);
-      line(ctx, G.h, [[X, yt], [X, yb]]);
-      dot(ctx, X, Y, fgCss());
-    } else {
-      const X = u2px(v, C), Y = v2py(v, (L * LW) / CW), x0 = u2px(v, 0), x1 = u2px(v, AMAX), y0 = v2py(v, 0), y1 = v2py(v, LW / CW);
-      line(ctx, G.h, [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]], true);
-      line(ctx, G.l, [[0, Y], [W, Y]]);
-      line(ctx, G.c, [[X, 0], [X, H]]);
-      dot(ctx, X, Y, fgCss());
-    }
-  };
-  // Sections redraw in two passes: a coarse one right away (cheap enough to
-  // follow a drag), then a sharp one built a few rows per frame once input
-  // pauses, so the page never stalls on it.
-  let secTimer = 0, secRaf = 0, sharpJob = 0;
-  function scheduleSections() {
-    if (disposed) return;
-    sharpJob++;
-    if (!secRaf) secRaf = requestAnimationFrame(() => {
-      secRaf = 0;
-      const gliding = glideStep();
-      let pxs = 0; Object.values(SV).forEach((v) => (pxs += v.cv.width * v.cv.height));
-      const step = Math.max(3, Math.ceil(Math.sqrt(pxs / 18000)));
-      ["l", "c", "h"].forEach((k) => paint(k, step));
-      clearTimeout(secTimer);
-      if (gliding) scheduleSections();
-      else secTimer = setTimeout(sharpPass, 180);
-    });
-  }
-  function sharpPass() {
-    const job = ++sharpJob, keys = ["l", "c", "h"];
-    let ki = 0, y = 0;
-    const slice = () => {
-      if (disposed || job !== sharpJob) return;
-      const t0 = performance.now();
-      while (ki < keys.length && performance.now() - t0 < 10) {
-        const k = keys[ki], H = SV[k].cv.height, y1 = Math.min(H, y + 8);
-        sampleRows(k, 1, y, y1);
-        y = y1;
-        if (y >= H) { present(k); ki++; y = 0; }
-      }
-      if (ki < keys.length) requestAnimationFrame(slice);
-    };
-    requestAnimationFrame(slice);
-  }
-  // Section interaction: drag = move cursor, wheel/pinch = zoom, right-drag/2 fingers = pan
-  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-  const setFromView = {
-    l: (u, w) => { const C = clamp(Math.hypot(u, w), 0, 0.4); let H = (Math.atan2(u, w) * 180) / Math.PI; if (H < 0) H += 360; return [S.cursor[0], C, C < 1e-4 ? S.cursor[2] : H]; },
-    c: (s, w) => { const C = S.cursor[1]; const H = C > 0.002 ? clamp(180 + ((s / C) * 180) / Math.PI, 0, 360) : S.cursor[2]; return [clamp((w * CW) / LW, 0, 1), C, H]; },
-    h: (c, w) => [clamp((w * CW) / LW, 0, 1), clamp(c, 0, 0.4), S.cursor[2]],
-  };
-  // Rounded to the sidebar sliders' own steps so the app shows tidy values.
-  const moveCursor = (lch) => {
-    const L = Math.round(lch[0] * 1000) / 1000, C = Math.round(lch[1] * 1000) / 1000, H = Math.round(lch[2] * 10) / 10;
-    api.setCursor(L, C, H);
-    onCursor(L, C, H);
-  };
-  Object.keys(SV).forEach((k) => {
-    const v = SV[k], ptrs = new Map();
-    let mode = null, last = null, pinch = null, pend = null;
-    const rel = (e) => { const r = v.cv.getBoundingClientRect(); return [((e.clientX - r.left) * v.cv.width) / r.width, ((e.clientY - r.top) * v.cv.height) / r.height]; };
-    // While a section is centred on the cursor, the wheel zooms about the
-    // cursor so it stays centred; once panned away, about the pointer.
-    const zoom = (x, y, f, atPointer) => {
-      const d = v.dom;
-      v.zoomTo = 0;
-      let u, w;
-      if (!atPointer && (v.centred || v.glide)) { const [cu, cw] = cursorInView(k); u = cu; w = cw; }
-      else { u = px2u(v, x); w = py2v(v, y); v.centred = false; v.glide = false; }
-      d.x0 = u + (d.x0 - u) * f; d.x1 = u + (d.x1 - u) * f; d.y0 = w + (d.y0 - w) * f; d.y1 = w + (d.y1 - w) * f;
-      v.user = true;
-      fitIso(v); scheduleSections();
-    };
-    const panV = (dx, dy) => {
-      const d = v.dom, su = (d.x1 - d.x0) / v.cv.width, sv = (d.y1 - d.y0) / v.cv.height;
-      d.x0 -= dx * su; d.x1 -= dx * su; d.y0 += dy * sv; d.y1 += dy * sv; v.user = true;
-      v.glide = false; v.centred = false;
-      scheduleSections();
-    };
-    handlers[k]["contextmenu"] = ((e) => e.preventDefault());
-    handlers[k]["pointerdown"] = ((e) => {
-      e.currentTarget.setPointerCapture(e.pointerId);
-      ptrs.set(e.pointerId, rel(e));
-      onHover(null);
-      if (ptrs.size === 2) {
-        // a second finger: this is a pinch or a two-finger pan, never a pick —
-        // whatever the first finger was about to do is dropped
-        if (pend) { clearTimeout(pend.timer); pend = null; }
-        const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }; mode = "pinch"; return;
-      }
-      if (ptrs.size > 2) return;
-      if (mode === "after") return;   // a finger left over from a pinch does nothing
-      last = rel(e);
-      if (e.button === 1 || e.button === 2 || e.shiftKey) { mode = "pan"; return; }
-      // A touch waits a moment before it acts, so the first finger of a
-      // two-finger gesture can't select or move the cursor.
-      if (e.pointerType === "touch") {
-        mode = "pending";
-        pend = { p: last, t: performance.now(), timer: setTimeout(() => { if (pend && mode === "pending" && ptrs.size === 1) commit(); }, TOUCH_HOLD) };
-        return;
-      }
-      startCursor(last, e.pointerType);
-    });
-    const commit = () => {
-      const q = pend; pend = null;
-      if (!q) return;
-      clearTimeout(q.timer);
-      startCursor(q.p, "touch");
-    };
-    // Picking what's drawn, on the plane or seen through its depth: a pin or
-    // an anchor's dot/card under the pointer snaps the cursor to it (and
-    // selects it); a bin or gamut-solid pixel showing a colour off the plane
-    // jumps to that colour. None of these start a drag.
-    const startCursor = (at, pointerType) => {
-      mode = "cursor";
-      const m = markerAt(k, at[0], at[1], pointerType === "mouse" ? 9 : 16);
-      if (m) { mode = "picked"; onPick(m); return; }
-      if (S.modes[k] !== "bins") {
-        const id = dotAt(k, at[0], at[1], pointerType === "mouse" ? 0 : 6);
-        if (id >= 0 && S.anchors[id]) { mode = "picked"; onPick(S.anchors[id]); return; }
-      }
-      if (S.modes[k] === "bins" || S.gamut[k] > 0) {
-        const P = [0, 0, 0], t = gamutAt(k, px2u(v, at[0]), py2v(v, at[1]), P);
-        if (t > 0) { mode = "picked"; moveCursor(spaceWorldToLCH(P[0], P[1], P[2])); return; }
-      }
-      dragView = k;
-      moveCursor(setFromView[k](px2u(v, at[0]), py2v(v, at[1])));
-    };
-    handlers[k]["pointermove"] = ((e) => {
-      if (!ptrs.has(e.pointerId)) {
-        if (e.pointerType === "mouse") {
-          const p = rel(e), P = [0, 0, 0], m = markerAt(k, p[0], p[1]);
-          if (m) { onHover({ item: m, x: e.clientX, y: e.clientY }); v.cv.style.cursor = "pointer"; return; }
-          v.cv.style.cursor = "";
-          const id = S.modes[k] !== "bins" ? dotAt(k, p[0], p[1]) : ready && N ? binAt(k, px2u(v, p[0]), py2v(v, p[1]), P)[0] : -1;
-          onHover(id >= 0 ? { item: S.anchors[id], x: e.clientX, y: e.clientY } : null);
-        }
-        return;
-      }
-      const p = rel(e);
-      ptrs.set(e.pointerId, p);
-      if (mode === "pinch" && ptrs.size === 2) {
-        const [a, b] = [...ptrs.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]), m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-        panV(m[0] - pinch.m[0], m[1] - pinch.m[1]); zoom(m[0], m[1], pinch.d / d, true); pinch = { d, m }; return;
-      }
-      if (mode === "pending") {
-        // a single finger that clearly travels, after the moment a second one
-        // would have landed, is a cursor drag from where it went down
-        if (pend && performance.now() - pend.t > TOUCH_HOLD * 0.5 && Math.hypot(p[0] - pend.p[0], p[1] - pend.p[1]) > 10 * DPR()) commit();
-        if (mode !== "cursor") return;
-      }
-      if (mode === "pan") { panV(p[0] - last[0], p[1] - last[1]); last = p; }
-      else if (mode === "cursor") moveCursor(setFromView[k](px2u(v, p[0]), py2v(v, p[1])));
-    });
-    const up = (e, cancelled) => {
-      ptrs.delete(e.pointerId);
-      // a quick tap acts on lift
-      if (mode === "pending") { if (!cancelled && !ptrs.size) commit(); else { if (pend) clearTimeout(pend.timer); pend = null; } }
-      if (mode === "pinch" || mode === "after") mode = ptrs.size ? "after" : null;
-      else if (!ptrs.size) mode = null;
-      if (!ptrs.size && dragView === k) { dragView = null; followCursor(k); }
-    };
-    handlers[k]["pointerup"] = ((e) => up(e, false));
-    handlers[k]["pointercancel"] = ((e) => up(e, true));
-    handlers[k]["pointerleave"] = (() => onHover(null));
-    handlers[k]["wheel"] = ((e) => { e.preventDefault(); const [x, y] = rel(e); zoom(x, y, Math.exp(e.deltaY * 0.0015)); });
-    handlers[k]["dblclick"] = (() => api.resetView(k));
-  });
-  ["contextmenu", "pointerdown", "pointermove", "pointerup", "pointercancel", "pointerleave", "wheel", "dblclick"].forEach((ev) =>
-    slotCanvases.forEach((el) =>
-      on(el, ev, (e) => { const k = viewOf(el), f = k && handlers[k][ev]; if (f) f(e); }, ev === "wheel" ? { passive: false } : undefined),
-    ),
-  );
-  const ro = new ResizeObserver(() => {
-    if (!slot["3d"] || slot["3d"].clientWidth === 0) return;   // hidden tab
-    let changed = false;
-    Object.values(SV).forEach((v) => { if (sizeView(v)) { fitIso(v); changed = true; } });
-    if (changed) followAll(true);
-    resize();
-  });
-  slotCanvases.forEach((el) => ro.observe(el));
-
-  // ── Public API ───────────────────────────────────────────────────────────
-  const api = {
-    // Renames and other label-only changes keep the built cells.
-    setAnchors(list) {
-      const sig = list.map((a) => `${a.L},${a.C},${a.H},${a.hex}`).join(";");
-      S.anchors = list;
-      if (sig === anchorSig && N === list.length) return;
-      anchorSig = sig;
-      buildCells();
-    },
-    setMarkers(list) {
-      const lookSig = (lk) => (lk ? `${lk.hatch ? 1 : 0}${lk.profile}${lk.light === false ? 0 : 1}${lk.image || ""}` : "");
-      const sig = list.length + ":" + list.map((m) => `${m.L},${m.C},${m.H},${m.hex},${m.kind},${lookSig(m.look)}`).join(";");
-      S.markers = list;
-      if (sig === markerSig) return;
-      markerSig = sig;
-      setMarkerGeometry(); scheduleSections();
-    },
-    setCursor(L, C, H) {
-      const [l0, c0, h0] = S.cursor;
-      if (Math.abs(l0 - L) < 1e-6 && Math.abs(c0 - C) < 1e-6 && Math.abs(h0 - H) < 1e-6) return;
-      S.cursor = [L, C, H];
-      const changedCell = updateCursor();
-      syncGamutRange();
-      followAll();
-      const r3 = S.ranges["3d"], sliced = r3.hl !== null || r3.hc !== null || r3.hh !== null;
-      if (sliced) { rebuild(); rebuildActive(); }
-      else { if (changedCell) rebuildActive(); updateDotVisibility(); scheduleSections(); }
-    },
-    // { view: { hl, hc, hh } } — half-widths around the cursor, null = everything
-    setRanges(map) {
-      let three = false, flat = false;
-      Object.keys(map).forEach((k) => {
-        const a = S.ranges[k], b = map[k];
-        const depth = b.depth === undefined ? (a && a.depth) : b.depth;
-        if (!a || (a.hl === b.hl && a.hc === b.hc && a.hh === b.hh && a.depth === depth)) return;
-        S.ranges[k] = { hl: b.hl, hc: b.hc, hh: b.hh, depth };
-        if (k === "3d") three = true; else flat = true;
-      });
-      if (three) { rebuild(); rebuildActive(); updateDotVisibility(); syncGamutRange(); }
-      if (flat) scheduleSections();
-    },
-    // After a jump to a colour: zoom every view so the names of the colour at
-    // the cursor and of its nearest neighbours are readable. A view already in
-    // that range is left alone; one zoomed far past it backs out so the
-    // neighbours are in sight again.
-    focus() {
-      if (!ready || !N || selIdx < 0) return;
-      const i = selIdx;
-      let w = nnW[i];
-      grid.within(px[i], py[i], pz[i], Math.max(0.5, nnW[i] * 2.5), i).slice(0, 6).forEach(([, j]) => (w = Math.min(w, nnW[j])));
-      w = Math.max(w, nnW[i] * 0.5, 1e-3);   // don't chase one much tighter neighbour too far
-      ["l", "c", "h"].forEach((k) => {
-        const v = SV[k];
-        if (!v.dom || !v.cv.width) return;
-        const need = Math.max(NAME_ZOOM_2D, NAME_PX / w) * 1.15;   // px per world unit
-        const ppw = v.cv.width / (v.dom.x1 - v.dom.x0) / CW;
-        if (ppw >= need && ppw <= need * 3) return;
-        v.zoomTo = v.cv.width / (need * CW);   // the x-span that gives `need`
-        v.glide = true;
-      });
-      scheduleSections();
-      const cv = slot["3d"];
-      if (cv && cv.height) {
-        const dpr = DPR(), fy = camera.projectionMatrix.elements[5], hh = cv.height / 2;
-        const need = Math.max(NAME_ZOOM_3D, NAME_PX / w) * dpr * 1.15;
-        const rNeed = Math.max(0.6, Math.min(40, (fy * hh) / need));
-        if (orb.r > rNeed * 1.02 || orb.r < rNeed / 3) { orb.rGoal = rNeed; requestRender(); }
-      }
-    },
-    // What names the cursor ({ L, C, H, kind } or null): the tether's far end.
-    setTether(t) {
-      const n = t && isFinite(t.L) && isFinite(t.C) ? { L: +t.L, C: +t.C, H: +t.H || 0, kind: t.kind } : null, o = S.tether;
-      if (o === n || (o && n && o.L === n.L && o.C === n.C && o.H === n.H && o.kind === n.kind)) return;
-      S.tether = n;
-      updateTether3D(); requestRender(); scheduleSections();
-    },
-    // { view: opacity } of the seamless gamut solid beneath each view (0 = off).
-    setGamut(map) {
-      let three = false, flat = false;
-      Object.keys(map).forEach((k) => {
-        const a = Math.max(0, Math.min(1, Number(map[k]) || 0));
-        if (!(k in S.gamut) || a === S.gamut[k]) return;
-        S.gamut[k] = a;
-        if (k === "3d") { gamutU.uAlpha.value = a; three = true; } else flat = true;
-      });
-      if (three) { buildGamutZones(); requestRender(); }
-      if (flat) scheduleSections();
-    },
-    // { view: opacity } for the sections
-    setAlpha(map) {
-      let changed = false;
-      Object.keys(map).forEach((k) => { if (k in S.alpha && S.alpha[k] !== map[k]) { S.alpha[k] = map[k]; changed = true; } });
-      if (changed) scheduleSections();
-    },
-    setLook({ fill, sep, opacity }) {
-      const geoChange = fill !== S.fill;
-      S.fill = fill; S.sep = sep; S.opacity = opacity;
-      shared.uSep.value = 1 + sep;
-      cellMat.uniforms.uAlpha.value = opacity;
-      cardMat.uniforms.uAlpha.value = opacity;
-      placeMarker(); updatePlanes(); buildGamutZones();
-      if (geoChange) { rebuild(true); rebuildActive(); } else requestRender();
-    },
-    setTheme({ dark, fg, bg }) {
-      S.dark = dark; S.fg = fg; S.bg = bg;
-      S.guide = dark ? { l: "#ffd27a", c: "#7ad7ff", h: "#ff8ad8" } : { l: "#b7791f", c: "#0e7490", h: "#be185d" };
-      const fg2 = spaceSrgbToCanvas(fg), fgc = new THREE.Color(fg2[0], fg2[1], fg2[2]);
-      rimMat.uniforms.uColor.value.copy(fgc);
-      dotMat.uniforms.uRing.value.copy(fgc);
-      markerMats.forEach((m) => m.color.copy(fgc));
-      tetherMat.color.copy(fgc);
-      const guide3 = (hex) => { const c = spaceSrgbToCanvas(spaceHexToRgb(hex)); return new THREE.Color(c[0], c[1], c[2]); };
-      plL.material.color.copy(guide3(S.guide.l)); plC.material.color.copy(guide3(S.guide.c)); plH.material.color.copy(guide3(S.guide.h));
-      axis.material.color.copy(fgc);
-      const pp = paperRgb();
-      cardMat.uniforms.uPaper.value.setRGB(pp[0], pp[1], pp[2]);
-      cardMat.uniforms.uEdge.value.copy(fgc);
-      requestRender(); scheduleSections();
-    },
-    // Per-view look: 3D "cells" (uses the inflation slider) or "swatches";
-    // sections "dots", "bins" or "swatches".
-    setModes(m) {
-      const prev3 = S.modes["3d"];
-      S.modes = { ...S.modes, ...m };
-      if (S.modes["3d"] !== prev3) { applyMode3D(); rebuildActive(); }
-      scheduleSections(); requestRender();
-    },
-    // Which slot canvas shows which view.
-    setLayout(next) {
-      Object.assign(slot, next);
-      ["l", "c", "h"].forEach((k) => { const v = SV[k]; v.cv = slot[k]; v.img = null; v.dom = null; v.user = false; sizeView(v); });
-      followAll(true);
-      slotCanvases.forEach((el) => (el.style.cursor = viewOf(el) === "3d" ? "grab" : "crosshair"));
-      resize(); scheduleSections(); requestRender();
-    },
-    resetView(k) { const v = SV[k]; v.zoomTo = 0; fitContain(v); followCursor(k, true); },
-    // The screen's gamut changed (another monitor, or the sRGB setting): the
-    // solid, the cells' reach and every colour are redone for it.
-    refreshGamut() {
-      syncGamutSpace();
-      gzKey = null;
-      buildCells();
-      setMarkerGeometry();
-      scheduleSections(); requestRender();
-    },
-    resetCamera() { Object.assign(orb, { theta: 0.75, phi: 1.12, r: 14, ox: 0, oy: 0, oz: 0, rGoal: null }); placeMarker(); applyOrbit(); },
-    resize,
-    dispose() {
-      disposed = true; buildToken++;
-      unsubGamut();
-      cancelAnimationFrame(rafId); cancelAnimationFrame(secRaf); clearTimeout(secTimer); sharpJob++;
-      ro.disconnect();
-      listeners.forEach(([el, ev, fn, o]) => el.removeEventListener(ev, fn, o));
-      scene.traverse((o) => { o.geometry && o.geometry.dispose(); });
-      overlay.traverse((o) => { o.geometry && o.geometry.dispose(); });
-      atlasTex.dispose(); photoQueue = [];
-      [cellMat, activeMat, rimMat, dotMat, ghostMat, cardMat, mcardMat, tetherMat, axis.material, plL.material, plC.material, plH.material, ...markerMats].forEach((m) => m.dispose());
-      renderer.dispose();
-      renderer.forceContextLoss();
-    },
-  };
-  const unsubGamut = DisplayGamut.subscribe(() => api.refreshGamut());
-  slotCanvases.forEach((el) => (el.style.cursor = viewOf(el) === "3d" ? "grab" : "crosshair"));
-  resize();
-  applyOrbit();
-  updatePlanes();
-  return api;
-}
-
-// Display name for an Explore point: its own override, else its anchor's name.
-const spacePointLabel = (p, names) => {
-  const noun =
-    p.nameOverride ||
-    (p.parentNounId && names[p.parentNounId]) ||
-    (p.anchorId && names[p.anchorId]) ||
-    "";
-  return String(noun).trim() || "Unnamed";
-};
-const SPACE_LOOK_KEY = "color-samificator-space-look";
-const SPACE_PLANE_COLORS = {
-  light: { l: "#b7791f", c: "#0e7490", h: "#be185d" },
-  dark: { l: "#ffd27a", c: "#7ad7ff", h: "#ff8ad8" },
-};
-
-const SpaceSlider = ({ label, value, min, max, step, onChange, format }) =>
-  React.createElement(
-    "label",
-    { className: "flex flex-col gap-1" },
-    React.createElement(
-      "div",
-      { className: "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono" },
-      React.createElement("span", { className: "font-bold tracking-wider" }, label),
-      React.createElement(
-        "span",
-        { className: "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-slate-600 dark:text-neutral-300" },
-        format(value),
-      ),
-    ),
-    React.createElement("input", {
-      type: "range", min, max, step, value,
-      onChange: (e) => onChange(Number(e.target.value)),
-      className: "w-full accent-sky-500",
-    }),
-  );
-
-
-// Three looks per viewport. The 3D view's "dots" and "bins" are its inflation
-// slider at 0 and 1; "swatches" swaps the cells for colour cards.
-const SPACE_PRESETS = [
-  { id: "dots", icon: "circle-dot", title: "Dots" },
-  { id: "bins", icon: "hexagon", title: "Bins" },
-  { id: "swatches", icon: "rectangle-vertical", title: "Swatches" },
-];
-const SpacePresets = ({ value, onChange, compact }) =>
-  React.createElement(
-    "div",
-    { className: "flex items-center rounded-md border border-slate-200 dark:border-neutral-800 overflow-hidden shrink-0", role: "group", "aria-label": "Look" },
-    SPACE_PRESETS.map((p) =>
-      React.createElement(
-        "button",
-        {
-          key: p.id,
-          onClick: () => onChange(p.id),
-          title: p.title,
-          "aria-label": p.title,
-          "aria-pressed": value === p.id,
-          className: `${compact ? "p-1" : "px-2 py-1 gap-1"} flex items-center text-[9px] font-bold uppercase tracking-widest transition-colors ${
-            value === p.id
-              ? "bg-slate-900 text-white"
-              : "text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-neutral-200 dark:hover:bg-neutral-800"
-          }`,
-        },
-        React.createElement(Icon, { name: p.icon, className: "w-3 h-3" }),
-        !compact && p.title,
-      ),
-    ),
-  );
-const SpaceIconButton = ({ icon, title, onClick, active }) =>
-  React.createElement(
-    "button",
-    {
-      onClick, title, "aria-label": title, "aria-pressed": active ? true : undefined,
-      className: `p-1 rounded transition-colors ${active ? "bg-slate-900 text-white" : "text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:text-neutral-200 dark:hover:bg-neutral-800"}`,
-    },
-    React.createElement(Icon, { name: icon, className: "w-3 h-3" }),
-  );
-
-// A view's own settings: look, (3D) inflation and separation, opacity, the
-// visible range around the cursor, and whether all views share them.
-const SPACE_VIEWS = ["3d", "l", "c", "h"];
-// A section starts on its plane alone (its own axis at 0); everything else
-// starts wide open.
-const spaceViewDefault = (k) => ({ mode: k === "3d" ? "cells" : "bins", fill: 0.5, sep: 0, opacity: 1, gamut: 0, tol: { l: k === "l" ? 0 : 1, c: k === "c" ? 0 : 0.4, h: k === "h" ? 0 : 180 } });
-const SPACE_TOL = {
-  l: { label: "Lightness ±", max: 1, step: 0.005, fmt: (x) => x.toFixed(3) },
-  c: { label: "Chroma ±", max: 0.4, step: 0.005, fmt: (x) => x.toFixed(3) },
-  h: { label: "Hue ±", max: 180, step: 1, fmt: (x) => `${x}°` },
-};
-const SpaceSwitch = ({ on, onChange, label }) =>
-  React.createElement(
-    "button",
-    { onClick: () => onChange(!on), role: "switch", "aria-checked": on, className: "flex items-center justify-between gap-2 w-full text-left" },
-    React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400" }, label),
-    React.createElement(
-      "span",
-      { className: `relative inline-block w-7 h-4 rounded-full transition-colors shrink-0 ${on ? "bg-slate-900 dark:bg-neutral-100" : "bg-slate-300 dark:bg-neutral-700"}` },
-      React.createElement("span", { className: `absolute top-0.5 w-3 h-3 rounded-full shadow transition-all ${on ? "left-3.5 bg-white dark:bg-neutral-900" : "left-0.5 bg-white"}` }),
-    ),
-  );
-const tolSlider = (a, v, onPatch, depth) => {
-  const t = SPACE_TOL[a];
-  return React.createElement(SpaceSlider, {
-    key: a, label: t.label, value: v.tol[a], min: 0, max: t.max, step: t.step,
-    format: (x) => (x >= t.max ? "all" : x <= 0 ? (depth ? "plane only" : "cursor only") : t.fmt(x)),
-    onChange: (x) => onPatch({ tol: { [a]: x } }),
-  });
-};
-// Which gamut the solid, the cells and the out-of-gamut warnings follow: the
-// screen's own (detected), or held to sRGB.
-const useDisplayGamut = () => {
-  const [, setTick] = useState(0);
-  useEffect(() => DisplayGamut.subscribe(() => setTick((t) => t + 1)), []);
-  return DisplayGamut;
-};
-const SpaceGamutSetting = () => {
-  const G = useDisplayGamut();
-  const note =
-    G.pref === "srgb" ? `Held to sRGB: colours every screen can show. This screen can show ${G.screenLabel}.`
-      : G.screen === "srgb" ? "This screen shows sRGB."
-        : G.id === "p3" ? `Detected a ${G.screenLabel} screen: the solid, cells and warnings use Display P3.`
-          : `This screen is ${G.screenLabel}, but this browser only draws sRGB here.`;
-  return React.createElement(
-    "div",
-    { className: "flex flex-col gap-2 pt-2 border-t border-slate-200 dark:border-neutral-800" },
-    React.createElement(
-      "div",
-      { className: "flex items-center justify-between gap-2" },
-      React.createElement("span", { className: "text-[9px] font-bold uppercase tracking-widest text-slate-400" }, "Gamut"),
-      React.createElement("span", { className: "text-[10px] font-mono text-slate-600 dark:text-neutral-300", "data-gamut": G.id }, G.label),
-    ),
-    (G.screen !== "srgb" || G.pref === "srgb") &&
-      React.createElement(SpaceSwitch, { on: G.pref === "srgb", onChange: (on) => G.setPref(on ? "srgb" : "auto"), label: "Hold to sRGB" }),
-    React.createElement("span", { className: "text-[10px] leading-snug text-slate-400" }, note),
-  );
-};
-const SpaceSettings = ({ k, v, preset, sync, onPreset, onPatch, onSync, onReset }) =>
-  React.createElement(
-    "div",
-    { className: "flex flex-col gap-3" },
-    React.createElement(SpacePresets, { value: preset, onChange: onPreset }),
-    k === "3d" &&
-      React.createElement(SpaceSlider, {
-        label: "Inflation", value: v.mode === "swatches" ? 0 : v.fill, min: 0, max: 1, step: 0.01,
-        format: (x) => (v.mode === "swatches" ? "cards" : x < 0.005 ? "dot" : `${Math.round(x * 100)}%`),
-        onChange: (x) => onPatch({ fill: x }),
-      }),
-    k === "3d" &&
-      React.createElement(SpaceSlider, {
-        label: "Separation", value: v.sep, min: 0, max: 2, step: 0.02, format: (x) => x.toFixed(2),
-        onChange: (x) => onPatch({ sep: x }),
-      }),
-    React.createElement(SpaceSlider, {
-      label: "Opacity", value: v.opacity, min: 0.05, max: 1, step: 0.01, format: (x) => `${Math.round(x * 100)}%`,
-      onChange: (x) => onPatch({ opacity: x }),
-    }),
-    // Every in-gamut colour, seamless, drawn beneath the dots, bins and cards.
-    React.createElement(SpaceSlider, {
-      label: "Gamut solid", value: v.gamut || 0, min: 0, max: 1, step: 0.01, format: (x) => (x <= 0 ? "off" : `${Math.round(x * 100)}%`),
-      onChange: (x) => onPatch({ gamut: x }),
-    }),
-    React.createElement(SpaceGamutSetting),
-    // A section's own axis is its depth: 0 shows only what crosses the plane,
-    // more brings in the colours on either side, seen straight on, up to all
-    // of them. The other two narrow what's shown around the cursor.
-    k !== "3d" &&
-      React.createElement(
-        "div",
-        { className: "flex flex-col gap-2 pt-2 border-t border-slate-200 dark:border-neutral-800" },
-        React.createElement("span", { className: "text-[9px] font-bold uppercase tracking-widest text-slate-400" }, "Depth around the plane"),
-        tolSlider(k, v, onPatch, true),
-      ),
-    React.createElement(
-      "div",
-      { className: "flex flex-col gap-3 pt-2 border-t border-slate-200 dark:border-neutral-800" },
-      React.createElement("span", { className: "text-[9px] font-bold uppercase tracking-widest text-slate-400" }, k === "3d" ? "Visible range around the cursor" : "Filter around the cursor"),
-      ["l", "c", "h"].filter((a) => a !== k).map((a) => tolSlider(a, v, onPatch, false)),
-    ),
-    React.createElement(
-      "div",
-      { className: "pt-2 border-t border-slate-200 dark:border-neutral-800 flex flex-col gap-2" },
-      React.createElement(SpaceSwitch, { on: sync, onChange: onSync, label: "Sync all views" }),
-      React.createElement(
-        "span",
-        { className: "text-[10px] leading-snug text-slate-400" },
-        sync ? "Changes here apply to every view." : "Each view keeps its own settings.",
-      ),
-    ),
-    onReset &&
-      React.createElement(
-        "button",
-        {
-          onClick: onReset,
-          className: "flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400 bg-slate-100 dark:bg-neutral-800 hover:bg-slate-200 dark:hover:bg-neutral-700 transition-colors",
-        },
-        React.createElement(Icon, { name: "rotate-ccw", className: "w-3 h-3" }),
-        k === "3d" ? "Reset camera" : "Reset zoom",
-      ),
-  );
-
-// A slot's settings float next to its header, kept inside the window (the
-// bottom slot's would otherwise run off-screen). Outside click or Esc closes.
-const SpacePopover = ({ anchorRef, onClose, children }) => {
-  const boxRef = useRef(null);
-  const [pos, setPos] = useState(null);
-  React.useLayoutEffect(() => {
-    const place = () => {
-      const a = anchorRef.current;
-      if (!a) return;
-      const r = a.getBoundingClientRect(), W = window.innerWidth, Hh = window.innerHeight;
-      const w = Math.min(256, W - 16), h = boxRef.current ? boxRef.current.scrollHeight : 420;
-      const left = Math.max(8, Math.min(r.left, W - w - 8));
-      const maxH = Hh - 16, top = Math.max(8, Math.min(r.bottom + 4, Hh - 8 - Math.min(h, maxH)));
-      setPos({ left, top, width: w, maxHeight: maxH });
-    };
-    place();
-    const id = requestAnimationFrame(place);
-    window.addEventListener("resize", place);
-    return () => { cancelAnimationFrame(id); window.removeEventListener("resize", place); };
-  }, []);
-  useEffect(() => {
-    const down = (e) => {
-      if (boxRef.current && boxRef.current.contains(e.target)) return;
-      if (anchorRef.current && anchorRef.current.contains(e.target)) return;
-      onClose();
-    };
-    const key = (e) => e.key === "Escape" && onClose();
-    document.addEventListener("pointerdown", down, true);
-    document.addEventListener("keydown", key);
-    return () => { document.removeEventListener("pointerdown", down, true); document.removeEventListener("keydown", key); };
-  }, [onClose]);
-  return ReactDOM.createPortal(
-    React.createElement(
-      "div",
-      {
-        ref: boxRef, "data-space-popover": "",
-        style: pos ? { position: "fixed", ...pos } : { position: "fixed", left: -9999, top: 0, width: 256 },
-        className: "z-[60] p-3 overflow-y-auto custom-scrollbar bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-lg",
-      },
-      children,
-    ),
-    document.body,
-  );
-};
-
-// One small viewport: header (name, value, looks, maximize, reset), canvas,
-// resize handle and axis captions. The canvas element never changes; which
-// view it shows does.
-const SpaceSlot = ({ info, canvasRef, height, setHeight, narrow, preset, onPreset, onMaximize, onReset, settingsOpen, onSettings, onCloseSettings, settings }) => {
-  const headRef = useRef(null);
-  return React.createElement(
-    "div",
-    { className: narrow ? "shrink-0 w-44 flex flex-col relative" : "flex flex-col relative" },
-    React.createElement(
-      "div",
-      { ref: headRef, className: "flex items-center justify-between gap-1.5 mb-1.5" },
-      React.createElement(
-        "div",
-        { className: "flex items-center gap-1.5 min-w-0" },
-        React.createElement("span", { className: "w-2 h-2 rounded-full shrink-0", style: { background: info.color } }),
-        React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400 truncate" }, info.title),
-        !narrow && info.value && React.createElement("span", { className: "text-[10px] font-mono text-slate-400 truncate" }, info.value),
-      ),
-      React.createElement(
-        "div",
-        { className: "flex items-center gap-0.5 shrink-0" },
-        React.createElement(SpacePresets, { value: preset, onChange: onPreset, compact: true }),
-        React.createElement(SpaceIconButton, { icon: "sliders-horizontal", title: "View settings", onClick: onSettings, active: settingsOpen }),
-        React.createElement(SpaceIconButton, { icon: "maximize-2", title: "Show large", onClick: onMaximize }),
-      ),
-    ),
-    settingsOpen && React.createElement(SpacePopover, { anchorRef: headRef, onClose: onCloseSettings }, settings),
-    React.createElement("canvas", {
-      ref: canvasRef,
-      "data-slot": info.id,
-      style: { height: narrow ? 130 : height, width: "100%", display: "block", touchAction: "none" },
-      className: narrow
-        ? "rounded-lg border border-slate-200 dark:border-neutral-800"
-        : "rounded-t-lg border border-b-0 border-slate-200 dark:border-neutral-800",
-    }),
-    !narrow &&
-      React.createElement("div", {
-        title: "Drag to resize",
-        className: "h-2.5 rounded-b-lg border border-t-0 border-slate-200 dark:border-neutral-800 bg-slate-50 dark:bg-neutral-800/50 cursor-ns-resize flex items-center justify-center",
-        style: { touchAction: "none" },
-        onPointerDown: (e) => {
-          const el = e.currentTarget, y0 = e.clientY, h0 = height;
-          el.setPointerCapture(e.pointerId);
-          const mv = (ev) => setHeight(Math.max(90, Math.min(900, h0 + ev.clientY - y0)));
-          const end = () => { el.removeEventListener("pointermove", mv); el.removeEventListener("pointerup", end); };
-          el.addEventListener("pointermove", mv);
-          el.addEventListener("pointerup", end);
-        },
-      }, React.createElement("span", { className: "w-6 h-0.5 rounded bg-slate-300 dark:bg-neutral-600" })),
-    !narrow &&
-      React.createElement(
-        "div",
-        { className: "flex justify-between mt-1 text-[9px] font-mono uppercase tracking-wider text-slate-400" },
-        info.axes.map((a, i) => React.createElement("span", { key: i }, a)),
-      ),
-  );
-};
-
-const ViewSpaceInner = ({
-  active = true,
-  points,
-  colorData,
-  names,
-  theme,
-  scrubL,
-  scrubC,
-  scrubH,
-  tether = null,
-  focusTick = 0,
-  presetCmd = null,
-  onPresetSummary,
-  onCursor,
-  handlePointClick,
-}) => {
-  const rootRef = useRef(null);
-  // Four fixed canvases: the large one and three small ones. `slots` says which
-  // view each shows; maximizing a small view swaps it with the large one.
-  const bigRef = useRef(null), s1Ref = useRef(null), s2Ref = useRef(null), s3Ref = useRef(null);
-  const slotRefs = [bigRef, s1Ref, s2Ref, s3Ref];
-  const [slots, setSlots] = useState(["3d", "l", "c", "h"]);
-  const engineRef = useRef(null);
-  const cbRef = useRef({});
-  cbRef.current = { onCursor, handlePointClick };
-  const [ready, setReady] = useState(false);
-  const [status, setStatus] = useState({ phase: "loading" });
-  const [hover, setHover] = useState(null);
-  const [narrow, setNarrow] = useState(false);
-  // Open beside a desktop-size view; collapsed on a phone, where it would cover it.
-  const [lookOpen, setLookOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 768);
-  const [secW, setSecW] = useState(250);
-  const [heights, setHeights] = useState([0, 230, 150, 230]);
-  const defaultLook = () => {
-    const d = { v: 2, sync: false, views: {} };
-    SPACE_VIEWS.forEach((k) => (d.views[k] = spaceViewDefault(k)));
-    return d;
-  };
-  const [look, setLook] = useState(() => {
-    const d = defaultLook();
-    try {
-      const saved = JSON.parse(localStorage.getItem(SPACE_LOOK_KEY) || "{}");
-      if (saved.views) {
-        SPACE_VIEWS.forEach((k) => {
-          const sv = saved.views[k] || {}, tol = { ...d.views[k].tol, ...(sv.tol || {}) };
-          // before v2 a section's own axis was a plain filter, left wide open
-          if (!(saved.v >= 2) && k !== "3d") tol[k] = 0;
-          d.views[k] = { ...d.views[k], ...sv, tol };
+  const swatchItems = useMemo(() => {
+    if (viewMode !== "swatches") return [];
+    const res = [];
+    points
+      .filter((p) => !p.isPin && filterFn(p))
+      .forEach((p) => {
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+        res.push({
+          ...p,
+          type: "grid",
+          displayName:
+            `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
+            "Unnamed",
+          hex: p.color,
         });
-        d.sync = !!saved.sync;
-      } else {
-        // earlier format: one 3D look plus a mode per section
-        if (saved.fill !== undefined) d.views["3d"].fill = saved.fill;
-        if (saved.sep !== undefined) d.views["3d"].sep = saved.sep;
-        if (saved.opacity !== undefined) d.views["3d"].opacity = saved.opacity;
-        if (saved.modes) SPACE_VIEWS.forEach((k) => saved.modes[k] && (d.views[k].mode = saved.modes[k]));
+      });
+    Object.values(savedColors).forEach((sc) => {
+      if (filterFn(sc)) {
+        if (sc.type === "anchor") {
+          res.push({
+            ...sc,
+            displayName:
+              `${sc.adjOverride || adjectives[sc.adjId] || ""} ${sc.nameOverride || names[sc.anchorId] || ""}`.trim() ||
+              sc.id,
+            hex: sc.srgbHex || sc.color,
+          });
+        } else if (sc.type === "pin") {
+          res.push({
+            ...sc,
+            displayName: sc.id || "Pin",
+            hex: sc.srgbHex || sc.color,
+          });
+        }
       }
-    } catch (e) {}
-    return d;
-  });
-  const [openPanel, setOpenPanel] = useState(null);   // slot index whose settings are open
-  // Reset views: every view's settings, the layout, the 3D camera and the
-  // sections' zoom back to how they start. The settings and layout can be
-  // brought back for a few seconds afterwards.
-  const undoRef = useRef(null);
-  const [undoable, setUndoable] = useState(false);
-  const undoTimer = useRef(0);
-  useEffect(() => () => clearTimeout(undoTimer.current), []);
-  const resetAll = () => {
-    undoRef.current = { look, slots, heights, secW };
-    setLook(defaultLook());
-    setSlots(["3d", "l", "c", "h"]);
-    setHeights([0, 230, 150, 230]);
-    setSecW(250);
-    setOpenPanel(null);
-    const e = engineRef.current;
-    if (e) { e.resetCamera(); ["l", "c", "h"].forEach((k) => e.resetView(k)); }
-    setUndoable(true);
-    clearTimeout(undoTimer.current);
-    undoTimer.current = setTimeout(() => setUndoable(false), 8000);
-  };
-  const undoReset = () => {
-    const u = undoRef.current;
-    if (u) { setLook(u.look); setSlots(u.slots); setHeights(u.heights); setSecW(u.secW); }
-    undoRef.current = null;
-    setUndoable(false);
-    clearTimeout(undoTimer.current);
-  };
-  const closePanel = useCallback(() => setOpenPanel(null), []);
-  // The preset a view is showing (3D: from its inflation; null = in between).
-  const presetOf = (k) => {
-    const v = look.views[k];
-    return k !== "3d" ? v.mode : v.mode === "swatches" ? "swatches" : v.fill < 0.005 ? "dots" : v.fill > 0.995 ? "bins" : null;
-  };
-  // Apply a change to one view, or to all of them while synced. A preset maps
-  // onto the 3D view's inflation; the 3D inflation slider maps back onto the
-  // sections' presets at its two ends.
-  const patchView = (k, v, patch) => {
-    const n = { ...v, tol: { ...v.tol, ...(patch.tol || {}) } };
-    if (patch.opacity !== undefined) n.opacity = patch.opacity;
-    if (patch.gamut !== undefined) n.gamut = patch.gamut;
-    if (patch.preset) {
-      if (k === "3d") Object.assign(n, patch.preset === "swatches" ? { mode: "swatches" } : { mode: "cells", fill: patch.preset === "dots" ? 0 : 1 });
-      else n.mode = patch.preset;
-    }
-    if (patch.fill !== undefined) {
-      if (k === "3d") { n.fill = patch.fill; n.mode = "cells"; }
-      else if (patch.fill < 0.005) n.mode = "dots";
-      else if (patch.fill > 0.995) n.mode = "bins";
-    }
-    if (patch.sep !== undefined && k === "3d") n.sep = patch.sep;
-    return n;
-  };
-  const updateView = (k, patch) =>
-    setLook((p) => {
-      const views = { ...p.views };
-      (p.sync ? SPACE_VIEWS : [k]).forEach((key) => (views[key] = patchView(key, views[key], patch)));
-      return { ...p, views };
-    });
-  const setPreset = (k, id) => updateView(k, { preset: id });
-  // Turning sync on copies this view's settings to every view.
-  const setSync = (k, on) =>
-    setLook((p) => {
-      if (!on) return { ...p, sync: false };
-      const src = p.views[k], views = {}, preset = presetOf(k);
-      SPACE_VIEWS.forEach((key) => {
-        views[key] = key === k ? src : patchView(key, p.views[key], { opacity: src.opacity, gamut: src.gamut || 0, tol: src.tol, ...(preset ? { preset } : {}) });
-      });
-      return { ...p, v: 2, sync: true, views };
-    });
-  const settingsFor = (k, withReset) =>
-    React.createElement(SpaceSettings, {
-      k, v: look.views[k], preset: presetOf(k), sync: look.sync,
-      onPreset: (id) => setPreset(k, id),
-      onPatch: (patch) => updateView(k, patch),
-      onSync: (on) => setSync(k, on),
-      onReset: withReset ? () => reset(k) : null,
-    });
-  useEffect(() => {
-    if (presetCmd && presetCmd.id) SPACE_VIEWS.forEach((k) => setPreset(k, presetCmd.id));
-  }, [presetCmd]);
-  useEffect(() => {
-    if (!onPresetSummary) return;
-    const ps = SPACE_VIEWS.map(presetOf);
-    onPresetSummary(ps.every((p) => p && p === ps[0]) ? ps[0] : null);
-  }, [look]);
-  const maximize = (k) => setSlots((s) => { const i = s.indexOf(k), n = s.slice(); [n[0], n[i]] = [n[i], n[0]]; return n; });
-  const isDark = theme === "dark";
-  const planeCol = SPACE_PLANE_COLORS[isDark ? "dark" : "light"];
-
-  // Anchors become cells; pins and commercial colours become dots.
-  const anchors = useMemo(() => {
-    const seen = new Set(), out = [];
-    (points || []).forEach((p) => {
-      if (p.isPin || !isFinite(p.L) || !isFinite(p.C) || !isFinite(p.H)) return;
-      const key = `${p.L.toFixed(4)}|${p.C.toFixed(4)}|${p.C < 1e-4 ? 0 : p.H.toFixed(3)}`;
-      if (seen.has(key)) return; // two anchors on one spot would share a cell
-      seen.add(key);
-      const label = spacePointLabel(p, names || {});
-      const nounId = p.parentNounId || p.anchorId;
-      out.push({
-        L: p.L, C: p.C, H: p.H, hex: spaceHexFor(p.color, p.L, p.C, p.H), label, kind: "anchor",
-        pick: [p.L, p.C, p.H, { anchorId: nounId, fullName: label }],
-      });
-    });
-    return out;
-  }, [points, names]);
-  // How a pin or commercial colour looks in the Match and Catalog tabs — its
-  // photo, wood/texture hatch and door-profile outline — so its swatch card
-  // here reads the same. A pin borrows what it lacks from its source colour.
-  const lookOf = (item, src) => {
-    const merged = { ...(src || {}), ...Object.fromEntries(Object.entries(item || {}).filter(([, v]) => v !== undefined && v !== null && v !== "")) };
-    const t = typeof parseSwatchTraits === "function" ? parseSwatchTraits(merged.erpCode, merged) : null;
-    const img = merged.image || (typeof merged.notes === "string" && merged.notes.startsWith("http") ? merged.notes : null);
-    return {
-      hatch: !!(t && t.hatch),
-      profile: t && t.profile === "CS" ? "CS" : t && t.profile === "SS" ? "SS" : "SL",
-      light: t ? !!t.light : true,
-      image: img || null,
-    };
-  };
-  const markers = useMemo(() => {
-    const out = [];
-    (points || []).forEach((p) => {
-      if (!p.isPin) return;
-      out.push({ L: p.L, C: p.C, H: p.H, hex: spaceHexFor(p.color, p.L, p.C, p.H), kind: "pin",
-        label: (() => {
-          const n = spacePointLabel(p, names || {});
-          return `Pin · ${n !== "Unnamed" ? n : p.erpCode || p.pinId || "unnamed"}`;
-        })(),
-        look: lookOf(p, p.brand !== undefined && p.originalIndex !== undefined ? colorData?.[p.brand]?.[p.originalIndex] : null),
-        pick: [p.L, p.C, p.H, { pinId: p.pinId }] });
     });
     if (colorData) {
       Object.keys(colorData).forEach((brand) => {
-        (colorData[brand] || []).forEach((c, idx) => {
-          if (!isFinite(c.L) || !isFinite(c.C)) return;
-          const H = isFinite(c.H) ? c.H : 0;
-          const oi = c.originalIndex !== undefined ? c.originalIndex : idx;
-          out.push({ L: c.L, C: c.C, H, hex: spaceHexFor(c.hex, c.L, c.C, H), kind: "brand",
-            label: `${typeof getBrandDisplayName === "function" ? getBrandDisplayName(brand) : brand} · ${c.name}`,
-            look: lookOf(c, null),
-            pick: [c.L, c.C, H, { brand, originalIndex: oi }] });
+        colorData[brand].forEach((c) => {
+          if (filterFn(c, true)) {
+            res.push({
+              ...c,
+              type: "commercial",
+              displayName: `${brand} - ${c.name}`,
+              hex: new Color("oklch", [c.L, c.C, c.H])
+                .to("srgb")
+                .toString({ format: "hex" }),
+            });
+          }
         });
       });
     }
-    return out;
-  }, [points, colorData, names]);
-
-  // Engine lifetime: one WebGL context per mount, released on unmount.
-  useEffect(() => {
-    let dead = false;
-    loadSpaceThree()
-      .then(() => {
-        if (dead) return;
-        try {
-          engineRef.current = createSpaceEngine({
-            canvases: { "3d": bigRef.current, l: s1Ref.current, c: s2Ref.current, h: s3Ref.current },
-            onCursor: (L, C, H) => cbRef.current.onCursor && cbRef.current.onCursor(L, C, H),
-            onHover: (h) => setHover(h),
-            onPick: (item) => cbRef.current.handlePointClick && cbRef.current.handlePointClick(item.pick),
-            onStatus: (s) => !dead && setStatus(s),
-          });
-          setReady(true);
-        } catch (e) {
-          setStatus({ phase: "error", message: "WebGL couldn't start here. Reload the page, or try another browser." });
-        }
-      })
-      .catch(() => !dead && setStatus({ phase: "error", message: "The 3D library couldn't be loaded. Check your connection and reload." }));
-    return () => {
-      dead = true;
-      if (engineRef.current) engineRef.current.dispose();
-      engineRef.current = null;
-    };
-  }, []);
-
-  // While another tab is showing, the view stays mounted (no rebuild, no new
-  // WebGL context on return) but takes no updates; they apply when shown.
-  const eng = active ? engineRef.current : null;
-  useEffect(() => { ready && eng && eng.setAnchors(anchors); }, [ready, anchors, active]);
-  useEffect(() => { ready && eng && eng.setMarkers(markers); }, [ready, markers, active]);
-  useEffect(() => { ready && eng && eng.setTether(tether); }, [ready, tether, active]);
-  useEffect(() => { ready && eng && eng.setCursor(scrubL, scrubC, ((scrubH % 360) + 360) % 360); }, [ready, scrubL, scrubC, scrubH, active]);
-  // A jump to a colour elsewhere in the app: zoom so names are readable. One
-  // made while Explore was hidden is applied when it next shows.
-  const focusedRef = useRef(0);
-  useEffect(() => {
-    if (!ready || !eng || !focusTick || focusedRef.current === focusTick) return;
-    focusedRef.current = focusTick;
-    eng.focus();
-  }, [ready, focusTick, active]);
-  useEffect(() => {
-    if (!ready || !eng) return;
-    // The range sliders are half-widths; at their maximum (or when they reach
-    // past both ends) they mean "everything".
-    const map = {};
-    // At 0 a filter keeps what sits at the cursor (within half a display step).
-    SPACE_VIEWS.forEach((k) => {
-      const t = look.views[k].tol;
-      map[k] = {
-        hl: t.l >= 1 || (scrubL - t.l <= 0 && scrubL + t.l >= 1) ? null : Math.max(t.l, 0.0005),
-        hc: t.c >= 0.4 || (scrubC - t.c <= 0 && scrubC + t.c >= 0.4) ? null : Math.max(t.c, 0.0005),
-        hh: t.h >= 180 ? null : Math.max(t.h, 0.05),
-      };
-      if (k !== "3d") map[k].depth = t[k] >= SPACE_TOL[k].max ? null : t[k];
+    return res;
+  }, [
+    points,
+    savedColors,
+    colorData,
+    lockedNouns,
+    lockedAdjectives,
+    viewMode,
+    names,
+    adjectives,
+    filterFn,
+  ]);
+  const finalSwatchItems = useMemo(() => {
+    if (viewMode !== "swatches") return [];
+    return swatchItems.map((item) => {
+      if (item.type === "pin") {
+        const { displayAdj, displayName } = getInheritedPinNames(
+          item,
+          savedColors,
+          names,
+          adjectives,
+        );
+        return {
+          ...item,
+          displayName: `${displayAdj} ${displayName}`.trim() || item.id,
+        };
+      }
+      return item;
     });
-    eng.setRanges(map);
-  }, [ready, look, scrubL, scrubC, active]);
-  useEffect(() => {
-    if (!ready || !eng) return;
-    const v3 = look.views["3d"];
-    eng.setLook({ fill: v3.fill, sep: v3.sep, opacity: v3.opacity });
-    eng.setModes({ "3d": v3.mode, l: look.views.l.mode, c: look.views.c.mode, h: look.views.h.mode });
-    eng.setAlpha({ l: look.views.l.opacity, c: look.views.c.opacity, h: look.views.h.opacity });
-    eng.setGamut({ "3d": look.views["3d"].gamut || 0, l: look.views.l.gamut || 0, c: look.views.c.gamut || 0, h: look.views.h.gamut || 0 });
-    try { localStorage.setItem(SPACE_LOOK_KEY, JSON.stringify(look)); } catch (e) {}
-  }, [ready, look, active]);
-  useEffect(() => {
-    if (!ready || !eng) return;
-    const map = {};
-    slots.forEach((k, i) => (map[k] = slotRefs[i].current));
-    eng.setLayout(map);
-  }, [ready, slots, active]);
-  useEffect(() => {
-    if (!ready || !eng) return;
-    // Read the theme's real colours once the app has applied its dark class.
-    const id = requestAnimationFrame(() => {
-      const el = rootRef.current;
-      if (!el || !engineRef.current) return;
-      const cs = getComputedStyle(el);
-      let bgEl = el, bg = null;
-      while (bgEl && !bg) { bg = spaceParseCss(getComputedStyle(bgEl).backgroundColor, null); bgEl = bgEl.parentElement; }
-      engineRef.current.setTheme({
-        dark: isDark,
-        fg: spaceParseCss(cs.color, isDark ? [0.95, 0.91, 0.87] : [0.1, 0.12, 0.1]),
-        bg: bg || (isDark ? [0.08, 0.08, 0.08] : [1, 1, 1]),
+  }, [swatchItems, viewMode, savedColors, names, adjectives]);
+  const baseTraces = useMemo(() => {
+    if (viewMode === "swatches") return [];
+    const filtered = points.filter((p) => !p.isPin && filterFn(p));
+    const filteredBurnt = Object.values(savedColors).filter(
+      (p) => p.type === "pin" && filterFn(p),
+    );
+    const traces = [];
+    traces.push({
+      type: "scatter",
+      mode: viewMode === "bins" ? (showText ? "text" : "markers") : "markers",
+      x: filtered.map((p) => p.C),
+      y: filtered.map((p) => p.L),
+      text: filtered.map((p) => {
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+        const adj = adjectives[p.lStr] || "";
+        const noun = names[nounId] || "";
+        const fullName = `${adj} ${noun}`.trim() || "Unnamed";
+        const binText =
+          adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`;
+        return viewMode === "bins"
+          ? binText
+          : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`;
+      }),
+      textposition: "middle center",
+      textfont: {
+        size: 12,
+        family: "Inter, sans-serif",
+        color: filtered.map((p) => (p.L > 0.55 ? "#010D00" : "#F2E8DF")),
+      },
+      hovertemplate:
+        viewMode === "bins"
+          ? "<b>%{customdata[3].fullName}</b><br>L: %{y:.3f} C: %{x:.3f}<extra></extra>"
+          : "%{text}<extra></extra>",
+      customdata: filtered.map((p) => {
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+        const fullName =
+          `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
+          "Unnamed";
+        return [p.L, p.C, p.H, { anchorId: nounId, adjId: p.lStr, fullName }];
+      }),
+      marker: {
+        size: 10,
+        color: filtered.map((p) => p.color),
+        opacity: viewMode === "bins" ? (showText ? 0 : 0.3) : 0.8,
+        line: {
+          width: 0.5,
+          color: isDark ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.2)",
+        },
+      },
+    });
+    const gridLockedNodes = filtered
+      .filter(
+        (p) =>
+          !p.isCustomAnchor &&
+          lockedNouns[p.parentNounId || `${p.cStr}-${p.hStr}`] &&
+          lockedAdjectives[p.lStr],
+      )
+      .map((p) => {
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+        return {
+          ...p,
+          displayName:
+            `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
+            "Unnamed",
+        };
       });
+    const customLockedNodes = Object.values(savedColors)
+      .filter((sc) => sc.type === "anchor" && filterFn(sc))
+      .map((p) => {
+        const displayName =
+          `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
+          p.id ||
+          "Custom Anchor";
+        return { ...p, displayName };
+      });
+    const lockedNodes = [...gridLockedNodes, ...customLockedNodes];
+    const pinNodes = filteredBurnt.map((p) => {
+      const displayName =
+        `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
+        "Unnamed Pin";
+      return { ...p, displayName };
     });
-    return () => cancelAnimationFrame(id);
-  }, [ready, isDark, active]);
-
-  // Narrow containers (phones) stack the small views under the large one.
-  useEffect(() => {
-    const el = rootRef.current;
-    if (!el) return undefined;
-    const ro = new ResizeObserver(() => { if (el.clientWidth > 0) setNarrow(el.clientWidth < 720); });   // 0 = hidden tab
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  useEffect(() => { if (narrow) setLookOpen(false); }, [narrow]);
-  useEffect(() => { if (!active) setHover(null); }, [active]);
-
-  const fmtH = (v) => `${(((v % 360) + 360) % 360).toFixed(1)}°`;
-  const INFO = {
-    "3d": { id: "3d", title: "3D", long: "3D view", color: isDark ? "#F2E8DF" : "#2B4032", value: "", axes: ["drag to orbit", "", "scroll to zoom"] },
-    l: { id: "l", title: "L", long: "L section", color: planeCol.l, value: `L ${scrubL.toFixed(3)}`, axes: ["a −", "a → · b ↑", "a +"] },
-    c: { id: "c", title: "C", long: "C section", color: planeCol.c, value: `C ${scrubC.toFixed(3)}`, axes: ["0°", "hue (true length) →", "360°"] },
-    h: { id: "h", title: "H", long: "H section", color: planeCol.h, value: `H ${fmtH(scrubH)}`, axes: ["C 0", "chroma → · L ↑", "true scale"] },
-  };
-  const reset = (k) => engineRef.current && (k === "3d" ? engineRef.current.resetCamera() : engineRef.current.resetView(k));
-  const big = slots[0];
-  const overlayCard = "bg-white/90 dark:bg-neutral-900/90 backdrop-blur border border-slate-200 dark:border-neutral-800 rounded-xl shadow-sm";
-
-  return React.createElement(
-    "div",
-    { ref: rootRef, className: `w-full h-full flex ${narrow ? "flex-col-reverse" : "flex-row"} text-slate-900 dark:text-neutral-100 overflow-hidden` },
-    // ── small views ──
-    React.createElement(
-      "div",
-      {
-        className: narrow
-          ? "shrink-0 flex flex-row gap-3 overflow-x-auto no-scrollbar p-3 border-t border-slate-100 dark:border-neutral-800"
-          : "shrink-0 h-full overflow-y-auto custom-scrollbar p-3 flex flex-col gap-4 border-r border-slate-100 dark:border-neutral-800 relative",
-        style: narrow ? undefined : { width: secW },
+    traces.push({
+      type: "scatter",
+      mode: "markers",
+      x: lockedNodes.map((p) => p.C),
+      y: lockedNodes.map((p) => p.L),
+      text: lockedNodes.map(
+        (p) =>
+          `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
+      ),
+      hovertemplate: "%{text}<extra></extra>",
+      customdata: lockedNodes.map((p) => [
+        p.L,
+        p.C,
+        p.H,
+        { anchorId: p.anchorId || p.id, adjId: p.adjId },
+      ]),
+      marker: {
+        symbol: "square",
+        size: 10,
+        color: lockedNodes.map((p) => p.color),
+        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
       },
-      [1, 2, 3].map((i) =>
-        React.createElement(SpaceSlot, {
-          key: i, info: INFO[slots[i]], canvasRef: slotRefs[i], narrow,
-          height: heights[i],
-          setHeight: (h) => setHeights((prev) => { const n = prev.slice(); n[i] = h; return n; }),
-          preset: presetOf(slots[i]),
-          onPreset: (id) => setPreset(slots[i], id),
-          onMaximize: () => { setOpenPanel(null); maximize(slots[i]); },
-          onReset: () => reset(slots[i]),
-          settingsOpen: openPanel === i,
-          onSettings: () => setOpenPanel(openPanel === i ? null : i),
-          onCloseSettings: closePanel,
-          settings: openPanel === i ? settingsFor(slots[i], true) : null,
-        }),
-      ),
-      !narrow &&
-        React.createElement(
-          "p",
-          { className: "text-[9px] leading-relaxed text-slate-400 uppercase tracking-wider" },
-          "Drag to move the cursor · scroll or pinch to zoom (names appear up close) · right-drag to pan · double-click to reset",
-        ),
-    ),
-    // column resize handle
-    !narrow &&
-      React.createElement("div", {
-        title: "Drag to resize",
-        className: "w-1.5 -ml-1.5 shrink-0 cursor-ew-resize hover:bg-slate-300 dark:hover:bg-neutral-700 z-10",
-        style: { touchAction: "none" },
-        onPointerDown: (e) => {
-          const el = e.currentTarget, x0 = e.clientX, w0 = secW;
-          el.setPointerCapture(e.pointerId);
-          const mv = (ev) => setSecW(Math.max(200, Math.min(640, w0 + ev.clientX - x0)));
-          const end = () => { el.removeEventListener("pointermove", mv); el.removeEventListener("pointerup", end); };
-          el.addEventListener("pointermove", mv);
-          el.addEventListener("pointerup", end);
-        },
-      }),
-    // ── large view ──
-    React.createElement(
-      "div",
-      { className: "relative flex-1 min-w-0 min-h-0" },
-      React.createElement("canvas", {
-        ref: bigRef,
-        "data-slot": "big",
-        className: "absolute inset-0 w-full h-full",
-        style: { touchAction: "none" },
-      }),
-      // the large view's settings
-      React.createElement(
-        "div",
-        { className: `absolute top-3 left-3 z-10 ${overlayCard} ${lookOpen ? "w-64 p-3 max-h-[calc(100%-4.5rem)] overflow-y-auto custom-scrollbar" : "p-1"}` },
-        React.createElement(
-          "button",
-          {
-            onClick: () => setLookOpen(!lookOpen),
-            className: `flex items-center gap-2 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400 hover:text-slate-800 dark:hover:text-white ${lookOpen ? "w-full mb-3" : "p-1.5"}`,
-            title: lookOpen ? "Hide settings" : `${INFO[big].long} settings`,
-          },
-          React.createElement(Icon, { name: "sliders-horizontal", className: "w-3.5 h-3.5" }),
-          lookOpen && `${INFO[big].long} settings`,
-          lookOpen && look.sync && React.createElement("span", { className: "ml-1 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-neutral-800 text-[8px]" }, "synced"),
-          lookOpen && React.createElement("span", { className: "ml-auto" }, React.createElement(Icon, { name: "chevron-up", className: "w-3 h-3" })),
-        ),
-        lookOpen && settingsFor(big, true),
-      ),
-      // the large view's own bar: its name, looks, reset, and back to 3D
-      React.createElement(
-        "div",
-        { className: `absolute top-3 right-3 z-10 flex items-center gap-2 px-2 py-1.5 ${overlayCard}` },
-        big !== "3d" &&
-          React.createElement(
-            "span",
-            { className: "flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400" },
-            React.createElement("span", { className: "w-2 h-2 rounded-full", style: { background: INFO[big].color } }),
-            INFO[big].long,
-            React.createElement("span", { className: "font-mono font-normal text-slate-400" }, INFO[big].value),
-          ),
-        React.createElement(SpacePresets, { value: presetOf(big), onChange: (id) => setPreset(big, id), compact: narrow }),
-        big !== "3d" && React.createElement(SpaceIconButton, { icon: "rotate-ccw", title: "Reset zoom", onClick: () => reset(big) }),
-        big !== "3d" && React.createElement(SpaceIconButton, { icon: "minimize-2", title: "Back to the 3D view", onClick: () => maximize("3d") }),
-        React.createElement("span", { className: "w-px h-4 bg-slate-200 dark:bg-neutral-700" }),
-        React.createElement(
-          "button",
-          {
-            onClick: undoable ? undoReset : resetAll,
-            title: undoable ? "Bring back the settings and layout from before the reset" : "Reset every view: settings, layout, camera and zoom",
-            className: `flex items-center gap-1.5 px-1.5 py-1 rounded text-[10px] font-bold uppercase tracking-widest transition-colors ${
-              undoable ? "bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900" : "text-slate-500 dark:text-neutral-400 hover:text-slate-800 hover:bg-slate-100 dark:hover:text-white dark:hover:bg-neutral-800"
-            }`,
-          },
-          React.createElement(Icon, { name: undoable ? "undo" : "refresh-cw", className: "w-3 h-3" }),
-          !narrow && (undoable ? "Undo reset" : "Reset views"),
-        ),
-      ),
-      // plane legend
-      React.createElement(
-        "div",
-        { className: "absolute bottom-3 left-3 z-10 flex items-center gap-3 px-2.5 py-1.5 text-[9px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400 pointer-events-none " + overlayCard },
-        [["l", "L plane"], ["c", "C plane"], ["h", "H plane"]].map(([k, t]) =>
-          React.createElement(
-            "span",
-            { key: k, className: "flex items-center gap-1.5" },
-            React.createElement("span", { className: "w-2 h-2 rounded-full", style: { background: planeCol[k] } }),
-            t,
-          ),
-        ),
-      ),
-      // status
-      status.phase !== "ready" && !(status.phase === "empty" && markers.length) &&
-        React.createElement(
-          "div",
-          { className: "absolute inset-0 flex items-center justify-center pointer-events-none z-0" },
-          React.createElement(
-            "div",
-            { className: "text-center max-w-xs px-6" },
-            React.createElement(
-              "div",
-              { className: "text-[10px] font-bold uppercase tracking-widest text-slate-400" },
-              status.phase === "loading" ? "Loading 3D view…"
-                : status.phase === "building" ? `Shaping cells · ${Math.round((status.progress || 0) * 100)}%`
-                : status.phase === "empty" ? "Nothing to show"
-                : "3D view unavailable",
-            ),
-            (status.phase === "empty" || status.phase === "error") &&
-              React.createElement(
-                "p",
-                { className: "mt-2 text-[11px] text-slate-500 dark:text-neutral-400" },
-                status.phase === "empty"
-                  ? "Turn on anchors, pins or a brand under Visibility, or clear the search and filters above."
-                  : status.message,
-              ),
-          ),
-        ),
-      // hover card
-      hover &&
-        React.createElement(
-          "div",
-          {
-            className: `fixed z-[300] pointer-events-none flex items-center gap-2.5 px-2.5 py-2 ${overlayCard} shadow-lg`,
-            style: { left: hover.x + 14, top: hover.y + 14 },
-          },
-          React.createElement("span", {
-            className: "w-7 h-7 rounded-md border border-black/10 dark:border-white/10 shrink-0",
-            style: { background: DisplayGamut.css(hover.item.L, hover.item.C, hover.item.H, hover.item.hex) },
-          }),
-          React.createElement(
-            "div",
-            { className: "flex flex-col" },
-            React.createElement("span", { className: "text-[11px] font-bold text-slate-800 dark:text-neutral-100" }, hover.item.label),
-            React.createElement(
-              "span",
-              { className: "text-[10px] font-mono text-slate-500 dark:text-neutral-400" },
-              `L ${hover.item.L.toFixed(3)} · C ${hover.item.C.toFixed(3)} · H ${hover.item.H.toFixed(1)}°`,
-            ),
-          ),
-        ),
-    ),
-  );
-};
-
-// Hidden and staying hidden: nothing to redraw, so skip the render entirely.
-const ViewSpace = React.memo(ViewSpaceInner, (prev, next) => !prev.active && !next.active && prev.active !== undefined);
-
-// ─── Anchors: add, rename, move and delete the named points ─────────────────
-// Distances are OkLab ΔE ×100 (so 1.0 ≈ a just-noticeable step).
-const ANCHOR_CLOSE_DE = 1;
-// Rows carry their OkLab a/b, so pair distances need no trigonometry.
-const anchorRowDE = (p, q) => {
-  const dL = p.L - q.L, da = p.oa - q.oa, db = p.ob - q.ob;
-  return Math.sqrt(dL * dL + da * da + db * db) * 100;
-};
-// Fixed row height: the table only mounts the rows in view (plus a margin),
-// so a few thousand anchors scroll as smoothly as a few dozen.
-const ANCHOR_ROW_H = 38, ANCHOR_OVERSCAN = 12;
-
-// A number cell that edits freely and commits on Enter or blur.
-const AnchorNumberInput = ({ value, onCommit, step, min, max, digits, label, wide }) => {
-  const [draft, setDraft] = useState(null);
-  const shown = draft !== null ? draft : Number(value).toFixed(digits);
-  const commit = () => {
-    if (draft === null) return;
-    const v = parseFloat(draft);
-    setDraft(null);
-    if (isFinite(v)) onCommit(Math.min(max, Math.max(min, v)));
-  };
-  return React.createElement("input", {
-    type: "number", step, min, max, value: shown, "aria-label": label,
-    onChange: (e) => setDraft(e.target.value),
-    onBlur: commit,
-    onKeyDown: (e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { setDraft(null); e.currentTarget.blur(); } },
-    className: `${wide ? "w-20" : "w-16"} text-right text-[11px] font-mono tabular-nums bg-transparent border border-transparent hover:border-slate-200 dark:hover:border-neutral-700 focus:border-sky-500 rounded px-1.5 py-1 outline-none text-slate-800 dark:text-neutral-200`,
-  });
-};
-
-const AnchorNameInput = ({ value, onCommit, autoFocus }) => {
-  const [draft, setDraft] = useState(null);
-  const ref = useRef(null);
-  useEffect(() => { if (autoFocus && ref.current) { ref.current.focus(); ref.current.select(); } }, [autoFocus]);
-  const commit = () => { if (draft === null) return; const v = draft.trim(); setDraft(null); if (v !== value) onCommit(v); };
-  return React.createElement("input", {
-    ref, type: "text", value: draft !== null ? draft : value, placeholder: "Unnamed",
-    "aria-label": "Anchor name",
-    onChange: (e) => setDraft(e.target.value),
-    onBlur: commit,
-    onKeyDown: (e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { setDraft(null); e.currentTarget.blur(); } },
-    className: "w-full min-w-[9rem] text-[12px] font-bold uppercase tracking-wide bg-transparent border border-transparent hover:border-slate-200 dark:hover:border-neutral-700 focus:border-sky-500 rounded px-1.5 py-1 outline-none text-slate-900 dark:text-white placeholder:normal-case placeholder:font-normal",
-  });
-};
-
-const AnchorIconButton = ({ icon, title, onClick, danger, active }) =>
-  React.createElement(
-    "button",
-    {
-      onClick, title, "aria-label": title,
-      className: `p-1.5 rounded-md transition-colors ${
-        danger
-          ? active
-            ? "bg-red-500 text-white"
-            : "text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
-          : "text-slate-400 hover:text-slate-800 hover:bg-slate-100 dark:hover:text-white dark:hover:bg-neutral-800"
-      }`,
-    },
-    React.createElement(Icon, { name: icon, className: "w-3.5 h-3.5" }),
-  );
-
-
-// One table row. Memoised: a row re-renders only when its own data, selection,
-// confirm state or distance to the cursor changes.
-const AnchorRow = React.memo(({ r, isHere, checked, confirming, autoFocus, deCursor, act }) =>
-  React.createElement(
-    "tr",
-    {
-      style: { height: ANCHOR_ROW_H },
-      className: `border-b border-slate-100 dark:border-neutral-800/70 ${isHere ? "bg-slate-100 dark:bg-neutral-800" : ""} hover:bg-slate-50 dark:hover:bg-neutral-800/40`,
-    },
-    React.createElement(
-      "td",
-      { className: "px-2 py-1" },
-      React.createElement("input", {
-        type: "checkbox", "aria-label": `Select ${r.name || "unnamed anchor"}`, checked,
-        onChange: (e) => act.select(r.id, e.target.checked),
-        className: "rounded border-slate-300 text-sky-500 focus:ring-sky-500",
-      }),
-    ),
-    React.createElement(
-      "td",
-      { className: "px-2 py-1" },
-      React.createElement("button", {
-        onClick: () => act.goTo(r), title: "Move the cursor here",
-        className: `w-7 h-7 rounded-md border block ${isHere ? "border-slate-800 dark:border-white" : "border-black/10 dark:border-white/10"}`,
-        style: { background: r.hex },
-      }),
-    ),
-    React.createElement(
-      "td",
-      { className: "px-1 py-1" },
-      React.createElement(AnchorNameInput, { value: r.name, autoFocus, onCommit: (v) => act.rename(r, v) }),
-    ),
-    React.createElement(
-      "td",
-      { className: "px-1 py-1 text-right whitespace-nowrap" },
-      r.range
-        ? React.createElement("span", { className: "text-[10px] font-mono text-slate-400 pr-1.5", title: "Legacy lightness range; editing L turns it into a point" },
-            `${r.range[0].toFixed(2)}–${r.range[1].toFixed(2)}`)
-        : null,
-      React.createElement(AnchorNumberInput, { value: r.L, step: 0.001, min: 0, max: 1, digits: 3, label: "Lightness", onCommit: (v) => act.move(r, { L: v }) }),
-    ),
-    React.createElement(
-      "td",
-      { className: "px-1 py-1 text-right" },
-      React.createElement(AnchorNumberInput, { value: r.C, step: 0.001, min: 0, max: 0.4, digits: 3, label: "Chroma", onCommit: (v) => act.move(r, { C: v }) }),
-    ),
-    React.createElement(
-      "td",
-      { className: "px-1 py-1 text-right" },
-      React.createElement(AnchorNumberInput, { value: r.H, step: 0.1, min: 0, max: 360, digits: 1, label: "Hue", wide: true, onCommit: (v) => act.move(r, { H: v }) }),
-    ),
-    React.createElement(
-      "td",
-      { className: "px-2 py-1" },
-      r.nn &&
-        React.createElement(
-          "button",
-          {
-            onClick: () => act.find(r.nn.name || ""),
-            title: "Show this anchor",
-            className: "flex items-center gap-2 text-left max-w-[14rem]",
-          },
-          React.createElement("span", { className: "w-3 h-3 rounded-sm shrink-0 border border-black/10", style: { background: r.nn.hex } }),
-          React.createElement("span", { className: "text-[10px] font-bold uppercase text-slate-600 dark:text-neutral-300 truncate" }, r.nn.name || "Unnamed"),
-          React.createElement(
-            "span",
-            {
-              className: `text-[10px] font-mono tabular-nums px-1.5 rounded ${
-                r.nnDE < ANCHOR_CLOSE_DE ? "bg-amber-500/15 text-amber-700 dark:text-amber-300" : "text-slate-400"
-              }`,
-            },
-            r.nnDE.toFixed(1),
-          ),
-        ),
-    ),
-    React.createElement(
-      "td",
-      { className: "px-2 py-1 text-right text-[10px] font-mono tabular-nums text-slate-500" },
-      deCursor,
-    ),
-    React.createElement(
-      "td",
-      { className: "px-2 py-1" },
-      React.createElement(
-        "div",
-        { className: "flex items-center justify-end gap-0.5" },
-        React.createElement(AnchorIconButton, { icon: "crosshair", title: "Move the cursor here", onClick: () => act.goTo(r) }),
-        React.createElement(AnchorIconButton, { icon: "move", title: "Move this anchor to the cursor", onClick: () => act.moveToCursor(r) }),
-        React.createElement(AnchorIconButton, { icon: "box", title: "Show in Explore", onClick: () => act.explore(r) }),
-        React.createElement(AnchorIconButton, {
-          icon: "trash-2", danger: true, active: confirming,
-          title: confirming ? "Click again to delete" : "Delete anchor",
-          onClick: () => act.trash(r),
-        }),
-      ),
-    ),
-  ),
-);
-
-// ─── One toolbar for every tab ──────────────────────────────────────────────
-// Explore, Match, Catalog and Anchors all show the same controls in the same
-// places: View · Layout · Visibility · Search · Zoom · Sort · Filters. A control
-// that doesn't apply to the current tab stays where it is, greyed out, with a
-// tooltip saying why, so nothing jumps around when switching tabs.
-const TB_BTN =
-  "flex items-center gap-1.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors whitespace-nowrap";
-const TB_LABEL = "text-[9px] font-bold uppercase tracking-widest text-slate-400 dark:text-neutral-500 hidden xl:inline";
-// A group of controls; when it doesn't apply it is dimmed and inert, and the
-// outer box still carries the tooltip (an inert box can't show one itself).
-const TbGroup = ({ label, enabled = true, why, children, grow }) =>
-  React.createElement(
-    "div",
-    {
-      className: `flex items-center gap-1.5 ${grow ? "flex-1 min-w-[120px] max-w-xs" : "shrink-0"}`,
-      title: enabled ? undefined : why,
-      "aria-disabled": enabled ? undefined : true,
-    },
-    React.createElement(
-      "div",
-      { className: `flex items-center gap-1.5 w-full ${enabled ? "" : "opacity-35 pointer-events-none select-none grayscale"}` },
-      label && React.createElement("span", { className: TB_LABEL }, label),
-      children,
-    ),
-  );
-const TbSeg = ({ options, value, onChange }) =>
-  React.createElement(
-    "div",
-    { className: "flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-neutral-800" },
-    options.map((o) =>
-      React.createElement(
-        "button",
-        {
-          key: o.id,
-          onClick: () => onChange(o.id),
-          title: o.label,
-          "aria-pressed": value === o.id,
-          className: `${TB_BTN} px-1.5 2xl:px-2 ${
-            value === o.id
-              ? "bg-white dark:bg-neutral-950 text-slate-900 dark:text-white shadow-sm"
-              : "text-slate-500 dark:text-neutral-400 hover:text-slate-800 dark:hover:text-neutral-200"
-          }`,
-        },
-        React.createElement(Icon, { name: o.icon, className: "w-3.5 h-3.5" }),
-        React.createElement("span", { className: "hidden 2xl:inline" }, o.label),
-      ),
-    ),
-  );
-const TB_VIEWS = [
-  { id: "dots", icon: "circle-dot", label: "Dots" },
-  { id: "bins", icon: "hexagon", label: "Bins" },
-  { id: "swatches", icon: "rectangle-vertical", label: "Swatches" },
-];
-const TB_LAYOUTS = [
-  { id: "table", icon: "table", label: "Table" },
-  { id: "gallery", icon: "layout-grid", label: "Gallery" },
-  { id: "matrix", icon: "grid-3x3", label: "Matrix" },
-];
-
-// Visibility: pins, anchors and every commercial brand. The brand list flows
-// into as many columns as the window allows and the panel never runs past
-// the window's edge (it scrolls inside instead).
-const VisibilityMenu = ({ vis, setVis, brands, brandOn, setBrand, brandLabel, kinds = true }) => {
-  const [open, setOpen] = useState(false);
-  const btnRef = useRef(null), panelRef = useRef(null);
-  const [pos, setPos] = useState(null);
-  React.useLayoutEffect(() => {
-    if (!open) return undefined;
-    const place = () => {
-      const r = btnRef.current && btnRef.current.getBoundingClientRect();
-      if (!r) return;
-      const W = window.innerWidth, H = window.innerHeight, w = Math.min(600, W - 16);
-      const left = Math.max(8, Math.min(r.left, W - w - 8));
-      let top = r.bottom + 6;
-      if (H - top < 260) top = Math.max(8, H - 8 - Math.min(H - 16, 520));
-      setPos({ left, top, width: w, maxHeight: H - top - 8 });
-    };
-    place();
-    window.addEventListener("resize", place);
-    return () => window.removeEventListener("resize", place);
-  }, [open]);
-  useEffect(() => {
-    if (!open) return undefined;
-    const down = (e) => {
-      if (panelRef.current && panelRef.current.contains(e.target)) return;
-      if (btnRef.current && btnRef.current.contains(e.target)) return;
-      setOpen(false);
-    };
-    const key = (e) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("pointerdown", down, true);
-    document.addEventListener("keydown", key);
-    return () => { document.removeEventListener("pointerdown", down, true); document.removeEventListener("keydown", key); };
-  }, [open]);
-  const check = (checked, onChange, label, key, small) =>
-    React.createElement(
-      "label",
-      {
-        key,
-        className: `flex items-center gap-2 px-2 ${small ? "py-1" : "py-1.5"} rounded cursor-pointer hover:bg-slate-50 dark:hover:bg-neutral-800 text-slate-700 dark:text-neutral-300 break-inside-avoid`,
-      },
-      React.createElement("input", { type: "checkbox", checked, onChange: (e) => onChange(e.target.checked), className: "rounded border-slate-300 text-sky-500 focus:ring-sky-500 w-3.5 h-3.5 shrink-0" }),
-      React.createElement("span", { className: "truncate" }, label),
-    );
-  const onCount = brands.filter((b) => brandOn(b)).length;
-  return React.createElement(
-    React.Fragment,
-    null,
-    React.createElement(
-      "button",
-      {
-        ref: btnRef,
-        onClick: () => setOpen(!open),
-        "aria-expanded": open,
-        "aria-label": "Visibility",
-        title: "Visibility",
-        className: `${TB_BTN} px-2 border border-slate-200 dark:border-neutral-700 text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800 ${open ? "bg-slate-100 dark:bg-neutral-800" : ""}`,
-      },
-      React.createElement(Icon, { name: "eye", className: "w-3.5 h-3.5" }),
-      React.createElement("span", { className: "hidden xl:inline" }, "Visibility"),
-      React.createElement(Icon, { name: "chevron-down", className: "w-3 h-3" }),
-    ),
-    open &&
-      ReactDOM.createPortal(
-        React.createElement(
-          "div",
-          {
-            ref: panelRef,
-            "data-visibility-menu": "",
-            style: pos ? { position: "fixed", ...pos } : { position: "fixed", left: -9999, top: 0 },
-            className: "z-[200] flex flex-col bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-xl text-xs overflow-hidden",
-          },
-          kinds &&
-            React.createElement(
-              "div",
-              { className: "flex flex-wrap items-center gap-x-4 px-2 pt-2 pb-1" },
-              check(vis.pins, (v) => setVis((p) => ({ ...p, pins: v })), "Pins", "pins"),
-              check(vis.anchors, (v) => setVis((p) => ({ ...p, anchors: v })), "Anchors", "anchors"),
-            ),
-          React.createElement(
-            "div",
-            { className: `flex items-center gap-2 px-4 py-2 ${kinds ? "border-t border-slate-100 dark:border-neutral-800" : ""}` },
-            React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-widest text-slate-500" }, "Commercial colours"),
-            React.createElement("span", { className: "text-[10px] font-mono text-slate-400" }, `${onCount}/${brands.length}`),
-            React.createElement(
-              "span",
-              { className: "ml-auto flex items-center gap-1" },
-              React.createElement("button", { onClick: () => brands.forEach((b) => setBrand(b, true)), className: "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-slate-500 hover:bg-slate-100 dark:hover:bg-neutral-800" }, "All"),
-              React.createElement("button", { onClick: () => brands.forEach((b) => setBrand(b, false)), className: "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-slate-500 hover:bg-slate-100 dark:hover:bg-neutral-800" }, "None"),
-            ),
-          ),
-          React.createElement(
-            "div",
-            { className: "px-2 pb-2 overflow-y-auto custom-scrollbar min-h-0", style: { columnWidth: "150px", columnGap: "4px" } },
-            brands.map((b) => check(brandOn(b), (v) => setBrand(b, v), brandLabel(b), b, true)),
-          ),
-        ),
-        document.body,
-      ),
-  );
-};
-
-const TabToolbar = ({ view, layout, visibility, search, zoom, sort, filters }) =>
-  React.createElement(
-    "div",
-    {
-      "data-tab-toolbar": "",
-      className:
-        // phones: wrap onto a second row (same order) rather than hide Sort and
-        // Filters off the edge; wider screens: one row
-        "px-3 md:px-4 py-2 border-b border-slate-100 dark:border-neutral-800 bg-slate-50/30 dark:bg-neutral-900/30 flex flex-wrap md:flex-nowrap items-center gap-2 md:gap-3 md:overflow-x-auto no-scrollbar shrink-0 z-20",
-    },
-    React.createElement(TbGroup, { label: "View", enabled: view.enabled, why: "Dots, bins and swatches are Explore's views" },
-      React.createElement(TbSeg, { options: TB_VIEWS, value: view.value, onChange: view.onChange })),
-    React.createElement(TbGroup, { label: "Layout", enabled: layout.enabled, why: "Explore lays colours out in colour space" },
-      React.createElement(TbSeg, { options: TB_LAYOUTS, value: layout.value, onChange: layout.onChange })),
-    React.createElement(TbGroup, { enabled: visibility.enabled, why: "This tab shows one kind of colour only" },
-      React.createElement(VisibilityMenu, visibility)),
-    React.createElement(TbGroup, { enabled: search.enabled, why: "Nothing to search here", grow: true },
-      React.createElement(
-        "div",
-        { className: "relative w-full" },
-        React.createElement(Icon, { name: "search", className: "absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" }),
-        React.createElement("input", {
-          type: "text",
-          value: search.value,
-          onChange: (e) => search.onChange(e.target.value),
-          placeholder: search.placeholder || "Search…",
-          "aria-label": "Search",
-          className: "w-full bg-slate-200/40 dark:bg-neutral-800/50 border border-transparent rounded-lg pl-7 pr-6 py-1.5 text-[10px] font-bold uppercase tracking-widest focus:ring-1 focus:ring-sky-500 outline-none text-slate-900 dark:text-white placeholder:text-slate-400",
-        }),
-        search.value &&
-          React.createElement(
-            "button",
-            { onClick: () => search.onChange(""), title: "Clear search", className: "absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-neutral-200" },
-            React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
-          ),
-      )),
-    React.createElement("div", { className: "flex-1 hidden md:block" }),
-    React.createElement(TbGroup, { enabled: zoom.enabled, why: "Zoom sizes the gallery and matrix swatches" },
-      React.createElement(Icon, { name: "zoom-in", className: "w-3.5 h-3.5 text-slate-400" }),
-      React.createElement("input", {
-        type: "range", min: "0.1", max: "5", step: "0.1", value: zoom.value,
-        "aria-label": "Swatch size",
-        onChange: (e) => zoom.onChange(parseFloat(e.target.value)),
-        className: "w-16 xl:w-20 accent-sky-500 cursor-pointer",
-      }),
-      React.createElement("span", { className: "text-[10px] font-mono text-slate-400 min-w-[34px] hidden 2xl:inline" }, `${Math.round(zoom.value * 100)}%`),
-    ),
-    React.createElement(TbGroup, { enabled: sort.enabled, why: "Explore places colours by their coordinates, not in a sorted list" },
-      React.createElement(SortControl, { fields: sort.fields, sortBy: sort.by, setSortBy: sort.setBy, sortAsc: sort.asc, setSortAsc: sort.setAsc, compact: true })),
-    React.createElement(TbGroup, { enabled: filters.enabled, why: "Filters narrow colour lists; anchors are listed in full" },
-      React.createElement(
-        "button",
-        {
-          onClick: filters.onClick,
-          className: `${TB_BTN} px-2.5 border ${
-            filters.count
-              ? "border-sky-200 dark:border-sky-500/30 bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400"
-              : "border-slate-200 dark:border-neutral-700 text-slate-500 dark:text-neutral-400 hover:bg-slate-50 dark:hover:bg-neutral-800"
-          }`,
-        },
-        React.createElement(Icon, { name: "filter", className: "w-3.5 h-3.5" }),
-        filters.count ? `Filters · ${filters.count}` : "Filters",
-      )),
-  );
-
-// Match's brand management (it used to hang off a brand filter dropdown,
-// which duplicated the Filters builder's Brand field).
-const BrandMenu = ({ brands, brandLabel, onAddBrand, onAddColor, onDeleteBrand }) => {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-  useEffect(() => {
-    if (!open) return undefined;
-    const down = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("pointerdown", down, true);
-    return () => document.removeEventListener("pointerdown", down, true);
-  }, [open]);
-  return React.createElement(
-    "div",
-    { ref, className: "relative" },
-    React.createElement(
-      "button",
-      {
-        onClick: () => setOpen(!open),
-        className: "px-2 py-1 text-[9px] font-bold bg-white dark:bg-neutral-800 hover:bg-slate-100 border border-slate-200 dark:border-neutral-700 uppercase tracking-wider rounded flex items-center gap-1",
-      },
-      React.createElement(Icon, { name: "building-2", className: "w-3 h-3" }),
-      "Brands",
-      React.createElement(Icon, { name: "chevron-down", className: "w-3 h-3" }),
-    ),
-    open &&
-      React.createElement(
-        "div",
-        { className: "absolute left-0 top-full mt-1 z-50 w-64 max-h-[60vh] overflow-y-auto custom-scrollbar bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-lg shadow-xl p-1 text-xs" },
-        React.createElement(
-          "button",
-          { onClick: () => { setOpen(false); onAddBrand(); }, className: "w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-50 dark:hover:bg-neutral-800 font-bold text-sky-600" },
-          React.createElement(Icon, { name: "plus", className: "w-3.5 h-3.5" }),
-          "New brand",
-        ),
-        React.createElement("div", { className: "h-px bg-slate-100 dark:bg-neutral-800 my-1" }),
-        brands.map((b) =>
-          React.createElement(
-            "div",
-            { key: b, className: "flex items-center gap-1 px-2 py-1 rounded hover:bg-slate-50 dark:hover:bg-neutral-800" },
-            React.createElement("span", { className: "flex-1 truncate text-slate-700 dark:text-neutral-300" }, brandLabel(b)),
-            React.createElement("button", { onClick: () => { setOpen(false); onAddColor(b); }, title: `Add a colour to ${brandLabel(b)}`, className: "p-1 rounded text-slate-400 hover:text-sky-600" }, React.createElement(Icon, { name: "plus", className: "w-3.5 h-3.5" })),
-            React.createElement("button", { onClick: () => { setOpen(false); onDeleteBrand(b); }, title: `Delete ${brandLabel(b)}`, className: "p-1 rounded text-slate-400 hover:text-rose-600" }, React.createElement(Icon, { name: "trash-2", className: "w-3.5 h-3.5" })),
-          ),
-        ),
-      ),
-  );
-};
-
-// The shared Sort control's fields for anchors, and how they map onto the
-// table's own column keys.
-const ANCHOR_SORT_FIELDS = [
-  { field: "deltae", label: "\u0394E" },
-  { field: "name", label: "Name" },
-  { field: "lightness", label: "Lightness" },
-  { field: "chroma", label: "Chroma" },
-  { field: "hue", label: "Hue" },
-  { field: "nn", label: "Nearest anchor" },
-];
-const ANCHOR_SORT_IN = { deltae: "cursor", name: "name", lightness: "L", chroma: "C", hue: "H", nn: "nn" };
-const ANCHOR_SORT_OUT = { cursor: "deltae", name: "name", L: "lightness", C: "chroma", H: "hue", nn: "nn" };
-const ViewAnchors = ({
-  savedColors, setSavedColors, names, setNames,
-  scrubL, scrubC, scrubH, handleUpdate, setActiveTab,
-  query: extQuery, setQuery: setExtQuery, sort: extSort, setSort, layout = "table", swatchZoom = 1,
-}) => {
-  // Search, sort and layout come from the shared toolbar.
-  const query = extQuery || "";
-  const setQuery = (q) => setExtQuery && setExtQuery(q);
-  const sortBy = ANCHOR_SORT_IN[extSort && extSort.by] || "name";
-  const sortAsc = !extSort || extSort.asc !== false;
-  const setSortBy = (k) => setSort && setSort((p) => ({ ...p, by: ANCHOR_SORT_OUT[k] || k }));
-  const setSortAsc = (v) => setSort && setSort((p) => ({ ...p, asc: v }));
-  const [selected, setSelected] = useState({});
-  const [confirm, setConfirm] = useState(null); // id or "bulk" awaiting a second click
-  const [focusId, setFocusId] = useState(null);
-  const scrollRef = useRef(null);
-  const [view, setView] = useState({ top: 0, h: 800 });
-  const [notice, setNotice] = useState("");
-  useEffect(() => { if (!confirm) return undefined; const t = setTimeout(() => setConfirm(null), 3000); return () => clearTimeout(t); }, [confirm]);
-  useEffect(() => { if (!notice) return undefined; const t = setTimeout(() => setNotice(""), 2500); return () => clearTimeout(t); }, [notice]);
-
-  // Every anchor as a flat record, plus its nearest neighbour (to spot near-duplicates).
-  const rows = useMemo(() => {
-    const list = anchorPointsOf(savedColors).map((an) => {
-      const L = (an.minL + an.maxL) / 2, C = Number(an.sc.C) || 0, H = ((Number(an.sc.H) || 0) % 360 + 360) % 360;
-      const h = (H * Math.PI) / 180;
-      return {
-        id: an.id, nameKey: an.nameKey, type: an.sc.type,
-        L, C, H, oa: C * Math.cos(h), ob: C * Math.sin(h),
-        range: an.maxL - an.minL > 1e-6 ? [an.minL, an.maxL] : null,
-        name: anchorNameOf(an, names),
-      };
     });
-    list.forEach((r) => (r.hex = spaceHexFor(null, r.L, r.C, r.H)));
-    // Nearest neighbour per anchor: sort by L once, then only scan while the
-    // lightness gap alone is still smaller than the best distance found.
-    const byL = list.slice().sort((p, q) => p.L - q.L);
-    for (let i = 0; i < byL.length; i++) {
-      const p = byL[i];
-      let best = null, bd = Infinity;
-      for (let dir = -1; dir <= 1; dir += 2)
-        for (let j = i + dir; j >= 0 && j < byL.length; j += dir) {
-          const q = byL[j];
-          if (Math.abs(q.L - p.L) * 100 >= bd) break;
-          const d = anchorRowDE(p, q);
-          if (d < bd) { bd = d; best = q; }
-        }
-      p.nn = best; p.nnDE = bd;
+    traces.push({
+      type: "scatter",
+      mode: "markers",
+      x: pinNodes.map((p) => p.C),
+      y: pinNodes.map((p) => p.L),
+      text: pinNodes.map(
+        (p) =>
+          `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
+      ),
+      hovertemplate: "%{text}<extra></extra>",
+      customdata: pinNodes.map((p) => [p.L, p.C, p.H, { pinId: p.id }]),
+      marker: {
+        symbol: "x",
+        size: 12,
+        color: pinNodes.map((p) => p.color),
+        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
+      },
+    });
+    const commercialNodes = [];
+    if (colorData) {
+      Object.keys(colorData).forEach((brand) => {
+        colorData[brand].forEach((c) => {
+          if (filterFn(c, true)) {
+            commercialNodes.push({
+              ...c,
+              color: new Color("oklch", [c.L, c.C, c.H])
+                .to("srgb")
+                .toString({ format: "hex" }),
+              displayName: `${brand} - ${c.name}`,
+            });
+          }
+        });
+      });
     }
-    return list;
-  }, [savedColors, names]);
-
-  const cursor = useMemo(() => {
-    const H = ((scrubH % 360) + 360) % 360, h = (H * Math.PI) / 180;
-    return { L: scrubL, C: scrubC, H, oa: scrubC * Math.cos(h), ob: scrubC * Math.sin(h) };
-  }, [scrubL, scrubC, scrubH]);
-  const cursorHex = spaceHexFor(null, cursor.L, cursor.C, cursor.H);
-  const cursorAnchor = useMemo(() => {
-    let best = null, bd = Infinity;
-    rows.forEach((r) => { const d = anchorRowDE(r, cursor); if (d < bd) { bd = d; best = r; } });
-    return best ? { ...best, de: bd } : null;
-  }, [rows, cursor]);
-
-  const shown = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    let out = q ? rows.filter((r) => r.name.toLowerCase().includes(q) || r.hex.includes(q)) : rows.slice();
-    const key = {
-      name: (r) => r.name.toLowerCase() || "￿",
-      L: (r) => r.L, C: (r) => r.C, H: (r) => r.H,
-      cursor: (r) => anchorRowDE(r, cursor),
-      nn: (r) => r.nnDE,
-    }[sortBy];
-    // Keys computed once per row, not once per comparison.
-    const keyed = out.map((r) => [key(r), r]);
-    keyed.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0) * (sortAsc ? 1 : -1));
-    return keyed.map((k) => k[1]);
-  }, [rows, query, sortBy, sortAsc, sortBy === "cursor" ? cursor : null]);
-
-  const closePairs = useMemo(() => rows.filter((r) => r.nnDE < ANCHOR_CLOSE_DE).length, [rows]);
-  const unnamed = useMemo(() => rows.filter((r) => !r.name).length, [rows]);
-
-  // ── edits ──
-  const rename = (r, v) => {
-    setSavedColors((prev) => (prev[r.id] ? { ...prev, [r.id]: { ...prev[r.id], nameOverride: v } } : prev));
-    setNames((prev) => {
-      const next = { ...prev };
-      if (v) next[r.nameKey] = v; else delete next[r.nameKey];
-      return next;
-    });
-  };
-  const move = (r, patch) => {
-    setSavedColors((prev) => {
-      const sc = prev[r.id];
-      if (!sc) return prev;
-      const L = patch.L !== undefined ? patch.L : r.L, C = patch.C !== undefined ? patch.C : r.C, H = patch.H !== undefined ? patch.H : r.H;
-      const h = (H * Math.PI) / 180;
-      const next = { ...sc, C, H, a: C * Math.sin(h), b: C * Math.cos(h) };
-      if (sc.type === "anchor") next.L = L;
-      else if (patch.L !== undefined || !r.range) { next.minL = L; next.maxL = L; }
-      return { ...prev, [r.id]: next };
-    });
-  };
-  const remove = (ids) => {
-    const set = new Set(ids);
-    const keys = rows.filter((r) => set.has(r.id)).map((r) => r.nameKey);
-    setSavedColors((prev) => { const next = { ...prev }; ids.forEach((id) => delete next[id]); return next; });
-    setNames((prev) => { const next = { ...prev }; keys.forEach((k) => delete next[k]); return next; });
-    setSelected({});
-    setNotice(`Deleted ${ids.length} anchor${ids.length === 1 ? "" : "s"}`);
-  };
-  const addAtCursor = () => {
-    const id = `custom-noun-${Date.now().toString(36)}`, h = (cursor.H * Math.PI) / 180;
-    setSavedColors((prev) => ({
-      ...prev,
-      [id]: { id, type: "nounColumn", nameOverride: "", C: cursor.C, H: cursor.H, minL: cursor.L, maxL: cursor.L,
-        a: cursor.C * Math.sin(h), b: cursor.C * Math.cos(h), notes: "" },
-    }));
-    setQuery(""); setSortBy("cursor"); setSortAsc(true); setFocusId(id);
-    if (scrollRef.current) scrollRef.current.scrollTop = 0;   // it sorts first (ΔE 0)
-    setNotice("Anchor added at the cursor. Name it below.");
-  };
-  const goTo = (r) => handleUpdate([r.L, r.C, r.H]);
-  const selectedIds = Object.keys(selected).filter((k) => selected[k]);
-  // Rows get one stable object of handlers that always calls the latest code,
-  // so passing it never makes a memoised row re-render.
-  const actRef = useRef({});
-  actRef.current = {
-    select: (id, v) => setSelected((p) => ({ ...p, [id]: v })),
-    goTo, rename, move,
-    find: (q) => setQuery(q),
-    moveToCursor: (r) => { move(r, { L: cursor.L, C: cursor.C, H: cursor.H }); setNotice(`Moved ${r.name || "anchor"} to the cursor`); },
-    explore: (r) => { goTo(r); setActiveTab("3d"); },
-    trash: (r) => (confirm === r.id ? (remove([r.id]), setConfirm(null)) : setConfirm(r.id)),
-  };
-  const act = useMemo(() => {
-    const o = {};
-    ["select", "goTo", "rename", "move", "find", "moveToCursor", "explore", "trash"].forEach((k) => (o[k] = (...a) => actRef.current[k](...a)));
-    return o;
-  }, []);
-  // Visible window of rows.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return undefined;
-    let raf = 0;
-    const read = () => { raf = 0; setView((v) => (v.top === el.scrollTop && v.h === el.clientHeight ? v : { top: el.scrollTop, h: el.clientHeight })); };
-    const onScroll = () => { if (!raf) raf = requestAnimationFrame(read); };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    const ro = new ResizeObserver(onScroll);
-    ro.observe(el);
-    read();
-    return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); cancelAnimationFrame(raf); };
-  }, [rows.length === 0, layout]);
-  const first = Math.max(0, Math.floor(view.top / ANCHOR_ROW_H) - ANCHOR_OVERSCAN);
-  const last = Math.min(shown.length, Math.ceil((view.top + view.h) / ANCHOR_ROW_H) + ANCHOR_OVERSCAN);
-
-  const th = "px-2 py-2 text-left text-[9px] font-bold uppercase tracking-widest text-slate-400 whitespace-nowrap";
-  const sortHeader = (id, label, right) =>
-    React.createElement(
-      "th",
-      { className: th + (right ? " text-right" : "") },
-      React.createElement(
-        "button",
-        {
-          onClick: () => { if (sortBy === id) setSortAsc(!sortAsc); else { setSortBy(id); setSortAsc(true); } },
-          className: `inline-flex items-center gap-1 uppercase tracking-widest hover:text-slate-700 dark:hover:text-neutral-200 ${sortBy === id ? "text-slate-700 dark:text-neutral-200" : ""}`,
+    if (commercialNodes.length > 0) {
+      const jitteredCommercial = applyJitter(
+        commercialNodes,
+        "C",
+        "L",
+        null,
+        0.006,
+      );
+      traces.push({
+        type: "scatter",
+        mode: "markers",
+        x: jitteredCommercial.map((p) => p._jX),
+        y: jitteredCommercial.map((p) => p._jY),
+        text: jitteredCommercial.map(
+          (p) =>
+            `<b>[Commercial] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
+        ),
+        hovertemplate: "%{text}<extra></extra>",
+        customdata: jitteredCommercial.map((p) => [
+          p.L,
+          p.C,
+          p.H,
+          { brand: p.brand, originalIndex: p.originalIndex },
+        ]),
+        marker: {
+          symbol: "triangle-up",
+          size: 10,
+          color: jitteredCommercial.map((p) => p.color),
+          line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
         },
-        label,
-        sortBy === id && React.createElement(Icon, { name: sortAsc ? "arrow-up" : "arrow-down", className: "w-3 h-3" }),
-      ),
-    );
+      });
+    }
+    return traces;
+  }, [
+    points,
+    isDark,
+    names,
+    adjectives,
+    savedColors,
+    lockedNouns,
+    lockedAdjectives,
+    viewMode,
+    showText,
+    targetH,
+    colorData,
+    filterFn,
+  ]);
+  const data = useMemo(() => {
+    if (viewMode === "swatches") return [];
+    const traces = [...baseTraces];
+    traces.push({
+      type: "scatter",
+      mode: "lines",
+      x: crosshair?.snapTarget ? [crosshair.rawC, crosshair.snapTarget.C] : [],
+      y: crosshair?.snapTarget ? [crosshair.rawL, crosshair.snapTarget.L] : [],
+      line: {
+        color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
+        width: 2,
+        dash: "dot",
+      },
+      hoverinfo: "skip",
+    });
+    traces.push({
+      type: "scatter",
+      mode: "markers",
+      x: [crosshair?.rawC],
+      y: [crosshair?.rawL],
+      text: [
+        `<b>Cursor</b><br>L: ${crosshair?.rawL?.toFixed(3)} C: ${crosshair?.rawC?.toFixed(3)} H: ${crosshair?.rawH?.toFixed(1)}\xB0`,
+      ],
+      hovertemplate: "%{text}<extra></extra>",
+      marker: {
+        symbol: "cross",
+        size: 12,
+        color: isDark ? "#F2E8DF" : "#010D00",
+        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
+      },
+      hoverinfo: "skip",
+    });
+    if (tetheringPinId && savedColors[tetheringPinId]) {
+      const p = savedColors[tetheringPinId];
+      traces.push({
+        type: "scatter",
+        mode: "lines",
+        x: [p.C, crosshair?.rawC],
+        y: [p.L, crosshair?.rawL],
+        line: { color: "#f59e0b", width: 2, dash: "dash" },
+        hoverinfo: "skip",
+      });
+    }
+    return traces;
+  }, [baseTraces, crosshair, isDark, viewMode, tetheringPinId, savedColors]);
+  const voronoiContent = useMemo(() => {
+    if (viewMode !== "bins") return { cells: [], mask: null };
+    try {
+      const filterFnSlice = (p) => {
+        if (p.C === 0) return true;
+        const cStepForH = Math.max(1, Math.round(p.C / 0.02));
+        const nH = 6 * cStepForH;
+        const stepH = 360 / nH;
+        const closestH = Math.round(targetH / stepH) * stepH;
+        const h1 = closestH % 360;
+        const h2 = (closestH + 360) % 360;
+        return Math.abs(p.H - h1) < 0.1 || Math.abs(p.H - h2) < 0.1;
+      };
+      const slicePoints = points.filter((p) => !p.isPin && filterFnSlice(p));
+      if (slicePoints.length === 0) return { cells: [], mask: null };
+      const allVoronoiPoints = [...slicePoints];
+      const isMobile = window.innerWidth < 768;
+      const lStep = isMobile ? 0.05 : 0.01;
+      const boundaryPoints = [];
+      for (let l = 0; l <= 1; l += lStep) {
+        let low = 0,
+          high = 0.4;
+        while (high - low > 0.001) {
+          let mid = (low + high) / 2;
+          if (new Color("oklch", [l, mid, targetH]).inGamut("srgb")) {
+            low = mid;
+          } else {
+            high = mid;
+          }
+        }
+        const maxC = Math.min(low, 0.4);
+        boundaryPoints.push([maxC, l]);
+        allVoronoiPoints.push({ C: maxC + 0.005, L: l, isDummy: true });
+        allVoronoiPoints.push({ C: maxC + 0.02, L: l, isDummy: true });
+      }
+      const cStep = isMobile ? 0.05 : 0.01;
+      for (let c = 0; c <= 0.45; c += cStep) {
+        allVoronoiPoints.push({ C: c, L: -0.01, isDummy: true });
+        allVoronoiPoints.push({ C: c, L: 1.01, isDummy: true });
+      }
+      const scaleX = 1;
+      const scaleY = 0.3;
+      const delaunay = d3.Delaunay.from(
+        allVoronoiPoints.map((p) => [p.C * scaleX, p.L * scaleY]),
+      );
+      const voronoi = delaunay.voronoi([
+        -0.1 * scaleX,
+        -0.1 * scaleY,
+        0.5 * scaleX,
+        1.15 * scaleY,
+      ]);
+      const cells = [];
+      allVoronoiPoints.forEach((p, i) => {
+        if (p.isDummy) return;
+        const path = voronoi.renderCell(i);
+        if (path) {
+          const pts = [];
+          path.replace(/([ML])([^,]+),([^MLZ]+)/g, (match, cmd, x, y) => {
+            pts.push([parseFloat(x), parseFloat(y)]);
+            return match;
+          });
+          if (pts.length > 2) {
+            const unscaledPts = pts.map((pt) => [
+              pt[0] / scaleX,
+              pt[1] / scaleY,
+            ]);
+            const unscaledPath =
+              "M" + unscaledPts.map((pt) => pt.join(",")).join("L") + "Z";
+            cells.push({ path: unscaledPath, color: p.color, p });
+          }
+        }
+      });
+      const outerSquare = [
+        [-0.5, -0.5],
+        [1, -0.5],
+        [1, 1.5],
+        [-0.5, 1.5],
+        [-0.5, -0.5],
+      ];
+      const innerBoundary = [[0, 1.2], ...boundaryPoints.reverse(), [0, -0.2]];
+      const maskPath =
+        "M" +
+        outerSquare.map((p) => p.join(",")).join("L") +
+        "Z M" +
+        innerBoundary.map((p) => p.join(",")).join("L") +
+        "Z";
+      return { cells, mask: maskPath };
+    } catch (e) {
+      console.error("Voronoi error:", e);
+      return { cells: [], mask: null };
+    }
+  }, [points, targetH, viewMode]);
+  const layout = useMemo(() => {
+    const shapes = [];
+    if (groupSettings) {
+      const gC = isDark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)";
+      // Neutral C line
+      if (groupSettings.neutralC) {
+        shapes.push({
+          type: "line",
+          x0: groupSettings.neutralC,
+          x1: groupSettings.neutralC,
+          y0: -0.05,
+          y1: 1.05,
+          line: { color: gC, width: 1, dash: "dot" },
+        });
+      }
+      // Vivid C line
+      if (groupSettings.vividC) {
+        shapes.push({
+          type: "line",
+          x0: groupSettings.vividC,
+          x1: groupSettings.vividC,
+          y0: -0.05,
+          y1: 1.05,
+          line: { color: gC, width: 1, dash: "dot" },
+        });
+      }
+      // Light L line (for non-neutrals)
+      if (groupSettings.lightL && groupSettings.neutralC) {
+        shapes.push({
+          type: "line",
+          x0: groupSettings.neutralC,
+          x1: 0.4,
+          y0: groupSettings.lightL,
+          y1: groupSettings.lightL,
+          line: { color: gC, width: 1, dash: "dot" },
+        });
+      }
+      // Neutrals maxL lines
+      if (groupSettings.neutrals && groupSettings.neutralC) {
+        groupSettings.neutrals.forEach(n => {
+          shapes.push({
+            type: "line",
+            x0: 0,
+            x1: groupSettings.neutralC,
+            y0: n.maxL,
+            y1: n.maxL,
+            line: { color: gC, width: 1, dash: "dot" },
+          });
+        });
+      }
+    } else {
+      shapes.push({
+        type: "line",
+        x0: 0,
+        x1: 0.3,
+        y0: 0.5,
+        y1: 0.5,
+        line: { color: isDark ? "#F2E8DF" : "#2B4032", width: 1, dash: "dot" },
+      });
+    }
 
-  return React.createElement(
-    "div",
-    { className: "w-full h-full flex flex-col min-h-0" },
-    // ── header: cursor + actions ──
-    React.createElement(
-      "div",
-      { className: "px-4 py-3 border-b border-slate-100 dark:border-neutral-800 flex flex-wrap items-center gap-x-6 gap-y-3" },
-      React.createElement(
-        "div",
-        { className: "flex items-baseline gap-2" },
-        React.createElement("span", { className: "text-[11px] font-black uppercase tracking-widest text-slate-800 dark:text-neutral-100" }, "Anchors"),
-        React.createElement("span", { className: "text-[10px] font-mono text-slate-400" }, `${rows.length}`),
-        unnamed > 0 && React.createElement("span", { className: "text-[10px] font-mono text-slate-400" }, `· ${unnamed} unnamed`),
-        closePairs > 0 &&
-          React.createElement(
-            "button",
-            {
-              onClick: () => { setSortBy("nn"); setSortAsc(true); },
-              title: `Anchors closer than ΔE ${ANCHOR_CLOSE_DE} to another anchor`,
-              className: "text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:bg-amber-500/25",
-            },
-            `${closePairs} near-duplicate${closePairs === 1 ? "" : "s"}`,
-          ),
-      ),
-      // cursor card
-      React.createElement(
-        "div",
-        { className: "flex items-center gap-3 min-w-0" },
-        React.createElement("button", {
-          onClick: () => setActiveTab("3d"), title: "Open the cursor in Explore",
-          className: "w-8 h-8 rounded-lg border border-black/10 dark:border-white/10 shrink-0",
-          style: { background: cursorHex },
-        }),
-        React.createElement(
-          "div",
-          { className: "flex flex-col min-w-0" },
-          React.createElement("span", { className: "text-[9px] font-bold uppercase tracking-widest text-slate-400" }, "Cursor"),
-          React.createElement(
-            "span",
-            { className: "text-[10px] font-mono text-slate-600 dark:text-neutral-300 whitespace-nowrap" },
-            `L ${cursor.L.toFixed(3)} · C ${cursor.C.toFixed(3)} · H ${cursor.H.toFixed(1)}°`,
-          ),
-          cursorAnchor &&
-            React.createElement(
-              "span",
-              { className: "text-[10px] text-slate-500 dark:text-neutral-400 truncate" },
-              "Named ",
-              React.createElement("b", { className: "uppercase text-slate-800 dark:text-neutral-100" }, cursorAnchor.name || "Unnamed"),
-              ` · ΔE ${cursorAnchor.de.toFixed(1)}`,
-            ),
-        ),
-        React.createElement(
-          "button",
-          {
-            onClick: addAtCursor,
-            className: "ml-1 flex items-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-slate-900 text-white hover:bg-slate-800 transition-colors whitespace-nowrap",
+    if (viewMode === "bins" && voronoiContent.cells.length > 0) {
+      voronoiContent.cells.forEach((cell) => {
+        if (filterPt && !filterPt(cell.p)) return;
+        shapes.push({
+          type: "path",
+          path: cell.path,
+          fillcolor: cell.color,
+          line: {
+            width: 1.5,
+            color: isDark ? "rgba(0,0,0,0.1)" : "rgba(255,255,255,0.4)",
           },
-          React.createElement(Icon, { name: "plus", className: "w-3.5 h-3.5" }),
-          "Add at cursor",
-        ),
-      ),
-    ),
-    // ── selection bar ──
-    (selectedIds.length > 0 || notice) &&
-      React.createElement(
-        "div",
-        { className: "px-4 py-2 border-b border-slate-100 dark:border-neutral-800 flex items-center gap-3 text-[10px] font-bold uppercase tracking-widest text-slate-500" },
-        selectedIds.length > 0 && React.createElement("span", null, `${selectedIds.length} selected`),
-        selectedIds.length > 0 &&
-          React.createElement(
-            "button",
-            {
-              onClick: () => (confirm === "bulk" ? (remove(selectedIds), setConfirm(null)) : setConfirm("bulk")),
-              className: `px-2.5 py-1 rounded-md transition-colors ${confirm === "bulk" ? "bg-red-500 text-white" : "text-red-600 hover:bg-red-50 dark:hover:bg-red-950"}`,
-            },
-            confirm === "bulk" ? `Click again to delete ${selectedIds.length}` : "Delete selected",
-          ),
-        selectedIds.length > 0 &&
-          React.createElement("button", { onClick: () => setSelected({}), className: "px-2 py-1 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800" }, "Clear"),
-        notice && React.createElement("span", { className: "ml-auto normal-case tracking-normal font-medium text-slate-500 dark:text-neutral-400" }, notice),
-      ),
-    // ── gallery / matrix: the same swatch grid the other tabs use ──
-    layout !== "table" && rows.length > 0 &&
-      React.createElement(
-        "div",
-        { className: "relative flex-1 min-h-0" },
-        React.createElement(ViewportSwatches, {
-          items: shown.map((r) => ({
-            id: r.id, type: "anchor", L: r.L, C: r.C, H: r.H, hex: r.hex,
-            displayName: r.name || "Unnamed", tags: [], note: "", erpCode: "", inSrgb: true,
-          })),
-          layout: layout === "matrix" ? "matrix" : "gallery",
-          swatchZoom,
-          externalSort: true,
-          dim1: "L",
-          dim2: "H",
-          dim1Labels: (v) => `L: ${Number(v).toFixed(2)}`,
-          dim2Labels: (v) => `H: ${Number(v).toFixed(0)}\u00b0`,
-          handlePointClick: (pt) => handleUpdate(Array.isArray(pt) ? pt.slice(0, 3) : [pt.L, pt.C, pt.H]),
-          viewportSearchQuery: "",
-          viewportTagFilter: "",
-          crosshair: null,
-          selectedIds,
-          setSelectedIds: (next) => {
-            const ids = typeof next === "function" ? next(selectedIds) : next;
-            setSelected(Object.fromEntries((ids || []).map((id) => [id, true])));
-          },
-        }),
-      ),
-    // ── table ──
-    (layout === "table" || rows.length === 0) &&
-    React.createElement(
-      "div",
-      { ref: scrollRef, className: "flex-1 min-h-0 overflow-auto custom-scrollbar" },
-      rows.length === 0
-        ? React.createElement(
-            "div",
-            { className: "h-full flex flex-col items-center justify-center gap-2 p-8 text-center" },
-            React.createElement("span", { className: "text-[11px] font-bold uppercase tracking-widest text-slate-400" }, "No anchors yet"),
-            React.createElement("p", { className: "text-[12px] text-slate-500 max-w-sm" }, "Move the cursor to a colour and press Add at cursor, or import an anchors CSV with Type NOUN rows."),
-          )
-        : React.createElement(
-            "table",
-            { className: "w-full border-collapse" },
-            React.createElement(
-              "thead",
-              { className: "sticky top-0 z-10 bg-white dark:bg-neutral-900 border-b border-slate-100 dark:border-neutral-800" },
-              React.createElement(
-                "tr",
-                null,
-                React.createElement(
-                  "th",
-                  { className: th + " w-8" },
-                  React.createElement("input", {
-                    type: "checkbox", "aria-label": "Select all shown",
-                    checked: shown.length > 0 && shown.every((r) => selected[r.id]),
-                    onChange: (e) => { const v = e.target.checked; setSelected((p) => { const n = { ...p }; shown.forEach((r) => (n[r.id] = v)); return n; }); },
-                    className: "rounded border-slate-300 text-sky-500 focus:ring-sky-500",
-                  }),
-                ),
-                React.createElement("th", { className: th + " w-10" }),
-                sortHeader("name", "Name"),
-                sortHeader("L", "L", true),
-                sortHeader("C", "C", true),
-                sortHeader("H", "H °", true),
-                sortHeader("nn", "Nearest anchor"),
-                sortHeader("cursor", "ΔE cursor", true),
-                React.createElement("th", { className: th + " text-right" }, ""),
-              ),
-            ),
-            React.createElement(
-              "tbody",
-              null,
-              first > 0 && React.createElement("tr", { key: "pad-top", "aria-hidden": true, style: { height: first * ANCHOR_ROW_H } }),
-              shown.slice(first, last).map((r) =>
-                React.createElement(AnchorRow, {
-                  key: r.id, r, act,
-                  isHere: !!cursorAnchor && cursorAnchor.id === r.id,
-                  checked: !!selected[r.id],
-                  confirming: confirm === r.id,
-                  autoFocus: focusId === r.id,
-                  deCursor: anchorRowDE(r, cursor).toFixed(1),
+          layer: "below",
+        });
+      });
+      if (voronoiContent.mask) {
+        shapes.push({
+          type: "path",
+          path: voronoiContent.mask,
+          fillcolor: isDark ? "#052212" : "#F2E8DF",
+          line: { width: 0 },
+          layer: "below",
+          fillrule: "evenodd",
+        });
+      }
+    }
+    return {
+      uirevision: "true",
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      dragmode: "pan",
+      xaxis: {
+        title: "Chroma",
+        range: [0, 0.4],
+        showgrid: viewMode !== "bins",
+        zeroline: viewMode !== "bins",
+        gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
+        titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
+        tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
+      },
+      yaxis: {
+        title: "Lightness",
+        range: [0, 1.05],
+        showgrid: viewMode !== "bins",
+        zeroline: viewMode !== "bins",
+        gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
+        titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
+        tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
+      },
+      margin: { l: 50, r: 20, b: 50, t: 20 },
+      shapes,
+      showlegend: false,
+      // Dots mode gets the matching OKLCH plane behind the points.
+      images:
+        viewMode === "dots"
+          ? [
+              {
+                source: oklchPlaneDataUri("cl", crosshair?.rawH !== undefined ? crosshair.rawH : 0, {
+                  xMax: 0.4,
+                  yMax: 1.05,
                 }),
-              ),
-              last < shown.length && React.createElement("tr", { key: "pad-bottom", "aria-hidden": true, style: { height: (shown.length - last) * ANCHOR_ROW_H } }),
-            ),
-          ),
-    ),
-  );
-};
-
-
-// ─── Colour names ───────────────────────────────────────────────────────────
-// One rule everywhere: a colour's own name override, else the name of the pin
-// it is tethered to, else the name of the nearest anchor (the cell it sits in
-// in Explore). Returned upper-case; "" when nothing names it.
-const UNNAMED_RE = /^unnamed( noun)?$/i;
-// How far a pin pulls the cursor onto itself: 1 ΔE (OkLab distance ×100).
-// Explore's bins views outline this zone around every pin.
-const PIN_PULL = 0.01;
-const cleanName = (v) => {
-  const s = String(v || "").trim();
-  return UNNAMED_RE.test(s) ? "" : s;
-};
-function getInheritedPinNames(sc, savedColors = {}, names = {}, depth = 0) {
-  if (!sc) return { displayName: "", source: "anchor", sourceId: "" };
-  const own = cleanName(sc.nameOverride);
-  const parent = sc.parentPinId && depth < 20 ? savedColors[sc.parentPinId] : null;
-  if (parent) {
-    const p = getInheritedPinNames(parent, savedColors, names, depth + 1);
-    return { displayName: (own || p.displayName).toUpperCase(), source: "pin", sourceId: parent.id };
+                xref: "x",
+                yref: "y",
+                x: 0,
+                y: 1.05,
+                sizex: 0.4,
+                sizey: 1.05,
+                sizing: "stretch",
+                layer: "below",
+                opacity: 0.25,
+              },
+            ].filter((im) => !!im.source)
+          : [],
+    };
+  }, [isDark, viewMode, voronoiContent, filterPt, groupSettings, crosshair?.rawH]);
+  const handleBgClick = (cValue, lValue) => {
+    handlePointClick([
+      Math.max(0, Math.min(1, lValue)),
+      Math.max(0, Math.min(0.4, cValue)),
+      crosshair?.rawH,
+    ]);
+  };
+  if (viewMode === "swatches") {
+    return React.createElement(ViewportSwatches, {
+      items: finalSwatchItems,
+      layout: swatchLayout,
+      swatchZoom,
+      dim1: "L",
+      dim2: "C",
+      dim1Labels: (v) => `L: ${Number(v).toFixed(3)}`,
+      dim2Labels: (v) => `C: ${Number(v).toFixed(2)}`,
+      handlePointClick,
+      viewportSearchQuery,
+      viewportTagFilter,
+      crosshair,
+    });
   }
-  if (own) return { displayName: own.toUpperCase(), source: sc.type || "pin", sourceId: sc.id || "" };
-  const an = findNearestAnchor(Number(sc.L), Number(sc.C), Number(sc.H), savedColors);
-  if (!an) return { displayName: "", source: "anchor", sourceId: "" };
-  return { displayName: cleanName(anchorNameOf(an, names)).toUpperCase(), source: an.sc.type, sourceId: an.nameKey };
+  return React.createElement(PlotlyChart, {
+    data,
+    layout,
+    onPointClick: handlePointClick,
+    onBgClick: handleBgClick,
+    onRelayout: handleRelayout,
+    theme,
+  });
+};
+const ViewChromaRings = ({
+  colorData,
+  points,
+  crosshair,
+  handlePointClick,
+  theme,
+  names,
+  adjectives,
+  savedColors = {},
+  lockedNouns,
+  lockedAdjectives,
+  viewMode,
+  tetheringPinId,
+  swatchLayout,
+  swatchZoom,
+  viewportFilter,
+  viewportSearchQuery,
+  viewportTagFilter,
+  filterPt,
+  filterL,
+  filterC,
+  filterH,
+  groupSettings,
+}) => {
+  const isDark = theme === "dark";
+  const [showText, setShowText] = useState(false);
+  const handleRelayout = (e) => {
+    if (e["xaxis.range[0]"] !== void 0 && e["xaxis.range[1]"] !== void 0) {
+      setShowText(e["xaxis.range[1]"] - e["xaxis.range[0]"] < 120);
+    } else if (e["xaxis.autorange"]) {
+      setShowText(false);
+    }
+  };
+  const targetC = crosshair?.rawC || 0;
+  const filterFn = useCallback(
+    (p, isCommercial = false) => {
+      if (filterPt && !filterPt(p)) return false;
+      if (p.C === 0 && targetC === 0) return true;
+      if (
+        p.isPin ||
+        p.isCustomAnchor ||
+        p.type === "pin" ||
+        p.type === "anchor" ||
+        p.url !== void 0 ||
+        p.hex !== void 0 ||
+        isCommercial
+      ) {
+        return Math.abs(p.C - targetC) <= Math.max(0.02, filterC);
+      }
+      return true;
+    },
+    [targetC, filterPt, filterC],
+  );
+  const swatchItems = useMemo(() => {
+    if (viewMode !== "swatches") return [];
+    const res = [];
+    points
+      .filter((p) => !p.isPin && filterFn(p))
+      .forEach((p) => {
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+        res.push({
+          ...p,
+          type: "grid",
+          displayName:
+            `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
+            "Unnamed",
+          hex: p.color,
+        });
+      });
+    Object.values(savedColors).forEach((sc) => {
+      if (filterFn(sc)) {
+        if (sc.type === "anchor") {
+          res.push({
+            ...sc,
+            displayName:
+              `${sc.adjOverride || adjectives[sc.adjId] || ""} ${sc.nameOverride || names[sc.anchorId] || ""}`.trim() ||
+              sc.id,
+            hex: sc.srgbHex || sc.color,
+          });
+        } else if (sc.type === "pin") {
+          res.push({
+            ...sc,
+            displayName: sc.id || "Pin",
+            hex: sc.srgbHex || sc.color,
+          });
+        }
+      }
+    });
+    if (colorData) {
+      Object.keys(colorData).forEach((brand) => {
+        colorData[brand].forEach((c) => {
+          if (filterFn(c, true)) {
+            res.push({
+              ...c,
+              type: "commercial",
+              displayName: `${brand} - ${c.name}`,
+              hex: new Color("oklch", [c.L, c.C, c.H])
+                .to("srgb")
+                .toString({ format: "hex" }),
+            });
+          }
+        });
+      });
+    }
+    return res;
+  }, [
+    points,
+    savedColors,
+    colorData,
+    lockedNouns,
+    lockedAdjectives,
+    viewMode,
+    names,
+    adjectives,
+    targetC,
+  ]);
+  const finalSwatchItems = useMemo(() => {
+    if (viewMode !== "swatches") return [];
+    return swatchItems.map((item) => {
+      if (item.type === "pin") {
+        const { displayAdj, displayName } = getInheritedPinNames(
+          item,
+          savedColors,
+          names,
+          adjectives,
+        );
+        return {
+          ...item,
+          displayName: `${displayAdj} ${displayName}`.trim() || item.id,
+        };
+      }
+      return item;
+    });
+  }, [swatchItems, viewMode, savedColors, names, adjectives]);
+  const baseTraces = useMemo(() => {
+    if (viewMode === "swatches") return [];
+    const filtered = points.filter((p) => !p.isPin && filterFn(p));
+    const filteredBurnt = Object.values(savedColors).filter(
+      (p) => p.type === "pin" && filterFn(p),
+    );
+    const traces = [];
+    traces.push({
+      type: "scatter",
+      mode: viewMode === "bins" ? (showText ? "text" : "markers") : "markers",
+      x: filtered.map((p) => p.H),
+      y: filtered.map((p) => p.L),
+      text: filtered.map((p) => {
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+        const adj = adjectives[p.lStr] || "";
+        const noun = names[nounId] || "";
+        const fullName = `${adj} ${noun}`.trim() || "Unnamed";
+        const binText =
+          adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`;
+        return viewMode === "bins"
+          ? binText
+          : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`;
+      }),
+      textposition: "middle center",
+      textfont: {
+        size: 12,
+        family: "Inter, sans-serif",
+        color: filtered.map((p) => (p.L > 0.55 ? "#010D00" : "#F2E8DF")),
+      },
+      hovertemplate:
+        viewMode === "bins"
+          ? "<b>%{customdata[3].fullName}</b><br>L: %{y:.3f} H: %{x:.1f}\xB0<extra></extra>"
+          : "%{text}<extra></extra>",
+      customdata: filtered.map((p) => {
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+        const fullName =
+          `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
+          "Unnamed";
+        return [p.L, p.C, p.H, { anchorId: nounId, adjId: p.lStr, fullName }];
+      }),
+      marker: {
+        size: 10,
+        color: filtered.map((p) => p.color),
+        opacity: viewMode === "bins" ? (showText ? 0 : 0.3) : 0.8,
+        line: {
+          width: 0.5,
+          color: isDark ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.2)",
+        },
+      },
+    });
+    const gridLockedNodes = filtered
+      .filter(
+        (p) =>
+          !p.isCustomAnchor &&
+          lockedNouns[p.parentNounId || `${p.cStr}-${p.hStr}`] &&
+          lockedAdjectives[p.lStr],
+      )
+      .map((p) => {
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+        return {
+          ...p,
+          displayName:
+            `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
+            "Unnamed",
+        };
+      });
+    const customLockedNodes = Object.values(savedColors)
+      .filter((sc) => sc.type === "anchor" && filterFn(sc))
+      .map((p) => {
+        const displayName =
+          `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
+          p.id ||
+          "Custom Anchor";
+        return { ...p, displayName };
+      });
+    const lockedNodes = [...gridLockedNodes, ...customLockedNodes];
+    const pinNodes = filteredBurnt.map((p) => {
+      const displayName =
+        `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
+        "Unnamed Pin";
+      return { ...p, displayName };
+    });
+    traces.push({
+      type: "scatter",
+      mode: "markers",
+      x: lockedNodes.map((p) => p.H),
+      y: lockedNodes.map((p) => p.L),
+      text: lockedNodes.map(
+        (p) =>
+          `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
+      ),
+      hovertemplate: "%{text}<extra></extra>",
+      customdata: lockedNodes.map((p) => [
+        p.L,
+        p.C,
+        p.H,
+        { anchorId: p.anchorId || p.id, adjId: p.adjId },
+      ]),
+      marker: {
+        symbol: "square",
+        size: 10,
+        color: lockedNodes.map((p) => p.color),
+        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
+      },
+    });
+    traces.push({
+      type: "scatter",
+      mode: "markers",
+      x: pinNodes.map((p) => p.H),
+      y: pinNodes.map((p) => p.L),
+      text: pinNodes.map(
+        (p) =>
+          `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
+      ),
+      hovertemplate: "%{text}<extra></extra>",
+      customdata: pinNodes.map((p) => [p.L, p.C, p.H, { pinId: p.id }]),
+      marker: {
+        symbol: "x",
+        size: 12,
+        color: pinNodes.map((p) => p.color),
+        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
+      },
+    });
+    const commercialNodes = [];
+    if (colorData) {
+      Object.keys(colorData).forEach((brand) => {
+        colorData[brand].forEach((c) => {
+          if (filterFn(c, true)) {
+            commercialNodes.push({
+              ...c,
+              color: new Color("oklch", [c.L, c.C, c.H])
+                .to("srgb")
+                .toString({ format: "hex" }),
+              displayName: `${brand} - ${c.name}`,
+            });
+          }
+        });
+      });
+    }
+    if (commercialNodes.length > 0) {
+      traces.push({
+        type: "scatter",
+        mode: "markers",
+        x: commercialNodes.map((p) => p.H),
+        y: commercialNodes.map((p) => p.L),
+        text: commercialNodes.map(
+          (p) =>
+            `<b>[Commercial] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
+        ),
+        hovertemplate: "%{text}<extra></extra>",
+        customdata: commercialNodes.map((p) => [
+          p.L,
+          p.C,
+          p.H,
+          { brand: p.brand, originalIndex: p.originalIndex },
+        ]),
+        marker: {
+          symbol: "triangle-up",
+          size: 10,
+          color: commercialNodes.map((p) => p.color),
+          line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
+        },
+      });
+    }
+    return traces;
+  }, [
+    points,
+    isDark,
+    names,
+    adjectives,
+    savedColors,
+    lockedNouns,
+    lockedAdjectives,
+    viewMode,
+    showText,
+    targetC,
+    colorData,
+    filterFn,
+  ]);
+  const data = useMemo(() => {
+    if (viewMode === "swatches") return [];
+    const traces = [...baseTraces];
+    traces.push({
+      type: "scatter",
+      mode: "lines",
+      x: crosshair?.snapTarget ? [crosshair.rawH, crosshair.snapTarget.H] : [],
+      y: crosshair?.snapTarget ? [crosshair.rawL, crosshair.snapTarget.L] : [],
+      line: {
+        color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
+        width: 2,
+        dash: "dot",
+      },
+      hoverinfo: "skip",
+    });
+    traces.push({
+      type: "scatter",
+      mode: "markers",
+      x: [crosshair?.rawH],
+      y: [crosshair?.rawL],
+      text: [
+        `<b>Cursor</b><br>L: ${crosshair?.rawL?.toFixed(3)} C: ${crosshair?.rawC?.toFixed(3)} H: ${crosshair?.rawH?.toFixed(1)}\xB0`,
+      ],
+      hovertemplate: "%{text}<extra></extra>",
+      marker: {
+        symbol: "cross",
+        size: 12,
+        color: isDark ? "#F2E8DF" : "#010D00",
+        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
+      },
+      hoverinfo: "skip",
+    });
+    if (tetheringPinId && savedColors[tetheringPinId]) {
+      const p = savedColors[tetheringPinId];
+      traces.push({
+        type: "scatter",
+        mode: "lines",
+        x: [p.H, crosshair?.rawH],
+        y: [p.L, crosshair?.rawL],
+        line: { color: "#f59e0b", width: 2, dash: "dash" },
+        hoverinfo: "none",
+      });
+    }
+    return traces;
+  }, [baseTraces, crosshair, isDark, viewMode, tetheringPinId, savedColors]);
+  const voronoiContent = useMemo(() => {
+    if (viewMode !== "bins") return { cells: [] };
+    try {
+      const gridC = Math.round(targetC / 0.02) * 0.02;
+      const slicePoints = points.filter(
+        (p) => !p.isPin && p.C > 0 && Math.abs(p.C - gridC) <= 0.001,
+      );
+      if (slicePoints.length === 0) return { cells: [] };
+      const allVoronoiPoints = [...slicePoints];
+      const isMobile = window.innerWidth < 768;
+      const lStep = isMobile ? 0.04 : 0.02;
+      const hStep = isMobile ? 10 : 5;
+      for (let l = -0.05; l <= 1.05; l += lStep) {
+        for (let h = 0; h < 360; h += hStep) {
+          if (l < 0 || l > 1) {
+            allVoronoiPoints.push({ H: h, L: l, isDummy: true });
+            continue;
+          }
+          const cColor = new Color("oklch", [l, gridC, h]);
+          if (!cColor.inGamut("srgb")) {
+            allVoronoiPoints.push({ H: h, L: l, isDummy: true });
+          }
+        }
+      }
+      const scaleX = 1;
+      const scaleY = 360;
+      const paddedVoronoi = [];
+      allVoronoiPoints.forEach((p) => {
+        paddedVoronoi.push({ ...p, H: p.H - 360 });
+        paddedVoronoi.push(p);
+        paddedVoronoi.push({ ...p, H: p.H + 360 });
+      });
+      const delaunay = d3.Delaunay.from(
+        paddedVoronoi.map((p) => [p.H * scaleX, p.L * scaleY]),
+      );
+      const voronoi = delaunay.voronoi([
+        -360 * scaleX,
+        -0.1 * scaleY,
+        720 * scaleX,
+        1.15 * scaleY,
+      ]);
+      const cells = [];
+      allVoronoiPoints.forEach((p, i) => {
+        if (p.isDummy) return;
+        const path = voronoi.renderCell(3 * i + 1);
+        if (path) {
+          const pts = [];
+          path.replace(/([ML])([^,]+),([^MLZ]+)/g, (match, cmd, x, y) => {
+            pts.push([parseFloat(x), parseFloat(y)]);
+            return match;
+          });
+          if (pts.length > 2) {
+            const unscaledPts = pts.map((pt) => [
+              pt[0] / scaleX,
+              pt[1] / scaleY,
+            ]);
+            const unscaledPath =
+              "M" + unscaledPts.map((pt) => pt.join(",")).join("L") + "Z";
+            cells.push({ path: unscaledPath, color: p.color, p });
+          }
+        }
+      });
+      return { cells };
+    } catch (e) {
+      console.error("Voronoi error:", e);
+      return { cells: [] };
+    }
+  }, [points, targetC, viewMode]);
+  const layout = useMemo(() => {
+    const shapes = [];
+    if (groupSettings) {
+      const gC = isDark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)";
+      shapes.push({
+        type: "line",
+        x0: 0,
+        x1: 360,
+        y0: groupSettings.lightL || 0.5,
+        y1: groupSettings.lightL || 0.5,
+        line: { color: gC, width: 1, dash: "dot" },
+      });
+      if (groupSettings.hues) {
+        hueBoundaries(groupSettings.hues).forEach((edge) => {
+          shapes.push({
+            type: "line",
+            x0: edge,
+            x1: edge,
+            y0: 0,
+            y1: 1.05,
+            line: { color: gC, width: 1, dash: "dot" },
+          });
+        });
+      }
+    } else {
+      shapes.push({
+        type: "line",
+        x0: 0,
+        x1: 360,
+        y0: 0.5,
+        y1: 0.5,
+        line: { color: isDark ? "#F2E8DF" : "#2B4032", width: 1, dash: "dot" },
+      });
+    }
+
+    if (viewMode === "bins" && voronoiContent.cells.length > 0) {
+      voronoiContent.cells.forEach((cell) => {
+        if (filterPt && !filterPt(cell.p)) return;
+        shapes.push({
+          type: "path",
+          path: cell.path,
+          fillcolor: cell.color,
+          line: {
+            width: 1.5,
+            color: isDark ? "rgba(0,0,0,0.1)" : "rgba(255,255,255,0.4)",
+          },
+          layer: "below",
+        });
+      });
+    }
+    return {
+      uirevision: "true",
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      dragmode: "pan",
+      xaxis: {
+        title: "Hue Angle (\xB0)",
+        range: [0, 360],
+        showgrid: viewMode !== "bins",
+        zeroline: viewMode !== "bins",
+        gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
+        titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
+        tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
+        tickmode: "linear",
+        dtick: 30,
+      },
+      yaxis: {
+        title: "Lightness",
+        range: [0, 1.05],
+        showgrid: viewMode !== "bins",
+        zeroline: viewMode !== "bins",
+        gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
+        titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
+        tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
+      },
+      margin: { l: 50, r: 20, b: 50, t: 20 },
+      shapes,
+      showlegend: false,
+      // Dots mode gets the matching OKLCH plane behind the points.
+      images:
+        viewMode === "dots"
+          ? [
+              {
+                source: oklchPlaneDataUri("hl", crosshair?.rawC !== undefined ? crosshair.rawC : 0.12, {
+                  xMax: 360,
+                  yMax: 1.05,
+                }),
+                xref: "x",
+                yref: "y",
+                x: 0,
+                y: 1.05,
+                sizex: 360,
+                sizey: 1.05,
+                sizing: "stretch",
+                layer: "below",
+                opacity: 0.25,
+              },
+            ].filter((im) => !!im.source)
+          : [],
+    };
+  }, [isDark, viewMode, voronoiContent, filterPt, groupSettings, crosshair?.rawC]);
+  const handleBgClick = (hValue, lValue) => {
+    handlePointClick([
+      Math.max(0, Math.min(1, lValue)),
+      crosshair?.rawC || 0,
+      Math.max(0, Math.min(360, hValue)),
+    ]);
+  };
+  if (viewMode === "swatches") {
+    return React.createElement(ViewportSwatches, {
+      items: finalSwatchItems,
+      layout: swatchLayout,
+      swatchZoom,
+      dim1: "L",
+      dim2: "H",
+      dim1Labels: (v) => `L: ${Number(v).toFixed(3)}`,
+      dim2Labels: (v) => `H: ${Number(v).toFixed(0)}\xB0`,
+      handlePointClick,
+      viewportSearchQuery,
+      viewportTagFilter,
+      crosshair,
+    });
+  }
+  return React.createElement(PlotlyChart, {
+    data,
+    layout,
+    onPointClick: handlePointClick,
+    onBgClick: handleBgClick,
+    onRelayout: handleRelayout,
+    theme,
+  });
+};
+function getInheritedPinNames(
+  sc,
+  savedColors = {},
+  names = {},
+  adjectives = {},
+  colorData = {},
+) {
+  if (!sc) return { displayAdj: "", displayName: "", source: "anchor", sourceId: "" };
+
+  if (sc.parentPinId && savedColors[sc.parentPinId]) {
+    const parent = savedColors[sc.parentPinId];
+    const parentRes = getInheritedPinNames(
+      parent,
+      savedColors,
+      names,
+      adjectives,
+      colorData,
+    );
+    let finalAdj = (sc.adjOverride || parentRes.displayAdj || "").trim();
+    let finalName = (sc.nameOverride || parentRes.displayName || "").trim();
+    if (finalAdj.toLowerCase() === "unnamed" || finalAdj.toLowerCase() === "unnamed adj") finalAdj = "";
+    if (finalName.toLowerCase() === "unnamed" || finalName.toLowerCase() === "unnamed noun") finalName = "";
+    return {
+      displayAdj: finalAdj.toUpperCase(),
+      displayName: finalName.toUpperCase(),
+      source: "pin",
+      sourceId: parent.id,
+    };
+  }
+
+  let source = sc.parentPinId ? "pin" : "anchor";
+  let sourceId = sc.parentPinId || sc.anchorId || sc.nounId || sc.id || "";
+
+  // 1. Check user explicit overrides
+  let inheritedAdj = sc.adjOverride ? sc.adjOverride.trim() : "";
+  let inheritedName = sc.nameOverride ? sc.nameOverride.trim() : "";
+
+  // 2. Check direct dictionary matches by IDs if name is not set
+  if (!inheritedName) {
+    const checkDict = (id) => {
+      if (!id || String(id).startsWith("commercial-")) return "";
+      const val = names[id];
+      if (val && typeof val === "string" && val.trim() && val.trim().toLowerCase() !== "unnamed" && val.trim().toLowerCase() !== "unnamed noun") {
+        return val.trim();
+      }
+      return "";
+    };
+
+    if (sc.anchorId && savedColors[sc.anchorId]) {
+      const nc = savedColors[sc.anchorId];
+      inheritedName = nc.nameOverride || checkDict(nc.id) || checkDict(nc.anchorId);
+      source = nc.type || "anchor";
+      sourceId = nc.id || nc.anchorId;
+    } else if (sc.nounId && savedColors[sc.nounId]) {
+      const nc = savedColors[sc.nounId];
+      inheritedName = nc.nameOverride || checkDict(nc.id) || checkDict(nc.anchorId);
+      source = nc.type || "anchor";
+      sourceId = nc.id || nc.anchorId;
+    }
+
+    if (!inheritedName) {
+      inheritedName = checkDict(sc.anchorId) || checkDict(sc.nounId) || checkDict(sc.id);
+    }
+  }
+
+  // 3. Parametric coordinate lookup from C and H
+  const scC = sc.C !== undefined ? sc.C : (sc.c !== undefined ? sc.c : null);
+  const scH = sc.H !== undefined ? sc.H : (sc.h !== undefined ? sc.h : null);
+  const scL = sc.L !== undefined ? sc.L : (sc.l !== undefined ? sc.l : null);
+
+  if (!inheritedName && scC !== null && scH !== null) {
+    const cStr = Math.round(scC * 100).toString().padStart(2, "0");
+    const hStr = Math.round(scH).toString().padStart(3, "0");
+    const baseNounId = `${cStr}-${hStr}`;
+    let prefix = "L";
+    if (scL !== null) {
+      if (scL >= 0.95) prefix = "UL";
+      else if (scL >= 0.5) prefix = "L";
+      else if (scL >= 0.2) prefix = "D";
+      else prefix = "UD";
+    }
+    const prefNounId = `${prefix}-${baseNounId}`;
+    if (names[prefNounId] && names[prefNounId].trim() && names[prefNounId].trim().toLowerCase() !== "unnamed" && names[prefNounId].trim().toLowerCase() !== "unnamed noun") {
+      inheritedName = names[prefNounId].trim();
+      sourceId = prefNounId;
+    } else if (names[baseNounId] && names[baseNounId].trim() && names[baseNounId].trim().toLowerCase() !== "unnamed" && names[baseNounId].trim().toLowerCase() !== "unnamed noun") {
+      inheritedName = names[baseNounId].trim();
+      sourceId = baseNounId;
+    }
+  }
+
+  // 4. Spatial nearest-neighbor search across savedColors (nounColumns/anchors) and names dictionary
+  if (!inheritedName && scC !== null && scH !== null) {
+    let scA = sc.a;
+    let scB = sc.b;
+    if (scA === undefined || scB === undefined) {
+      // App convention: a = C*sin(H), b = C*cos(H). Using the standard
+      // formulas here put the pin in the wrong quadrant relative to the
+      // anchors it is being compared against.
+      scA = scC * Math.sin((scH * Math.PI) / 180);
+      scB = scC * Math.cos((scH * Math.PI) / 180);
+    }
+
+    let minDist = Infinity;
+    let bestNoun = "";
+    let bestSourceId = sourceId;
+    let bestSourceType = source;
+
+    // Check savedColors nounColumns and anchors
+    Object.values(savedColors).forEach((other) => {
+      if (other.type === "nounColumn" || other.type === "anchor") {
+        const oName = (other.nameOverride || names[other.id] || names[other.anchorId] || "").trim();
+        if (!oName || oName.toLowerCase() === "unnamed" || oName.toLowerCase() === "unnamed noun") return;
+        const oA = other.a !== undefined ? other.a : (other.C || 0) * Math.sin(((other.H || 0) * Math.PI) / 180);
+        const oB = other.b !== undefined ? other.b : (other.C || 0) * Math.cos(((other.H || 0) * Math.PI) / 180);
+        const minL = other.minL !== undefined ? other.minL : (other.L !== undefined ? other.L - 0.05 : -0.01);
+        const maxL = other.maxL !== undefined ? other.maxL : (other.L !== undefined ? other.L + 0.05 : 1.01);
+        const midL = (minL + maxL) / 2;
+        const inL = scL === null || (scL >= minL - 0.01 && scL <= maxL + 0.01);
+        const dL = scL !== null ? (scL - midL) : 0;
+        const d = Math.pow(scA - oA, 2) + Math.pow(scB - oB, 2) + Math.pow(dL * 0.4, 2);
+        if (d < minDist && (inL || d < minDist * 0.5)) {
+          minDist = d;
+          bestNoun = oName;
+          bestSourceId = other.id;
+          bestSourceType = other.type;
+        }
+      }
+    });
+
+    // Check all entries in names dictionary
+    Object.entries(names).forEach(([k, val]) => {
+      if (!val || typeof val !== "string") return;
+      const cleanVal = val.trim();
+      if (!cleanVal || cleanVal.toLowerCase() === "unnamed" || cleanVal.toLowerCase() === "unnamed noun") return;
+      if (String(k).startsWith("commercial-")) return;
+
+      const parts = k.split("-");
+      let nC = 0, nH = 0, nMidL = 0.5;
+      if (parts.length === 2 && !isNaN(parseInt(parts[0], 10)) && !isNaN(parseInt(parts[1], 10))) {
+        nC = parseInt(parts[0], 10) / 100;
+        nH = parseInt(parts[1], 10);
+      } else if (parts.length === 3 && !isNaN(parseInt(parts[1], 10)) && !isNaN(parseInt(parts[2], 10))) {
+        const pref = parts[0];
+        nC = parseInt(parts[1], 10) / 100;
+        nH = parseInt(parts[2], 10);
+        if (pref === "UL") nMidL = 0.975;
+        else if (pref === "L") nMidL = 0.725;
+        else if (pref === "D") nMidL = 0.35;
+        else if (pref === "UD") nMidL = 0.1;
+      } else {
+        return;
+      }
+
+      const nA = nC * Math.cos((nH * Math.PI) / 180);
+      const nB = nC * Math.sin((nH * Math.PI) / 180);
+      const dL = scL !== null ? (scL - nMidL) : 0;
+      const d = Math.pow(scA - nA, 2) + Math.pow(scB - nB, 2) + Math.pow(dL * 0.4, 2);
+      if (d < minDist) {
+        minDist = d;
+        bestNoun = cleanVal;
+        bestSourceId = k;
+        bestSourceType = "anchor";
+      }
+    });
+
+    if (bestNoun) {
+      inheritedName = bestNoun;
+      sourceId = bestSourceId;
+      source = bestSourceType;
+    }
+  }
+
+  // 5. Resolve Adjective
+  if (!inheritedAdj) {
+    if (sc.adjId && adjectives[sc.adjId] && adjectives[sc.adjId].trim()) {
+      inheritedAdj = adjectives[sc.adjId].trim();
+    } else if (scL !== null) {
+      const lStr = getLStr(scL);
+      if (adjectives[lStr] && adjectives[lStr].trim()) {
+        inheritedAdj = adjectives[lStr].trim();
+      } else {
+        let closestLDist = Infinity;
+        let bestLAdj = "";
+        Object.entries(adjectives).forEach(([k, v]) => {
+          if (!v || typeof v !== "string" || !v.trim()) return;
+          const numL = parseFloat(k);
+          if (!isNaN(numL)) {
+            const diff = Math.abs(numL - scL);
+            if (diff < closestLDist) {
+              closestLDist = diff;
+              bestLAdj = v.trim();
+            }
+          }
+        });
+        if (bestLAdj) inheritedAdj = bestLAdj;
+      }
+    }
+  }
+
+  // Sanitize
+  if (inheritedName.toLowerCase() === "unnamed" || inheritedName.toLowerCase() === "unnamed noun") {
+    inheritedName = "";
+  }
+  if (inheritedAdj.toLowerCase() === "unnamed" || inheritedAdj.toLowerCase() === "unnamed adj") {
+    inheritedAdj = "";
+  }
+
+  return {
+    displayAdj: inheritedAdj.toUpperCase(),
+    displayName: inheritedName.toUpperCase(),
+    source,
+    sourceId,
+  };
 }
 
-// --- Same-anchor filtering --------------------------------------------------
-// "Same anchor" asks one question: is this colour named by the same anchor as
-// the cursor? Names are compared rather than ids, so two anchors that share a
-// name group together.
-// ─── Anchors are points ─────────────────────────────────────────────────────
-// An anchor names one colour. Any other colour takes the name of the anchor
-// nearest to it in OkLab (straight-line distance over L, a, b), which is the
-// same rule that shapes the cells in Explore. Old lightness-range columns still
-// count: the distance is measured to the nearest point of their range.
-const ANCHOR_LIST_CACHE = new WeakMap();
-const anchorPointsOf = (savedColors) => {
-  if (!savedColors) return [];
-  const hit = ANCHOR_LIST_CACHE.get(savedColors);
-  if (hit) return hit;
-  const list = [];
-  Object.values(savedColors).forEach((sc) => {
-    if (!sc || (sc.type !== "nounColumn" && sc.type !== "anchor")) return;
-    const C = Number(sc.C), H = Number(sc.H) || 0;
-    if (!isFinite(C)) return;
-    let minL, maxL;
-    if (sc.type === "anchor") {
-      minL = maxL = Number(sc.L);
-    } else {
-      minL = isFinite(sc.minL) ? sc.minL : 0;
-      maxL = isFinite(sc.maxL) ? sc.maxL : 1;
-    }
-    if (!isFinite(minL) || !isFinite(maxL)) return;
-    const h = (H * Math.PI) / 180;
-    const nameKey =
-      sc.type === "anchor"
-        ? sc.anchorId || sc.id
-        : sc.id;
-    list.push({ id: sc.id, nameKey, sc, minL, maxL, a: C * Math.sin(h), b: C * Math.cos(h) });
-  });
-  ANCHOR_LIST_CACHE.set(savedColors, list);
-  return list;
-};
-// Squared OkLab distance from a colour to an anchor (point or L range).
-const anchorDist2 = (L, a, b, an) => {
-  const dL = L < an.minL ? an.minL - L : L > an.maxL ? L - an.maxL : 0;
-  return dL * dL + (a - an.a) * (a - an.a) + (b - an.b) * (b - an.b);
-};
-const findNearestAnchor = (L, C, H, savedColors, opts = {}) => {
-  const list = anchorPointsOf(savedColors);
-  if (!list.length || !isFinite(L) || !isFinite(C)) return null;
-  const h = ((Number(H) || 0) * Math.PI) / 180, a = C * Math.sin(h), b = C * Math.cos(h);
-  let best = null, bd = Infinity;
-  for (const an of list) {
-    if (opts.named && !opts.named(an)) continue;
-    const d = anchorDist2(L, a, b, an);
-    if (d < bd) { bd = d; best = an; }
-  }
-  return best ? { ...best, dist: Math.sqrt(bd) } : null;
-};
-const anchorNameOf = (an, names) =>
-  String((names && names[an.nameKey]) || (names && names[an.id]) || an.sc.nameOverride || "").trim();
-// CSV headers in any case or spacing ("NOUN", "noun", "Oklch L") map onto the
-// names the importer reads, so a file exported elsewhere still loads its names.
-const CSV_CANONICAL_KEYS = "Adjective Anchor AnchorId Anchor_ID Brand BrandName Brand_Name CIE_A CIE_B CIE_L DoorProfile Door_Profile ERP_Code HEX ID Illuminant Image LAB_L Lab_A Lab_B Lab_L Material Measurement_Date Measurement_Device Measurement_Method Name Note Noun NounOverride Noun_Override OKLCH_C OKLCH_H OKLCH_L Observer Original_Index Parent ParentId ParentPinId Parent_ID Parent_Pin_ID PinId Pin_ID Profile RGB_B RGB_G RGB_R Sheen Spectral TactileTexture Tactile_Texture Tags Type URL VisualPattern VisualTexture Visual_Pattern Visual_Texture".split(" ");
-const CSV_KEY_LOOKUP = (() => {
-  const m = {};
-  CSV_CANONICAL_KEYS.forEach((k) => { const n = k.toLowerCase().replace(/[\s_-]+/g, ""); if (!m[n]) m[n] = k; });
-  return m;
-})();
-// Header → canonical name, worked out once per distinct header (not per row).
-const CSV_KEY_CANON = new Map();
-const csvCanonKey = (k) => {
-  let c = CSV_KEY_CANON.get(k);
-  if (c === undefined) {
-    c = CSV_KEY_LOOKUP[String(k).toLowerCase().replace(/[\s_-]+/g, "")] || null;
-    CSV_KEY_CANON.set(k, c);
-  }
-  return c;
-};
-const normalizeCsvRow = (row) => {
-  if (!row || typeof row !== "object") return row;
-  let out = null;
-  for (const k in row) {
-    const canon = csvCanonKey(k);
-    if (canon && canon !== k && row[canon] === undefined && (!out || out[canon] === undefined)) {
-      if (!out) out = { ...row };
-      out[canon] = row[k];
-    }
-  }
-  return out || row;
-};
+// --- Same-noun / same-adjective resolution ---------------------------------
+// Both filters answer one question: does this colour carry the same assigned
+// name as the cursor? The assignment comes from anchors.csv — names[] for
+// nouns (keyed by column), adjectives[] for lightness levels. Comparing the
+// resolved *name* rather than the ID means one name spread across several
+// columns or several lightness levels groups together, and a colour sitting
+// between two anchors still falls under the nearest one.
 
+// Every entity that carries a noun becomes a column candidate. An anchor pins
+// a single sample, but the noun it holds belongs to the whole C/H column, so
+// it stays a candidate at every lightness. A nounColumn keeps its own L range.
+const getNounColumns = (gridData, savedColors) => {
+  const cols = [];
+  const push = (id, a, b, minL, maxL, nameOverride) => {
+    if (id === undefined || id === null) return;
+    if (!isFinite(a) || !isFinite(b)) return;
+    cols.push({ id, a, b, minL, maxL, nameOverride });
+  };
+
+  (gridData?.baseAnchors || []).forEach((ba) => {
+    const a = ba.a !== undefined ? ba.a : ba.C * Math.sin((ba.H * Math.PI) / 180);
+    const b = ba.b !== undefined ? ba.b : ba.C * Math.cos((ba.H * Math.PI) / 180);
+    const id = ba.parentNounId || `${ba.cStr}-${ba.hStr}`;
+    push(id, a, b, -Infinity, Infinity, ba.nameOverride);
+  });
+
+  Object.values(savedColors || {}).forEach((sc) => {
+    if (sc.type === "nounColumn") {
+      const a = sc.a !== undefined ? sc.a : sc.C * Math.sin((sc.H * Math.PI) / 180);
+      const b = sc.b !== undefined ? sc.b : sc.C * Math.cos((sc.H * Math.PI) / 180);
+      push(
+        sc.id,
+        a,
+        b,
+        sc.minL !== undefined && sc.minL !== null ? sc.minL : -Infinity,
+        sc.maxL !== undefined && sc.maxL !== null ? sc.maxL : Infinity,
+        sc.nameOverride,
+      );
+    } else if (sc.type === "anchor") {
+      const a = sc.a !== undefined ? sc.a : sc.C * Math.sin((sc.H * Math.PI) / 180);
+      const b = sc.b !== undefined ? sc.b : sc.C * Math.cos((sc.H * Math.PI) / 180);
+      const adjId = sc.adjId || getLStr(sc.L);
+      const id =
+        sc.anchorId ||
+        `custom-${Math.round(sc.C * 100).toString().padStart(2, "0")}-${Math.round(sc.H).toString().padStart(3, "0")}-${adjId}`;
+      push(id, a, b, -Infinity, Infinity, sc.nameOverride);
+    }
+  });
+
+  return cols;
+};
 
 // Which noun column does this colour fall under? Nearest column in the a/b
 // plane, preferring columns whose lightness range actually contains it.
-// Which anchor names this colour? The nearest one in OkLab.
-const resolveNounKey = (L, C, H, savedColors, namesObj) => {
-  const an = findNearestAnchor(L, C, H, savedColors);
-  if (!an) return "id:none";
-  const name = cleanName(anchorNameOf(an, namesObj));
-  return name ? `name:${name.toLowerCase()}` : `id:${an.id}`;
+const resolveNounKey = (L, C, H, columns, namesObj) => {
+  const normH = isNaN(H) || H === undefined ? 0 : ((H % 360) + 360) % 360;
+  const a = C * Math.sin((normH * Math.PI) / 180);
+  const b = C * Math.cos((normH * Math.PI) / 180);
+
+  let best = null;
+  let bestDist = Infinity;
+  const consider = (requireRange) => {
+    columns.forEach((col) => {
+      if (requireRange && !(L >= col.minL - 0.001 && L <= col.maxL + 0.001)) return;
+      const d = Math.pow(a - col.a, 2) + Math.pow(b - col.b, 2);
+      if (d < bestDist) {
+        bestDist = d;
+        best = col;
+      }
+    });
+  };
+  consider(true);
+  if (!best) consider(false);
+
+  if (!best) {
+    const cStr = Math.round(C * 100).toString().padStart(2, "0");
+    const hStr = Math.round(normH).toString().padStart(3, "0");
+    return `id:${cStr}-${hStr}`;
+  }
+
+  const name = String(
+    (namesObj && namesObj[best.id]) || best.nameOverride || "",
+  ).trim();
+  return name ? `name:${name.toLowerCase()}` : `id:${best.id}`;
 };
 
+// Which adjective level does this colour fall under? The exact lightness
+// bucket if anchors.csv named it, otherwise the nearest named level.
+const resolveAdjectiveKey = (L, adjectivesObj) => {
+  const lStr = getLStr(L);
+  const exact = adjectivesObj && adjectivesObj[lStr];
+  if (exact && String(exact).trim()) {
+    return `name:${String(exact).trim().toLowerCase()}`;
+  }
+
+  let bestName = null;
+  let bestDist = Infinity;
+  Object.entries(adjectivesObj || {}).forEach(([key, value]) => {
+    const label = String(value || "").trim();
+    if (!label) return;
+    const levelL = Number(key) / 100;
+    if (!isFinite(levelL)) return;
+    const d = Math.abs(levelL - L);
+    if (d < bestDist) {
+      bestDist = d;
+      bestName = label;
+    }
+  });
+
+  return bestName ? `name:${bestName.toLowerCase()}` : `id:${lStr}`;
+};
 
 // Bundles the cursor's keys with the column list so a filter pass resolves
 // the cursor once and then only does per-item work.
-const getSameGroupContext = (L, C, H, savedColors, namesObj) => ({
+const getSameGroupContext = (
+  L,
+  C,
+  H,
+  gridData,
   savedColors,
   namesObj,
-  nounKey: resolveNounKey(L, C, H, savedColors, namesObj),
-});
+  adjectivesObj,
+) => {
+  const columns = getNounColumns(gridData, savedColors);
+  return {
+    columns,
+    namesObj,
+    adjectivesObj,
+    nounKey: resolveNounKey(L, C, H, columns, namesObj),
+    adjectiveKey: resolveAdjectiveKey(L, adjectivesObj),
+  };
+};
 
+const matchesSameAdjective = (ctx, L) =>
+  resolveAdjectiveKey(L, ctx.adjectivesObj) === ctx.adjectiveKey;
 
 const matchesSameNoun = (ctx, L, C, H) =>
-  resolveNounKey(L, C, H, ctx.savedColors, ctx.namesObj) === ctx.nounKey;
+  resolveNounKey(L, C, H, ctx.columns, ctx.namesObj) === ctx.nounKey;
 
+// A nounColumn spans a lightness range, so it counts as sharing the cursor's
+// adjective if any part of that range lands on the same level.
+const nounColumnMatchesSameAdjective = (ctx, sc) => {
+  const minL = sc.minL !== undefined && sc.minL !== null ? sc.minL : sc.L;
+  const maxL = sc.maxL !== undefined && sc.maxL !== null ? sc.maxL : sc.L;
+  if (minL === undefined || maxL === undefined) return false;
+  if (Math.abs(maxL - minL) < 1e-9) return matchesSameAdjective(ctx, minL);
+  for (let L = minL; L <= maxL + 1e-9; L += 0.02) {
+    if (matchesSameAdjective(ctx, L)) return true;
+  }
+  return matchesSameAdjective(ctx, maxL);
+};
 // Every view grew its own row of sort buttons — eleven of them in the commercial
 // DB. One control, one shape: pick a field, flip the direction. Views differ
 // only in the fields they pass in.
 // --- Global filter model ---------------------------------------------------
 // Every filter is one row: a field, an operator, a value. Rows stack with AND.
-// The "same anchor", "color match" and "exact material match" behaviours are not separate mechanisms any more — they are presets that push
+// The "same noun", "same adjective", "color match" and "exact material match"
+// behaviours are not separate mechanisms any more — they are presets that push
 // ordinary rows into this same stack, so they can be inspected and removed like
 // anything else.
 
@@ -6122,12 +3788,12 @@ const FILTER_FIELDS = [
   { id: "visualTexture", label: "Visual pattern", type: "select", get: (it) => it.visualTexture || "" },
   { id: "tactileTexture", label: "Tactile texture", type: "select", get: (it) => it.tactileTexture || "" },
   { id: "tag", label: "Tag", type: "select", multi: true, get: (it) => (it.tags || []).join(", ") },
-  { id: "noun", label: "Anchor", type: "text", get: (it, ctx) => (ctx ? nounNameOf(it, ctx) : "") },
+  { id: "noun", label: "Noun", type: "text", get: (it, ctx) => (ctx ? nounNameOf(it, ctx) : "") },
+  { id: "adjective", label: "Adjective", type: "text", get: (it, ctx) => (ctx ? adjNameOf(it, ctx) : "") },
   { id: "L", label: "Lightness", type: "number", get: (it) => it.L },
   { id: "C", label: "Chroma", type: "number", get: (it) => it.C },
   { id: "H", label: "Hue", type: "number", get: (it) => it.H },
   { id: "deltaE", label: "\u0394E to cursor", type: "number", get: (it) => it._d },
-  { id: "xref", label: "Equivalent in brand", type: "xref", get: () => "" },
   {
     id: "spectral",
     label: "Has spectral data",
@@ -6142,55 +3808,12 @@ const FILTER_FIELDS = [
   },
 ];
 
-// Cross-reference as a filter: does this colour have an equivalent in brand X
-// within ΔE d (optionally with the same material traits)? Same nearest-match
-// rule as the Cross-Reference panel. Each brand gets a coarse OkLab grid,
-// built once per data load, so 20k colours check in a few milliseconds.
-const XREF_DATA = { current: null };
-const XREF_GRIDS = new WeakMap();
-const XREF_CELL = 0.03;
-const xrefGrid = (list) => {
-  let g = XREF_GRIDS.get(list);
-  if (g) return g;
-  g = new Map();
-  (list || []).forEach((c, i) => {
-    if (!isFinite(c.L) || !isFinite(c.C)) return;
-    const h = ((Number(c.H) || 0) * Math.PI) / 180, a = c.C * Math.sin(h), b = c.C * Math.cos(h);
-    const k = Math.floor(c.L / XREF_CELL) + "," + Math.floor(a / XREF_CELL) + "," + Math.floor(b / XREF_CELL);
-    let cell = g.get(k);
-    if (!cell) g.set(k, (cell = []));
-    cell.push({ c, i, L: c.L, a, b });
-  });
-  XREF_GRIDS.set(list, g);
-  return g;
-};
-// Nearest ΔE (×100) from an item to the brand's colours, or Infinity.
-const xrefNearest = (item, brand, maxDE, sameSpec) => {
-  const list = XREF_DATA.current && XREF_DATA.current[brand];
-  if (!list || !isFinite(item.L) || !isFinite(item.C)) return Infinity;
-  const g = xrefGrid(list), r = maxDE / 100;
-  const h = ((Number(item.H) || 0) * Math.PI) / 180, a = item.C * Math.sin(h), b = item.C * Math.cos(h);
-  const n = Math.ceil(r / XREF_CELL);
-  const cL = Math.floor(item.L / XREF_CELL), ca = Math.floor(a / XREF_CELL), cb = Math.floor(b / XREF_CELL);
-  let best = Infinity;
-  for (let x = -n; x <= n; x++)
-    for (let y = -n; y <= n; y++)
-      for (let z = -n; z <= n; z++) {
-        const cell = g.get(cL + x + "," + (ca + y) + "," + (cb + z));
-        if (!cell) continue;
-        for (const e of cell) {
-          // not itself (raw records arrive without brand/index in some lists)
-          if (e.c === item || (item.brand === brand && e.i === item.originalIndex) ||
-            (e.c.name === item.name && Math.abs(e.L - item.L) < 1e-9 && Math.abs(e.c.C - item.C) < 1e-9)) continue;
-          if (sameSpec && !crossRefSameSpec(item, e.c)) continue;
-          const d = Math.sqrt((item.L - e.L) ** 2 + (a - e.a) ** 2 + (b - e.b) ** 2) * 100;
-          if (d < best) best = d;
-        }
-      }
-  return best;
-};
 const nounNameOf = (item, ctx) => {
-  const key = resolveNounKey(item.L, item.C, item.H, ctx.savedColors, ctx.namesObj);
+  const key = resolveNounKey(item.L, item.C, item.H, ctx.columns, ctx.namesObj);
+  return key.indexOf("name:") === 0 ? key.slice(5) : "";
+};
+const adjNameOf = (item, ctx) => {
+  const key = resolveAdjectiveKey(item.L, ctx.adjectivesObj);
   return key.indexOf("name:") === 0 ? key.slice(5) : "";
 };
 
@@ -6217,43 +3840,26 @@ const FILTER_OPS = {
     { id: "is_true", label: "is yes" },
     { id: "is_false", label: "is no" },
   ],
-  // value = brand, value2 = ΔE limit
-  xref: [
-    { id: "has", label: "has one within \u0394E" },
-    { id: "has_spec", label: "has same-material within \u0394E" },
-    { id: "none", label: "has none within \u0394E" },
-  ],
 };
 
 const defaultOpFor = (type) => FILTER_OPS[type][0].id;
 
-// Does any plain row (inside groups too) satisfy pred?
-const filterRowsSome = (rows, pred) =>
-  (rows || []).some((r) => (r && r.group ? filterRowsSome(r.rows, pred) : pred(r)));
 const evalFilterRow = (item, row, ctx) => {
-  if (row && row.group) {
-    const rs = row.rows || [];
-    if (!rs.length) return true;
-    return row.mode === "or" ? rs.some((r) => evalFilterRow(item, r, ctx)) : rs.every((r) => evalFilterRow(item, r, ctx));
-  }
   const field = FILTER_FIELDS.find((f) => f.id === row.field);
   if (!field) return true;
 
   // A dynamic row tracks the cursor: the comparison target is whatever the
   // cursor resolves to at this moment, not a value captured when it was added.
-  if (row.dynamic && row.field === "noun") {
+  if (row.dynamic && (row.field === "noun" || row.field === "adjective")) {
     if (!ctx) return true;
-    const mine = resolveNounKey(item.L, item.C, item.H, ctx.savedColors, ctx.namesObj);
-    return row.op === "is_not" ? mine !== ctx.nounKey : mine === ctx.nounKey;
+    const target = row.field === "noun" ? ctx.nounKey : ctx.adjectiveKey;
+    const mine =
+      row.field === "noun"
+        ? resolveNounKey(item.L, item.C, item.H, ctx.columns, ctx.namesObj)
+        : resolveAdjectiveKey(item.L, ctx.adjectivesObj);
+    return row.op === "is_not" ? mine !== target : mine === target;
   }
 
-  if (field.type === "xref") {
-    const brand = String(row.value || "");
-    if (!brand) return true;
-    const lim = isFinite(parseFloat(row.value2)) ? parseFloat(row.value2) : 2;
-    const d = xrefNearest(item, brand, lim, row.op === "has_spec");
-    return row.op === "none" ? !(d <= lim) : d <= lim;
-  }
   const raw = field.get(item, ctx);
 
   if (field.type === "boolean") {
@@ -6322,16 +3928,12 @@ const applyGlobalFilters = (items, rows, ctx, mode, scope) => {
 
 const cursorValueFor = (fieldId, ctx) => {
   if (!ctx) return "cursor";
-  const key = ctx.nounKey;
+  const key = fieldId === "noun" ? ctx.nounKey : ctx.adjectiveKey;
   return key && key.indexOf("name:") === 0 ? key.slice(5) : "cursor";
 };
 
 const describeFilterRow = (row, ctx) => {
   if (row && row.any) return "any of the active filters";
-  if (row && row.group) {
-    const parts = (row.rows || []).map((r) => describeFilterRow(r, ctx));
-    return parts.length ? `(${parts.join(row.mode === "or" ? " or " : " and ")})` : "(empty group)";
-  }
   const field = FILTER_FIELDS.find((f) => f.id === row.field);
   if (!field) return "filter";
   const tag = row.scope === "db" ? " (DB)" : "";
@@ -6341,10 +3943,6 @@ const describeFilterRow = (row, ctx) => {
   const op = (FILTER_OPS[field.type] || []).find((o) => o.id === row.op);
   const opLabel = op ? op.label : "";
   if (field.type === "boolean") return `${field.label} ${opLabel}${tag}`;
-  if (field.type === "xref") {
-    const b = row.value ? (typeof getBrandDisplayName === "function" ? getBrandDisplayName(row.value) : row.value) : "any brand";
-    return `Equivalent in ${b}: ${opLabel} ${row.value2 || 2}${tag}`;
-  }
   if (row.op === "between") {
     return `${field.label} ${opLabel} ${row.value}\u2013${row.value2}`;
   }
@@ -6377,86 +3975,84 @@ const newFilterRow = (fieldId, op, value, value2, dynamic, scope) => {
   };
 };
 
-// Nested sub-filters: up to this many levels (the top list counts as one).
-const FILTER_MAX_DEPTH = 3;
-const newFilterGroup = (mode = "or") => ({ id: `g${++FILTER_ROW_SEQ}`, group: true, mode, rows: [newFilterRow("name")], scope: null });
-// One list of filter rows joined by one And/Or. A group row holds another such
-// list (its own And/Or), drawn indented under its header.
-const FilterRows = ({ rows, setRows, mode, setMode, optionsFor, ctx, depth = 0 }) => {
+const FilterBuilder = ({
+  rows,
+  setRows,
+  optionsFor,
+  presets,
+  mode,
+  setMode,
+  ctx,
+}) => {
   const update = (id, patch) =>
     setRows(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-  const conjunction = (idx) =>
-    idx === 0
-      ? React.createElement("span", { className: "text-[9px] uppercase tracking-widest text-slate-400 w-12" }, "Where")
-      : React.createElement(
-          "select",
-          {
-            value: mode === "or" ? "or" : "and",
-            onChange: (e) => setMode && setMode(e.target.value),
-            title: depth ? "Applies to every row in this group" : "Applies to every filter in this list",
-            className: "w-12 bg-transparent border border-slate-200 dark:border-neutral-700 rounded-md px-1 py-0.5 text-[9px] uppercase tracking-widest text-slate-500 focus:outline-none",
-          },
-          React.createElement("option", { value: "and" }, "And"),
-          React.createElement("option", { value: "or" }, "Or"),
-        );
-  const renderGroup = (row, idx) =>
-    React.createElement(
-      "div",
-      { key: row.id, className: "flex flex-col gap-1.5" },
-      React.createElement(
-        "div",
-        { className: "flex items-center gap-1" },
-        conjunction(idx),
-        React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400" }, "Group \u2014 match"),
-        React.createElement(
-          "select",
-          {
-            value: row.mode === "or" ? "or" : "and",
-            onChange: (e) => update(row.id, { mode: e.target.value }),
-            className: "bg-transparent border border-slate-200 dark:border-neutral-700 rounded-md px-1.5 py-0.5 text-[10px] text-slate-600 dark:text-neutral-300 focus:outline-none",
-          },
-          React.createElement("option", { value: "and" }, "all of"),
-          React.createElement("option", { value: "or" }, "any of"),
-        ),
-        React.createElement(
-          "button",
-          { onClick: () => setRows(rows.filter((r) => r.id !== row.id)), title: "Remove this group", className: "ml-auto p-1 text-slate-400 hover:text-red-500" },
-          React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
-        ),
-      ),
-      React.createElement(FilterRows, {
-        rows: row.rows || [],
-        setRows: (next) => update(row.id, { rows: typeof next === "function" ? next(row.rows || []) : next }),
-        mode: row.mode,
-        setMode: (m) => update(row.id, { mode: m }),
-        optionsFor,
-        ctx,
-        depth: depth + 1,
-      }),
-    );
+
   return React.createElement(
     "div",
-    {
-      className: depth
-        ? "flex flex-col gap-2 ml-3 pl-2.5 py-1 border-l-2 border-sky-200 dark:border-sky-500/30"
-        : "flex flex-col gap-2",
-    },
-    depth > 0 && rows.length === 0 &&
-      React.createElement("div", { className: "text-[10px] italic text-slate-400" }, "Empty group \u2014 matches everything."),
+    { className: "flex flex-col gap-2 min-w-[260px]" },
+    presets &&
+      presets.length > 0 &&
+      React.createElement(
+        "div",
+        { className: "flex flex-wrap gap-1 pb-2 border-b border-slate-200 dark:border-neutral-800" },
+        React.createElement(
+          "span",
+          {
+            className:
+              "w-full text-[9px] font-bold uppercase tracking-widest text-slate-400 pb-1",
+          },
+          "Presets",
+        ),
+        presets.map((p) =>
+          React.createElement(
+            "button",
+            {
+              key: p.id,
+              onClick: p.apply,
+              title: p.hint || "",
+              className:
+                "px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-slate-200 dark:border-neutral-700 text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800",
+            },
+            p.label,
+          ),
+        ),
+      ),
+    rows.length === 0 &&
+      React.createElement(
+        "div",
+        { className: "text-[11px] italic text-slate-400 py-1" },
+        "No filters. Everything is shown.",
+      ),
     rows.map((row, idx) => {
-      if (row.group) return renderGroup(row, idx);
       const field = FILTER_FIELDS.find((f) => f.id === row.field) || FILTER_FIELDS[0];
       const ops = FILTER_OPS[field.type] || [];
-      const options =
-        field.type === "xref"
-          ? Object.keys(XREF_DATA.current || {}).sort()
-          : field.type === "select" && optionsFor ? optionsFor(field.id) : null;
+      const options = field.type === "select" && optionsFor ? optionsFor(field.id) : null;
       const selectCls =
         "bg-transparent border border-slate-200 dark:border-neutral-700 rounded-md px-1.5 py-1 text-[10px] text-slate-600 dark:text-neutral-300 focus:outline-none";
       return React.createElement(
         "div",
         { key: row.id, className: "flex items-center gap-1 flex-wrap" },
-        conjunction(idx),
+        idx === 0
+          ? React.createElement(
+              "span",
+              {
+                className:
+                  "text-[9px] uppercase tracking-widest text-slate-400 w-12",
+              },
+              "Where",
+            )
+          : React.createElement(
+              "select",
+              {
+                value: mode === "or" ? "or" : "and",
+                onChange: (e) => setMode && setMode(e.target.value),
+                title: "Applies to every filter in this group",
+                className:
+                  "w-12 bg-transparent border border-slate-200 dark:border-neutral-700 rounded-md px-1 py-0.5 text-[9px] uppercase tracking-widest text-slate-500 focus:outline-none",
+              },
+              React.createElement("option", { value: "and" }, "And"),
+              React.createElement("option", { value: "or" }, "Or"),
+            ),
         React.createElement(
           "select",
           {
@@ -6467,7 +4063,7 @@ const FilterRows = ({ rows, setRows, mode, setMode, optionsFor, ctx, depth = 0 }
                 field: e.target.value,
                 op: defaultOpFor(nf.type),
                 value: "",
-                value2: nf.type === "xref" ? "2" : "",
+                value2: "",
               });
             },
             className: selectCls,
@@ -6511,9 +4107,9 @@ const FilterRows = ({ rows, setRows, mode, setMode, optionsFor, ctx, depth = 0 }
                   onChange: (e) => update(row.id, { value: e.target.value }),
                   className: selectCls + " max-w-[110px]",
                 },
-                React.createElement("option", { value: "" }, field.type === "xref" ? "brand\u2026" : "any"),
+                React.createElement("option", { value: "" }, "any"),
                 options.map((o) =>
-                  React.createElement("option", { key: o, value: o }, field.type === "xref" && typeof getBrandDisplayName === "function" ? getBrandDisplayName(o) : o),
+                  React.createElement("option", { key: o, value: o }, o),
                 ),
               )
             : React.createElement("input", {
@@ -6524,17 +4120,6 @@ const FilterRows = ({ rows, setRows, mode, setMode, optionsFor, ctx, depth = 0 }
                 onChange: (e) => update(row.id, { value: e.target.value }),
                 className: selectCls + " w-[74px]",
               })),
-        field.type === "xref" &&
-          React.createElement("input", {
-            type: "number",
-            step: "0.5",
-            min: "0",
-            value: row.value2,
-            placeholder: "2",
-            title: "\u0394E limit",
-            onChange: (e) => update(row.id, { value2: e.target.value }),
-            className: selectCls + " w-[52px]",
-          }),
         row.op === "between" &&
           React.createElement("input", {
             type: "number",
@@ -6557,83 +4142,28 @@ const FilterRows = ({ rows, setRows, mode, setMode, optionsFor, ctx, depth = 0 }
     }),
     React.createElement(
       "div",
-      { className: "flex items-center gap-3 pt-1" },
+      { className: "flex items-center gap-2 pt-1" },
       React.createElement(
         "button",
         {
           onClick: () => setRows([...rows, newFilterRow("name")]),
-          className: "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400",
+          className:
+            "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400",
         },
         React.createElement(Icon, { name: "plus", className: "w-3 h-3" }),
-        depth ? "Add to group" : "Add filter",
+        "Add filter",
       ),
-      depth < FILTER_MAX_DEPTH - 1 &&
+      rows.length > 0 &&
         React.createElement(
           "button",
           {
-            onClick: () => setRows([...rows, newFilterGroup(mode === "or" ? "and" : "or")]),
-            title: "A group of filters joined by its own And/Or",
-            className: "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400",
+            onClick: () => setRows([]),
+            className:
+              "ml-auto text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-slate-600",
           },
-          React.createElement(Icon, { name: "list-plus", className: "w-3 h-3" }),
-          depth ? "Add sub-group" : "Add group",
-        ),
-      depth === 0 && rows.length > 0 &&
-        React.createElement(
-          "button",
-          { onClick: () => setRows([]), className: "ml-auto text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-slate-600" },
           "Clear all",
         ),
     ),
-  );
-};
-const FilterBuilder = ({
-  rows,
-  setRows,
-  optionsFor,
-  presets,
-  mode,
-  setMode,
-  ctx,
-}) => {
-
-  return React.createElement(
-    "div",
-    { className: "flex flex-col gap-2 min-w-[260px]" },
-    presets &&
-      presets.length > 0 &&
-      React.createElement(
-        "div",
-        { className: "flex flex-wrap gap-1 pb-2 border-b border-slate-200 dark:border-neutral-800" },
-        React.createElement(
-          "span",
-          {
-            className:
-              "w-full text-[9px] font-bold uppercase tracking-widest text-slate-400 pb-1",
-          },
-          "Presets",
-        ),
-        presets.map((p) =>
-          React.createElement(
-            "button",
-            {
-              key: p.id,
-              onClick: p.apply,
-              title: p.hint || "",
-              className:
-                "px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-slate-200 dark:border-neutral-700 text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800",
-            },
-            p.label,
-          ),
-        ),
-      ),
-    rows.length === 0 &&
-      React.createElement(
-        "div",
-        { className: "text-[11px] italic text-slate-400 py-1" },
-        "No filters. Everything is shown.",
-      ),
-    React.createElement(FilterRows, { rows, setRows, mode, setMode, optionsFor, ctx, depth: 0 }),
   );
 };
 
@@ -6724,7 +4254,13 @@ const FilterChips = ({ chips, onClearAll }) => {
 // strength it replaced the swatch — wood decors photograph much darker than
 // their anchor colour, so the tile read wrong. Keep it faint enough that the
 // swatch still shows its true colour.
-const SWATCH_PHOTO_OPACITY = 0.38;
+// The product photo used to fill the tile. Any alpha or blend mode inherits
+// the photo's own lightness, so a dark wood shot made a light colour read
+// dark — the same finish in solid vs textured looked like two colours. The
+// swatch is now the measured colour alone; the photo sits in a corner inset
+// as reference, where it cannot distort what the swatch reports.
+const SWATCH_PHOTO_INSET =
+  "absolute bottom-0 right-0 w-1/3 h-1/3 bg-cover bg-center pointer-events-none rounded-tl-md rounded-br-[inherit] ring-1 ring-black/15 z-10";
 
 const SWATCH_HATCH_VISUALS = ["V2", "V3", "V4"]; // grained; V1 and V5 stay plain
 // A grained *feel* earns the hatch too: T3 linear grain, T4 embossed-in-register.
@@ -6934,9 +4470,146 @@ const SwatchLegend = ({ className = "" }) => {
   );
 };
 
+// --- OKLCH colour wheel background ----------------------------------------
+// A continuous a/b slice at a given lightness, drawn once to a canvas and
+// cached per lightness. Out-of-gamut pixels fade out so the disc ends softly
+// rather than at a hard clipped edge.
+const OKLCH_WHEEL_CACHE = new Map();
 
+// Shared converter: OKLCH coords -> linear sRGB plus how far out of gamut.
+const oklchToLinearRGB = (L, a, b) => {
+  const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+  const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+  const s_ = L - 0.0894841775 * a - 1.291485548 * b;
+  const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
+  return [
+    4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3,
+    -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3,
+    -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3,
+  ];
+};
+const srgbByte = (v) => {
+  v = Math.min(1, Math.max(0, v));
+  return Math.round((v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055) * 255);
+};
+const gamutOvershoot = (lin) => {
+  let over = 0;
+  for (let k = 0; k < 3; k++) {
+    if (lin[k] < 0) over = Math.max(over, -lin[k]);
+    else if (lin[k] > 1) over = Math.max(over, lin[k] - 1);
+  }
+  return over;
+};
 
+// Renders whichever plane a view actually plots:
+//   "ab" — the wheel, at a fixed lightness
+//   "cl" — chroma x lightness, at a fixed hue
+//   "hl" — hue angle x lightness, at a fixed chroma
+const oklchPlaneDataUri = (plane, fixed, opts = {}) => {
+  const size = opts.size || 256;
+  const xMax = opts.xMax !== undefined ? opts.xMax : 0.4;
+  const yMax = opts.yMax !== undefined ? opts.yMax : 1.05;
+  const extent = opts.extent !== undefined ? opts.extent : 0.3;
+  const key = `${plane}|${Math.round(fixed * 100)}|${size}|${xMax}|${yMax}|${extent}`;
+  if (OKLCH_WHEEL_CACHE.has(key)) return OKLCH_WHEEL_CACHE.get(key);
+  let uri = null;
+  try {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = size;
+    const ctx = cv.getContext("2d");
+    const img = ctx.createImageData(size, size);
+    const d = img.data;
+    for (let py = 0; py < size; py++) {
+      for (let px = 0; px < size; px++) {
+        const i = (py * size + px) * 4;
+        // The app's axes are a = C*sin(H), b = C*cos(H) — the standard OKLab
+        // a/b swapped. oklchToLinearRGB takes standard a/b, so the pair is
+        // swapped on the way in or the wheel comes out mirrored (green where
+        // purple belongs).
+        let L, aApp, bApp;
+        if (plane === "ab") {
+          L = fixed;
+          aApp = -extent + (px / (size - 1)) * extent * 2;
+          bApp = extent - (py / (size - 1)) * extent * 2;
+        } else if (plane === "cl") {
+          const C = (px / (size - 1)) * xMax;
+          const rad = (fixed * Math.PI) / 180;
+          L = yMax - (py / (size - 1)) * yMax;
+          aApp = C * Math.sin(rad);
+          bApp = C * Math.cos(rad);
+        } else {
+          const Hdeg = (px / (size - 1)) * 360;
+          const rad = (Hdeg * Math.PI) / 180;
+          L = yMax - (py / (size - 1)) * yMax;
+          aApp = fixed * Math.sin(rad);
+          bApp = fixed * Math.cos(rad);
+        }
+        const lin = oklchToLinearRGB(L, bApp, aApp);
+        const over = gamutOvershoot(lin);
+        d[i] = srgbByte(lin[0]);
+        d[i + 1] = srgbByte(lin[1]);
+        d[i + 2] = srgbByte(lin[2]);
+        d[i + 3] = over <= 0 ? 255 : Math.max(0, 255 * (1 - over * 14));
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    uri = cv.toDataURL("image/png");
+  } catch (e) {
+    uri = null;
+  }
+  OKLCH_WHEEL_CACHE.set(key, uri);
+  return uri;
+};
 
+const oklchWheelDataUri = (L, extent = 0.3, size = 256) => {
+  const key = `${Math.round(L * 100)}|${extent}|${size}`;
+  if (OKLCH_WHEEL_CACHE.has(key)) return OKLCH_WHEEL_CACHE.get(key);
+  let uri = null;
+  try {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = size;
+    const ctx = cv.getContext("2d");
+    const img = ctx.createImageData(size, size);
+    const d = img.data;
+    for (let py = 0; py < size; py++) {
+      // canvas y grows downward; the b axis grows upward
+      const b = extent - (py / (size - 1)) * extent * 2;
+      for (let px = 0; px < size; px++) {
+        const a = -extent + (px / (size - 1)) * extent * 2;
+        const i = (py * size + px) * 4;
+        // same axis swap as above
+        const l_ = L + 0.3963377774 * b + 0.2158037573 * a;
+        const m_ = L - 0.1055613458 * b - 0.0638541728 * a;
+        const s_ = L - 0.0894841775 * b - 1.291485548 * a;
+        const l3 = l_ * l_ * l_, m3 = m_ * m_ * m_, s3 = s_ * s_ * s_;
+        const lin = [
+          4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3,
+          -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3,
+          -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3,
+        ];
+        // How far outside sRGB this pixel sits, used to feather the edge.
+        let over = 0;
+        for (let k = 0; k < 3; k++) {
+          if (lin[k] < 0) over = Math.max(over, -lin[k]);
+          else if (lin[k] > 1) over = Math.max(over, lin[k] - 1);
+        }
+        const alpha = over <= 0 ? 255 : Math.max(0, 255 * (1 - over * 14));
+        for (let k = 0; k < 3; k++) {
+          let v = Math.min(1, Math.max(0, lin[k]));
+          v = v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+          d[i + k] = Math.round(v * 255);
+        }
+        d[i + 3] = alpha;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    uri = cv.toDataURL("image/png");
+  } catch (e) {
+    uri = null;
+  }
+  OKLCH_WHEEL_CACHE.set(key, uri);
+  return uri;
+};
 
 // --- Cross-reference between two suppliers ---------------------------------
 // "Which of my Tafisa colours could I get from Uniboard instead?" For every
@@ -7226,7 +4899,6 @@ const ViewportSwatches = ({
   onRemoveItem,
   onEditItem,
 }) => {
-  useDisplayGamut();
   const [sortBy, setSortBy] = useState(dim1);
   const [sortAsc, setSortAsc] = useState(true);
   const [fullscreenImage, setFullscreenImage] = useState(null);
@@ -7304,7 +4976,7 @@ const ViewportSwatches = ({
         _inGamut:
           item.inSrgb !== void 0
             ? item.inSrgb
-            : new Color("oklch", [item.L, item.C, item.H]).inGamut(DisplayGamut.space),
+            : new Color("oklch", [item.L, item.C, item.H]).inGamut("srgb"),
       }));
     if (externalSort) return withGamut(filtered);
     return filtered
@@ -7320,7 +4992,7 @@ const ViewportSwatches = ({
         _inGamut:
           item.inSrgb !== void 0
             ? item.inSrgb
-            : new Color("oklch", [item.L, item.C, item.H]).inGamut(DisplayGamut.space),
+            : new Color("oklch", [item.L, item.C, item.H]).inGamut("srgb"),
       }));
   }, [
     items,
@@ -7329,37 +5001,7 @@ const ViewportSwatches = ({
     viewportSearchQuery,
     viewportTagFilter,
     externalSort,
-    DisplayGamut.id,
   ]);
-  // Full-size photo, opened from the eye button in any layout.
-  const imagePreview =
-    fullscreenImage &&
-    ReactDOM.createPortal(
-      React.createElement(
-        "div",
-        {
-          className:
-            "fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4 cursor-pointer",
-          onClick: () => setFullscreenImage(null),
-        },
-        React.createElement("img", {
-          src: fullscreenImage,
-          alt: "Fullscreen Image",
-          className: "max-w-full max-h-full object-contain rounded shadow-2xl",
-          onClick: (e) => e.stopPropagation(),
-        }),
-        React.createElement(
-          "button",
-          {
-            className:
-              "absolute top-4 right-4 text-white/70 hover:text-white bg-black/50 hover:bg-black/80 rounded-full w-12 h-12 flex items-center justify-center transition-colors",
-            onClick: () => setFullscreenImage(null),
-          },
-          React.createElement(Icon, { name: "x", className: "w-6 h-6" }),
-        ),
-      ),
-      document.body,
-    );
   if (layout === "matrix") {
     const quantize = (v) => Math.round(v * 1e3) / 1e3;
     const d1ValsUniq = new Set();
@@ -7457,7 +5099,7 @@ const ViewportSwatches = ({
                             ),
                           className: `group rounded cursor-pointer transition-all relative ${activeHex === item.hex ? "ring-4 ring-sky-500 z-20 scale-110" : "z-10"} ${selectedIds?.includes(item.id) ? "ring-2 ring-sky-500 shadow-md" : "hover:ring-2 hover:ring-sky-500"}`,
                           style: {
-                            backgroundColor: DisplayGamut.css(item.L, item.C, item.H, item.hex),
+                            backgroundColor: item.hex,
                             width: `${baseMatrixSize * swatchZoom}px`,
                             height: `${baseMatrixSize * swatchZoom}px`,
                           },
@@ -7470,13 +5112,8 @@ ${item.erpCode}`,
                         }),
                         (item.image || item.note?.startsWith("http")) &&
                           React.createElement("div", {
-                            className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
-                            style: {
-                              backgroundImage: `url(${item.image || item.note})`,
-                              opacity: SWATCH_PHOTO_OPACITY,
-                              WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                              maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                            },
+                            className: SWATCH_PHOTO_INSET,
+                            style: { backgroundImage: `url(${item.image || item.note})` },
                           }),
                         !item._inGamut &&
                           React.createElement("div", {
@@ -7591,7 +5228,6 @@ ${item.erpCode}`,
           { className: "text-center text-slate-400 text-xs w-full p-8 italic" },
           "No saved colors or pins found in this slice.",
         ),
-      imagePreview,
     );
   }
   if (layout === "table") {
@@ -7759,19 +5395,14 @@ ${item.erpCode}`,
                     {
                       className: "w-8 h-8 rounded relative shadow-sm overflow-hidden",
                       style: {
-                        backgroundColor: DisplayGamut.css(item.L, item.C, item.H, item.hex),
+                        backgroundColor: item.hex,
                       },
                     },
                     React.createElement(SwatchTreatment, { item, size: 32 }),
                     (item.image || item.note?.startsWith("http")) &&
                       React.createElement("div", {
-                        className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
-                        style: {
-                          backgroundImage: `url(${item.image || item.note})`,
-                          opacity: SWATCH_PHOTO_OPACITY,
-                          WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                          maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                        },
+                        className: SWATCH_PHOTO_INSET,
+                        style: { backgroundImage: `url(${item.image || item.note})` },
                       }),
                     item.hasSpectral &&
                       React.createElement("div", {
@@ -7898,7 +5529,6 @@ ${item.erpCode}`,
           { className: "text-center text-slate-400 text-xs w-full p-8 italic" },
           "No saved colors or pins found in this slice.",
         ),
-      imagePreview,
     );
   }
   return React.createElement(
@@ -7982,7 +5612,7 @@ ${item.erpCode}`,
             {
               className: `aspect-square rounded-2xl relative overflow-hidden transition-all group-hover:scale-[1.02] group-hover:shadow-md ${activeHex === item.hex ? "ring-4 ring-sky-500" : ""} ${selectedIds?.includes(item.id) ? "ring-2 ring-sky-500 shadow-md" : "hover:ring-2 hover:ring-sky-500"}`,
               style: {
-                backgroundColor: DisplayGamut.css(item.L, item.C, item.H, item.hex),
+                backgroundColor: item.hex,
                 width: "100%",
               },
             },
@@ -8025,13 +5655,8 @@ ${item.erpCode}`,
               ),
             (item.image || item.note?.startsWith("http")) &&
               React.createElement("div", {
-                className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
-                style: {
-                  backgroundImage: `url(${item.image || item.note})`,
-                  opacity: SWATCH_PHOTO_OPACITY,
-                  WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                  maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                },
+                className: SWATCH_PHOTO_INSET,
+                style: { backgroundImage: `url(${item.image || item.note})` },
               }),
             !item._inGamut &&
               React.createElement("div", {
@@ -8101,13 +5726,16 @@ ${item.erpCode}`,
                 className:
                   "absolute inset-0 flex flex-col items-center justify-center pointer-events-none p-1 leading-none space-y-0.5 z-10",
                 style: {
-                  color: item.L > 0.65 ? "rgba(0,0,0,0.85)" : "rgba(255,255,255,0.95)",
-                  textShadow:
+                  backgroundColor:
                     item.image || item.note?.startsWith("http")
-                      ? item.L > 0.65
-                        ? "0 0 3px rgba(255,255,255,0.8)"
-                        : "0 0 3px rgba(0,0,0,0.7)"
-                      : undefined,
+                      ? "rgba(0,0,0,0.3)"
+                      : "transparent",
+                  color:
+                    item.image || item.note?.startsWith("http")
+                      ? "white"
+                      : item.L > 0.65
+                        ? "rgba(0,0,0,0.85)"
+                        : "rgba(255,255,255,0.95)",
                 },
               },
               item.displayName
@@ -8186,7 +5814,7 @@ ${item.erpCode}`,
                         "select",
                         {
                           key: f.key,
-                          value: specOption(f.options, item[f.key]) || "-",
+                          value: item[f.key] || "-",
                           title: f.label,
                           onClick: (e) => e.stopPropagation(),
                           onChange: (e) => {
@@ -8197,7 +5825,7 @@ ${item.erpCode}`,
                             "w-full bg-transparent border border-slate-200 dark:border-neutral-700 rounded px-0.5 text-center cursor-pointer hover:border-slate-400",
                           style: { fontSize: "inherit" },
                         },
-                        specOptions(f.options, item[f.key]).map((opt) =>
+                        f.options.map((opt) =>
                           React.createElement("option", { key: opt, value: opt }, opt),
                         ),
                       )
@@ -8207,6 +5835,25 @@ ${item.erpCode}`,
                         `${f.label}: ${String(item[f.key] || "-").trim()}`,
                       ),
                 ),
+              ),
+            // Notes sit under the specs, so the swatch view carries the same
+            // context the table rows do.
+            showSpecs &&
+              item.displayNotes &&
+              String(item.displayNotes).trim() &&
+              React.createElement(
+                "div",
+                {
+                  className:
+                    "w-full text-slate-500 dark:text-neutral-400 leading-snug border-t border-slate-200 dark:border-neutral-700 text-left",
+                  style: {
+                    fontSize: `${Math.max(4.5, 5.5 * swatchZoom)}px`,
+                    marginTop: `${Math.max(2, 3 * swatchZoom)}px`,
+                    paddingTop: `${Math.max(1, 2 * swatchZoom)}px`,
+                  },
+                  title: String(item.displayNotes),
+                },
+                String(item.displayNotes).trim(),
               ),
             item.tags &&
               item.tags.length > 0 &&
@@ -8241,49 +5888,1739 @@ ${item.erpCode}`,
         { className: "text-center text-slate-400 text-xs w-full p-8 italic" },
         "No saved colors or pins found in this slice.",
       ),
-    imagePreview,
+    fullscreenImage &&
+      ReactDOM.createPortal(
+        React.createElement(
+          "div",
+          {
+            className:
+              "fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4 cursor-pointer",
+            onClick: () => setFullscreenImage(null),
+          },
+          React.createElement("img", {
+            src: fullscreenImage,
+            alt: "Fullscreen Image",
+            className:
+              "max-w-full max-h-full object-contain rounded shadow-2xl",
+            onClick: (e) => e.stopPropagation(),
+          }),
+          React.createElement(
+            "button",
+            {
+              className:
+                "absolute top-4 right-4 text-white/70 hover:text-white bg-black/50 hover:bg-black/80 rounded-full w-12 h-12 flex items-center justify-center transition-colors",
+              onClick: () => setFullscreenImage(null),
+            },
+            React.createElement(Icon, { name: "x", className: "w-6 h-6" }),
+          ),
+        ),
+        document.body,
+      ),
   );
 };
-// Wraps a view so it skips re-rendering when only callback identities changed
-// (the parent recreates them on every render). Callbacks still reach the
-// latest version through a ref, so nothing goes stale.
-const withStableCallbacks = (Comp) => {
-  const Inner = React.memo(Comp);
-  return (props) => {
-    const ref = useRef(props);
-    ref.current = props;
-    const cache = useRef({});
-    const next = {};
-    for (const k in props) {
-      const v = props[k];
-      if (typeof v === "function") {
-        if (!cache.current[k]) cache.current[k] = (...a) => (ref.current[k] ? ref.current[k](...a) : undefined);
-        next[k] = cache.current[k];
-      } else next[k] = v;
+const ViewTopDown = ({
+  colorData,
+  points,
+  baseAnchors,
+  crosshair,
+  handlePointClick,
+  theme,
+  names,
+  adjectives,
+  savedColors = {},
+  lockedNouns,
+  lockedAdjectives,
+  viewMode,
+  tetheringPinId,
+  swatchLayout,
+  swatchZoom,
+  viewportSearchQuery,
+  viewportTagFilter,
+  filterPt,
+  filterL,
+  filterC,
+  filterH,
+  groupSettings,
+}) => {
+  const isDark = theme === "dark";
+  const [showText, setShowText] = useState(false);
+  const handleRelayout = (e) => {
+    if (e["xaxis.range[0]"] !== void 0 && e["xaxis.range[1]"] !== void 0) {
+      setShowText(e["xaxis.range[1]"] - e["xaxis.range[0]"] < 0.25);
+    } else if (e["xaxis.autorange"]) {
+      setShowText(false);
     }
-    return React.createElement(Inner, next);
   };
+  const filterFn = useCallback(
+    (p, isCommercial = false) => {
+      if (filterPt && !filterPt(p)) return false;
+      const targetL2 = crosshair?.rawL || 0;
+      if (
+        p.isPin ||
+        p.isCustomAnchor ||
+        p.type === "pin" ||
+        p.type === "anchor" ||
+        p.url !== void 0 ||
+        p.hex !== void 0 ||
+        isCommercial
+      ) {
+        return Math.abs(p.L - targetL2) <= Math.max(0.02, filterL);
+      }
+      return true;
+    },
+    [crosshair, filterPt, filterL],
+  );
+  const validAnchors = useMemo(() => {
+    if (!crosshair) return [];
+    return baseAnchors
+      .map((p) => {
+        const targetL2 = p.L !== void 0 && p.L !== null ? p.L : crosshair.rawL;
+        const minL = p.minL !== void 0 ? p.minL : -0.01;
+        const maxL = p.maxL !== void 0 ? p.maxL : 1.01;
+        const inRange = targetL2 >= minL - 0.001 && targetL2 <= maxL + 0.001;
+        const c = new Color("oklch", [targetL2, p.C, p.H]);
+        const isSpecificAnchor =
+          (Math.abs(p.C - 0.04) < 0.001 && Math.abs(p.H - 90) < 0.1) ||
+          (Math.abs(p.C - 0.12) < 0.001 && Math.abs(p.H - 90) < 0.1);
+        if ((c.inGamut("srgb") || p.C === 0 || isSpecificAnchor) && inRange) {
+          return {
+            ...p,
+            L: targetL2,
+            color: c
+              .clone()
+              .toGamut({ space: "srgb" })
+              .toString({ format: "hex" }),
+            inSrgb: true,
+            isValid: true,
+          };
+        }
+        return { isValid: false };
+      })
+      .filter((p) => p.isValid && !p.isPin);
+  }, [baseAnchors, crosshair?.rawL, filterPt]);
+  const swatchItems = useMemo(() => {
+    if (viewMode !== "swatches") return [];
+    const res = [];
+    validAnchors.filter((p) => filterPt ? filterPt(p) : true).forEach((p) => {
+      const lStr = getLStr(p.L);
+      const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+      res.push({
+        ...p,
+        type: "grid",
+        displayName:
+          `${adjectives[lStr] || ""} ${names[nounId] || ""}`.trim() ||
+          "Unnamed",
+        hex: p.color,
+      });
+    });
+    Object.values(savedColors).forEach((sc) => {
+      if (filterFn(sc)) {
+        if (sc.type === "anchor") {
+          res.push({
+            ...sc,
+            displayName:
+              `${sc.adjOverride || adjectives[sc.adjId] || ""} ${sc.nameOverride || names[sc.anchorId] || ""}`.trim() ||
+              sc.id,
+            hex: sc.srgbHex || sc.color,
+          });
+        } else if (sc.type === "pin") {
+          res.push({
+            ...sc,
+            displayName: sc.id || "Pin",
+            hex: sc.srgbHex || sc.color,
+          });
+        }
+      }
+    });
+    if (colorData) {
+      Object.keys(colorData).forEach((brand) => {
+        colorData[brand].forEach((c) => {
+          if (filterFn(c, true)) {
+            res.push({
+              ...c,
+              type: "commercial",
+              displayName: `${brand} - ${c.name}`,
+              hex: new Color("oklch", [c.L, c.C, c.H])
+                .to("srgb")
+                .toString({ format: "hex" }),
+            });
+          }
+        });
+      });
+    }
+    return res;
+  }, [
+    validAnchors,
+    savedColors,
+    colorData,
+    lockedNouns,
+    lockedAdjectives,
+    viewMode,
+    names,
+    adjectives,
+    filterFn,
+  ]);
+  const finalSwatchItems = useMemo(() => {
+    if (viewMode !== "swatches") return [];
+    return swatchItems.map((item) => {
+      if (item.type === "pin") {
+        const { displayAdj, displayName } = getInheritedPinNames(
+          item,
+          savedColors,
+          names,
+          adjectives,
+        );
+        return {
+          ...item,
+          displayName: `${displayAdj} ${displayName}`.trim() || item.id,
+        };
+      }
+      return item;
+    });
+  }, [swatchItems, viewMode, savedColors, names, adjectives]);
+  const baseTraces = useMemo(() => {
+    if (viewMode === "swatches") return [];
+    const traces = [];
+    const displayAnchors = validAnchors.filter((p) => filterPt ? filterPt(p) : true);
+    traces.push({
+      type: "scatter",
+      mode: viewMode === "bins" ? (showText ? "text" : "markers") : "markers",
+      x: displayAnchors.map((p) => p.a),
+      y: displayAnchors.map((p) => p.b),
+      text: displayAnchors.map((p) => {
+        const lStr = getLStr(p.L);
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+        const adj = adjectives[lStr] || "";
+        const noun = names[nounId] || "";
+        const fullName = `${adj} ${noun}`.trim() || "Unnamed";
+        const binText =
+          adj && noun ? `<b>${adj}</b><br>${noun}` : `<b>${fullName}</b>`;
+        return viewMode === "bins"
+          ? p.C === 0
+            ? `<b>${adj}</b>`
+            : binText
+          : `<b>${fullName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`;
+      }),
+      textposition: "middle center",
+      textfont: {
+        size: 12,
+        family: "Inter, sans-serif",
+        color: displayAnchors.map((p) => (p.L > 0.55 ? "#010D00" : "#F2E8DF")),
+      },
+      hovertemplate:
+        viewMode === "bins"
+          ? "<b>%{customdata[3].fullName}</b><br>C: %{customdata[1]:.3f} H: %{customdata[2]:.1f}\xB0<extra></extra>"
+          : "%{text}<extra></extra>",
+      customdata: displayAnchors.map((p) => {
+        const lStr = getLStr(p.L);
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+        const fullName =
+          `${adjectives[lStr] || ""} ${names[nounId] || ""}`.trim() ||
+          "Unnamed";
+        return [p.L, p.C, p.H, { anchorId: nounId, adjId: lStr, fullName }];
+      }),
+      marker: {
+        size: 14,
+        color: displayAnchors.map((p) => p.color),
+        opacity: viewMode === "bins" ? (showText ? 0 : 0.3) : 1,
+        line: {
+          width: 0.5,
+          color: isDark ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.2)",
+        },
+      },
+    });
+    const gridLockedNodes = baseAnchors
+      .filter((p) => !p.isCustomAnchor)
+      .map((p) => ({
+        ...p,
+        L: crosshair?.rawL || 0,
+        lStr: getLStr(crosshair?.rawL || 0),
+      }))
+      .filter((p) => {
+        return (
+          !p.isPin &&
+          lockedNouns[p.parentNounId || `${p.cStr}-${p.hStr}`] &&
+          lockedAdjectives[p.lStr] &&
+          (filterPt ? filterPt(p) : true)
+        );
+      })
+      .map((p) => {
+        const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+        const c = new Color("oklch", [p.L, p.C, p.H]);
+        const nodeColor =
+          c.inGamut("srgb") || p.C === 0
+            ? c.clone().toGamut({ space: "srgb" }).toString({ format: "hex" })
+            : "#010D00";
+        return {
+          ...p,
+          displayName:
+            `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
+            "Unnamed",
+          color: nodeColor,
+        };
+      });
+    const customLockedNodes = Object.values(savedColors)
+      .filter((sc) => sc.type === "anchor" && filterFn(sc))
+      .map((p) => {
+        const displayName =
+          `${p.adjOverride || adjectives[p.adjId] || ""} ${p.nameOverride || names[p.anchorId] || ""}`.trim() ||
+          p.id ||
+          "Custom Anchor";
+        return {
+          ...p,
+          a: p.C * Math.sin((p.H * Math.PI) / 180),
+          b: p.C * Math.cos((p.H * Math.PI) / 180),
+          displayName,
+          color: p.color,
+        };
+      });
+    const lockedNodes = [...gridLockedNodes, ...customLockedNodes];
+    const pinNodes = Object.values(savedColors)
+      .filter((sc) => sc.type === "pin" && filterFn(sc))
+      .map((p) => {
+        const { displayAdj, displayName } = getInheritedPinNames(
+          p,
+          savedColors,
+          names,
+          adjectives,
+        );
+        return { ...p, displayAdj, displayName };
+      });
+    traces.push({
+      type: "scatter",
+      mode: "markers",
+      x: lockedNodes.map((p) => p.a),
+      y: lockedNodes.map((p) => p.b),
+      text: lockedNodes.map(
+        (p) =>
+          `<b>[Lock] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
+      ),
+      hovertemplate: "%{text}<extra></extra>",
+      customdata: lockedNodes.map((p) => [
+        p.L,
+        p.C,
+        p.H,
+        { anchorId: p.anchorId || p.id, adjId: p.adjId },
+      ]),
+      marker: {
+        symbol: "square",
+        size: 10,
+        color: lockedNodes.map((p) => p.color),
+        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
+      },
+    });
+    traces.push({
+      type: "scatter",
+      mode: "markers",
+      x: pinNodes.map((p) => p.a),
+      y: pinNodes.map((p) => p.b),
+      text: pinNodes.map(
+        (p) =>
+          `<b>[Pin] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
+      ),
+      hovertemplate: "%{text}<extra></extra>",
+      customdata: pinNodes.map((p) => [p.L, p.C, p.H, { pinId: p.id }]),
+      marker: {
+        symbol: "x",
+        size: 12,
+        color: pinNodes.map((p) => p.color),
+        line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
+      },
+    });
+    const commercialNodes = [];
+    if (colorData) {
+      Object.keys(colorData).forEach((brand) => {
+        colorData[brand].forEach((c) => {
+          if (filterFn(c, true)) {
+            commercialNodes.push({
+              ...c,
+              a: c.C * Math.sin((c.H * Math.PI) / 180),
+              b: c.C * Math.cos((c.H * Math.PI) / 180),
+              color: new Color("oklch", [c.L, c.C, c.H])
+                .to("srgb")
+                .toString({ format: "hex" }),
+              displayName: `${brand} - ${c.name}`,
+            });
+          }
+        });
+      });
+    }
+    if (commercialNodes.length > 0) {
+      const jitteredCommercial = applyJitter(
+        commercialNodes,
+        "a",
+        "b",
+        null,
+        0.006,
+      );
+      traces.push({
+        type: "scatter",
+        mode: "markers",
+        x: jitteredCommercial.map((p) => p._jX),
+        y: jitteredCommercial.map((p) => p._jY),
+        text: jitteredCommercial.map(
+          (p) =>
+            `<b>[Commercial] ${p.displayName}</b><br>L: ${p.L.toFixed(3)} C: ${p.C.toFixed(3)} H: ${p.H.toFixed(1)}\xB0`,
+        ),
+        hovertemplate: "%{text}<extra></extra>",
+        customdata: jitteredCommercial.map((p) => [
+          p.L,
+          p.C,
+          p.H,
+          { brand: p.brand, originalIndex: p.originalIndex },
+        ]),
+        marker: {
+          symbol: "triangle-up",
+          size: 10,
+          color: jitteredCommercial.map((p) => p.color),
+          line: { color: isDark ? "#F2E8DF" : "#010D00", width: 2 },
+        },
+      });
+    }
+    return traces;
+  }, [
+    validAnchors,
+    baseAnchors,
+    crosshair,
+    isDark,
+    names,
+    adjectives,
+    savedColors,
+    lockedNouns,
+    lockedAdjectives,
+    viewMode,
+    showText,
+    colorData,
+    filterFn,
+    filterPt,
+  ]);
+  const data = useMemo(() => {
+    if (viewMode === "swatches") return [];
+    const traces = [...baseTraces];
+    traces.push({
+      type: "scatter",
+      mode: "lines",
+      x:
+        crosshair?.snapTarget || crosshair?.activePullType
+          ? [crosshair.a, crosshair.snapTarget?.a || crosshair.gravityA]
+          : [],
+      y:
+        crosshair?.snapTarget || crosshair?.activePullType
+          ? [crosshair.b, crosshair.snapTarget?.b || crosshair.gravityB]
+          : [],
+      line: {
+        color: isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
+        width: 2,
+        dash: "dot",
+      },
+      hoverinfo: "skip",
+    });
+    traces.push({
+      type: "scatter",
+      mode: "markers",
+      x: [crosshair?.a],
+      y: [crosshair?.b],
+      text: [
+        `<b>Cursor ${crosshair?.activePullType ? `(Tethered to ${crosshair.activePullType})` : ""}</b><br>L: ${crosshair?.rawL?.toFixed(3)} C: ${crosshair?.rawC?.toFixed(3)} H: ${crosshair?.rawH?.toFixed(1)}\xB0`,
+      ],
+      hovertemplate: "%{text}<extra></extra>",
+      marker: {
+        symbol: "cross",
+        size: 12,
+        color: isDark ? "#F2E8DF" : "#2B4032",
+        opacity: 0.8,
+        line: { color: isDark ? "#F2E8DF" : "#2B4032", width: 2 },
+      },
+      hoverinfo: "skip",
+    });
+    if (tetheringPinId && savedColors[tetheringPinId]) {
+      const p = savedColors[tetheringPinId];
+      traces.push({
+        type: "scatter",
+        mode: "lines",
+        x: [p.a, crosshair?.a],
+        y: [p.b, crosshair?.b],
+        line: { color: "#f59e0b", width: 2, dash: "dash" },
+        hoverinfo: "skip",
+      });
+    }
+    return traces;
+  }, [baseTraces, crosshair, isDark, viewMode, tetheringPinId, savedColors]);
+  const layout = useMemo(() => {
+    const shapes = [];
+    if (viewMode === "bins") {
+      if (validAnchors.length > 0) {
+        try {
+          const allVoronoiPoints = [...validAnchors];
+          const isMobile = window.innerWidth < 768;
+          const angleStep = isMobile ? 10 : 2;
+          const boundaryPoints = [];
+          for (let angle = 0; angle < 360; angle += angleStep) {
+            let low = 0,
+              high = 0.4;
+            while (high - low > 0.001) {
+              let mid = (low + high) / 2;
+              if (
+                new Color("oklch", [crosshair?.rawL || 0, mid, angle]).inGamut(
+                  "srgb",
+                )
+              ) {
+                low = mid;
+              } else {
+                high = mid;
+              }
+            }
+            const maxC = Math.min(low, 0.3);
+            const rad = (angle * Math.PI) / 180;
+            boundaryPoints.push([maxC * Math.sin(rad), maxC * Math.cos(rad)]);
+            allVoronoiPoints.push({
+              a: (maxC + 0.005) * Math.sin(rad),
+              b: (maxC + 0.005) * Math.cos(rad),
+              isDummy: true,
+            });
+            allVoronoiPoints.push({
+              a: (maxC + 0.02) * Math.sin(rad),
+              b: (maxC + 0.02) * Math.cos(rad),
+              isDummy: true,
+            });
+          }
+          const delaunay = d3.Delaunay.from(
+            allVoronoiPoints.map((p) => [p.a, p.b]),
+          );
+          const voronoi = delaunay.voronoi([-0.4, -0.4, 0.4, 0.4]);
+          allVoronoiPoints.forEach((p, i) => {
+            if (p.isDummy) return;
+            if (filterPt && !filterPt(p)) return;
+            const path = voronoi.renderCell(i);
+            if (path) {
+              const pts = [];
+              path.replace(/([ML])([^,]+),([^MLZ]+)/g, (match, cmd, x, y) => {
+                pts.push([parseFloat(x), parseFloat(y)]);
+                return match;
+              });
+              if (pts.length > 2) {
+                const unscaledPath =
+                  "M" + pts.map((pt) => pt.join(",")).join("L") + "Z";
+                shapes.push({
+                  type: "path",
+                  path: unscaledPath,
+                  fillcolor: p.color,
+                  line: {
+                    width: 1.5,
+                    color: isDark ? "rgba(0,0,0,0.1)" : "rgba(255,255,255,0.4)",
+                  },
+                  layer: "below",
+                });
+              }
+            }
+          });
+          const outerSquare = [
+            [-0.5, -0.5],
+            [0.5, -0.5],
+            [0.5, 0.5],
+            [-0.5, 0.5],
+            [-0.5, -0.5],
+          ];
+          const innerBoundary = [...boundaryPoints];
+          const maskPath =
+            "M" +
+            outerSquare.map((p) => p.join(",")).join("L") +
+            "Z M" +
+            innerBoundary.map((p) => p.join(",")).join("L") +
+            "Z";
+          shapes.push({
+            type: "path",
+            path: maskPath,
+            fillcolor: isDark ? "#052212" : "#F2E8DF",
+            line: { width: 0 },
+            layer: "below",
+          });
+        } catch (e) {
+          console.error("Voronoi error:", e);
+        }
+      }
+    } else {
+      for (let c = 0.02; c <= 0.34; c += 0.02) {
+        shapes.push({
+          type: "circle",
+          xref: "x",
+          yref: "y",
+          x0: -c,
+          y0: -c,
+          x1: c,
+          y1: c,
+          line: {
+            color: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.05)",
+            width: 1,
+            dash: "dot",
+          },
+        });
+      }
+    }
+    
+    if (groupSettings) {
+      const gC = isDark ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.25)";
+      if (groupSettings.neutralC) {
+        shapes.push({
+          type: "circle",
+          xref: "x",
+          yref: "y",
+          x0: -groupSettings.neutralC,
+          y0: -groupSettings.neutralC,
+          x1: groupSettings.neutralC,
+          y1: groupSettings.neutralC,
+          line: { color: gC, width: 1.5, dash: "dot" },
+        });
+      }
+      if (groupSettings.vividC) {
+        shapes.push({
+          type: "circle",
+          xref: "x",
+          yref: "y",
+          x0: -groupSettings.vividC,
+          y0: -groupSettings.vividC,
+          x1: groupSettings.vividC,
+          y1: groupSettings.vividC,
+          line: { color: gC, width: 1.5, dash: "dot" },
+        });
+      }
+      if (groupSettings.hues && groupSettings.neutralC) {
+        hueBoundaries(groupSettings.hues).forEach((edge) => {
+          const rad = (edge * Math.PI) / 180;
+          shapes.push({
+             type: "line",
+             x0: groupSettings.neutralC * Math.sin(rad),
+             y0: groupSettings.neutralC * Math.cos(rad),
+             x1: 0.4 * Math.sin(rad),
+             y1: 0.4 * Math.cos(rad),
+             line: { color: gC, width: 1.5, dash: "dot" },
+          });
+        });
+      }
+    }
+
+    return {
+      uirevision: "true",
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      dragmode: "pan",
+      xaxis: {
+        title: "a",
+        range: [-0.3, 0.3],
+        showgrid: viewMode !== "bins",
+        zeroline: viewMode !== "bins",
+        gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
+        scaleanchor: "y",
+        titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
+        tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
+      },
+      yaxis: {
+        title: "b",
+        range: [-0.3, 0.3],
+        showgrid: viewMode !== "bins",
+        zeroline: viewMode !== "bins",
+        gridcolor: isDark ? "rgba(177,188,131,0.12)" : "rgba(43,64,50,0.10)",
+        titlefont: { color: isDark ? "#B1BC83" : "#2B4032" },
+        tickfont: { color: isDark ? "#B1BC83" : "#2B4032" },
+      },
+      margin: { l: 50, r: 50, b: 50, t: 50 },
+      showlegend: false,
+      shapes,
+      // Dots mode gets the colour wheel behind the points, at the lightness
+      // currently under the cursor.
+      images:
+        viewMode === "dots"
+          ? [
+              {
+                source: oklchWheelDataUri(
+                  crosshair?.rawL !== undefined ? crosshair.rawL : 0.65,
+                  0.3,
+                ),
+                xref: "x",
+                yref: "y",
+                x: -0.3,
+                y: 0.3,
+                sizex: 0.6,
+                sizey: 0.6,
+                sizing: "stretch",
+                layer: "below",
+                opacity: 0.25,
+              },
+            ].filter((im) => !!im.source)
+          : [],
+    };
+  }, [isDark, viewMode, validAnchors, crosshair?.rawL, filterPt, groupSettings]);
+  const handleBgClick = (a, b) => {
+    const C = Math.min(0.4, Math.sqrt(a * a + b * b));
+    let H = Math.atan2(a, b) * (180 / Math.PI);
+    if (H < 0) H += 360;
+    handlePointClick([crosshair?.rawL, C, H]);
+  };
+  if (viewMode === "swatches") {
+    return React.createElement(ViewportSwatches, {
+      items: finalSwatchItems,
+      layout: swatchLayout,
+      swatchZoom,
+      dim1: "C",
+      dim2: "H",
+      dim1Labels: (v) => `C: ${Number(v).toFixed(2)}`,
+      dim2Labels: (v) => `H: ${Number(v).toFixed(0)}\xB0`,
+      handlePointClick,
+      viewportSearchQuery,
+      viewportTagFilter,
+      crosshair,
+    });
+  }
+  return React.createElement(PlotlyChart, {
+    data,
+    layout,
+    onPointClick: handlePointClick,
+    onBgClick: handleBgClick,
+    onRelayout: handleRelayout,
+    theme,
+  });
 };
-// Long lists mount a page at a time; the next page loads as the end of the
-// list scrolls into view (or on click).
-const LoadMoreSentinel = ({ onMore, left }) => {
-  const ref = useRef(null);
-  const cb = useRef(onMore);
-  cb.current = onMore;
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || typeof IntersectionObserver === "undefined") return undefined;
-    const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) cb.current(); }, { rootMargin: "600px" });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [left]);
+const ViewPalette = ({
+  baseAnchors,
+  points = [],
+  handlePointClick,
+  names,
+  setNames,
+  adjectives,
+  setAdjectives,
+  dictNotes,
+  lockedNouns,
+  lockedAdjectives,
+  savedColors = {},
+  setSavedColors,
+  dictTags,
+  onVisualize,
+}) => {
+  const [sortBy, setSortBy] = useState("ring");
+  const [sortAsc, setSortAsc] = useState(true);
+  const [tagFilter, setTagFilter] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [isAdding, setIsAdding] = useState(false);
+  const [fullscreenImage, setFullscreenImage] = useState(null);
+  const [editForm, setEditForm] = useState({
+    name: "",
+    C: 0.1,
+    H: 180,
+    minL: 0.2,
+    maxL: 0.8,
+    notes: "",
+  });
+  const handleAddCustomNoun = () => {
+    const name = editForm.name.trim();
+    const C = parseFloat(editForm.C);
+    const H = parseFloat(editForm.H);
+    let minL = parseFloat(editForm.minL);
+    let maxL = parseFloat(editForm.maxL);
+    if (isNaN(C) || isNaN(H) || isNaN(minL) || isNaN(maxL)) {
+      return;
+    }
+    if (minL > maxL) {
+      const temp = minL;
+      minL = maxL;
+      maxL = temp;
+    }
+    const id = editForm.id || `custom-noun-${crypto.randomUUID()}`;
+    setSavedColors((prev) => ({
+      ...prev,
+      [id]: {
+        id,
+        type: "nounColumn",
+        nameOverride: name,
+        C,
+        H,
+        minL,
+        maxL,
+        a: C * Math.sin((H * Math.PI) / 180),
+        b: C * Math.cos((H * Math.PI) / 180),
+        notes: editForm.notes || "",
+      },
+    }));
+    if (setNames && name) {
+      setNames({ ...names, [id]: name });
+    } else if (name) {
+      Object.assign(names, { [id]: name });
+    }
+    setIsAdding(false);
+    setEditForm({
+      id: null,
+      name: "",
+      C: 0.1,
+      H: 180,
+      minL: 0.2,
+      maxL: 0.8,
+      notes: "",
+    });
+  };
+  const handleDeleteCustomNoun = (id, e) => {
+    e.stopPropagation();
+    setSavedColors((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      Object.values(next).forEach((sc) => {
+        if (sc.type === "anchor" && sc.anchorId === id && sc.isCustomAnchor) {
+          delete next[sc.id];
+        } else if (sc.type === "pin" && sc.anchorId === id) {
+          sc.anchorId = null;
+        } else if (sc.type === "pin" && sc.parentPinId === id) {
+          sc.parentPinId = null;
+        }
+      });
+      return next;
+    });
+  };
+  const handleEditCustomNoun = (item, e) => {
+    e.stopPropagation();
+    setEditForm({
+      id: item.id,
+      name: item.name || "",
+      C: item.C,
+      H: item.H,
+      minL: item.minL,
+      maxL: item.maxL,
+      notes: item.notes || "",
+    });
+    setIsAdding(true);
+  };
+  const flatItems = useMemo(() => {
+    const items = [];
+    Object.values(savedColors).forEach((sc) => {
+      if (sc.type === "nounColumn") {
+        const midL = (sc.minL + sc.maxL) / 2;
+        const cStr = Math.round(sc.C * 100)
+          .toString()
+          .padStart(2, "0");
+        const hStr = Math.round(sc.H).toString().padStart(3, "0");
+        let count = 0;
+        points.forEach((p) => {
+          if (
+            p.parentNounId === sc.id ||
+            (Math.abs(p.C - sc.C) < 0.01 &&
+              Math.abs(p.H - sc.H) < 0.01 &&
+              p.L >= sc.minL &&
+              p.L <= sc.maxL &&
+              !p.isPin)
+          ) {
+            count++;
+          }
+        });
+        items.push({
+          ...sc,
+          L: midL,
+          C: sc.C,
+          H: sc.H,
+          color: new Color("oklch", [midL, sc.C, sc.H])
+            .toGamut({ space: "srgb" })
+            .toString({ format: "hex" }),
+          id: sc.id,
+          fullCode: `NOUN-C${cStr}-H${hStr}`,
+          layer: "Custom Range",
+          count,
+          cStr,
+          hStr,
+          tags: dictTags[sc.id] || [],
+          name: names[sc.id] || sc.nameOverride,
+          note: dictNotes[sc.id] || sc.notes,
+          adj: `L ${sc.minL.toFixed(2)} - ${sc.maxL.toFixed(2)}`,
+          isCustomNoun: true,
+        });
+      }
+    });
+    return items;
+  }, [dictTags, names, dictNotes, adjectives, savedColors, points]);
+  const rings = useMemo(() => {
+    const r = {};
+    flatItems.forEach((i) => {
+      if (!r[i.cStr]) r[i.cStr] = [];
+      r[i.cStr].push(i);
+    });
+    return r;
+  }, [flatItems]);
+  const allTags = useMemo(
+    () => Array.from(new Set(flatItems.flatMap((item) => item.tags))).sort(),
+    [flatItems],
+  );
+  const filterFn = (item) => {
+    const matchesTag = !tagFilter || item.tags.includes(tagFilter);
+    const qWords = searchTerm.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    const matchesSearch =
+      qWords.length === 0 ||
+      qWords.every(
+        (w) =>
+          (item.name && item.name.toLowerCase().includes(w)) ||
+          (item.note && item.note.toLowerCase().includes(w)) ||
+          (item.adj && item.adj.toLowerCase().includes(w)) ||
+          (item.fullCode && item.fullCode.toLowerCase().includes(w)),
+      );
+    return matchesTag && matchesSearch;
+  };
+  const filteredItems = useMemo(
+    () => flatItems.filter(filterFn),
+    [flatItems, tagFilter, searchTerm],
+  );
+  const renderSingleSwatch = (item) => {
+    if (!item) return null;
+    const dupNoun = getGlobalDuplicate(
+      names,
+      adjectives,
+      item.id,
+      names[item.id],
+      savedColors,
+    );
+    return React.createElement(
+      "div",
+      {
+        key: item.id,
+        className:
+          "flex flex-col items-center gap-1.5 bg-white dark:bg-neutral-900 p-2.5 rounded-lg border border-slate-200 dark:border-neutral-800 shadow-sm w-24 flex-shrink-0 relative group transition-colors",
+      },
+      React.createElement(
+        "div",
+        { className: "absolute -top-2 -right-2 flex gap-1 z-30" },
+        React.createElement(
+          "button",
+          {
+            onClick: (e) => handleEditCustomNoun(item, e),
+            className:
+              "bg-sky-500 hover:bg-sky-600 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-sm",
+            title: "Edit Noun Column",
+          },
+          React.createElement(Icon, { name: "edit-2", className: "w-3 h-3" }),
+        ),
+        React.createElement(
+          "button",
+          {
+            onClick: (e) => handleDeleteCustomNoun(item.id, e),
+            className:
+              "bg-red-500 hover:bg-red-600 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-sm",
+            title: "Delete Noun Column",
+          },
+          React.createElement(Icon, { name: "trash", className: "w-3 h-3" }),
+        ),
+      ),
+      React.createElement(
+        "div",
+        {
+          className:
+            "text-[10px] font-mono text-sky-600 dark:text-sky-400 font-bold mb-1 tracking-wider",
+        },
+        item.fullCode,
+      ),
+      React.createElement(
+        "div",
+        {
+          className:
+            "w-full text-[8px] font-bold uppercase tracking-wider bg-transparent text-center text-slate-500 dark:text-neutral-400 truncate",
+          title: item.adj,
+        },
+        item.adj,
+      ),
+      React.createElement("input", {
+        type: "text",
+        className: `w-full text-[11px] font-bold uppercase tracking-wider bg-transparent border-b border-slate-200 dark:border-neutral-700 text-center focus:outline-none placeholder:opacity-30 pb-0.5 disabled:opacity-50 ${dupNoun ? "!text-red-500 !border-red-500" : "text-slate-800 dark:text-neutral-200 focus:border-sky-500"}`,
+        placeholder: "Unnamed Noun",
+        value: names[item.id] || "",
+        onChange: (e) => setNames({ ...names, [item.id]: e.target.value }),
+        disabled: lockedNouns[item.id],
+        title: dupNoun ? `Conflict: ${dupNoun}` : "",
+      }),
+      React.createElement(
+        "div",
+        {
+          onClick: () =>
+            handlePointClick([item.L, item.C, item.H], item.spectral, {
+              brand: item.brand,
+              originalIndex: item.originalIndex,
+            }),
+          className:
+            "relative w-14 h-14 rounded shadow-sm cursor-pointer overflow-hidden border border-slate-200 dark:border-neutral-700 hover:ring-2 hover:ring-sky-500 transition-all flex-shrink-0 group/swatch",
+          style: {
+            backgroundColor: item.color,
+          },
+        },
+        React.createElement(SwatchTreatment, { item, size: 56 }),
+        (item.image || item.note?.startsWith("http")) &&
+          React.createElement("div", {
+            className: SWATCH_PHOTO_INSET,
+            style: { backgroundImage: `url(${item.image || item.note})` },
+          }),
+        !new Color("oklch", [item.L, item.C, item.H]).inGamut("srgb") &&
+          React.createElement("div", {
+            className: "absolute inset-0 pointer-events-none",
+            style: {
+              backgroundImage:
+                "repeating-linear-gradient(45deg, rgba(0,0,0,0.2), rgba(0,0,0,0.2) 5px, rgba(255,255,255,0.2) 5px, rgba(255,255,255,0.2) 10px)",
+            },
+          }),
+        React.createElement(
+          "div",
+          {
+            className:
+              "absolute inset-0 flex items-center justify-center gap-2 bg-black/60 opacity-0 group-hover/swatch:opacity-100 transition-opacity z-20 backdrop-blur-sm rounded",
+          },
+          (item.image || item.note?.startsWith("http")) &&
+            React.createElement(
+              "button",
+              {
+                onClick: (e) => {
+                  e.stopPropagation();
+                  setFullscreenImage(item.image || item.note);
+                },
+                className: "text-white hover:text-sky-300 p-1",
+              },
+              React.createElement(Icon, { name: "eye", className: "w-5 h-5" }),
+            ),
+        ),
+        React.createElement(
+          "div",
+          {
+            className:
+              "absolute top-1 right-1 px-1 py-0.5 rounded-sm text-[9px] font-black font-mono leading-none z-10",
+            style: {
+              color: item.L > 0.65 ? "#010D00" : "#F2E8DF",
+              backgroundColor:
+                item.L > 0.65
+                  ? "rgba(242, 232, 223, 0.7)"
+                  : "rgba(1, 13, 0, 0.5)",
+            },
+            title: "Occurrences",
+          },
+          item.count,
+        ),
+        React.createElement(
+          "button",
+          {
+            onClick: (e) => {
+              e.stopPropagation();
+              onVisualize("noun", item.id, names[item.id] || item.id);
+            },
+            className:
+              "absolute bottom-1 right-1 opacity-0 group-hover/swatch:opacity-100 bg-black/50 hover:bg-black/70 text-white p-1 rounded transition-opacity z-30",
+            title: "Visualize all instances",
+          },
+          React.createElement(Icon, { name: "eye", className: "w-3 h-3" }),
+        ),
+      ),
+      React.createElement("input", {
+        type: "text",
+        className:
+          "w-full text-[9px] bg-transparent text-center text-slate-500 dark:text-neutral-400 italic focus:outline-none disabled:opacity-80 cursor-default",
+        placeholder: "No Notes",
+        value: dictNotes[item.id] || "",
+        title: dictNotes[item.id] || "",
+        disabled: true,
+      }),
+      React.createElement(
+        "div",
+        {
+          className:
+            "text-[8px] font-mono text-slate-400 dark:text-neutral-500 mt-0.5 flex flex-col items-center",
+        },
+        React.createElement(
+          "div",
+          null,
+          "L: ",
+          item.minL.toFixed(2),
+          "-",
+          item.maxL.toFixed(2),
+        ),
+        React.createElement("div", null, "C:", item.C.toFixed(2)),
+        React.createElement("div", null, "H:", item.H.toFixed(1), "\xB0"),
+      ),
+      item.tags.length > 0 &&
+        React.createElement(
+          "div",
+          {
+            className:
+              "absolute top-0 left-0 w-full p-1 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none flex flex-wrap gap-1 justify-center z-20 backdrop-blur-sm bg-white/50 dark:bg-black/50 rounded-t-lg",
+          },
+          item.tags.map((t) =>
+            React.createElement(
+              "span",
+              {
+                key: t,
+                className:
+                  "bg-sky-500 text-white px-1 rounded text-[7px] font-bold uppercase",
+              },
+              t,
+            ),
+          ),
+        ),
+    );
+  };
+  // Plain render helper, not a component: defining a component inside render
+  // gives it a new type each pass, so React remounted every header button.
+  let content;
+  if (sortBy === "ring") {
+    content = Object.keys(rings)
+      .sort((a, b) => parseInt(a) - parseInt(b))
+      .map((r) => {
+        const ringItems = filteredItems.filter((i) => i.cStr === r);
+        if (ringItems.length === 0) return null;
+        const byHue = {};
+        ringItems.forEach((i) => {
+          if (!byHue[i.hStr]) byHue[i.hStr] = [];
+          byHue[i.hStr].push(i);
+        });
+        return React.createElement(
+          "div",
+          { key: r, className: "mb-8 last:mb-0" },
+          React.createElement(
+            "div",
+            { className: "flex items-center gap-4 mb-4" },
+            React.createElement(
+              "span",
+              {
+                className:
+                  "text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400",
+              },
+              r === "00"
+                ? "Neutral Spine"
+                : `Chroma Ring (C:${(parseInt(r) / 100).toFixed(2)})`,
+              React.createElement(
+                "span",
+                {
+                  className:
+                    "ml-2 px-1.5 py-0.5 bg-slate-100 dark:bg-neutral-800 rounded text-sky-500 font-mono text-[9px]",
+                },
+                ringItems.length,
+                " Nouns",
+              ),
+            ),
+            React.createElement("div", {
+              className: "flex-1 h-px bg-slate-200 dark:bg-neutral-800",
+            }),
+          ),
+          React.createElement(
+            "div",
+            { className: "flex flex-wrap gap-x-8 gap-y-6" },
+            Object.keys(byHue)
+              .sort((a, b) => parseInt(a) - parseInt(b))
+              .map((h) => {
+                return React.createElement(
+                  "div",
+                  {
+                    key: h,
+                    className:
+                      "flex flex-col items-center gap-2 bg-white dark:bg-neutral-900 p-3 rounded-xl border border-slate-200 dark:border-neutral-800 shadow-sm",
+                  },
+                  React.createElement(
+                    "div",
+                    {
+                      className:
+                        "text-[10px] font-mono text-slate-400 dark:text-neutral-500 font-bold mb-1 bg-slate-100 dark:bg-neutral-800 px-2 py-0.5 rounded-full",
+                    },
+                    "Hue: ",
+                    parseInt(h),
+                    "\xB0",
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "flex gap-4 flex-wrap justify-center" },
+                    byHue[h].map(renderSingleSwatch),
+                  ),
+                );
+              }),
+          ),
+        );
+      });
+  } else {
+    const sortedItems = [...filteredItems].sort((a, b) => {
+      let valA, valB;
+      switch (sortBy) {
+        case "name":
+          valA = (names[a.id] || "").toLowerCase();
+          valB = (names[b.id] || "").toLowerCase();
+          if (valA === valB) return a.H - b.H;
+          return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+        case "count":
+          valA = a.count;
+          valB = b.count;
+          break;
+        case "layer":
+          valA = a.L;
+          valB = b.L;
+          break;
+        case "tag":
+          valA = a.tags.join(", ");
+          valB = b.tags.join(", ");
+          if (valA === valB) return a.H - b.H;
+          return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+        case "hue":
+        default:
+          valA = a.H;
+          valB = b.H;
+          break;
+      }
+      if (valA === valB) return a.C - b.C;
+      return sortAsc ? (valA < valB ? -1 : 1) : valB < valA ? -1 : 1;
+    });
+    content = React.createElement(
+      "div",
+      { className: "flex flex-wrap gap-4" },
+      sortedItems.map(renderSingleSwatch),
+    );
+  }
   return React.createElement(
-    "button",
-    { ref, onClick: () => cb.current(), className: "w-full py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-slate-700 dark:hover:text-neutral-200" },
-    `Show more (${left} more)`,
+    "div",
+    { className: "h-full flex flex-col overflow-hidden pt-2 relative" },
+    React.createElement(
+      "div",
+      {
+        className:
+          "flex flex-wrap items-center gap-2 px-4 pb-4 mb-4 border-b border-slate-200 dark:border-neutral-800 flex-shrink-0",
+      },
+      React.createElement(
+        "div",
+        { className: "relative flex-1 min-w-[200px] max-w-xs" },
+        React.createElement(Icon, {
+          name: "search",
+          className:
+            "absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400",
+        }),
+        React.createElement("input", {
+          type: "text",
+          placeholder: "Search nouns, ranges...",
+          value: searchTerm,
+          onChange: (e) => setSearchTerm(e.target.value),
+          className:
+            "w-full bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-300 text-[10px] font-bold uppercase tracking-wider rounded-lg pl-9 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-sky-500/50 transition-all",
+        }),
+        searchTerm &&
+          React.createElement(
+            "button",
+            {
+              onClick: () => setSearchTerm(""),
+              className:
+                "absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-neutral-200",
+            },
+            React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
+          ),
+      ),
+      React.createElement(
+        "span",
+        {
+          className:
+            "text-[10px] font-bold text-slate-400 dark:text-neutral-500 uppercase mr-2 flex items-center gap-1.5",
+        },
+        React.createElement(Icon, {
+          name: "arrow-down-up",
+          className: "w-3.5 h-3.5",
+        }),
+        " Sort By:",
+      ),
+      React.createElement(SortControl, {
+        fields: [
+          { field: "ring", label: "Chroma rings" },
+          { field: "hue", label: "Hue angle" },
+          { field: "count", label: "Occurrences" },
+          { field: "name", label: "Name" },
+          { field: "tag", label: "Tags" },
+        ],
+        sortBy,
+        setSortBy,
+        sortAsc,
+        setSortAsc,
+      }),
+      allTags.length > 0 &&
+        React.createElement(
+          "div",
+          { className: "ml-4 flex items-center gap-2" },
+          React.createElement(Icon, {
+            name: "filter",
+            className: "w-3.5 h-3.5 text-slate-400",
+          }),
+          React.createElement(
+            "select",
+            {
+              value: tagFilter,
+              onChange: (e) => setTagFilter(e.target.value),
+              className:
+                "bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-300 text-[9px] font-bold uppercase tracking-wider rounded px-2 py-1 outline-none cursor-pointer",
+            },
+            React.createElement("option", { value: "" }, "All Tags"),
+            allTags.map((t) =>
+              React.createElement("option", { key: t, value: t }, t),
+            ),
+          ),
+        ),
+      React.createElement(
+        "div",
+        { className: "ml-auto flex items-center gap-2" },
+        React.createElement(
+          "button",
+          {
+            onClick: () => setIsAdding(!isAdding),
+            className:
+              "px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded text-[10px] items-center gap-1.5 flex font-bold uppercase tracking-wider transition-colors",
+          },
+          React.createElement(Icon, {
+            name: isAdding ? "x" : "plus",
+            className: "w-3.5 h-3.5",
+          }),
+          isAdding ? "Cancel" : "Add Noun",
+        ),
+        React.createElement(
+          "span",
+          {
+            className:
+              "px-2 py-1 bg-sky-500/10 text-sky-500 rounded text-[10px] font-black uppercase tracking-widest border border-sky-500/20",
+          },
+          "Total: ",
+          filteredItems.length,
+          " Nouns",
+        ),
+      ),
+    ),
+    React.createElement(
+      "div",
+      { className: "flex-1 overflow-y-auto custom-scrollbar px-4 pb-10" },
+      isAdding &&
+        React.createElement(
+          "div",
+          {
+            className:
+              "flex flex-col gap-3 bg-slate-50 dark:bg-neutral-800/80 p-4 rounded-xl border border-slate-200 dark:border-neutral-700 shadow-sm w-full mb-6",
+          },
+          React.createElement(
+            "span",
+            {
+              className:
+                "text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1",
+            },
+            "Create Custom Noun Column",
+          ),
+          React.createElement(
+            "div",
+            { className: "flex gap-3" },
+            React.createElement("input", {
+              type: "text",
+              placeholder: "Noun Name (Optional)",
+              className:
+                "flex-1 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-3 py-2 text-xs focus:ring-2 focus:ring-sky-500 outline-none",
+              value: editForm.name,
+              onChange: (e) =>
+                setEditForm({ ...editForm, name: e.target.value }),
+            }),
+          ),
+          React.createElement(
+            "div",
+            { className: "flex gap-4" },
+            React.createElement(
+              "div",
+              { className: "flex flex-col flex-1" },
+              React.createElement(
+                "span",
+                {
+                  className:
+                    "text-[9px] uppercase font-bold text-slate-500 dark:text-neutral-400 mb-1",
+                },
+                "Chroma",
+              ),
+              React.createElement("input", {
+                type: "number",
+                step: "0.01",
+                min: "0",
+                max: "0.4",
+                className:
+                  "bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs focus:ring-1 outline-none font-mono",
+                value: editForm.C,
+                onChange: (e) =>
+                  setEditForm({ ...editForm, C: e.target.value }),
+              }),
+            ),
+            React.createElement(
+              "div",
+              { className: "flex flex-col flex-1" },
+              React.createElement(
+                "span",
+                {
+                  className:
+                    "text-[9px] uppercase font-bold text-slate-500 dark:text-neutral-400 mb-1",
+                },
+                "Hue (0-360)",
+              ),
+              React.createElement("input", {
+                type: "number",
+                step: "1",
+                min: "0",
+                max: "360",
+                className:
+                  "bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs focus:ring-1 outline-none font-mono",
+                value: editForm.H,
+                onChange: (e) =>
+                  setEditForm({ ...editForm, H: e.target.value }),
+              }),
+            ),
+            React.createElement(
+              "div",
+              { className: "flex flex-col flex-1" },
+              React.createElement(
+                "span",
+                {
+                  className:
+                    "text-[9px] uppercase font-bold text-slate-500 dark:text-neutral-400 mb-1",
+                },
+                "Min Lightness (0-1)",
+              ),
+              React.createElement("input", {
+                type: "number",
+                step: "0.01",
+                min: "0",
+                max: "1",
+                className:
+                  "bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs focus:ring-1 outline-none font-mono",
+                value: editForm.minL,
+                onChange: (e) =>
+                  setEditForm({ ...editForm, minL: e.target.value }),
+              }),
+            ),
+            React.createElement(
+              "div",
+              { className: "flex flex-col flex-1" },
+              React.createElement(
+                "span",
+                {
+                  className:
+                    "text-[9px] uppercase font-bold text-slate-500 dark:text-neutral-400 mb-1",
+                },
+                "Max Lightness (0-1)",
+              ),
+              React.createElement("input", {
+                type: "number",
+                step: "0.01",
+                min: "0",
+                max: "1",
+                className:
+                  "bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs focus:ring-1 outline-none font-mono",
+                value: editForm.maxL,
+                onChange: (e) =>
+                  setEditForm({ ...editForm, maxL: e.target.value }),
+              }),
+            ),
+          ),
+          React.createElement("textarea", {
+            placeholder: "Notes for this column...",
+            className:
+              "bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-3 py-2 text-xs focus:ring-1 outline-none h-16 w-full resize-none font-mono",
+            value: editForm.notes,
+            onChange: (e) =>
+              setEditForm({ ...editForm, notes: e.target.value }),
+          }),
+          React.createElement(
+            "button",
+            {
+              onClick: handleAddCustomNoun,
+              className:
+                "w-full py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded font-bold uppercase tracking-wider text-xs transition-colors mt-2 shadow-sm",
+            },
+            "Save Custom Noun",
+          ),
+        ),
+      content,
+    ),
+    fullscreenImage &&
+      ReactDOM.createPortal(
+        React.createElement(
+          "div",
+          {
+            className:
+              "fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4 cursor-pointer",
+            onClick: () => setFullscreenImage(null),
+          },
+          React.createElement("img", {
+            src: fullscreenImage,
+            alt: "Fullscreen Match",
+            className:
+              "max-w-full max-h-full object-contain rounded shadow-2xl",
+            onClick: (e) => e.stopPropagation(),
+          }),
+          React.createElement(
+            "button",
+            {
+              className:
+                "absolute top-4 right-4 text-white/70 hover:text-white bg-black/50 hover:bg-black/80 rounded-full w-12 h-12 flex items-center justify-center transition-colors",
+              onClick: () => setFullscreenImage(null),
+            },
+            React.createElement(Icon, { name: "x", className: "w-6 h-6" }),
+          ),
+        ),
+        document.body,
+      ),
   );
 };
-const ViewPinsInner = ({
+const ViewAdjectives = ({
+  points,
+  names,
+  adjectives,
+  setAdjectives,
+  handlePointClick,
+  crosshair,
+  savedColors = {},
+  lockedAdjectives,
+  onVisualize,
+}) => {
+  const [sortBy, setSortBy] = useState("lightness");
+  const [sortAsc, setSortAsc] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const sortedSteps = useMemo(() => {
+    const counts = {};
+    points.forEach((p) => {
+      if (!p.isPin) counts[p.lStr] = (counts[p.lStr] || 0) + 1;
+    });
+    const steps = points.filter((p) => p.C === 0);
+    const unique = [];
+    const seen = new Set();
+    steps.forEach((p) => {
+      if (!seen.has(p.lStr)) {
+        seen.add(p.lStr);
+        unique.push({ ...p, occurrences: counts[p.lStr] || 0 });
+      }
+    });
+    let filtered = unique;
+    if (searchTerm.trim()) {
+      const qWords = searchTerm
+        .toLowerCase()
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      filtered = filtered.filter((item) => {
+        const itemAdj = (adjectives[item.lStr] || "").toLowerCase();
+        return qWords.every((w) => itemAdj.includes(w));
+      });
+    }
+    return filtered.sort((a, b) => {
+      let valA, valB;
+      switch (sortBy) {
+        case "adjective":
+          valA = (adjectives[a.lStr] || "").toLowerCase();
+          valB = (adjectives[b.lStr] || "").toLowerCase();
+          if (valA === valB) return b.L - a.L;
+          return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+        case "count":
+          valA = a.occurrences;
+          valB = b.occurrences;
+          break;
+        case "lightness":
+        default:
+          valA = a.L;
+          valB = b.L;
+          break;
+      }
+      if (valA === valB) return b.L - a.L;
+      return sortAsc ? (valA < valB ? -1 : 1) : valB < valA ? -1 : 1;
+    });
+  }, [points, adjectives, sortBy, sortAsc, searchTerm]);
+  // Plain render helper, not a component: defining a component inside render
+  // gives it a new type each pass, so React remounted every header button.
+  return React.createElement(
+    "div",
+    { className: "h-full flex flex-col overflow-hidden pt-2" },
+    React.createElement(
+      "div",
+      {
+        className:
+          "flex flex-wrap justify-between items-center gap-4 px-4 pb-4 mb-4 border-b border-slate-200 dark:border-neutral-800 flex-shrink-0",
+      },
+      React.createElement(
+        "div",
+        { className: "flex flex-wrap items-center gap-2" },
+        React.createElement(
+          "div",
+          { className: "relative flex-1 min-w-[200px] max-w-xs mr-4" },
+          React.createElement(Icon, {
+            name: "search",
+            className:
+              "absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400",
+          }),
+          React.createElement("input", {
+            type: "text",
+            placeholder: "Search adjectives...",
+            value: searchTerm,
+            onChange: (e) => setSearchTerm(e.target.value),
+            className:
+              "w-full bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-300 text-[10px] font-bold uppercase tracking-wider rounded-lg pl-9 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-sky-500/50 transition-all",
+          }),
+          searchTerm &&
+            React.createElement(
+              "button",
+              {
+                onClick: () => setSearchTerm(""),
+                className:
+                  "absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-neutral-200",
+              },
+              React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
+            ),
+        ),
+        React.createElement(
+          "span",
+          {
+            className:
+              "text-[10px] font-bold text-slate-400 dark:text-neutral-500 uppercase mr-2 flex items-center gap-1.5",
+          },
+          React.createElement(Icon, {
+            name: "arrow-down-up",
+            className: "w-3.5 h-3.5",
+          }),
+          " Sort By:",
+        ),
+        React.createElement(SortControl, {
+          fields: [
+            { field: "lightness", label: "Lightness" },
+            { field: "count", label: "Occurrences" },
+            { field: "adjective", label: "Adjective name" },
+          ],
+          sortBy,
+          setSortBy,
+          sortAsc,
+          setSortAsc,
+        }),
+      ),
+      React.createElement(
+        "div",
+        { className: "ml-auto flex items-center gap-2" },
+        React.createElement(
+          "span",
+          {
+            className:
+              "px-2 py-1 bg-sky-500/10 text-sky-500 rounded text-[10px] font-black uppercase tracking-widest border border-sky-500/20",
+          },
+          "Total: ",
+          sortedSteps.length,
+          " Adjectives",
+        ),
+      ),
+    ),
+    React.createElement(
+      "div",
+      { className: "flex-1 overflow-y-auto custom-scrollbar px-4 pb-10" },
+      React.createElement(
+        "div",
+        {
+          className:
+            "grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-6",
+        },
+        sortedSteps.map((item) => {
+          const dynamicC = crosshair?.activePullType
+            ? crosshair.gravityC
+            : crosshair?.rawC || 0;
+          const dynamicH = crosshair?.activePullType
+            ? crosshair.gravityH
+            : crosshair?.rawH || 0;
+          const c = new Color("oklch", [item.L, dynamicC, dynamicH]);
+          const hexColor = c
+            .clone()
+            .toGamut({ space: "srgb" })
+            .toString({ format: "hex" });
+          const dupAdj = getGlobalDuplicate(
+            names,
+            adjectives,
+            item.lStr,
+            adjectives[item.lStr],
+            savedColors,
+          );
+          return React.createElement(
+            "div",
+            {
+              key: item.lStr,
+              className:
+                "flex flex-col items-center gap-2 bg-white dark:bg-neutral-900 p-3 rounded-xl border border-slate-200 dark:border-neutral-800 shadow-sm hover:border-sky-500/50 transition-all",
+            },
+            React.createElement(
+              "div",
+              {
+                onClick: () => handlePointClick([item.L, dynamicC, dynamicH]),
+                className:
+                  "relative w-16 h-16 rounded-lg shadow-sm cursor-pointer overflow-hidden border border-slate-200 dark:border-neutral-700 hover:ring-2 hover:ring-sky-500 transition-all flex-shrink-0 group/swatch",
+                style: { backgroundColor: hexColor },
+              },
+              !c.inGamut("srgb") &&
+                React.createElement("div", {
+                  className: "absolute inset-0 pointer-events-none",
+                  style: {
+                    backgroundImage:
+                      "repeating-linear-gradient(45deg, rgba(0,0,0,0.2), rgba(0,0,0,0.2) 5px, rgba(255,255,255,0.2) 5px, rgba(255,255,255,0.2) 10px)",
+                  },
+                }),
+              React.createElement(
+                "div",
+                {
+                  className:
+                    "absolute top-1 right-1 px-1 py-0.5 rounded-sm text-[9px] font-black font-mono leading-none z-10",
+                  style: {
+                    color: item.L > 0.65 ? "#010D00" : "#F2E8DF",
+                    backgroundColor:
+                      item.L > 0.65
+                        ? "rgba(242, 232, 223, 0.7)"
+                        : "rgba(1, 13, 0, 0.5)",
+                  },
+                },
+                item.occurrences,
+              ),
+              React.createElement(
+                "button",
+                {
+                  onClick: (e) => {
+                    e.stopPropagation();
+                    onVisualize(
+                      "adjective",
+                      item.lStr,
+                      adjectives[item.lStr] || `L=${item.lStr}`,
+                    );
+                  },
+                  className:
+                    "absolute bottom-1 right-1 opacity-0 group-hover/swatch:opacity-100 bg-black/50 hover:bg-black/70 text-white p-1 rounded transition-opacity z-30",
+                  title: "Visualize all instances",
+                },
+                React.createElement(Icon, {
+                  name: "eye",
+                  className: "w-3 h-3",
+                }),
+              ),
+            ),
+            React.createElement("input", {
+              type: "text",
+              className: `w-full text-[11px] font-bold uppercase tracking-wider bg-transparent border-b border-slate-200 dark:border-neutral-700 text-center focus:outline-none placeholder:opacity-30 pb-0.5 mt-1 disabled:opacity-50 ${dupAdj ? "!text-red-500 !border-red-500" : "text-slate-800 dark:text-neutral-200 focus:border-sky-500"}`,
+              placeholder: "Adjective",
+              value: adjectives[item.lStr] || "",
+              onChange: (e) =>
+                setAdjectives({ ...adjectives, [item.lStr]: e.target.value }),
+              disabled: lockedAdjectives[item.lStr],
+              title: dupAdj ? `Conflict: ${dupAdj}` : "",
+            }),
+            React.createElement(
+              "div",
+              {
+                className:
+                  "text-[8px] font-mono text-slate-400 dark:text-neutral-500 mt-0.5 flex flex-col items-center gap-0.5",
+              },
+              React.createElement(
+                "div",
+                null,
+                "L:",
+                item.L.toFixed(2),
+                " C:",
+                dynamicC.toFixed(2),
+              ),
+              React.createElement(
+                "div",
+                null,
+                "H:",
+                dynamicH.toFixed(1),
+                "\xB0",
+              ),
+            ),
+          );
+        }),
+      ),
+    ),
+  );
+};
+const ViewPins = ({
   handlePointClick,
   swatchZoom = 1,
   setSwatchZoom,
@@ -8293,6 +7630,7 @@ const ViewPinsInner = ({
   globalFilterMode,
   sameGroupContext,
   names,
+  adjectives,
   dictNotes,
   savedColors = {},
   setSavedColors,
@@ -8307,23 +7645,21 @@ const ViewPinsInner = ({
   setSelectedPrintIds,
   setAveryPrintSourceType,
   onOpenAveryModal,
-  searchTerm: extSearch = "",
-  layout: extLayout = "table",
 }) => {
-  // Sort, search and layout come from the shared toolbar. Tags are filtered
-  // with the Filters builder's Tag field, like every other tab.
+  // Sorting is driven by the global bar; these remain only as a fallback for
+  // any caller that does not supply it.
   const sortBy = globalSortBy !== undefined ? globalSortBy : "layer";
   const sortAsc = globalSortAsc !== undefined ? globalSortAsc : true;
-  const tagFilter = "";
-  const searchTerm = extSearch || "";
+  const [tagFilter, setTagFilter] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
   const [isAdding, setIsAdding] = useState(false);
-  // "swatches" is the gallery here (the internal name it always had).
-  const catalogView = extLayout === "gallery" ? "swatches" : extLayout === "matrix" ? "matrix" : "table";
-  const [tableLimit, setTableLimit] = useState(60);
+  // Catalog now offers the same three presentations as the other views.
+  const [catalogView, setCatalogView] = useState("table");
   const [showSpecs, setShowSpecs] = useState(true);
   const [editForm, setEditForm] = useState({
     id: "",
     noun: "",
+    adj: "",
     notes: "",
     erpCode: "",
     L: 0.5,
@@ -8357,11 +7693,13 @@ const ViewPinsInner = ({
         b,
         erpCode: editForm.erpCode || "",
         anchorId: "",
+        adjId: "",
         color: new Color("oklch", [L, C, H])
           .clone()
           .toGamut({ space: "srgb" })
           .toString({ format: "hex" }),
         nameOverride: editForm.noun || "",
+        adjOverride: editForm.adj || "",
         notes: editForm.notes || "",
       },
     }));
@@ -8369,6 +7707,7 @@ const ViewPinsInner = ({
     setEditForm({
       id: "",
       noun: "",
+      adj: "",
       notes: "",
       erpCode: "",
       L: 0.5,
@@ -8385,6 +7724,11 @@ const ViewPinsInner = ({
       [newId]: {
         ...sourcePin,
         id: newId,
+        // A duplicate is a new pin at the same position: it should take the
+        // current anchor's name like any other pin, not inherit the source's
+        // frozen name. Only a deliberate override is kept.
+        nameOverride: "",
+        adjOverride: "",
       },
     }));
     setDictTags((prev) => {
@@ -8400,16 +7744,23 @@ const ViewPinsInner = ({
     return Object.values(savedColors)
       .filter((sc) => sc.type === "pin")
       .map((sc) => {
-        const { displayName } = getInheritedPinNames(sc, savedColors, names);
+        const { displayAdj, displayName } = getInheritedPinNames(
+          sc,
+          savedColors,
+          names,
+          adjectives,
+        );
         return {
           ...sc,
+          displayAdj: (displayAdj || "Unnamed").trim(),
           displayName: (displayName || "Unnamed").trim(),
+          isAdjOverridden: !!sc.adjOverride,
           isNameOverridden: !!sc.nameOverride,
           displayNotes: sc.notes || dictNotes[sc.anchorId] || "",
           tags: dictTags[sc.id] || [],
         };
       });
-  }, [savedColors, names, dictNotes, dictTags]);
+  }, [savedColors, names, adjectives, dictNotes, dictTags]);
 
   // The global filter bar has to reach the catalog too; pins were previously
   // the only surface it never touched. Pins are not DB rows, so this runs in
@@ -8431,6 +7782,10 @@ const ViewPinsInner = ({
     ).items.map((k) => pinItems[k.__idx]);
   }, [pinItems, globalFilters, globalFilterMode, sameGroupContext]);
 
+  const allTags = useMemo(
+    () => Array.from(new Set(pinItems.flatMap((item) => item.tags))).sort(),
+    [pinItems],
+  );
   const sortedItems = useMemo(() => {
     let items = [...filteredPinItems];
     if (tagFilter) {
@@ -8451,6 +7806,7 @@ const ViewPinsInner = ({
         qWords.every(
           (w) =>
             item.displayName.toLowerCase().includes(w) ||
+            item.displayAdj.toLowerCase().includes(w) ||
             item.displayNotes.toLowerCase().includes(w) ||
             item.erpCode.toLowerCase().includes(w),
         ),
@@ -8584,6 +7940,67 @@ const ViewPinsInner = ({
       ),
       React.createElement(
         "div",
+        { className: "relative flex-1 min-w-[200px] max-w-xs" },
+        React.createElement(Icon, {
+          name: "search",
+          className:
+            "absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400",
+        }),
+        React.createElement("input", {
+          type: "text",
+          placeholder: "Search names, notes, codes...",
+          value: searchTerm,
+          onChange: (e) => setSearchTerm(e.target.value),
+          className:
+            "w-full bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-300 text-[10px] font-bold uppercase tracking-wider rounded-lg pl-9 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-sky-500/50 transition-all",
+        }),
+        searchTerm &&
+          React.createElement(
+            "button",
+            {
+              onClick: () => setSearchTerm(""),
+              className:
+                "absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-neutral-200",
+            },
+            React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
+          ),
+      ),
+      React.createElement(
+        "span",
+        {
+          className:
+            "text-[10px] font-bold text-slate-400 dark:text-neutral-500 uppercase mr-2 flex items-center gap-1.5",
+        },
+        React.createElement(Icon, {
+          name: "arrow-down-up",
+          className: "w-3.5 h-3.5",
+        }),
+        " Sort By:",
+      ),
+      allTags.length > 0 &&
+        React.createElement(
+          "div",
+          { className: "ml-4 flex items-center gap-2" },
+          React.createElement(Icon, {
+            name: "filter",
+            className: "w-3.5 h-3.5 text-slate-400",
+          }),
+          React.createElement(
+            "select",
+            {
+              value: tagFilter,
+              onChange: (e) => setTagFilter(e.target.value),
+              className:
+                "bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-300 text-[9px] font-bold uppercase tracking-wider rounded px-2 py-1 outline-none cursor-pointer",
+            },
+            React.createElement("option", { value: "" }, "All Tags"),
+            allTags.map((t) =>
+              React.createElement("option", { key: t, value: t }, t),
+            ),
+          ),
+        ),
+      React.createElement(
+        "div",
         { className: "ml-auto flex items-center gap-2" },
         React.createElement(
           "button",
@@ -8627,6 +8044,35 @@ const ViewPinsInner = ({
           sortedItems.length,
         ),
         React.createElement(SwatchLegend, { className: "ml-3" }),
+        catalogView !== "table" &&
+          setSwatchZoom &&
+          React.createElement(
+            "div",
+            { className: "flex items-center gap-2 ml-3" },
+            React.createElement(Icon, {
+              name: "zoom-in",
+              className: "w-3.5 h-3.5 text-slate-400",
+            }),
+            React.createElement("input", {
+              type: "range",
+              min: "0.1",
+              max: "5",
+              step: "0.1",
+              value: swatchZoom,
+              onChange: (e) => setSwatchZoom(parseFloat(e.target.value)),
+              className:
+                "w-24 accent-sky-500 opacity-60 hover:opacity-100 transition-opacity",
+            }),
+            React.createElement(
+              "span",
+              {
+                className:
+                  "text-[10px] font-mono text-slate-400 min-w-[30px]",
+              },
+              Math.round(swatchZoom * 100),
+              "%",
+            ),
+          ),
         catalogView === "swatches" &&
           React.createElement(
             "button",
@@ -8642,6 +8088,26 @@ const ViewPinsInner = ({
             },
             "Specs",
           ),
+        React.createElement(
+          "div",
+          { className: "flex items-center gap-1 ml-2" },
+          ["table", "matrix", "swatches"].map((m) =>
+            React.createElement(
+              "button",
+              {
+                key: m,
+                onClick: () => setCatalogView(m),
+                "aria-pressed": catalogView === m,
+                className: `px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                  catalogView === m
+                    ? "bg-slate-800 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                    : "text-slate-500 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-800"
+                }`,
+              },
+              m,
+            ),
+          ),
+        ),
       ),
     ),
     React.createElement(
@@ -8696,12 +8162,21 @@ const ViewPinsInner = ({
               { className: "flex gap-3" },
               React.createElement("input", {
                 type: "text",
-                placeholder: "Name (optional; otherwise the nearest anchor's)",
+                placeholder: "Overridden Noun",
                 className:
                   "flex-1 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs focus:ring-1 outline-none",
                 value: editForm.noun,
                 onChange: (e) =>
                   setEditForm({ ...editForm, noun: e.target.value }),
+              }),
+              React.createElement("input", {
+                type: "text",
+                placeholder: "Overridden Adjective",
+                className:
+                  "flex-1 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs focus:ring-1 outline-none",
+                value: editForm.adj,
+                onChange: (e) =>
+                  setEditForm({ ...editForm, adj: e.target.value }),
               }),
             ),
             React.createElement(
@@ -8810,8 +8285,16 @@ const ViewPinsInner = ({
               items: sortedItems.map((item) => ({
                 ...item,
                 type: "pin",
-                displayName: item.displayName || item.id,
-                hex: lchDisplayHex(item.L, item.C, item.H),
+                displayName: `${item.displayAdj} ${item.displayName}`.trim() || item.id,
+                hex: (() => {
+                  try {
+                    return new Color("oklch", [item.L, item.C, item.H])
+                      .toGamut({ space: "srgb" })
+                      .toString({ format: "hex" });
+                  } catch (e) {
+                    return "#cccccc";
+                  }
+                })(),
               })),
               layout: catalogView === "matrix" ? "matrix" : "gallery",
               swatchZoom,
@@ -8838,7 +8321,7 @@ const ViewPinsInner = ({
             )
           : null,
         catalogView === "table" &&
-        sortedItems.slice(0, tableLimit).map((item) =>
+        sortedItems.map((item) =>
           React.createElement(
             "div",
             {
@@ -8874,10 +8357,10 @@ const ViewPinsInner = ({
                   }),
                 className:
                   "relative w-14 h-14 rounded-lg shadow-sm cursor-pointer border border-slate-200 dark:border-neutral-700 hover:ring-2 hover:ring-sky-500 transition-all flex-shrink-0 overflow-hidden ml-6",
-                style: { backgroundColor: DisplayGamut.css(item.L, item.C, item.H, item.color) },
+                style: { backgroundColor: item.color },
               },
               React.createElement(SwatchTreatment, { item, size: 56 }),
-              !new Color("oklch", [item.L, item.C, item.H]).inGamut(DisplayGamut.space) &&
+              !new Color("oklch", [item.L, item.C, item.H]).inGamut("srgb") &&
                 React.createElement("div", {
                   className: "absolute inset-0 pointer-events-none",
                   style: {
@@ -8911,6 +8394,15 @@ const ViewPinsInner = ({
                     "text-[10px] font-mono text-sky-600 dark:text-sky-400 font-bold mb-1 tracking-wider",
                 },
                 item.erpCode,
+              ),
+              React.createElement(
+                "div",
+                {
+                  className:
+                    "w-full text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400 truncate",
+                  title: item.displayAdj,
+                },
+                item.displayAdj,
               ),
               React.createElement(
                 "div",
@@ -9057,12 +8549,6 @@ const ViewPinsInner = ({
           ),
         ),
       ),
-      catalogView === "table" &&
-        sortedItems.length > tableLimit &&
-        React.createElement(LoadMoreSentinel, {
-          left: sortedItems.length - tableLimit,
-          onMore: () => setTableLimit((n) => n + 150),
-        }),
     ),
     selectedIds.length > 0 &&
       React.createElement(
@@ -9186,7 +8672,6 @@ const ViewPinsInner = ({
       ),
   );
 };
-const ViewPins = withStableCallbacks(ViewPinsInner);
 const ViewGroups = ({ settings, setSettings }) => {
   const updateSetting = (key, val) => setSettings({ ...settings, [key]: val });
   const updateHue = (index, field, val) => {
@@ -9645,17 +9130,10 @@ const ViewGroups = ({ settings, setSettings }) => {
     ),
   );
 };
-// Tints, shades and tones: the colour mixed toward white, black or the grey of
-// its own lightness, in OkLab (so each step looks evenly spaced).
-const HARMONY_STEPS = [0, 0.2, 0.4, 0.6, 0.8];
 const ColorHarmonies = ({ L, C, H, handlePointClick }) => {
   const harmonies = useMemo(() => {
     const h = H || 0;
-    const mix = (fn) => HARMONY_STEPS.map((t) => fn(t));
     return [
-      { name: "Tints", hint: "toward white", points: mix((t) => [L + (1 - L) * t, C * (1 - t), h]) },
-      { name: "Shades", hint: "toward black", points: mix((t) => [L * (1 - t), C * (1 - t), h]) },
-      { name: "Tones", hint: "toward grey", points: mix((t) => [L, C * (1 - t), h]) },
       { name: "Complementary", hues: [h, (h + 180) % 360] },
       { name: "Analogous", hues: [h, (h + 30) % 360, (h - 30 + 360) % 360] },
       { name: "Triadic", hues: [h, (h + 120) % 360, (h + 240) % 360] },
@@ -9688,21 +9166,24 @@ const ColorHarmonies = ({ L, C, H, handlePointClick }) => {
               "text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400",
           },
           harmony.name,
-          harmony.hint &&
-            React.createElement("span", { className: "ml-1.5 normal-case tracking-normal font-normal text-slate-400" }, harmony.hint),
         ),
         React.createElement(
           "div",
           { className: "flex gap-2" },
-          (harmony.points || harmony.hues.map((hue, i) => [harmony.Ls ? harmony.Ls[i] : L, C, hue])).map(([l, c, hue], i) => {
-            const hex = lchDisplayHex(l, c, hue);
+          harmony.hues.map((hue, i) => {
+            const l = harmony.Ls ? harmony.Ls[i] : L;
+            const cObj = new Color("oklch", [l, C, hue]);
+            const hex = cObj
+              .clone()
+              .toGamut({ space: "srgb" })
+              .toString({ format: "hex" });
             return React.createElement("div", {
               key: i,
               className:
                 "h-8 flex-1 rounded-md shadow-sm cursor-pointer border border-slate-200 dark:border-neutral-700 hover:ring-2 hover:ring-sky-500 transition-all",
               style: { backgroundColor: hex },
-              onClick: () => handlePointClick([l, c, hue]),
-              title: `L: ${l.toFixed(2)} C: ${c.toFixed(3)} H: ${hue.toFixed(1)}`,
+              onClick: () => handlePointClick([l, C, hue]),
+              title: `L: ${l.toFixed(2)} C: ${C.toFixed(2)} H: ${hue.toFixed(1)}`,
             });
           }),
         ),
@@ -10070,19 +9551,6 @@ function getBrandDisplayName(key) {
     pionite: "Pionite",
     swissKrono: "Swiss Krono",
     munsell: "Munsell",
-    pantoneFhiTcx: "Pantone FHI TCX",
-    isccNbs: "ISCC–NBS",
-    css: "CSS",
-    isccnbsCentroids: "ISCC–NBS Centroids",
-    fs595c: "FS 595C",
-    fs595b: "FS 595B",
-    ralDesignSystem: "RAL Design System",
-    ralClassic: "RAL Classic",
-    ncsStandard: "NCS Standard",
-    werner: "Werner's Nomenclature",
-    ridgway: "Ridgway (1912)",
-    pantoneCmykCoated: "Pantone CMYK Coated",
-    pantoneCmykUncoated: "Pantone CMYK Uncoated",
     unknown: "Unknown",
   };
   if (displayNames[key]) return displayNames[key];
@@ -10114,9 +9582,6 @@ function normalizeBrandKey(s) {
     pionite: "pionite",
     "swiss krono": "swissKrono",
     munsell: "munsell",
-    "iscc-nbs": "isccNbs",
-    "iscc nbs": "isccNbs",
-    "iscc–nbs": "isccNbs",
   };
   const lower = s.toLowerCase().trim();
   if (knownBrands[lower]) return knownBrands[lower];
@@ -10203,37 +9668,25 @@ const processCSVData = (
   currentColorData,
   currentSavedColors,
   currentNames = {},
+  currentAdjs = {},
   currentNotes = {},
   currentTags = {},
   currentGroupSettings = null,
   currentSavedPalettes = [],
 ) => {
-  // Records are never edited in place below (each change writes a new object),
-  // so shallow copies are enough. Deep-copying everything loaded so far, once
-  // per file, made a 20-file load quadratic.
-  const newColorData = currentColorData ? { ...currentColorData } : {};
-  const newSavedColors = currentSavedColors ? { ...currentSavedColors } : {};
-  const newNames = currentNames ? { ...currentNames } : {};
-  const newNotes = currentNotes ? { ...currentNotes } : {};
-  const newTags = currentTags ? { ...currentTags } : {};
-  const newSavedPalettes = currentSavedPalettes ? currentSavedPalettes.slice() : [];
-  // Brand lists are copied on first write; names are looked up through an index
-  // instead of a scan of the whole list for every row.
-  const brandCopied = new Set();
-  const brandNameIdx = {};
-  const brandListFor = (brand) => {
-    if (!brandCopied.has(brand)) {
-      newColorData[brand] = newColorData[brand] ? newColorData[brand].slice() : [];
-      brandCopied.add(brand);
-      const idx = new Map();
-      newColorData[brand].forEach((c, i) => {
-        const k = String((c && c.name) || "").toLowerCase();
-        if (!idx.has(k)) idx.set(k, i);
-      });
-      brandNameIdx[brand] = idx;
-    }
-    return newColorData[brand];
-  };
+  const newColorData = currentColorData
+    ? JSON.parse(JSON.stringify(currentColorData))
+    : {};
+  const newSavedColors = currentSavedColors
+    ? JSON.parse(JSON.stringify(currentSavedColors))
+    : {};
+  const newNames = currentNames ? JSON.parse(JSON.stringify(currentNames)) : {};
+  const newAdjs = currentAdjs ? JSON.parse(JSON.stringify(currentAdjs)) : {};
+  const newNotes = currentNotes ? JSON.parse(JSON.stringify(currentNotes)) : {};
+  const newTags = currentTags ? JSON.parse(JSON.stringify(currentTags)) : {};
+  const newSavedPalettes = currentSavedPalettes
+    ? JSON.parse(JSON.stringify(currentSavedPalettes))
+    : [];
   let newGroupSettings = currentGroupSettings
     ? JSON.parse(JSON.stringify(currentGroupSettings))
     : null;
@@ -10241,11 +9694,8 @@ const processCSVData = (
   let pinsAdded2 = 0;
   let hasNeutrals = false;
   let hasHues = false;
-  let groupSettingRows = false;
-  const newTagLibrary = [];
   let hasOverrides = false;
-  parsedData.forEach((rawRow) => {
-    const row = normalizeCsvRow(rawRow);
+  parsedData.forEach((row) => {
     const targetType = String(row.Type || "")
       .toUpperCase()
       .trim();
@@ -10273,13 +9723,7 @@ const processCSVData = (
       } catch (e2) {}
       return;
     }
-    if (targetType === "TAG") {
-      const t = String(row.Noun || row.Tags || "").trim();
-      if (t && !newTagLibrary.some((x) => x.toLowerCase() === t.toLowerCase())) newTagLibrary.push(t);
-      return;
-    }
     if (targetType === "SETTING") {
-      groupSettingRows = true;
       if (!newGroupSettings)
         newGroupSettings = {
           lightL: 0.5,
@@ -10313,8 +9757,7 @@ const processCSVData = (
         hasNeutrals = true;
       }
       newGroupSettings.neutrals.push({
-        // older exports put the id in Adjective
-        id: row.ID || row.Adjective || crypto.randomUUID(),
+        id: row.ID || crypto.randomUUID(),
         name: row.Noun || "",
         maxL: parseFloat(row.OKLCH_L) || 0,
       });
@@ -10334,13 +9777,16 @@ const processCSVData = (
         newGroupSettings.hues = [];
         hasHues = true;
       }
-      const hv = parseFloat(row.OKLCH_H);
-      const isCenter = /^center/i.test(String(row.Note || "").trim());
+      // Files written before the switch stored an upper bound in the same
+      // column. Without the marker, read it as a bound and let hueCenterOf
+      // derive the midpoint, so existing repos keep their regions.
+      const isMidpoint =
+        String(row.Note || "").trim().toLowerCase() === "midpoint";
+      const angle = parseFloat(row.OKLCH_H) || 0;
       newGroupSettings.hues.push({
-        id: row.ID || row.Adjective || crypto.randomUUID(),
+        id: row.ID || crypto.randomUUID(),
         name: row.Noun || "",
-        // a midpoint, or (older files) an upper bound turned into one later
-        ...(isCenter ? { centerH: isFinite(hv) ? hv : 0 } : { maxH: isFinite(hv) ? hv : 0 }),
+        ...(isMidpoint ? { centerH: angle } : { maxH: angle }),
       });
       return;
     }
@@ -10359,7 +9805,7 @@ const processCSVData = (
         hasOverrides = true;
       }
       newGroupSettings.overrides.push({
-        id: row.ID || row.Tags || crypto.randomUUID(),
+        id: row.ID || crypto.randomUUID(),
         condition: row.Adjective || "",
         name: row.Noun || "",
       });
@@ -10409,17 +9855,15 @@ const processCSVData = (
           row.OKLCH_H !== void 0 &&
           row.OKLCH_L !== ""
         ) {
-          const hh = parseFloat(row.OKLCH_H);
-          pL = parseFloat(row.OKLCH_L);
-          pC = parseFloat(row.OKLCH_C);
-          pH = isNaN(hh) ? 0 : ((hh % 360) + 360) % 360;
+          tc = new Color("oklch", [
+            parseFloat(row.OKLCH_L),
+            parseFloat(row.OKLCH_C),
+            parseFloat(row.OKLCH_H),
+          ]);
         } else if (row.HEX) {
-          const f = fastHexToOklch(row.HEX);
-          if (f) {
-            pL = f[0];
-            pC = f[1];
-            pH = isNaN(f[2]) ? 0 : f[2];
-          }
+          let ch = String(row.HEX).trim();
+          if (!ch.startsWith("#")) ch = "#" + ch;
+          tc = createColorFromHex(ch);
         } else if (
           (row.CIE_L !== void 0 || row.Lab_L !== void 0 || row.LAB_L !== void 0) &&
           (row.CIE_A !== void 0 || row.CIE_a !== void 0 || row.Lab_A !== void 0 || row.Lab_a !== void 0) &&
@@ -10473,11 +9917,10 @@ const processCSVData = (
       if (image.includes("placehold") || image.includes("dummy")) image = "";
       const finalBrand = normalizeBrandKey(brandRaw) || "unknown";
       if (finalBrand) {
-        brandListFor(finalBrand);
-        const nameKeyLc = name.toLowerCase();
-        const existingIdx = brandNameIdx[finalBrand].has(nameKeyLc)
-          ? brandNameIdx[finalBrand].get(nameKeyLc)
-          : -1;
+        if (!newColorData[finalBrand]) newColorData[finalBrand] = [];
+        const existingIdx = newColorData[finalBrand].findIndex(
+          (c) => c.name.toLowerCase() === name.toLowerCase(),
+        );
         const colorObj = {
           name,
           hex,
@@ -10520,7 +9963,6 @@ const processCSVData = (
             ...colorObj,
           };
         } else {
-          brandNameIdx[finalBrand].set(nameKeyLc, newColorData[finalBrand].length);
           newColorData[finalBrand].push(colorObj);
         }
         colorsAdded++;
@@ -10581,8 +10023,14 @@ const processCSVData = (
 
       const a = pC * Math.sin((pH * Math.PI) / 180);
       const b = pC * Math.cos((pH * Math.PI) / 180);
-      const anchorId =
+      const cStr = Math.round(pC * 100)
+        .toString()
+        .padStart(2, "0");
+      const hStr = Math.round(pH).toString().padStart(3, "0");
+      const defaultAnchorId = `${cStr}-${hStr}`;
+      const explicitAnchorId =
         row.Anchor_ID || row.AnchorId || row.anchorId || (row.Anchor ? String(row.Anchor) : null);
+      const anchorId = explicitAnchorId || defaultAnchorId;
       const parentPinId =
         row.Parent_Pin_ID ||
         row.ParentPinId ||
@@ -10591,6 +10039,8 @@ const processCSVData = (
         row.ParentId ||
         row.Parent ||
         null;
+      const adjId =
+        row.Adj_ID || row.AdjId || row.adjId || getLStr(pL);
       const brand =
         row.Brand || row.brand || row.Brand_Name || row.BrandName || undefined;
       const originalIndex =
@@ -10612,6 +10062,8 @@ const processCSVData = (
         // pins the name down, so re-importing never freezes stale names.
         nameOverride:
           row.Noun_Override || row.NounOverride || row.nameOverride || "",
+        adjOverride:
+          row.Adjective_Override || row.AdjOverride || row.adjOverride || "",
         notes: row.Note || "",
         erpCode: row.ERP_Code || getExactErpCode(pL, pC, pC === 0 ? 0 : pH),
         sheen: (row.Sheen || row.sheen || "").trim(),
@@ -10619,6 +10071,7 @@ const processCSVData = (
         visualTexture: (row.Visual_Pattern || row.VisualPattern || row.Visual_Texture || row.VisualTexture || row.visualTexture || "").trim(),
         tactileTexture: (row.Tactile_Texture || row.TactileTexture || row.tactileTexture || "").trim(),
         material: (row.Material || row.material || "").trim(),
+        adjId,
         anchorId,
         parentPinId: parentPinId || null,
         brand: brand || undefined,
@@ -10656,7 +10109,18 @@ const processCSVData = (
           .filter(Boolean);
       if (typeof pinsAdded2 !== "undefined") pinsAdded2++;
     } else if (targetType === "NOUN") {
-      const [minL, maxL] = parseAnchorL(row.OKLCH_L, pL);
+      const parts = String(row.OKLCH_L || "").split("-");
+      let minL = 0,
+        maxL = 1;
+      if (parts.length === 2) {
+        minL = parseFloat(parts[0]) || 0;
+        maxL = parseFloat(parts[1]) || 1;
+      } else if (parts.length === 1 && parts[0] !== "") {
+        minL = parseFloat(parts[0]) || 0;
+        maxL = parseFloat(parts[0]) || 1;
+      } else if (pL !== null) {
+        minL = maxL = pL;
+      }
       const C = pC !== null ? pC : 0;
       const H = pH !== null ? pH : 0;
       let id = row.ID;
@@ -10692,10 +10156,18 @@ const processCSVData = (
       const id =
         row.ID ||
         (pL !== null
-          ? `anchor-${Math.round(C * 100).toString().padStart(2, "0")}-${Math.round(H).toString().padStart(3, "0")}-${Math.round(pL * 100)}`
+          ? `anchor-${Math.round(C * 100).toString().padStart(2, "0")}-${Math.round(H).toString().padStart(3, "0")}-${getLStr(pL)}`
           : `noun-${crypto.randomUUID()}`);
       if (targetType === "NOUN_COLUMN") {
-        const [minL, maxL] = parseAnchorL(row.OKLCH_L, pL);
+        const parts = (row.OKLCH_L || "").split("-");
+        let minL = 0,
+          maxL = 1;
+        if (parts.length === 2) {
+          minL = parseFloat(parts[0]) || 0;
+          maxL = parseFloat(parts[1]) || 1;
+        } else if (pL !== null) {
+          minL = maxL = pL;
+        }
         newSavedColors[id] = {
           id,
           type: "nounColumn",
@@ -10721,36 +10193,69 @@ const processCSVData = (
           newTags[id] = row.Tags.split(",")
             .map((t) => t.trim())
             .filter(Boolean);
+        let lStr = null;
+        if (row.Adjective !== void 0 && row.Adjective !== "") {
+          if (pL !== null) {
+            lStr = getLStr(pL);
+          } else if (row.ERP_Code && row.ERP_Code.length >= 2) {
+            lStr = row.ERP_Code.substring(0, 2);
+          }
+          if (lStr) newAdjs[lStr] = row.Adjective;
+        }
         if (pL !== null && pC !== null && pH !== null) {
+          const adjId = lStr || getLStr(pL);
+          const a = pC * Math.sin((pH * Math.PI) / 180);
+          const b = pC * Math.cos((pH * Math.PI) / 180);
           newSavedColors[id] = {
             id,
-            type: "nounColumn",
-            nameOverride: row.Noun || "",
+            type: "anchor",
+            L: pL,
             C: pC,
             H: pH,
-            minL: pL,
-            maxL: pL,
-            a: pC * Math.sin((pH * Math.PI) / 180),
-            b: pC * Math.cos((pH * Math.PI) / 180),
+            a,
+            b,
+            erpCode: row.ERP_Code || getExactErpCode(pL, pC, pH),
+            adjId,
+            anchorId: id,
+            isCustomAnchor: true,
+            locked: String(row.Locked).toUpperCase() !== "FALSE",
+            nameOverride: row.Noun || "",
+            adjOverride: row.Adjective || "",
             notes: row.Note || "",
+            color:
+              row.HEX ||
+              new Color("oklch", [pL, pC, pH])
+                .clone()
+                .toGamut({ space: "srgb" })
+                .toString({ format: "hex" }),
           };
         }
       }
+    } else if (targetType === "ADJECTIVE") {
+      if (row.Adjective !== void 0 && row.Adjective !== "") {
+        const lStr =
+          (row.ID && row.ID.trim()) ||
+          (row.OKLCH_L &&
+            typeof row.OKLCH_L === "string" &&
+            row.OKLCH_L.trim()) ||
+          (pL !== null ? getLStr(pL) : null) ||
+          (row.ERP_Code && row.ERP_Code.length >= 2
+            ? row.ERP_Code.substring(0, 2)
+            : null);
+        // anchors.csv writes these IDs unpadded ("0", "2", "8"), but getLStr
+        // produces two-digit keys ("00", "02", "08"), so the darkest five
+        // levels never matched on lookup.
+        if (lStr) newAdjs[lStr.trim().padStart(2, "0")] = row.Adjective;
+      }
     }
   });
-  if (hasHues && newGroupSettings && (newGroupSettings.hues || []).some((h) => isFinite(h.centerH))) {
-    newGroupSettings.hues = newGroupSettings.hues.map((h) =>
-      isFinite(h.centerH) || !isFinite(h.maxH) ? h : { id: h.id, name: h.name, centerH: h.maxH },
-    );
-  }
   return {
     newColorData,
     newSavedColors,
     newNames,
+    newAdjs,
     newNotes,
     newTags,
-    groupRowsSeen: !!(hasHues || hasNeutrals || hasOverrides || groupSettingRows),
-    newTagLibrary,
     colorsAdded,
     pinsAdded: pinsAdded2,
     newGroupSettings,
@@ -10770,12 +10275,10 @@ const GITHUB_API = "https://api.github.com";
 // differently. Grouping them into destinations changes only the selector —
 // activeTab stays the source of truth, so routing and saved state are untouched.
 const DESTINATIONS = [
-  // Explore is one combined view now; old tab ids still route to it.
-  { id: "explore", label: "Explore", tabs: ["3d"] },
+  { id: "explore", label: "Explore", tabs: ["top", "chroma", "slice", "3d"] },
   { id: "match", label: "Match", tabs: ["db"] },
   { id: "catalog", label: "Catalog", tabs: ["pins"] },
-  // The adjective × noun grid gave way to free anchor points.
-  { id: "names", label: "Anchors", tabs: ["anchors", "groups"] },
+  { id: "names", label: "Names", tabs: ["groups", "adjectives", "palette"] },
 ];
 const destForTab = (tabId) =>
   DESTINATIONS.find((d) => d.tabs.indexOf(tabId) !== -1) || DESTINATIONS[0];
@@ -11031,7 +10534,6 @@ const ghReadDataFiles = async (cfg, branch, dir, onProgress) => {
     (e) =>
       e.type === "blob" &&
       e.path.indexOf(prefix) === 0 &&
-      e.path.slice(prefix.length).indexOf("/") === -1 &&
       e.path.toLowerCase().endsWith(".csv"),
   );
   const out = {};
@@ -11214,240 +10716,29 @@ const GitHubSyncModal = ({ config, setConfig, status, onSync, onPull, onClose })
   );
 };
 
-// ─── Tag manager ─────────────────────────────────────────────────────────────
-// Every tag in use (anchors, pins, commercial colours) plus tags created ahead
-// of use, in one list: search it, select many, and create, delete, apply or
-// remove them in bulk. The list can run to thousands, so only the first rows
-// that match are drawn; "select all shown" still takes every match.
-const TAG_LIST_CAP = 400;
-const TagManagerModal = ({ tags, targets, onCreate, onDelete, onApply, onRemove, onClose }) => {
-  const [query, setQuery] = useState("");
-  const [sort, setSort] = useState("name");
-  const [selected, setSelected] = useState(() => new Set());
-  const [draft, setDraft] = useState("");
-  const [target, setTarget] = useState(targets[0] ? targets[0].id : "");
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [notice, setNotice] = useState("");
-  const lc = (t) => String(t).toLowerCase().trim();
-  useEffect(() => {
-    const key = (e) => e.key === "Escape" && onClose();
-    document.addEventListener("keydown", key);
-    return () => document.removeEventListener("keydown", key);
-  }, []);
-  useEffect(() => {
-    if (!targets.some((t) => t.id === target) && targets[0]) setTarget(targets[0].id);
-  }, [targets]);
-  const total = (t) => t.anchors + t.pins + t.commercial;
-  const shown = useMemo(() => {
-    const q = lc(query);
-    const list = q ? tags.filter((t) => lc(t.name).includes(q)) : tags.slice();
-    if (sort === "name") list.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
-    else if (sort === "most") list.sort((a, b) => total(b) - total(a) || a.name.localeCompare(b.name));
-    else list.sort((a, b) => total(a) - total(b) || a.name.localeCompare(b.name));
-    return list;
-  }, [tags, query, sort]);
-  const allShownSelected = shown.length > 0 && shown.every((t) => selected.has(lc(t.name)));
-  const toggle = (name) =>
-    setSelected((prev) => {
-      const n = new Set(prev), k = lc(name);
-      if (n.has(k)) n.delete(k); else n.add(k);
-      return n;
-    });
-  const toggleAllShown = () =>
-    setSelected((prev) => {
-      const n = new Set(prev);
-      if (allShownSelected) shown.forEach((t) => n.delete(lc(t.name)));
-      else shown.forEach((t) => n.add(lc(t.name)));
-      return n;
-    });
-  const selectedNames = tags.filter((t) => selected.has(lc(t.name))).map((t) => t.name);
-  const say = (m) => { setNotice(m); setConfirmDelete(false); };
-  const create = () => {
-    const names = [...new Set(draft.split(/[,\n]/).map((s) => s.trim()).filter(Boolean))];
-    if (!names.length) return;
-    onCreate(names);
-    setDraft("");
-    setSelected((prev) => { const n = new Set(prev); names.forEach((x) => n.add(lc(x))); return n; });
-    say(`Created ${names.length} tag${names.length === 1 ? "" : "s"} and selected ${names.length === 1 ? "it" : "them"}.`);
-  };
-  const tgt = targets.find((t) => t.id === target);
-  const apply = () => {
-    if (!selectedNames.length || !tgt) return;
-    const n = onApply(selectedNames, target);
-    say(`Applied ${selectedNames.length} tag${selectedNames.length === 1 ? "" : "s"} to ${n} colour${n === 1 ? "" : "s"} (${tgt.label}).`);
-  };
-  const remove = () => {
-    if (!selectedNames.length || !tgt) return;
-    const n = onRemove(selectedNames, target);
-    say(`Removed ${selectedNames.length} tag${selectedNames.length === 1 ? "" : "s"} from ${n} colour${n === 1 ? "" : "s"} (${tgt.label}).`);
-  };
-  const del = () => {
-    if (!selectedNames.length) return;
-    if (!confirmDelete) { setConfirmDelete(true); setNotice(""); return; }
-    const n = onDelete(selectedNames);
-    setSelected(new Set());
-    say(`Deleted ${selectedNames.length} tag${selectedNames.length === 1 ? "" : "s"} from ${n} colour${n === 1 ? "" : "s"}.`);
-  };
-  const btn = "px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-colors disabled:opacity-40 disabled:cursor-not-allowed";
-  const field = "bg-slate-50 dark:bg-neutral-800/60 border border-slate-200 dark:border-neutral-700 rounded-lg px-2.5 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-sky-500";
-  const usage = (t) =>
-    [t.anchors && `${t.anchors} anchor${t.anchors === 1 ? "" : "s"}`, t.pins && `${t.pins} pin${t.pins === 1 ? "" : "s"}`,
-      t.commercial && `${t.commercial} commercial`].filter(Boolean).join(" · ") || "unused";
-  return ReactDOM.createPortal(
-    React.createElement(
-      "div",
-      { className: "fixed inset-0 z-[120] flex items-center justify-center p-3 md:p-6", role: "dialog", "aria-modal": true, "aria-label": "Manage tags" },
-      React.createElement("div", { className: "absolute inset-0 bg-black/40", onClick: onClose }),
-      React.createElement(
-        "div",
-        { className: "relative w-full max-w-2xl max-h-full flex flex-col bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-neutral-800 overflow-hidden" },
-        // header
-        React.createElement(
-          "div",
-          { className: "flex items-center gap-2 px-4 py-3 border-b border-slate-200 dark:border-neutral-800" },
-          React.createElement(Icon, { name: "tags", className: "w-4 h-4 text-slate-500" }),
-          React.createElement("h2", { className: "text-xs font-black uppercase tracking-widest text-slate-800 dark:text-neutral-100" }, "Manage tags"),
-          React.createElement("span", { className: "text-[10px] text-slate-400" }, `${tags.length} tag${tags.length === 1 ? "" : "s"}`),
-          React.createElement(
-            "button",
-            { onClick: onClose, title: "Close", "aria-label": "Close", className: "ml-auto p-1 rounded hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500" },
-            React.createElement(Icon, { name: "x", className: "w-4 h-4" }),
-          ),
-        ),
-        // create
-        React.createElement(
-          "div",
-          { className: "flex gap-2 px-4 py-3 border-b border-slate-200 dark:border-neutral-800" },
-          React.createElement("input", {
-            value: draft, onChange: (e) => setDraft(e.target.value),
-            onKeyDown: (e) => e.key === "Enter" && create(),
-            placeholder: "New tags, separated by commas…", "aria-label": "New tags",
-            className: `${field} flex-1`,
-          }),
-          React.createElement("button", { onClick: create, disabled: !draft.trim(), className: `${btn} bg-slate-900 text-white dark:bg-white dark:text-neutral-900 hover:opacity-90` }, "Create"),
-        ),
-        // search + sort
-        React.createElement(
-          "div",
-          { className: "flex items-center gap-2 px-4 pt-3 pb-2" },
-          React.createElement(
-            "label",
-            { className: "flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 cursor-pointer shrink-0" },
-            React.createElement("input", { type: "checkbox", checked: allShownSelected, onChange: toggleAllShown, "aria-label": "Select all shown" }),
-            "All",
-          ),
-          React.createElement("input", {
-            value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Search tags…", "aria-label": "Search tags",
-            className: `${field} flex-1 min-w-0`,
-          }),
-          React.createElement(
-            "select",
-            { value: sort, onChange: (e) => setSort(e.target.value), "aria-label": "Sort tags", className: `${field} w-auto` },
-            React.createElement("option", { value: "name" }, "A–Z"),
-            React.createElement("option", { value: "most" }, "Most used"),
-            React.createElement("option", { value: "least" }, "Least used"),
-          ),
-        ),
-        // list
-        React.createElement(
-          "div",
-          { className: "flex-1 min-h-[160px] overflow-y-auto custom-scrollbar px-2 pb-2" },
-          shown.length === 0 &&
-            React.createElement("p", { className: "px-2 py-6 text-center text-[11px] text-slate-400 italic" }, query ? "No tags match." : "No tags yet. Create some above."),
-          shown.slice(0, TAG_LIST_CAP).map((t) =>
-            React.createElement(
-              "label",
-              {
-                key: lc(t.name),
-                className: `flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer ${selected.has(lc(t.name)) ? "bg-sky-50 dark:bg-sky-500/10" : "hover:bg-slate-50 dark:hover:bg-neutral-800/60"}`,
-              },
-              React.createElement("input", { type: "checkbox", checked: selected.has(lc(t.name)), onChange: () => toggle(t.name) }),
-              React.createElement("span", { className: "text-[11px] font-bold text-slate-800 dark:text-neutral-100 truncate" }, t.name),
-              React.createElement("span", { className: `ml-auto shrink-0 text-[10px] ${!total(t) ? "text-amber-600 dark:text-amber-400" : selected.has(lc(t.name)) ? "text-slate-600 dark:text-neutral-300" : "text-slate-400"}` }, usage(t)),
-            ),
-          ),
-          shown.length > TAG_LIST_CAP &&
-            React.createElement(
-              "p",
-              { className: "px-2 py-2 text-[10px] text-slate-400" },
-              `Showing ${TAG_LIST_CAP} of ${shown.length}. Search to narrow it; "All" still selects every match.`,
-            ),
-        ),
-        // actions
-        React.createElement(
-          "div",
-          { className: "flex flex-col gap-2 px-4 py-3 border-t border-slate-200 dark:border-neutral-800 bg-slate-50/60 dark:bg-neutral-900" },
-          React.createElement(
-            "div",
-            { className: "flex flex-wrap items-center gap-2" },
-            React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-500" }, `${selectedNames.length} selected`),
-            selectedNames.length > 0 &&
-              React.createElement("button", { onClick: () => setSelected(new Set()), className: "text-[10px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400" }, "Clear"),
-            React.createElement(
-              "select",
-              { value: target, onChange: (e) => setTarget(e.target.value), "aria-label": "Apply to", className: `${field} ml-auto max-w-[60%]` },
-              targets.map((t) => React.createElement("option", { key: t.id, value: t.id }, `${t.label}${t.count !== undefined ? ` (${t.count})` : ""}`)),
-            ),
-          ),
-          React.createElement(
-            "div",
-            { className: "flex flex-wrap items-center gap-2" },
-            React.createElement("button", { onClick: apply, disabled: !selectedNames.length || !tgt, className: `${btn} bg-sky-600 text-white hover:bg-sky-700` }, "Apply to target"),
-            React.createElement("button", { onClick: remove, disabled: !selectedNames.length || !tgt, className: `${btn} bg-slate-200 dark:bg-neutral-800 text-slate-700 dark:text-neutral-200 hover:bg-slate-300 dark:hover:bg-neutral-700` }, "Remove from target"),
-            React.createElement(
-              "button",
-              { onClick: del, disabled: !selectedNames.length, className: `${btn} ml-auto ${confirmDelete ? "bg-red-600 text-white" : "text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10"}` },
-              confirmDelete ? `Delete ${selectedNames.length} everywhere?` : "Delete",
-            ),
-          ),
-          notice && React.createElement("p", { className: "text-[10px] text-emerald-700 dark:text-emerald-400", role: "status" }, notice),
-        ),
-      ),
-    ),
-    document.body,
-  );
-};
-
 const App = () => {
-  useDisplayGamut();
   const [theme, setTheme] = useState("light");
   const [activeTab, setActiveTab] = useState("db");
-  // Retired tabs (old Explore views, adjective/noun grids) open their replacements.
-  useEffect(() => {
-    const alias = { adjectives: "anchors", palette: "anchors", top: "3d", chroma: "3d", slice: "3d" }[activeTab];
-    if (alias) setActiveTab(alias);
-  }, [activeTab]);
   const [colorData, setColorData] = useState(null);
-  XREF_DATA.current = colorData;   // the cross-reference filter reads the full data
+  const [filterL, setFilterL] = useState(1);
+  const [filterC, setFilterC] = useState(0.4);
+  const [filterH, setFilterH] = useState(180);
+  const [filterSameAdjective, setFilterSameAdjective] = useState(false);
   const [filterSameNoun, setFilterSameNoun] = useState(false);
-  // Filter rows per tab. Match starts with verified colours only (the old
-  // default, an ordinary row you can remove); Explore and Catalog start open.
-  const [filtersByTab, setFiltersByTab] = useState(() => ({
-    explore: [],
-    db: [newFilterRow("spectral", "is_true", "", "", false, "db")],
-    pins: [],
-  }));
-  const [filterModeByTab, setFilterModeByTab] = useState({ explore: "and", db: "and", pins: "and" });
-  // Anchors and Color groups have no filter rows ("none" stays empty).
-  const filterTabKey = ["top", "chroma", "slice", "3d"].includes(activeTab) ? "explore" : activeTab === "pins" ? "pins" : activeTab === "db" ? "db" : "none";
-  const globalFilters = filtersByTab[filterTabKey] || [];
-  const setGlobalFilters = useCallback(
-    (v) => setFiltersByTab((p) => ({ ...p, [filterTabKey]: typeof v === "function" ? v(p[filterTabKey] || []) : v })),
-    [filterTabKey],
-  );
-  const globalFilterMode = filterModeByTab[filterTabKey] || "and";
-  const setGlobalFilterMode = useCallback((m) => setFilterModeByTab((p) => ({ ...p, [filterTabKey]: m })), [filterTabKey]);
-  const exploreFilters = filtersByTab.explore, exploreFilterMode = filterModeByTab.explore;
-  const dbFilters = filtersByTab.db, dbFilterMode = filterModeByTab.db;
-  const setDbFilters = useCallback((v) => setFiltersByTab((p) => ({ ...p, db: typeof v === "function" ? v(p.db) : v })), []);
-  const pinsFilters = filtersByTab.pins, pinsFilterMode = filterModeByTab.pins;
+  // One stack of filter rows for the whole app, not per tab.
+  // Verified colours only on load — the old default, now expressed as an
+  // ordinary filter row so it shows in the stack and can be removed.
+  const [globalFilters, setGlobalFilters] = useState(() => [
+    // Scoped to the DB list: the Explore viewports show everything by default.
+    newFilterRow("spectral", "is_true", "", "", false, "db"),
+  ]);
+  const [globalFilterMode, setGlobalFilterMode] = useState("and");
   const [globalSortBy, setGlobalSortBy] = useState("deltae");
   const [globalSortAsc, setGlobalSortAsc] = useState(true);
   const [scrubL, setScrubL] = useState(0.65);
   const [scrubC, setScrubC] = useState(0.12);
   const [scrubH, setScrubH] = useState(0);
   const [scrubCommercial, setScrubCommercial] = useState(null);
-  const [focusTick, setFocusTick] = useState(0);
   const [temporarySpectral, setTemporarySpectral] = useState(null);
   const [compSlotA, setCompSlotA] = useState(null);
   const [compSlotB, setCompSlotB] = useState(null);
@@ -11470,9 +10761,34 @@ const App = () => {
     }
   }, [scrubL, scrubC, scrubH, scrubCommercial, colorData]);
 
+  useEffect(() => {
+    switch (activeTab) {
+      case "top":
+        setFilterL(0.01);
+        setFilterC(0.4);
+        setFilterH(180);
+        break;
+      case "chroma":
+        setFilterL(1);
+        setFilterC(0.01);
+        setFilterH(180);
+        break;
+      case "slice":
+        setFilterL(1);
+        setFilterC(0.4);
+        setFilterH(5);
+        break;
+      default:
+        setFilterL(1);
+        setFilterC(0.4);
+        setFilterH(180);
+        break;
+    }
+  }, [activeTab]);
   const updateColorData = (newData) => {
     setColorData(newData);
   };
+  const gridData = useMemo(() => generateGridData(), []);
   const initialState = useMemo(() => {
     const el = document.getElementById("color-samificator-state");
     let parsed = {};
@@ -11503,16 +10819,43 @@ const App = () => {
     if (!parsed.savedColors) parsed.savedColors = {};
     if (!parsed.names) parsed.names = {};
     if (!parsed.dictNotes) parsed.dictNotes = {};
+    if (!parsed.savedColors["__migrated_grid_nouns"]) {
+      const newColors = { ...parsed.savedColors };
+      gridData.baseAnchors.forEach((a) => {
+        const addN = (ref, pref, minL, maxL) => {
+          if (!ref) return;
+          const oldId = `${pref}-${a.cStr}-${a.hStr}`;
+          if (!newColors[oldId]) {
+            newColors[oldId] = {
+              id: oldId,
+              type: "nounColumn",
+              nameOverride: parsed.names[oldId] || "",
+              C: a.C,
+              H: a.H,
+              minL,
+              maxL,
+              a: a.C * Math.sin((a.H * Math.PI) / 180),
+              b: a.C * Math.cos((a.H * Math.PI) / 180),
+              notes: parsed.dictNotes[oldId] || "",
+            };
+          }
+        };
+        addN(a.ultraLightRef, "UL", 0.95, 1);
+        addN(a.lightRef, "L", 0.5, 0.95);
+        addN(a.darkRef, "D", 0.2, 0.5);
+        addN(a.ultraDarkRef, "UD", 0, 0.2);
+      });
+      newColors["__migrated_grid_nouns"] = { type: "system", migrated: true };
+      parsed.savedColors = newColors;
+    }
     return parsed;
-  }, []);
+  }, [gridData.baseAnchors]);
   const [names, setNames] = useState(initialState?.names || {});
+  const [adjectives, setAdjectives] = useState(initialState?.adjectives || {});
   const [dictNotes, setDictNotes] = useState(initialState?.dictNotes || {});
   const [dictTags, setDictTags] = useState(initialState?.dictTags || {});
-  const [tagLibrary, setTagLibrary] = useState(() => (Array.isArray(initialState?.tagLibrary) ? initialState.tagLibrary : []));
-  const [showTagManager, setShowTagManager] = useState(false);
   const globalTags = useMemo(() => {
     const tags = new Set();
-    tagLibrary.forEach((t) => tags.add(t));
     Object.values(dictTags).forEach((tagList) => {
       if (Array.isArray(tagList)) {
         tagList.forEach((t) => tags.add(t));
@@ -11530,7 +10873,7 @@ const App = () => {
     return Array.from(tags).sort((a, b) =>
       a.toLowerCase().localeCompare(b.toLowerCase()),
     );
-  }, [dictTags, colorData, tagLibrary]);
+  }, [dictTags, colorData]);
   const [savedColors, setSavedColors] = useState(
     initialState?.savedColors || {},
   );
@@ -11552,6 +10895,20 @@ const App = () => {
     if (needsCleanup) {
       setSavedColors(next);
     }
+  }, [savedColors]);
+  const lockedNouns = useMemo(() => {
+    const res = {};
+    Object.values(savedColors).forEach((sc) => {
+      if (sc.type === "anchor" && sc.locked !== false) res[sc.anchorId] = true;
+    });
+    return res;
+  }, [savedColors]);
+  const lockedAdjectives = useMemo(() => {
+    const res = {};
+    Object.values(savedColors).forEach((sc) => {
+      if (sc.type === "anchor" && sc.locked !== false) res[sc.adjId] = true;
+    });
+    return res;
   }, [savedColors]);
 
   const getPaletteItemInfo = useCallback(
@@ -11582,9 +10939,26 @@ const App = () => {
       }
 
       const targetObj = pin || item;
-      const inherited = getInheritedPinNames(targetObj, savedColors, names);
-      const noun = inherited.displayName;
-      const displayName = (noun || (cleanErp ? `#${cleanErp}` : "\u2014")).toUpperCase();
+      const inherited = getInheritedPinNames(
+        targetObj,
+        savedColors,
+        names,
+        adjectives,
+        colorData,
+      );
+      let adj = (inherited.displayAdj || "").trim();
+      let noun = (inherited.displayName || "").trim();
+
+      if (adj.toUpperCase() === "UNNAMED" || adj.toUpperCase() === "UNNAMED ADJ") adj = "";
+      if (
+        noun.toUpperCase() === "UNNAMED" ||
+        noun.toUpperCase() === "UNNAMED NOUN"
+      ) {
+        noun = "";
+      }
+
+      const derivedName = `${adj} ${noun}`.trim();
+      const displayName = (derivedName || noun || adj || (cleanErp ? `#${cleanErp}` : "\u2014")).toUpperCase();
 
       let image = item.image;
       let sheen = item.sheen;
@@ -11643,7 +11017,7 @@ const App = () => {
         doorProfile,
       };
     },
-    [savedColors, names, colorData],
+    [savedColors, adjectives, names, colorData],
   );
 
   const [groupSettings, setGroupSettings] = useState(
@@ -11684,6 +11058,7 @@ const App = () => {
         C: sc.C,
         H: sc.H,
         erpCode: sc.erpCode,
+        adjId: sc.adjId,
         nounId: sc.anchorId,
         pinId: sc.id,
         brand: sc.brand,
@@ -11844,13 +11219,12 @@ const App = () => {
       }
     });
     let currentNames = {};
+    let currentAdjs = {};
     let currentNotes = initialState?.dictNotes || {};
     let currentTags = initialState?.dictTags || {};
     let currentSavedPalettes = savedPalettes || [];
     let currentGroupSettings =
       initialState?.groupSettings || defaultGroupSettings;
-    const currentTagLibrary = Array.isArray(initialState?.tagLibrary) ? [...initialState.tagLibrary] : [];
-    const rawUrls = {};
     const discoverCSVFiles = async () => {
       try {
         const res = await fetch("./data/");
@@ -11890,15 +11264,15 @@ const App = () => {
             if (repoPath.endsWith("/")) repoPath = repoPath.slice(0, -1);
             const targetPath = repoPath ? `${repoPath}/data` : "data";
             const apiPath = `https://api.github.com/repos/${user}/${repo}/contents/${targetPath}`;
-            const res = await fetch(apiPath, { cache: "no-store" });
+            const res = await fetch(apiPath);
             if (res.ok) {
               const data = await res.json();
               if (Array.isArray(data)) {
-                const csvs = data.filter(
-                  (f) => f.name && f.type !== "dir" && f.name.toLowerCase().endsWith(".csv"),
-                );
-                csvs.forEach((f) => { if (f.download_url) rawUrls[f.name] = f.download_url; });
-                return csvs.map((f) => f.name);
+                return data
+                  .filter(
+                    (f) => f.name && f.name.toLowerCase().endsWith(".csv"),
+                  )
+                  .map((f) => f.name);
               }
             }
           }
@@ -11947,33 +11321,21 @@ const App = () => {
     ) {
       setLinkedFiles(filesToLoad);
     }
-    // Downloads run in parallel; processing still goes file by file, in order.
-    const fetchText = async (file) => {
-      let parsedUrl = new URL(window.location.href);
-      let p = parsedUrl.pathname;
-      if (!p.endsWith("/") && !p.split("/").pop().includes(".")) {
-        p += "/";
-      }
-      let baseForFetch = parsedUrl.origin + p;
-      const resolvedPath = file.startsWith("data/") ? file : "data/" + file;
-      const resolvedUrl = new URL(resolvedPath, baseForFetch).href;
-      const raw = rawUrls[file.replace(/^data\//, "")];
-      if (raw) {
-        try {
-          const r = await fetch(`${raw}${raw.includes("?") ? "&" : "?"}t=${Date.now()}`, { cache: "no-store" });
-          if (r.ok) return await r.text();
-        } catch (e) {}
-      }
-      const res = await fetch(resolvedUrl, { cache: "no-store" });
-      return res.ok ? await res.text() : "";
-    };
-    const pendingTexts = filesToLoad.map((file) => fetchText(file).catch((e) => e));
-    for (let fi = 0; fi < filesToLoad.length; fi++) {
-      const file = filesToLoad[fi];
+    for (const file of filesToLoad) {
       try {
-        const got = await pendingTexts[fi];
-        if (got instanceof Error) throw got;
-        let csvText = got || "";
+        let csvText = "";
+        let parsedUrl = new URL(window.location.href);
+        let p = parsedUrl.pathname;
+        if (!p.endsWith("/") && !p.split("/").pop().includes(".")) {
+          p += "/";
+        }
+        let baseForFetch = parsedUrl.origin + p;
+        const resolvedPath = file.startsWith("data/") ? file : "data/" + file;
+        const resolvedUrl = new URL(resolvedPath, baseForFetch).href;
+        const res = await fetch(resolvedUrl);
+        if (res.ok) {
+          csvText = await res.text();
+        }
         if (csvText) {
           const fc = csvText.trimStart().slice(0, 5).toLowerCase();
           if (fc === "<!doc" || fc === "<html") continue;
@@ -11984,6 +11346,7 @@ const App = () => {
             currentColorData,
             currentSavedColors,
             currentNames,
+            currentAdjs,
             currentNotes,
             currentTags,
             currentGroupSettings,
@@ -11992,16 +11355,13 @@ const App = () => {
           currentColorData = processed.newColorData;
           currentSavedColors = processed.newSavedColors;
           currentNames = processed.newNames;
+          currentAdjs = processed.newAdjs;
           currentNotes = processed.newNotes;
           currentTags = processed.newTags;
-          if (processed.newGroupSettings && processed.groupRowsSeen &&
-              (file === "anchors.csv" || !filesToLoad.includes("anchors.csv")))
+          if (processed.newGroupSettings)
             currentGroupSettings = processed.newGroupSettings;
           if (processed.newSavedPalettes)
             currentSavedPalettes = processed.newSavedPalettes;
-          (processed.newTagLibrary || []).forEach((t) => {
-            if (!currentTagLibrary.some((x) => x.toLowerCase() === t.toLowerCase())) currentTagLibrary.push(t);
-          });
         }
       } catch (e) {
         console.warn("Failed: " + file, e);
@@ -12014,11 +11374,11 @@ const App = () => {
     }
     setSavedColors(currentSavedColors);
     setNames(currentNames);
+    setAdjectives(currentAdjs);
     setDictNotes(currentNotes);
     setDictTags(currentTags);
     setGroupSettings(currentGroupSettings);
     setSavedPalettes(currentSavedPalettes);
-    setTagLibrary(currentTagLibrary);
   }, [linkedFiles]);
   useEffect(() => {
     loadInitialData();
@@ -12107,36 +11467,38 @@ const App = () => {
     commercial: false,
     brands: {},
   });
-  // Anchor-name rows in the global stack need the same resolution context
+  // Noun/adjective rows in the global stack need the same resolution context
   // the labels use; the viewport memos previously had no access to one.
   const viewportGroupContext = useMemo(() => {
     try {
-      return getSameGroupContext(scrubL, scrubC, scrubH, savedColors, names);
+      return getSameGroupContext(
+        scrubL,
+        scrubC,
+        scrubH,
+        gridData,
+        savedColors,
+        names,
+        adjectives,
+      );
     } catch (e) {
       return null;
     }
-  }, [scrubL, scrubC, scrubH, savedColors, names]);
-  // Viewport filter rows that apply here, and whether any of them (or the
-  // same-group toggles) depend on the cursor. Only then must the filtered lists
-  // be rebuilt as the cursor moves; otherwise a drag rebuilt every list and,
-  // through them, every Explore cell, on each step.
-  const viewportRows = useMemo(
-    () => (exploreFilters || []).filter((r) => !r.scope || r.scope === "viewport"),
-    [exploreFilters],
-  );
-  const viewportCursorDep =
-    filterSameNoun ||
-    filterRowsSome(viewportRows, (r) => r.dynamic || r.field === "deltaE" || r.field === "noun");
-  const viewportCursorKey = viewportCursorDep ? `${scrubL}|${scrubC}|${scrubH}` : "";
-  const viewportCtxDep = viewportCursorDep ? viewportGroupContext : null;
-  // Explore's commercial colours (its own brand visibility and filter rows).
+  }, [scrubL, scrubC, scrubH, gridData, savedColors, names, adjectives]);
   const filteredColorData = useMemo(() => {
     if (!colorData) return null;
-    const isDb = false;
+    const isDb = activeTab === "db";
 
     let sameGroup = null;
-    if (filterSameNoun) {
-      sameGroup = getSameGroupContext(scrubL, scrubC, scrubH, savedColors, names);
+    if (filterSameAdjective || filterSameNoun) {
+      sameGroup = getSameGroupContext(
+        scrubL,
+        scrubC,
+        scrubH,
+        gridData,
+        savedColors,
+        names,
+        adjectives,
+      );
     }
 
     const filtered = {};
@@ -12144,7 +11506,7 @@ const App = () => {
       const isVisible = isDb ? viewportVisibility.brands[brand] !== false : viewportVisibility.brands[brand] === true;
       if (isVisible) {
         let list = colorData[brand];
-        if (filterSameNoun && sameGroup) {
+        if ((filterSameAdjective || filterSameNoun) && sameGroup) {
           list = list.filter((c) => {
             let itemL, itemC, itemH;
             if (c.L !== undefined && c.L !== null && !isNaN(c.L)) {
@@ -12171,19 +11533,34 @@ const App = () => {
                 return false;
               }
             }
+            if (filterSameAdjective && !matchesSameAdjective(sameGroup, itemL)) {
+              return false;
+            }
             if (filterSameNoun && !matchesSameNoun(sameGroup, itemL, itemC, itemH)) {
               return false;
             }
             return true;
           });
         }
-        if (viewportRows.length) {
+        if (globalFilters && globalFilters.length) {
           // Commercial rows carry no \u0394E of their own; measure against the
           // cursor first or a \u0394E row rejects every one of them.
+          let center = null;
+          try {
+            center = new Color("oklch", [scrubL, scrubC, scrubH]);
+          } catch (e) {
+            center = null;
+          }
           const decorated = list.map((c) => {
             const item = { ...c, brand, displayName: c.name || "" };
-            if (item._d === undefined) {
-              item._d = fastDeltaEOK(scrubL, scrubC, scrubH, c.L, c.C, c.H);
+            if (item._d === undefined && center) {
+              try {
+                item._d =
+                  center.deltaE(
+                    new Color("oklch", [c.L, c.C, isNaN(c.H) ? 0 : c.H]),
+                    "OK",
+                  ) * 100;
+              } catch (e) {}
             }
             return item;
           });
@@ -12194,9 +11571,9 @@ const App = () => {
           });
           list = applyGlobalFilters(
             decorated,
-            exploreFilters,
+            globalFilters,
             viewportGroupContext,
-            exploreFilterMode,
+            globalFilterMode,
             "viewport",
           ).items.map((k) => list[k.__idx]);
         }
@@ -12206,24 +11583,21 @@ const App = () => {
     return filtered;
   }, [
     colorData,
+    gridData,
     viewportVisibility,
+    filterSameAdjective,
     filterSameNoun,
     savedColors,
-    viewportCursorKey,
+    scrubL,
+    scrubC,
+    scrubH,
     names,
-    viewportRows,
-    exploreFilterMode,
-    viewportCtxDep,
+    adjectives,
+    activeTab,
+    globalFilters,
+    globalFilterMode,
+    viewportGroupContext,
   ]);
-  // Match's commercial colours: its own brand visibility (every brand unless
-  // switched off); its filter rows apply inside the list.
-  const [dbVisibility, setDbVisibility] = useState({ pins: true, anchors: true, brands: {} });
-  const dbColorData = useMemo(() => {
-    if (!colorData) return null;
-    const out = {};
-    Object.keys(colorData).forEach((b) => { if (dbVisibility.brands[b] !== false) out[b] = colorData[b]; });
-    return out;
-  }, [colorData, dbVisibility]);
   const [showVisibilityMenu, setShowVisibilityMenu] = useState(false);
   const visibilityMenuRef = useRef(null);
   useEffect(() => {
@@ -12253,10 +11627,12 @@ const App = () => {
   const [showHelpPanel, setShowHelpPanel] = useState(false);
   const [showDatabaseManager, setShowDatabaseManager] = useState(false);
   const [showFileManager, setShowFileManager] = useState(false);
+  const [visualizeData, setVisualizeData] = useState(null);
   const [history, setHistory] = useState({
     list: [
       {
         names: initialState?.names || {},
+        adjectives: initialState?.adjectives || {},
         dictNotes: initialState?.dictNotes || {},
         dictTags: initialState?.dictTags || {},
         savedColors: initialState?.savedColors || {},
@@ -12274,6 +11650,7 @@ const App = () => {
     () =>
       JSON.stringify({
         names,
+        adjectives,
         dictNotes,
         dictTags,
         savedColors,
@@ -12282,11 +11659,10 @@ const App = () => {
         savedPalettes,
         observer,
         illuminant,
-        tagLibrary,
       }),
     [
-      tagLibrary,
       names,
+      adjectives,
       dictNotes,
       dictTags,
       savedColors,
@@ -12309,12 +11685,10 @@ const App = () => {
         console.warn("Failed to persist state to localStorage:", e);
       }
       setHistory((prev) => {
-        const currentRecordStr = historyRecordStr(prev.list[prev.index]);
+        const currentRecordStr = JSON.stringify(prev.list[prev.index]);
         if (currentRecordStr === currentStateStr) return prev;
         const newList = prev.list.slice(0, prev.index + 1);
-        const rec = JSON.parse(currentStateStr);
-        HISTORY_STR.set(rec, currentStateStr);
-        newList.push(rec);
+        newList.push(JSON.parse(currentStateStr));
         if (newList.length > 50) newList.shift();
         return { list: newList, index: newList.length - 1 };
       });
@@ -12328,6 +11702,7 @@ const App = () => {
         const newIndex = prev.index - 1;
         const prevState = prev.list[newIndex];
         setNames(prevState.names);
+        setAdjectives(prevState.adjectives);
         setDictNotes(prevState.dictNotes);
         setDictTags(prevState.dictTags);
         setSavedColors(prevState.savedColors);
@@ -12349,6 +11724,7 @@ const App = () => {
         const newIndex = prev.index + 1;
         const nextState = prev.list[newIndex];
         setNames(nextState.names);
+        setAdjectives(nextState.adjectives);
         setDictNotes(nextState.dictNotes);
         setDictTags(nextState.dictTags);
         setSavedColors(nextState.savedColors);
@@ -12392,42 +11768,12 @@ const App = () => {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
   const filteredViewData = useMemo(() => {
-    // Points are matched by near-equal L/C/H through a bucket index (was a scan
-    // of every point for every anchor).
-    const nearIdx = new Map();
-    const nearKey = (L, C, H) => `${Math.round(L * 1000)}|${Math.round(C * 1000)}|${Math.round(H * 1000)}`;
-    const indexPoint = (p, i) => {
-      if (!isFinite(p.L) || !isFinite(p.C) || !isFinite(p.H)) return;
-      const k = nearKey(p.L, p.C, p.H);
-      const arr = nearIdx.get(k);
-      if (arr) arr.push(i); else nearIdx.set(k, [i]);
-    };
-    const findNear = (L, C, H) => {
-      let best = -1;
-      const l0 = Math.round(L * 1000), c0 = Math.round(C * 1000), h0 = Math.round(H * 1000);
-      for (let dl = -1; dl <= 1; dl++)
-        for (let dc = -1; dc <= 1; dc++)
-          for (let dh = -1; dh <= 1; dh++) {
-            const arr = nearIdx.get(`${l0 + dl}|${c0 + dc}|${h0 + dh}`);
-            if (!arr) continue;
-            for (const i of arr) {
-              const p = points[i];
-              if (
-                (best < 0 || i < best) &&
-                Math.abs(p.L - L) < 0.001 &&
-                Math.abs(p.C - C) < 0.001 &&
-                Math.abs(p.H - H) < 0.001
-              )
-                best = i;
-            }
-          }
-      return best;
-    };
-    let points = [];
-    let baseAnchors = [];
+    if (!gridData) return { points: [], baseAnchors: [], savedColors: {} };
+    let points = [...gridData.allPoints];
+    let baseAnchors = [...gridData.baseAnchors];
     const filteredSavedColors = { ...savedColors };
     Object.values(filteredSavedColors).forEach((sc) => {
-      const lStr = getLStr(sc.L);
+      const adjId = sc.adjId || getLStr(sc.L);
       const anchorId =
         sc.anchorId ||
         `custom-${Math.round(sc.C * 100)
@@ -12435,7 +11781,7 @@ const App = () => {
           .padStart(
             2,
             "0",
-          )}-${Math.round(sc.H).toString().padStart(3, "0")}-${lStr}`;
+          )}-${Math.round(sc.H).toString().padStart(3, "0")}-${adjId}`;
       if (sc.type === "pin" || sc.type === "anchor") {
         const pt = {
           L: sc.L,
@@ -12443,7 +11789,7 @@ const App = () => {
           H: sc.H,
           a: sc.a,
           b: sc.b,
-          lStr,
+          lStr: adjId,
           cStr: anchorId ? anchorId.split("-")[1] : "",
           hStr: anchorId ? anchorId.split("-")[2] : "",
           erpCode: sc.erpCode,
@@ -12453,17 +11799,15 @@ const App = () => {
           delta: 0,
           isPin: sc.type === "pin",
           pinId: sc.type === "pin" ? sc.id : void 0,
+          adjOverride: sc.adjOverride,
           nameOverride: sc.nameOverride,
           anchorId,
+          adjId,
           isCustomAnchor: sc.type === "anchor",
           image: sc.image || (sc.notes?.startsWith("http") ? sc.notes : undefined),
           brand: sc.brand,
           originalIndex: sc.originalIndex,
-          visualTexture: sc.visualTexture,
-          tactileTexture: sc.tactileTexture,
-          doorProfile: sc.doorProfile,
         };
-        indexPoint(pt, points.length);
         points.push(pt);
         baseAnchors.push({
           C: sc.C,
@@ -12479,22 +11823,29 @@ const App = () => {
           maxL: sc.L,
           color: sc.color,
           anchorId,
+          adjId,
           nameOverride: sc.nameOverride,
+          adjOverride: sc.adjOverride,
           isCustomAnchor: sc.type === "anchor",
         });
       } else if (sc.type === "nounColumn") {
         const dL = 0.02;
         if (sc.minL === sc.maxL && sc.minL !== null) {
           const L = sc.minL;
-          const existingIdx = findNear(L, sc.C, sc.H);
+          const cColor = new Color("oklch", [L, sc.C, sc.H]);
+          const existingIdx = points.findIndex(
+            (p) =>
+              Math.abs(p.L - L) < 0.001 &&
+              Math.abs(p.C - sc.C) < 0.001 &&
+              Math.abs(p.H - sc.H) < 0.001,
+          );
           if (existingIdx >= 0) {
             points[existingIdx] = {
               ...points[existingIdx],
               parentNounId: sc.id,
               isCustomNounGenerated: true,
             };
-          } else {
-            indexPoint({ L, C: sc.C, H: sc.H }, points.length);
+          } else if (cColor.inGamut("srgb")) {
             points.push({
               L,
               C: sc.C,
@@ -12512,7 +11863,10 @@ const App = () => {
                   2,
                   "0",
                 )}-H${Math.round(sc.H).toString().padStart(3, "0")}`,
-              color: lchDisplayHex(L, sc.C, sc.H),
+              color: cColor
+                .clone()
+                .toGamut({ space: "srgb" })
+                .toString({ format: "hex" }),
               opacity: 1,
               ring: 0,
               delta: 0,
@@ -12523,15 +11877,20 @@ const App = () => {
           }
         } else {
           for (let L = Math.ceil(sc.minL / dL) * dL; L <= sc.maxL; L += dL) {
-            const gh = lchGamutHex(L, sc.C, sc.H);
-            const existingIdx = findNear(L, sc.C, sc.H);
+            const cColor = new Color("oklch", [L, sc.C, sc.H]);
+            const existingIdx = points.findIndex(
+              (p) =>
+                Math.abs(p.L - L) < 0.001 &&
+                Math.abs(p.C - sc.C) < 0.001 &&
+                Math.abs(p.H - sc.H) < 0.001,
+            );
             if (existingIdx >= 0) {
               points[existingIdx] = {
                 ...points[existingIdx],
                 parentNounId: sc.id,
                 isCustomNounGenerated: true,
               };
-            } else if (gh.inGamut) {
+            } else if (cColor.inGamut("srgb")) {
               const pt = {
                 L,
                 C: sc.C,
@@ -12549,7 +11908,10 @@ const App = () => {
                     2,
                     "0",
                   )}-H${Math.round(sc.H).toString().padStart(3, "0")}`,
-                color: gh.hex,
+                color: cColor
+                  .clone()
+                  .toGamut({ space: "srgb" })
+                  .toString({ format: "hex" }),
                 opacity: 1,
                 ring: 0,
                 delta: 0,
@@ -12557,7 +11919,6 @@ const App = () => {
                 isCustomNounGenerated: true,
                 parentNounId: sc.id,
               };
-              indexPoint(pt, points.length);
               points.push(pt);
             }
           }
@@ -12587,10 +11948,19 @@ const App = () => {
         }
       }
     });
-    if (filterSameNoun) {
-      const sameGroup = getSameGroupContext(scrubL, scrubC, scrubH, savedColors, names);
+    if (filterSameAdjective || filterSameNoun) {
+      const sameGroup = getSameGroupContext(
+        scrubL,
+        scrubC,
+        scrubH,
+        gridData,
+        savedColors,
+        names,
+        adjectives,
+      );
 
       points = points.filter((p) => {
+        if (filterSameAdjective && !matchesSameAdjective(sameGroup, p.L)) return false;
         if (filterSameNoun && !matchesSameNoun(sameGroup, p.L, p.C, p.H)) return false;
         return true;
       });
@@ -12598,14 +11968,18 @@ const App = () => {
       Object.keys(filteredSavedColors).forEach((k) => {
         const sc = filteredSavedColors[k];
         if (sc.type === "nounColumn") {
-          if (
+          if (filterSameAdjective && !nounColumnMatchesSameAdjective(sameGroup, sc)) {
+            delete filteredSavedColors[k];
+          } else if (
             filterSameNoun &&
             !matchesSameNoun(sameGroup, sc.minL !== undefined ? sc.minL : sc.L, sc.C, sc.H)
           ) {
             delete filteredSavedColors[k];
           }
         } else {
-          if (filterSameNoun && !matchesSameNoun(sameGroup, sc.L, sc.C, sc.H)) {
+          if (filterSameAdjective && !matchesSameAdjective(sameGroup, sc.L)) {
+            delete filteredSavedColors[k];
+          } else if (filterSameNoun && !matchesSameNoun(sameGroup, sc.L, sc.C, sc.H)) {
             delete filteredSavedColors[k];
           }
         }
@@ -12613,6 +11987,13 @@ const App = () => {
 
       baseAnchors = baseAnchors.filter((ba) => {
         const minL = ba.minL !== undefined ? ba.minL : (ba.L !== undefined ? ba.L : 0);
+        const maxL = ba.maxL !== undefined ? ba.maxL : (ba.L !== undefined ? ba.L : 1);
+        if (
+          filterSameAdjective &&
+          !nounColumnMatchesSameAdjective(sameGroup, { minL, maxL, L: ba.L })
+        ) {
+          return false;
+        }
         if (filterSameNoun && !matchesSameNoun(sameGroup, minL, ba.C, ba.H)) return false;
         return true;
       });
@@ -12653,17 +12034,15 @@ const App = () => {
         }
         if (q) {
           const qWords = q.split(/\s+/).filter(Boolean);
-          const name = (
-            p.isPin
-              ? getInheritedPinNames(savedColors[p.pinId] || p, savedColors, names).displayName
-              : names[nounId] || ""
-          ).toLowerCase();
+          const name = (names[nounId] || "").toLowerCase();
+          const adj = (adjectives[p.lStr] || "").toLowerCase();
           const note = (dictNotes[nounId] || "").toLowerCase();
           const erp = p.erpCode.toLowerCase();
           if (
             !qWords.every(
               (w) =>
                 name.includes(w) ||
+                adj.includes(w) ||
                 note.includes(w) ||
                 erp.includes(w),
             )
@@ -12689,9 +12068,14 @@ const App = () => {
         if (q) {
           const qWords = q.split(/\s+/).filter(Boolean);
           const name = (
-            sc.type === "pin"
-              ? getInheritedPinNames(sc, savedColors, names).displayName
-              : sc.nameOverride || names[sc.id] || names[sc.anchorId] || ""
+            sc.nameOverride ||
+            names[sc.anchorId] ||
+            ""
+          ).toLowerCase();
+          const adj = (
+            sc.adjOverride ||
+            adjectives[sc.adjId] ||
+            ""
           ).toLowerCase();
           const note = (sc.notes || dictNotes[sc.anchorId] || "").toLowerCase();
           const erp = (sc.erpCode || "").toLowerCase();
@@ -12699,6 +12083,7 @@ const App = () => {
             !qWords.every(
               (w) =>
                 name.includes(w) ||
+                adj.includes(w) ||
                 note.includes(w) ||
                 erp.includes(w),
             )
@@ -12726,9 +12111,15 @@ const App = () => {
         activeColumns.has(`${ba.cStr}-${ba.hStr}`),
       );
     }
-    if (viewportRows.length) {
-      // Points expose their name and L/C/H; \u0394E is measured
+    if (globalFilters && globalFilters.length) {
+      // Grid points expose name/noun/adjective and L/C/H; \u0394E is measured
       // against the cursor so the same rows work here as in the list.
+      let center = null;
+      try {
+        center = new Color("oklch", [scrubL, scrubC, scrubH]);
+      } catch (e) {
+        center = null;
+      }
       const decorate = (p) => {
         const name =
           names[p.parentNounId || p.anchorId || p.id] ||
@@ -12736,8 +12127,19 @@ const App = () => {
           p.nameOverride ||
           p.name ||
           "";
-        const d = fastDeltaEOK(scrubL, scrubC, scrubH, p.L, p.C, p.H);
-        return { ...p, displayName: name, _d: isFinite(d) ? d : undefined };
+        let d;
+        if (center) {
+          try {
+            d =
+              center.deltaE(
+                new Color("oklch", [p.L, p.C, isNaN(p.H) ? 0 : p.H]),
+                "OK",
+              ) * 100;
+          } catch (e) {
+            d = undefined;
+          }
+        }
+        return { ...p, displayName: name, _d: d };
       };
       const strip = (p) => {
         const clean = { ...p };
@@ -12747,9 +12149,9 @@ const App = () => {
       };
       points = applyGlobalFilters(
         points.map(decorate),
-        exploreFilters,
+        globalFilters,
         viewportGroupContext,
-        exploreFilterMode,
+        globalFilterMode,
         "viewport",
       ).items.map(strip);
 
@@ -12758,9 +12160,9 @@ const App = () => {
       const keep = (item) =>
         applyGlobalFilters(
           [decorate(item)],
-          exploreFilters,
+          globalFilters,
           viewportGroupContext,
-          exploreFilterMode,
+          globalFilterMode,
           "viewport",
         ).items.length > 0;
 
@@ -12772,18 +12174,23 @@ const App = () => {
     }
     return { points, baseAnchors, savedColors: filteredSavedColors };
   }, [
+    gridData,
     viewportVisibility,
     viewportTagFilter,
     viewportSearchQuery,
     savedColors,
     dictTags,
     names,
+    adjectives,
     dictNotes,
+    filterSameAdjective,
     filterSameNoun,
-    viewportCursorKey,
-    viewportRows,
-    exploreFilterMode,
-    viewportCtxDep,
+    scrubL,
+    scrubC,
+    scrubH,
+    globalFilters,
+    globalFilterMode,
+    viewportGroupContext,
   ]);
   useEffect(() => {
     if (theme === "dark") document.documentElement.classList.add("dark");
@@ -12799,9 +12206,9 @@ const App = () => {
     setScrubH(H);
     setTemporarySpectral(spectralData);
     setScrubCommercial(commercialData);
-    setFocusTick((t) => t + 1);
   };
   const crosshair = useMemo(() => {
+    if (!gridData) return null;
     const a = scrubC * Math.sin((scrubH * Math.PI) / 180);
     const b = scrubC * Math.cos((scrubH * Math.PI) / 180);
     let closestSaved = null,
@@ -12837,7 +12244,7 @@ const App = () => {
           Math.pow(b - pt.b, 2),
       );
       const EPSILON = 1e-9;
-      const allowedRadius = pt.isPin ? PIN_PULL : 0.02;
+      const allowedRadius = pt.isPin ? 0.002 : 0.02;
       if (d <= allowedRadius) {
         if (d < minGridDist - EPSILON) {
           minGridDist = d;
@@ -12854,15 +12261,6 @@ const App = () => {
         return p1.H - p2.H;
       });
     }
-    // A pin within its own pull radius names the cursor, even when an
-    // anchor's (wider) pull reaches it too.
-    let pulledPin = null, pulledPinDist = Infinity;
-    for (const pt of filteredViewData.points) {
-      if (!pt.isPin) continue;
-      const d = Math.sqrt(Math.pow(scrubL - pt.L, 2) + Math.pow(a - pt.a, 2) + Math.pow(b - pt.b, 2));
-      if (d <= PIN_PULL && d < pulledPinDist) { pulledPinDist = d; pulledPin = pt; }
-    }
-    if (pulledPin) { gridTieBreakers = [pulledPin]; minGridDist = pulledPinDist; }
     const closestGridPt = gridTieBreakers[0];
     const exactSavedColor =
       closestSaved && minSavedDist < 1e-4 ? closestSaved : null;
@@ -12901,7 +12299,7 @@ const App = () => {
       gravityA = closestGridPt.a;
       gravityB = closestGridPt.b;
       activePullType = "anchor";
-    } else if (minPinDist <= PIN_PULL && closestPin) {
+    } else if (minPinDist <= 0.002 && closestPin) {
       gravityL = closestPin.L;
       gravityC = closestPin.C;
       gravityH = closestPin.H;
@@ -12927,34 +12325,78 @@ const App = () => {
     ) {
       if (closestGridPt.isPin) {
         activeSavedColor = savedColors[closestGridPt.pinId];
+      } else {
+        const aId = `${closestGridPt.cStr}-${closestGridPt.hStr}`;
+        const anchorLock = Object.values(savedColors).find(
+          (sc) =>
+            sc.type === "anchor" &&
+            sc.anchorId === aId &&
+            sc.adjId === closestGridPt.lStr,
+        );
+        if (anchorLock) activeSavedColor = anchorLock;
       }
     }
+    let nearestAdjId, nearestAnchorId;
     const effectiveL = activePullType ? gravityL : scrubL;
     const effectiveC = activePullType ? gravityC : scrubC;
     const effectiveH = activePullType ? gravityH : scrubH;
-    // Anchors are points: the cursor takes the name of the nearest one in
-    // OkLab, the same rule that draws the cells in Explore.
-    const nearAnchor = findNearestAnchor(effectiveL, effectiveC, effectiveH, savedColors);
-    const nearestAnchorId = nearAnchor ? nearAnchor.nameKey : null;
-    // What names the cursor, for the tether line in Explore: its pin (exact or
-    // pulled), else the nearest anchor (a legacy range anchor at the cursor's L).
-    let tether = null;
-    {
-      const pinT =
-        activeSavedColor && activeSavedColor.type === "pin"
-          ? activeSavedColor
-          : !activeSavedColor && closestGridPt && closestGridPt.isPin
-            ? savedColors[closestGridPt.pinId]
-            : null;
-      if (pinT && isFinite(pinT.L) && isFinite(pinT.C))
-        tether = { L: Number(pinT.L), C: Number(pinT.C), H: Number(pinT.H) || 0, kind: "pin" };
-      else if (nearAnchor)
-        tether = {
-          L: Math.max(nearAnchor.minL, Math.min(nearAnchor.maxL, effectiveL)),
-          C: Number(nearAnchor.sc.C) || 0,
-          H: Number(nearAnchor.sc.H) || 0,
-          kind: "anchor",
-        };
+    const effectiveA = activePullType ? gravityA : a;
+    const effectiveB = activePullType ? gravityB : b;
+    if (closestGridPt && closestGridPt.isPin && minGridDist < 0.001) {
+      nearestAdjId = closestGridPt.adjId;
+      nearestAnchorId = closestGridPt.anchorId;
+    } else {
+      nearestAdjId = getLStr(effectiveL);
+      let min2d = Infinity,
+        bestAnchor = null;
+      if (filteredViewData.baseAnchors) {
+        for (const ba of filteredViewData.baseAnchors) {
+          const dist =
+            Math.pow(effectiveA - ba.a, 2) + Math.pow(effectiveB - ba.b, 2);
+          const minL = ba.minL !== void 0 ? ba.minL : -0.01;
+          const maxL = ba.maxL !== void 0 ? ba.maxL : 1.01;
+          const inRange =
+            effectiveL >= minL - 0.001 && effectiveL <= maxL + 0.001;
+          if (dist < min2d && inRange) {
+            min2d = dist;
+            bestAnchor = ba;
+          }
+        }
+      }
+      Object.values(savedColors)
+        .filter((sc) => sc.type === "nounColumn")
+        .forEach((cc) => {
+          const dist =
+            Math.pow(effectiveA - cc.a, 2) + Math.pow(effectiveB - cc.b, 2);
+          if (dist <= min2d && effectiveL >= cc.minL && effectiveL <= cc.maxL) {
+            min2d = dist;
+            bestAnchor = cc;
+          }
+        });
+      if (bestAnchor) {
+        if (bestAnchor.type === "nounColumn") {
+          nearestAnchorId = bestAnchor.id;
+        } else if (bestAnchor.isCustomAnchor) {
+          nearestAnchorId = `custom-${bestAnchor.cStr}-${bestAnchor.hStr}-${getLStr(effectiveL)}`;
+        } else {
+          nearestAnchorId =
+            bestAnchor.parentNounId || `${bestAnchor.cStr}-${bestAnchor.hStr}`;
+        }
+      } else {
+        const cStr = Math.round(effectiveC * 100).toString().padStart(2, "0");
+        const hStr = Math.round(effectiveH).toString().padStart(3, "0");
+        const baseId = `${cStr}-${hStr}`;
+        const prefix =
+          effectiveL >= 0.95
+            ? "UL"
+            : effectiveL >= 0.5
+            ? "L"
+            : effectiveL >= 0.2
+            ? "D"
+            : "UD";
+        const prefId = `${prefix}-${baseId}`;
+        nearestAnchorId = names[prefId] ? prefId : (names[baseId] ? baseId : prefId);
+      }
     }
     const exactErpCode = getExactErpCode(scrubL, scrubC, scrubH);
     const activeErpCode = exactErpCode;
@@ -12989,14 +12431,15 @@ const App = () => {
       isGridSnapped,
       closestGridPt,
       activeErpCode,
+      nearestAdjId,
       nearestAnchorId,
       snapDist: minGridDist,
       snapTarget: closestGridPt,
       temporarySpectral,
       activeCommercial: validatedCommercial,
-      tether,
     };
   }, [
+    gridData,
     filteredViewData.points,
     filteredViewData.baseAnchors,
     scrubL,
@@ -13011,6 +12454,16 @@ const App = () => {
     colorData,
     names,
   ]);
+  const filterPt = useCallback(
+    (p) => {
+      const lDiff = Math.abs(p.L - scrubL);
+      const cDiff = Math.abs(p.C - scrubC);
+      let hDiff = Math.abs(p.H - scrubH);
+      hDiff = Math.min(hDiff, 360 - hDiff);
+      return lDiff <= filterL && cDiff <= filterC && hDiff <= filterH;
+    },
+    [scrubL, scrubC, scrubH, filterL, filterC, filterH],
+  );
   const handlePointClick = (pt, spectralData = null, commercialData = null) => {
     const coords = Array.isArray(pt) ? pt.slice(0, 3) : pt;
     let explicitCommercial = commercialData;
@@ -13072,6 +12525,7 @@ const App = () => {
         exactSavedColor,
         isGridSnapped,
         closestGridPt,
+        nearestAdjId,
         nearestAnchorId,
       } = crosshair;
       let clickedItem = null;
@@ -13084,6 +12538,7 @@ const App = () => {
           clickedItem = {
             type: "anchor",
             anchorId: nearestAnchorId,
+            adjId: nearestAdjId,
             erpCode: closestGridPt.erpCode,
           };
         }
@@ -13095,6 +12550,7 @@ const App = () => {
             ...prev[tetheringPinId],
             parentPinId: clickedItem.type === "pin" ? clickedItem.id : null,
             anchorId: clickedItem.anchorId || clickedItem.id,
+            adjId: clickedItem.adjId,
           },
         }));
         setTetheringPinId(null);
@@ -13102,46 +12558,347 @@ const App = () => {
       }
     }
   };
+  const handleVisualize = (type, id, displayName) => {
+    let items = [];
+    if (type === "adjective") {
+      items = filteredViewData.points
+        .filter((p) => p.lStr === id)
+        .map((p) => {
+          const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+          return {
+            ...p,
+            displayName:
+              `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
+              (p.erpCode ? `#${p.erpCode}` : "\u2014"),
+            erpCode: p.erpCode,
+          };
+        });
+    } else if (type === "noun") {
+      const sc = savedColors[id];
+      if (sc && sc.type === "nounColumn") {
+        items = filteredViewData.points
+          .filter((p) => {
+            return (
+              p.parentNounId === sc.id ||
+              (Math.abs(p.C - sc.C) < 0.01 &&
+                Math.abs(p.H - sc.H) < 0.01 &&
+                p.L >= sc.minL &&
+                p.L <= sc.maxL &&
+                !p.isPin)
+            );
+          })
+          .map((p) => {
+            return {
+              ...p,
+              displayName:
+                `${adjectives[p.lStr] || ""} ${names[id] || sc.nameOverride || ""}`.trim() ||
+                (p.erpCode ? `#${p.erpCode}` : "\u2014"),
+              erpCode: p.erpCode,
+            };
+          });
+      } else {
+        items = filteredViewData.points
+          .filter((p) => {
+            const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+            return nounId === id;
+          })
+          .map((p) => {
+            const nounId = p.parentNounId || `${p.cStr}-${p.hStr}`;
+            return {
+              ...p,
+              displayName:
+                `${adjectives[p.lStr] || ""} ${names[nounId] || ""}`.trim() ||
+                (p.erpCode ? `#${p.erpCode}` : "\u2014"),
+              erpCode: p.erpCode,
+            };
+          });
+      }
+    }
+    setVisualizeData({ title: `Visualizing ${displayName}`, items });
+  };
   const tabs = useMemo(
     () => [
       { id: "db", label: "Commercial DB" },
       { id: "pins", label: "Catalog (pinned colors)" },
-      { id: "3d", label: "Color space" },
-      { id: "anchors", label: "Anchors" },
+      { id: "top", label: "Light layers" },
+      { id: "chroma", label: "Chroma rings" },
+      { id: "slice", label: "Hue slices" },
+      { id: "3d", label: "3D view" },
       { id: "groups", label: "Color groups" },
+      { id: "adjectives", label: "Adjectives" },
+      { id: "palette", label: "Nouns" },
     ],
     [],
   );
   const searchResults = useMemo(() => {
-    if (!searchQuery.trim()) return [];
+    if (!searchQuery.trim() || !gridData) return [];
     const q = searchQuery.toLowerCase().trim();
     const results = [];
-    const qWords = q.split(/\s+/).filter(Boolean);
+    const seenCodes = new Set();
     Object.values(savedColors).forEach((sc) => {
-      if (!sc || (sc.type !== "pin" && sc.type !== "nounColumn" && sc.type !== "anchor")) return;
-      if (results.length >= 100) return;
-      const isPin = sc.type === "pin";
-      const key = sc.type === "anchor" ? sc.anchorId || sc.id : sc.id;
-      const name = isPin
-        ? getInheritedPinNames(sc, savedColors, names).displayName
-        : cleanName(names[key] || sc.nameOverride);
-      const note = sc.notes || dictNotes[key] || "";
-      const tagsStr = (dictTags[sc.id] || dictTags[key] || []).join(" ");
-      const hay = `${name} ${note} ${sc.erpCode || ""} ${tagsStr}`.toLowerCase();
-      if (!qWords.every((w) => hay.includes(w))) return;
-      const L = sc.type === "nounColumn" ? (sc.minL + sc.maxL) / 2 : sc.L;
-      results.push({
-        key: `saved-${sc.id}`,
-        L,
-        C: sc.C,
-        H: sc.H,
-        color: sc.color || lchDisplayHex(L, sc.C || 0, sc.H || 0),
-        displayName: name || "Unnamed",
-        erpCode: sc.erpCode,
-        type: isPin ? "Pin" : "Anchor",
-        note,
-      });
+      const adj = (
+        sc.type === "nounColumn"
+          ? `L ${sc.minL} - ${sc.maxL}`
+          : sc.adjOverride || adjectives[sc.adjId] || ""
+      ).toLowerCase();
+      const name = (
+        sc.type === "nounColumn"
+          ? names[sc.id] || sc.nameOverride || ""
+          : sc.nameOverride || names[sc.anchorId] || ""
+      ).toLowerCase();
+      const fullName = `${adj} ${name}`.trim();
+      const note = (
+        sc.notes ||
+        (sc.type === "nounColumn"
+          ? dictNotes[sc.id]
+          : dictNotes[sc.anchorId]) ||
+        ""
+      ).toLowerCase();
+      const code = (sc.erpCode || "").toLowerCase();
+      const tagsStr = (dictTags[sc.id] || dictTags[sc.anchorId] || [])
+        .join(" ")
+        .toLowerCase();
+      const qWords = q.split(/\s+/).filter(Boolean);
+      const isMatch =
+        qWords.length === 0 ||
+        qWords.every(
+          (w) =>
+            adj.includes(w) ||
+            name.includes(w) ||
+            fullName.includes(w) ||
+            note.includes(w) ||
+            code.includes(w) ||
+            tagsStr.includes(w),
+        );
+      if (isMatch) {
+        let dn = "Unnamed";
+        if (sc.type === "nounColumn") {
+          dn = `[Grid Area] ${names[sc.id] || sc.nameOverride || "Unnamed Column"}`;
+        } else {
+          dn =
+            `${sc.adjOverride || adjectives[sc.adjId] || ""} ${sc.nameOverride || names[sc.anchorId] || ""}`.trim() ||
+            "Unnamed";
+        }
+        const t =
+          sc.type === "pin"
+            ? "Pin"
+            : sc.type === "nounColumn"
+              ? "Noun Column"
+              : "Locked Anchor";
+        const n =
+          sc.type === "nounColumn"
+            ? sc.notes || dictNotes[sc.id] || ""
+            : sc.notes || dictNotes[sc.anchorId] || "";
+        const realL = sc.type === "nounColumn" ? (sc.minL + sc.maxL) / 2 : sc.L;
+        const cFallback = new Color("oklch", [realL, sc.C || 0, sc.H || 0])
+          .toGamut({ space: "srgb" })
+          .toString({ format: "hex" });
+        results.push({
+          key: `saved-${sc.id}`,
+          L: realL,
+          C: sc.C,
+          H: sc.H,
+          color: sc.color || cFallback,
+          displayName: dn,
+          erpCode: sc.erpCode,
+          type: t,
+          note: n,
+        });
+        if (sc.erpCode) seenCodes.add(sc.erpCode);
+      }
     });
+    for (const pt of filteredViewData.points) {
+      if (results.length >= 100) break;
+      if (seenCodes.has(pt.erpCode)) continue;
+      const nounId = pt.parentNounId || `${pt.cStr}-${pt.hStr}`;
+      const adjStr = (adjectives[pt.lStr] || "").toLowerCase();
+      const nameStr = (names[nounId] || "").toLowerCase();
+      const fullNameStr = `${adjStr} ${nameStr}`.trim();
+      const noteStr = (dictNotes[nounId] || "").toLowerCase();
+      const codeStr = pt.erpCode.toLowerCase();
+      const tagsStr = (dictTags[nounId] || []).join(" ").toLowerCase();
+      const qWords = q.split(/\s+/).filter(Boolean);
+      const hasDictMatch =
+        qWords.length === 0 ||
+        qWords.every(
+          (w) =>
+            (adjStr && adjStr.includes(w)) ||
+            (nameStr && nameStr.includes(w)) ||
+            (fullNameStr && fullNameStr.includes(w)) ||
+            (noteStr && noteStr.includes(w)) ||
+            (tagsStr && tagsStr.includes(w)),
+        );
+      const isCodeSearch = q.length >= 2 && !isNaN(q) && codeStr.includes(q);
+      if (hasDictMatch || isCodeSearch) {
+        const validPtColor = new Color("oklch", [pt.L, pt.C, pt.H])
+          .toGamut({ space: "srgb" })
+          .toString({ format: "hex" });
+        results.push({
+          key: `pt-${pt.erpCode}`,
+          L: pt.L,
+          C: pt.C,
+          H: pt.H,
+          color: validPtColor,
+          displayName:
+            `${adjectives[pt.lStr] || ""} ${names[nounId] || ""}`.trim() ||
+            "Unnamed",
+          erpCode: pt.erpCode,
+          type: "Coordinate",
+          note: dictNotes[nounId] || "",
+        });
+        seenCodes.add(pt.erpCode);
+      }
+    }
+    for (const [adjId, adjName] of Object.entries(adjectives)) {
+      if (results.length >= 100) break;
+      const adjStr = (adjName || "").toLowerCase();
+      const idStr = adjId.toLowerCase();
+      const qWords = q.split(/\s+/).filter(Boolean);
+      if (
+        qWords.length === 0 ||
+        qWords.every((w) => adjStr.includes(w) || idStr.includes(w))
+      ) {
+        let alreadyAdded = false;
+        for (const r of results) {
+          if (r.key === `adj-${adjId}`) {
+            alreadyAdded = true;
+            break;
+          }
+        }
+        if (!alreadyAdded) {
+          let lVal = 0.5;
+          if (adjId.includes("-"))
+            lVal = parseFloat(adjId.split("-")[1]) || 0.5;
+          else if (!isNaN(parseFloat(adjId))) lVal = parseFloat(adjId) / 100;
+          results.push({
+            key: `adj-${adjId}`,
+            L: lVal,
+            C: 0,
+            H: 0,
+            color: new Color("oklch", [lVal, 0, 0])
+              .toGamut({ space: "srgb" })
+              .toString({ format: "hex" }),
+            displayName: `${adjName} [Adjective]`.trim(),
+            erpCode: "",
+            type: "Adjective Definition",
+            note: "",
+          });
+        }
+      }
+    }
+    for (const [nId, nName] of Object.entries(names)) {
+      if (results.length >= 200) break;
+      const nameStr = (nName || "").toLowerCase();
+      const idStr = nId.toLowerCase();
+      const noteStr = (dictNotes[nId] || "").toLowerCase();
+      const tagsStr = (dictTags[nId] || []).join(" ").toLowerCase();
+      let cVal = 0.1,
+        hVal = 180,
+        baseL = 0.5;
+      let sc = savedColors[nId];
+      if (sc) {
+        cVal = sc.C;
+        hVal = sc.H;
+        baseL = sc.type === "nounColumn" ? (sc.minL + sc.maxL) / 2 : sc.L;
+      } else {
+        const parts = nId.split("-");
+        if (parts.length >= 3) {
+          const rawC = parts[parts.length - 2].replace("C", "");
+          const rawH = parts[parts.length - 1].replace("H", "");
+          cVal = parseFloat(rawC) / 100;
+          hVal = parseFloat(rawH);
+          if (parts[0] === "UL") baseL = 0.96;
+          else if (parts[0] === "L") baseL = 0.65;
+          else if (parts[0] === "D") baseL = 0.35;
+          else if (parts[0] === "UD") baseL = 0.15;
+          else if (parts[0] === "ALL" || cVal === 0) {
+            cVal = 0;
+            hVal = 0;
+          }
+          if (isNaN(cVal)) cVal = 0.1;
+          if (isNaN(hVal)) hVal = 180;
+        }
+      }
+      for (const [adjId, adjName] of Object.entries(adjectives)) {
+        if (results.length >= 200) break;
+        const comboName = `${adjName} ${nName}`.trim().toLowerCase();
+        const qWords2 = q.split(/\s+/).filter(Boolean);
+        if (
+          qWords2.length === 0 ||
+          qWords2.every((w) => comboName.includes(w))
+        ) {
+          let lVal = baseL;
+          if (adjId.includes("-"))
+            lVal = parseFloat(adjId.split("-")[1]) || baseL;
+          else if (!isNaN(parseFloat(adjId))) lVal = parseFloat(adjId) / 100;
+          if (sc) {
+            if (sc.type !== "nounColumn") continue;
+            if (lVal < sc.minL - 0.001 || lVal > sc.maxL + 0.001) continue;
+          }
+          const inferredC = new Color("oklch", [lVal, cVal, hVal]);
+          if (cVal > 0 && !inferredC.inGamut("srgb", { epsilon: 0.01 }))
+            continue;
+          const validColor = inferredC
+            .clone()
+            .toGamut({ space: "srgb" })
+            .toString({ format: "hex" });
+          results.push({
+            key: `combo-${adjId}-${nId}`,
+            L: lVal,
+            C: cVal,
+            H: hVal,
+            color: validColor,
+            displayName: `${adjName} ${nName}`.trim(),
+            erpCode: `NOUN-C${Math.round(cVal * 100)
+              .toString()
+              .padStart(
+                2,
+                "0",
+              )}-H${Math.round(hVal).toString().padStart(3, "0")}`,
+            type: "Coordinate",
+            note: dictNotes[nId] || "",
+          });
+        }
+      }
+      const qWords = q.split(/\s+/).filter(Boolean);
+      const nounMatch =
+        qWords.length === 0 ||
+        qWords.every(
+          (w) =>
+            nameStr.includes(w) ||
+            idStr.includes(w) ||
+            noteStr.includes(w) ||
+            tagsStr.includes(w),
+        );
+      if (nounMatch) {
+        let sc2 = savedColors[nId];
+        let alreadyAdded = false;
+        for (const r of results) {
+          if (r.key === `noun-${nId}` || (sc2 && r.key === `saved-${sc2.id}`)) {
+            alreadyAdded = true;
+            break;
+          }
+        }
+        if (!alreadyAdded && !sc2) {
+          const inferredC = new Color("oklch", [baseL, cVal, hVal]);
+          const validColor = inferredC
+            .clone()
+            .toGamut({ space: "srgb" })
+            .toString({ format: "hex" });
+          results.push({
+            key: `noun-${nId}`,
+            L: baseL,
+            C: cVal,
+            H: hVal,
+            color: validColor,
+            displayName: nName.trim() || nId,
+            erpCode: "",
+            type: "Noun Definition",
+            note: dictNotes[nId] || "",
+          });
+        }
+      }
+    }
     if (colorData) {
       for (const [brandKey, list] of Object.entries(colorData)) {
         if (results.length >= 200) break;
@@ -13206,8 +12963,7 @@ const App = () => {
                 color: item.hex || "#000000",
                 image: item.image || null,
                 displayName: customName || item.name,
-                erpCode: brandKey === "REFERENCE" ? "REF"
-                  : `${getBrandDisplayName(brandKey)}${item.erpCode && !/^https?:/i.test(item.erpCode) ? ` · ${item.erpCode}` : ""}`,
+                erpCode: brandKey === "REFERENCE" ? "REF" : brandKey,
                 type: "Commercial Item",
                 note:
                   customNote ||
@@ -13223,13 +12979,15 @@ const App = () => {
     return results;
   }, [
     searchQuery,
+    gridData,
     names,
+    adjectives,
     dictNotes,
     savedColors,
     dictTags,
     colorData,
   ]);
-  if (!crosshair)
+  if (!gridData || !crosshair)
     return React.createElement(
       "div",
       {
@@ -13238,40 +12996,64 @@ const App = () => {
       },
       "Initializing Studio...",
     );
-  // Card button: add an anchor at the cursor, or remove the one it sits on.
-  const toggleAnchorHere = () => {
-    const an = findNearestAnchor(scrubL, scrubC, scrubH, savedColors);
-    if (an && an.dist < 0.0005) {
-      setSavedColors((prev) => {
-        const next = { ...prev };
-        delete next[an.id];
-        return next;
-      });
-      setNames((prev) => {
-        if (!(an.nameKey in prev)) return prev;
-        const next = { ...prev };
-        delete next[an.nameKey];
-        return next;
-      });
-      return;
+  const toggleAnchorLock = () => {
+    if (!crosshair) return;
+    const anchorId = crosshair.nearestAnchorId;
+    const adjId = crosshair.nearestAdjId;
+    const existingAnchorLock = Object.values(savedColors).find(
+      (sc) =>
+        sc.type === "anchor" && sc.anchorId === anchorId && sc.adjId === adjId,
+    );
+    if (existingAnchorLock) {
+      if (existingAnchorLock.isCustomAnchor) {
+        setSavedColors((prev) => {
+          const next = { ...prev };
+          next[existingAnchorLock.id] = {
+            ...next[existingAnchorLock.id],
+            locked: existingAnchorLock.locked === false ? true : false,
+          };
+          return next;
+        });
+      } else {
+        setSavedColors((prev) => {
+          const next = { ...prev };
+          delete next[existingAnchorLock.id];
+          return next;
+        });
+      }
+    } else {
+      const newId = `${anchorId}-${adjId}`;
+      let ptToLock = crosshair.closestGridPt;
+      if (ptToLock && ptToLock.isPin) {
+        const cStr = anchorId.split("-")[1];
+        const hStr = anchorId.split("-")[2];
+        ptToLock =
+          filteredViewData.points.find(
+            (p) => p.lStr === adjId && p.cStr === cStr && p.hStr === hStr,
+          ) || ptToLock;
+      }
+      if (ptToLock) {
+        setSavedColors((prev) => ({
+          ...prev,
+          [newId]: {
+            id: newId,
+            type: "anchor",
+            L: ptToLock.L,
+            C: ptToLock.C,
+            H: ptToLock.H,
+            a: ptToLock.a,
+            b: ptToLock.b,
+            erpCode: ptToLock.erpCode,
+            adjId,
+            anchorId,
+            nameOverride: "",
+            adjOverride: "",
+            notes: "",
+            color: ptToLock.color,
+          },
+        }));
+      }
     }
-    const id = `custom-noun-${Date.now().toString(36)}`;
-    const h = (scrubH * Math.PI) / 180;
-    setSavedColors((prev) => ({
-      ...prev,
-      [id]: {
-        id,
-        type: "nounColumn",
-        nameOverride: "",
-        C: scrubC,
-        H: scrubH,
-        minL: scrubL,
-        maxL: scrubL,
-        a: scrubC * Math.sin(h),
-        b: scrubC * Math.cos(h),
-        notes: "",
-      },
-    }));
   };
   const togglePin = () => {
     if (!crosshair) return;
@@ -13313,11 +13095,13 @@ const App = () => {
           a: crosshair.a,
           b: crosshair.b,
           erpCode: getExactErpCode(scrubL, scrubC, scrubH),
+          adjId: crosshair.nearestAdjId,
           anchorId: crosshair.nearestAnchorId,
           parentPinId: crosshair.closestGridPt?.isPin
             ? crosshair.closestGridPt.pinId
             : null,
           nameOverride: "",
+          adjOverride: "",
           notes: "",
           color: new Color("oklch", [scrubL, scrubC, scrubH])
             .clone()
@@ -13346,6 +13130,26 @@ const App = () => {
       },
     }));
   };
+  const onAdjChange = (val) => {
+    if (crosshair?.activeSavedColor?.type === "pin")
+      updateSavedColor("adjOverride", val);
+    else {
+      setAdjectives({ ...adjectives, [crosshair?.nearestAdjId]: val });
+      if (
+        crosshair?.nearestAnchorId &&
+        savedColors[crosshair.nearestAnchorId] &&
+        savedColors[crosshair.nearestAnchorId].type === "anchor"
+      ) {
+        setSavedColors((prev) => ({
+          ...prev,
+          [crosshair.nearestAnchorId]: {
+            ...prev[crosshair.nearestAnchorId],
+            adjOverride: val,
+          },
+        }));
+      }
+    }
+  };
   const onNameChange = (val) => {
     if (crosshair?.activeSavedColor?.type === "pin") {
       updateSavedColor("nameOverride", val);
@@ -13360,6 +13164,38 @@ const App = () => {
         setSavedColors((prev) => ({
           ...prev,
           [id]: { ...prev[id], nameOverride: val },
+        }));
+      }
+      if (val && !savedColors[id] && !id.startsWith("custom-")) {
+        let minL = 0,
+          maxL = 1;
+        if (id.startsWith("UL")) {
+          minL = 0.95;
+          maxL = 1;
+        } else if (id.startsWith("L")) {
+          minL = 0.5;
+          maxL = 0.95;
+        } else if (id.startsWith("D")) {
+          minL = 0.2;
+          maxL = 0.5;
+        } else if (id.startsWith("UD")) {
+          minL = 0;
+          maxL = 0.2;
+        }
+        setSavedColors((prev) => ({
+          ...prev,
+          [id]: {
+            id,
+            type: "nounColumn",
+            nameOverride: val,
+            C: crosshair.gravityC,
+            H: crosshair.gravityH,
+            minL,
+            maxL,
+            a: crosshair.gravityA,
+            b: crosshair.gravityB,
+            notes: dictNotes[id] || "",
+          },
         }));
       }
     }
@@ -13391,6 +13227,7 @@ const App = () => {
       const filename = `The ColorSAMIficator ${ts}.html`;
       const stateData = {
         names,
+        adjectives,
         dictNotes,
         dictTags,
         savedColors,
@@ -13400,7 +13237,6 @@ const App = () => {
         observer,
         illuminant,
         linkedFiles,
-        tagLibrary,
       };
       let appCode = "";
       let styleCode = "";
@@ -13563,32 +13399,31 @@ const App = () => {
             Noun: nounName,
             Note: sc.notes || dictNotes[sc.id] || "",
             Tags: (dictTags[sc.id] || []).join(","),
-            // A point anchor writes its lightness; a legacy range writes "min-max".
             OKLCH_L:
               sc.minL !== undefined && sc.maxL !== undefined
-                ? sc.minL === sc.maxL
-                  ? csvNum(sc.minL)
-                  : `${csvNum(sc.minL)}-${csvNum(sc.maxL)}`
+                ? `${sc.minL}-${sc.maxL}`
                 : sc.L !== undefined
-                  ? csvNum(sc.L)
+                  ? sc.L
                   : "",
-            OKLCH_C: sc.C !== undefined ? csvNum(sc.C) : "",
-            OKLCH_H: sc.H !== undefined ? csvNum(sc.H) : "",
+            OKLCH_C: sc.C !== undefined ? sc.C : "",
+            OKLCH_H: sc.H !== undefined ? sc.H : "",
           });
         } else if (sc.type === "anchor") {
           exportedAnchorIds.add(sc.id);
           if (sc.anchorId) exportedAnchorIds.add(sc.anchorId);
           const extra = getExtraColorValues(sc.L, sc.C, sc.H, sc.color || sc.hex);
           const anchorNoun = sc.nameOverride || names[sc.anchorId] || names[sc.id] || "";
+          const anchorAdj = sc.adjOverride || adjectives[sc.adjId] || adjectives[sc.id] || "";
           anchorsCsv.push({
             Type: "ANCHOR",
             ID: sc.id || sc.anchorId || "",
             Noun: anchorNoun,
+            Adjective: anchorAdj,
             Note: sc.notes || dictNotes[sc.id] || dictNotes[sc.anchorId] || "",
             Tags: (dictTags[sc.id] || dictTags[sc.anchorId] || []).join(","),
-            OKLCH_L: sc.L !== undefined ? csvNum(sc.L) : "",
-            OKLCH_C: sc.C !== undefined ? csvNum(sc.C) : "",
-            OKLCH_H: sc.H !== undefined ? csvNum(sc.H) : "",
+            OKLCH_L: sc.L !== undefined ? sc.L : "",
+            OKLCH_C: sc.C !== undefined ? sc.C : "",
+            OKLCH_H: sc.H !== undefined ? sc.H : "",
             ...extra,
             HEX:
               sc.color ||
@@ -13598,34 +13433,97 @@ const App = () => {
                     .toGamut({ space: "srgb" })
                     .toString({ format: "hex" })
                 : ""),
+            Locked: sc.locked !== false ? "TRUE" : "FALSE",
             ERP_Code: sc.erpCode || "",
           });
         }
+      });
+
+      Object.keys(names).forEach((id) => {
+        if (exportedAnchorIds.has(id)) return;
+        const name = names[id];
+        if (!name) return;
+        const nc = savedColors[id];
+        if (nc && nc.type === "nounColumn") {
+          anchorsCsv.push({
+            Type: "NOUN",
+            ID: id,
+            Noun: name,
+            Note: dictNotes[id] || "",
+            Tags: (dictTags[id] || []).join(","),
+            OKLCH_L: `${nc.minL}-${nc.maxL}`,
+            OKLCH_C: nc.C,
+            OKLCH_H: nc.H,
+          });
+        } else {
+          const parts = id.split("-");
+          let cVal = "";
+          let hVal = "";
+          let lVal = "";
+          if (parts.length === 2) {
+            cVal = (parseInt(parts[0], 10) / 100).toString();
+            hVal = parseInt(parts[1], 10).toString();
+          } else if (parts.length === 3) {
+            if (parts[0] === "UL") lVal = "0.95-1";
+            else if (parts[0] === "L") lVal = "0.5-0.95";
+            else if (parts[0] === "D") lVal = "0.2-0.5";
+            else if (parts[0] === "UD") lVal = "0-0.2";
+            cVal = (parseInt(parts[1], 10) / 100).toString();
+            hVal = parseInt(parts[2], 10).toString();
+          }
+          anchorsCsv.push({
+            Type: "NOUN",
+            ID: id,
+            Noun: name,
+            Note: dictNotes[id] || "",
+            Tags: (dictTags[id] || []).join(","),
+            OKLCH_L: lVal,
+            OKLCH_C: cVal,
+            OKLCH_H: hVal,
+          });
+        }
+      });
+
+      Object.keys(adjectives).forEach((adjId) => {
+        anchorsCsv.push({
+          Type: "ADJECTIVE",
+          ID: adjId,
+          Adjective: adjectives[adjId] || "",
+          OKLCH_L: adjId,
+        });
       });
 
       Object.values(savedColors)
         .filter((sc) => sc.type === "pin")
         .forEach((sc) => {
           const extra = getExtraColorValues(sc.L, sc.C, sc.H, sc.hex);
-          const pinNames = getInheritedPinNames(sc, savedColors, names);
+          const pinNames = getInheritedPinNames(
+            sc,
+            savedColors,
+            names,
+            adjectives,
+            colorData,
+          );
           pinsCsv.push({
             Type: "PIN",
             ID: sc.id || "",
             Parent_Pin_ID: sc.parentPinId || "",
-            // The anchor that names this pin now (for reading; naming is live).
-            Anchor_ID: (findNearestAnchor(sc.L, sc.C, sc.H, savedColors) || {}).nameKey || "",
+            Anchor_ID: sc.anchorId || pinNames.sourceId || "",
+            Adj_ID: sc.adjId || "",
             Brand: sc.brand || "",
             Original_Index: sc.originalIndex !== undefined ? sc.originalIndex : "",
             Image: sc.image || "",
-            // Noun is the resolved name, for reading only — it is not
-            // re-imported. An override round-trips in its own column.
+            // Noun/Adjective are the resolved names, for reading only — they
+            // are not re-imported. Overrides round-trip in their own columns.
             Noun: sc.nameOverride || pinNames.displayName || "",
+            Adjective: sc.adjOverride || pinNames.displayAdj || "",
             Noun_Override: sc.nameOverride || "",
+            Adjective_Override: sc.adjOverride || "",
             Note: sc.notes || "",
             Tags: (dictTags[sc.id] || []).join(","),
-            OKLCH_L: csvNum(sc.L),
-            OKLCH_C: csvNum(sc.C),
-            OKLCH_H: csvNum(sc.H),
+            OKLCH_L: sc.L,
+            OKLCH_C: sc.C,
+            OKLCH_H: sc.H,
             ...extra,
             ERP_Code: sc.erpCode,
             Sheen: sc.sheen || "",
@@ -13660,33 +13558,31 @@ const App = () => {
         (groupSettings.neutrals || []).forEach((n) =>
           anchorsCsv.push({
             Type: "NEUTRAL_REGION",
-            ID: n.id,
+            Adjective: n.id,
             Noun: n.name,
             OKLCH_L: n.maxL,
           }),
         );
-        // Hue regions are kept by their midpoint; "center" in Note tells the
-        // importer so (older files wrote an upper bound there instead).
-        (groupSettings.hues || []).forEach((h, _i, all) =>
+        (groupSettings.hues || []).forEach((h) =>
           anchorsCsv.push({
             Type: "HUE_REGION",
-            ID: h.id,
+            Adjective: h.id,
             Noun: h.name,
-            OKLCH_H: hueCenterOf(h, all),
-            Note: "center",
+            // Regions are stored by midpoint now; OKLCH_H carries that angle
+            // and Note marks the format so older files are read correctly.
+            OKLCH_H: hueCenterOf(h, groupSettings.hues),
+            Note: "midpoint",
           }),
         );
         (groupSettings.overrides || []).forEach((o) =>
           anchorsCsv.push({
             Type: "OVERRIDE",
-            ID: o.id,
             Adjective: o.condition,
             Noun: o.name,
+            Tags: o.id,
           }),
         );
       }
-      // tags created in the tag manager, so ones not yet on any colour survive
-      (tagLibrary || []).forEach((t) => anchorsCsv.push({ Type: "TAG", Noun: t }));
       const palettesCsv = [];
       (savedPalettes || []).forEach((p) => {
         palettesCsv.push({
@@ -13702,6 +13598,7 @@ const App = () => {
           ID: "",
           Parent_Pin_ID: "",
           Anchor_ID: "",
+          Adj_ID: "",
           Brand: "",
           Original_Index: "",
           Image: "",
@@ -13709,6 +13606,7 @@ const App = () => {
           Adjective: "",
           Note: "",
           Tags: "",
+          Locked: "",
           HEX: "",
           OKLCH_L: "",
           OKLCH_C: "",
@@ -13830,6 +13728,10 @@ const App = () => {
       return files;
   };
   const handleSystemExport = async () => {
+    if (!gridData) {
+      alert("Missing gridData!");
+      return;
+    }
     try {
       const files = buildExportFiles();
       const zip = new JSZip();
@@ -13861,7 +13763,7 @@ const App = () => {
     }
     if (
       !window.confirm(
-        "Replace the colors, anchors and palettes in this session with what is currently in the repo? Anything unsynced will be lost.",
+        "Replace the colors, nouns, adjectives and palettes in this session with what is currently in the repo? Anything unsynced will be lost.",
       )
     ) {
       return;
@@ -13881,11 +13783,11 @@ const App = () => {
       let cColorData = {};
       let cSaved = {};
       let cNames = {};
+      let cAdjs = {};
       let cNotes = {};
       let cTags = {};
       let cGroups = defaultGroupSettings;
       let cPalettes = [];
-      const cTagLib = [];
       const log = [];
       names.forEach((name) => {
         const parsed = parseCSV(files[name]);
@@ -13898,6 +13800,7 @@ const App = () => {
           cColorData,
           cSaved,
           cNames,
+          cAdjs,
           cNotes,
           cTags,
           cGroups,
@@ -13906,22 +13809,21 @@ const App = () => {
         cColorData = processed.newColorData;
         cSaved = processed.newSavedColors;
         cNames = processed.newNames;
+        cAdjs = processed.newAdjs;
         cNotes = processed.newNotes;
         cTags = processed.newTags;
-        if (processed.groupRowsSeen && (name === "anchors.csv" || !names.includes("anchors.csv")))
-          cGroups = processed.newGroupSettings || cGroups;
+        cGroups = processed.newGroupSettings || cGroups;
         cPalettes = processed.newSavedPalettes || cPalettes;
-        (processed.newTagLibrary || []).forEach((t) => { if (!cTagLib.some((x) => x.toLowerCase() === t.toLowerCase())) cTagLib.push(t); });
         log.push(`${name} — ${parsed.length} rows`);
       });
       setColorData(Object.keys(cColorData).length > 0 ? cColorData : null);
       setSavedColors(cSaved);
       setNames(cNames);
+      setAdjectives(cAdjs);
       setDictNotes(cNotes);
       setDictTags(cTags);
       setGroupSettings(cGroups);
       setSavedPalettes(cPalettes);
-      setTagLibrary(cTagLib);
       setSyncStatus({
         state: "done",
         message: `Pulled ${names.length} file${names.length === 1 ? "" : "s"} from ${cfg.owner}/${cfg.repo}@${branch}.`,
@@ -13936,6 +13838,10 @@ const App = () => {
     const cfg = override || githubConfig;
     if (!cfg.token || !cfg.owner || !cfg.repo) {
       setShowGithubModal(true);
+      return;
+    }
+    if (!gridData) {
+      alert("Missing gridData!");
       return;
     }
     setSyncStatus({ state: "running", message: "Checking access...", log: [] });
@@ -13989,6 +13895,7 @@ const App = () => {
         colorData,
         savedColors,
         names,
+        adjectives,
         dictNotes,
         dictTags,
         groupSettings,
@@ -13998,12 +13905,11 @@ const App = () => {
         setGroupSettings(processed.newGroupSettings);
       }
       setNames(processed.newNames);
+      setAdjectives(processed.newAdjs);
       setDictNotes(processed.newNotes);
       setSavedColors(processed.newSavedColors);
       setDictTags(processed.newTags);
       setSavedPalettes(processed.newSavedPalettes);
-      if (processed.newTagLibrary && processed.newTagLibrary.length)
-        setTagLibrary((prev) => [...prev, ...processed.newTagLibrary.filter((t) => !prev.some((x) => x.toLowerCase() === t.toLowerCase()))]);
       if (Object.keys(processed.newColorData).length > 0) {
         updateColorData(processed.newColorData);
       }
@@ -14037,6 +13943,7 @@ const App = () => {
       C: scrubC,
       H: scrubH,
       erpCode: crosshair.activeErpCode,
+      adjId: crosshair.nearestAdjId,
       nounId: crosshair.nearestAnchorId,
       pinId,
       image: imageSrc,
@@ -14114,6 +14021,7 @@ const App = () => {
               C: scrubC,
               H: scrubH,
               erpCode: crosshair.activeErpCode,
+              adjId: crosshair.nearestAdjId,
               nounId: crosshair.nearestAnchorId,
               pinId,
               image: imageSrc,
@@ -14427,6 +14335,7 @@ const App = () => {
         C: targetC,
         H: hue,
         erpCode: null,
+        adjId: null,
         nounId: null,
         pinId: null,
         image: null,
@@ -14469,65 +14378,126 @@ const App = () => {
   }
   const labValues = `${labCoords[0].toFixed(1)}, ${labCoords[1].toFixed(1)}, ${labCoords[2].toFixed(1)}`;
   const colorGroup = getColorGroup(scrubL, scrubC, scrubH, groupSettings);
-  const isOutOfGamut = !activeColorObj.inGamut(DisplayGamut.space, { epsilon: 0.001 });
+  const isOutOfGamut = !activeColorObj.inGamut("srgb");
   const crosshairHex = activeColorObj
     .clone()
     .toGamut({ space: "srgb" })
     .toString({ format: "hex" })
     .toUpperCase();
-  // The card's name: a pin by its own rules (override, tethered parent,
-  // nearest anchor); anything else by the nearest anchor.
-  const getInheritedData = (sc, depth = 0) => {
+  const getInheritedData = (sc) => {
     if (!sc) return null;
-    const parent = sc.parentPinId && depth < 20 ? savedColors[sc.parentPinId] : null;
-    if (parent) {
-      const parentData = getInheritedData(parent, depth + 1);
+    if (!sc.parentPinId || !savedColors[sc.parentPinId]) {
+      const cb = getInheritedPinNames(
+        sc,
+        savedColors,
+        names,
+        adjectives,
+        colorData,
+      );
+      const parsedAdj = cb.displayAdj === "Unnamed" ? "" : cb.displayAdj;
+      const parsedName = cb.displayName === "Unnamed" ? "" : cb.displayName;
       return {
-        name: cleanName(parent.nameOverride) || parentData.name,
-        notes: parent.notes || parentData.notes,
-        source: "pin",
-        sourceId: parent.id,
+        adj: parsedAdj,
+        name: parsedName,
+        notes: sc.notes || dictNotes[cb.sourceId] || "",
+        source: cb.source,
+        sourceId: cb.sourceId,
       };
     }
-    const cb = getInheritedPinNames(sc, savedColors, names);
+    const parent = savedColors[sc.parentPinId];
+    const parentData = getInheritedData(parent);
     return {
-      name: cb.displayName,
-      notes: sc.notes || dictNotes[cb.sourceId] || "",
-      source: cb.source,
-      sourceId: cb.sourceId,
+      adj: parent.adjOverride || parentData.adj,
+      name: parent.nameOverride || parentData.name,
+      notes: parent.notes || parentData.notes,
+      source: "pin",
+      sourceId: parent.id,
     };
   };
   // Plain IIFE, not useMemo: this sits after an early return, so a hook
   // here would break hook ordering.
   const activeData = (() => {
-    const pinSc =
-      crosshair?.activeSavedColor?.type === "pin"
-        ? crosshair.activeSavedColor
-        : !crosshair?.activeSavedColor && crosshair?.closestGridPt?.isPin
-          ? savedColors[crosshair.closestGridPt.pinId]
-          : null;
-    if (pinSc) {
-      const inherited = getInheritedData(pinSc);
+    if (!crosshair?.activeSavedColor) {
+      if (crosshair?.closestGridPt?.isPin) {
+        const pinSc = savedColors[crosshair.closestGridPt.pinId];
+        const inherited2 = getInheritedData(pinSc);
+        return {
+          adj: pinSc.adjOverride || inherited2.adj,
+          name: pinSc.nameOverride || inherited2.name,
+          notes: pinSc.notes || inherited2.notes,
+          inherited: inherited2,
+        };
+      }
+      let activeNoun = names[crosshair?.nearestAnchorId] || "";
+      let activeAdj = adjectives[crosshair?.nearestAdjId] || "";
+      if (!activeNoun || activeNoun === "Unnamed" || activeNoun === "Unnamed Noun" || !activeAdj) {
+        const derived = getInheritedPinNames(
+          {
+            L: crosshair?.rawL,
+            C: crosshair?.rawC,
+            H: crosshair?.rawH,
+            a: crosshair?.a,
+            b: crosshair?.b,
+            anchorId: crosshair?.nearestAnchorId,
+            adjId: crosshair?.nearestAdjId,
+          },
+          savedColors,
+          names,
+          adjectives,
+          colorData,
+        );
+        if (!activeNoun || activeNoun === "Unnamed" || activeNoun === "Unnamed Noun") {
+          activeNoun = derived.displayName;
+        }
+        if (!activeAdj) {
+          activeAdj = derived.displayAdj;
+        }
+      }
       return {
-        name: cleanName(pinSc.nameOverride) || inherited.name,
-        notes: pinSc.notes || inherited.notes,
-        inherited,
+        adj: activeAdj,
+        name: activeNoun,
+        notes: dictNotes[crosshair?.nearestAnchorId] || "",
       };
     }
-    const id = crosshair?.nearestAnchorId;
-    const sc = id ? savedColors[id] : null;
+    const sc = crosshair.activeSavedColor;
+    if (sc.type === "anchor") {
+      return {
+        adj: adjectives[sc.adjId] || "",
+        name: names[sc.anchorId] || "",
+        notes: dictNotes[sc.anchorId] || "",
+      };
+    } else if (sc.type === "nounColumn") {
+      return {
+        adj:
+          adjectives[crosshair?.nearestAdjId] ||
+          adjectives[getLStr(crosshair?.rawL)] ||
+          "",
+        name: names[sc.id] || sc.nameOverride,
+        notes: dictNotes[sc.id] || sc.notes,
+      };
+    }
+    const inherited = getInheritedData(sc);
     return {
-      name: cleanName(names[id] || (sc && sc.nameOverride)),
-      notes: dictNotes[id] || (sc && sc.notes) || "",
+      adj: sc.adjOverride || inherited.adj,
+      name: sc.nameOverride || inherited.name,
+      notes: sc.notes || inherited.notes,
+      inherited,
     };
   })();
+  const activeAdj = activeData.adj;
   const activeName = activeData.name;
   const activeNotes = activeData.notes;
   const isPinned = crosshair?.exactSavedColor?.type === "pin";
-  const isAnchorHere = (() => {
-    const an = findNearestAnchor(scrubL, scrubC, scrubH, savedColors);
-    return !!an && an.dist < 0.0005;
-  })();
+  const isAnchorLocked = crosshair
+    ? lockedAdjectives[crosshair.nearestAdjId] &&
+      lockedNouns[crosshair.nearestAnchorId]
+    : false;
+  const isInputDisabled =
+    crosshair?.activeSavedColor?.type === "anchor" ||
+    (!crosshair?.activeSavedColor &&
+      crosshair &&
+      lockedAdjectives[crosshair.nearestAdjId] &&
+      lockedNouns[crosshair.nearestAnchorId]);
   const activeCommercial = crosshair?.activeCommercial;
   const activeItemId = activeCommercial
     ? `commercial-${activeCommercial.brand}-${activeCommercial.originalIndex}`
@@ -14570,114 +14540,6 @@ const App = () => {
       });
     }
   };
-  // ── Tag manager: every tag with where it's used, and bulk operations ──
-  const tagLcOf = (t) => String(t).toLowerCase().trim();
-  const anchorTagKeys = () =>
-    Object.values(savedColors)
-      .filter((sc) => sc && (sc.type === "nounColumn" || sc.type === "anchor"))
-      .map((sc) => (sc.type === "anchor" ? sc.anchorId || sc.id : sc.id));
-  const pinTagKeys = () => Object.values(savedColors).filter((sc) => sc && sc.type === "pin").map((sc) => sc.id);
-  const tagUsage = useMemo(() => {
-    if (!showTagManager) return [];
-    const m = new Map();
-    const pins = new Set(pinTagKeys());
-    const bump = (t, kind) => {
-      const k = tagLcOf(t);
-      if (!k) return;
-      let e = m.get(k);
-      if (!e) { e = { name: String(t).trim(), anchors: 0, pins: 0, commercial: 0 }; m.set(k, e); }
-      e[kind]++;
-    };
-    Object.entries(dictTags || {}).forEach(([id, list]) =>
-      (Array.isArray(list) ? list : []).forEach((t) => bump(t, pins.has(id) ? "pins" : /^(commercial|brand)-/.test(id) ? "commercial" : "anchors")),
-    );
-    Object.values(colorData || {}).forEach((list) => (list || []).forEach((c) => (c.tags || []).forEach((t) => bump(t, "commercial"))));
-    tagLibrary.forEach((t) => { const k = tagLcOf(t); if (k && !m.has(k)) m.set(k, { name: t, anchors: 0, pins: 0, commercial: 0 }); });
-    return [...m.values()];
-  }, [showTagManager, dictTags, colorData, tagLibrary, savedColors]);
-  const tagTargets = useMemo(() => {
-    if (!showTagManager) return [];
-    const out = [];
-    if (activeCommercial || activeItemId)
-      out.push({ id: "active", label: `Current colour${activeName ? `: ${activeName}` : ""}`, count: 1 });
-    out.push({ id: "anchors", label: "All anchors", count: anchorTagKeys().length });
-    out.push({ id: "pins", label: "All pins", count: pinTagKeys().length });
-    const brands = Object.keys(colorData || {});
-    out.push({ id: "commercial", label: "All commercial colours", count: brands.reduce((s, b) => s + (colorData[b] || []).length, 0) });
-    brands
-      .sort((a, b) => getBrandDisplayName(a).localeCompare(getBrandDisplayName(b)))
-      .forEach((b) => out.push({ id: `brand:${b}`, label: `Brand: ${getBrandDisplayName(b)}`, count: (colorData[b] || []).length }));
-    return out;
-  }, [showTagManager, colorData, savedColors, activeCommercial, activeItemId, activeName]);
-  // Change the tags of every colour in a target; returns how many changed.
-  const editTagsWhere = (target, edit) => {
-    let changed = 0;
-    let keys = [], brands = [], one = null;
-    if (target === "active") {
-      if (activeCommercial) one = activeCommercial; else if (activeItemId) keys = [activeItemId];
-    } else if (target === "anchors") keys = anchorTagKeys();
-    else if (target === "pins") keys = pinTagKeys();
-    else if (target === "commercial") brands = Object.keys(colorData || {});
-    else if (target.startsWith("brand:")) brands = [target.slice(6)];
-    else if (target === "everywhere") { keys = Object.keys(dictTags || {}); brands = Object.keys(colorData || {}); }
-    if (keys.length) {
-      const next = { ...dictTags };
-      keys.forEach((k) => {
-        const before = next[k] || [], after = edit(before);
-        if (after !== before) { changed++; if (after.length) next[k] = after; else delete next[k]; }
-      });
-      if (changed) setDictTags(next);
-    }
-    if (brands.length || one) {
-      const updated = { ...colorData };
-      let any = false;
-      const doBrand = (b, only) => {
-        const list = updated[b];
-        if (!list) return;
-        let copy = null;
-        list.forEach((c, i) => {
-          if (only !== undefined && i !== only) return;
-          const before = c.tags || [], after = edit(before);
-          if (after !== before) {
-            if (!copy) copy = list.slice();
-            copy[i] = { ...c, tags: after };
-            changed++;
-          }
-        });
-        if (copy) { updated[b] = copy; any = true; }
-      };
-      if (one) doBrand(one.brand, one.originalIndex);
-      brands.forEach((b) => doBrand(b));
-      if (any) updateColorData(updated);
-    }
-    return changed;
-  };
-  const tagOps = {
-    create: (names) =>
-      setTagLibrary((prev) => [...prev, ...names.filter((n) => !prev.some((x) => tagLcOf(x) === tagLcOf(n)))]),
-    apply: (names, target) =>
-      editTagsWhere(target, (list) => {
-        const have = new Set(list.map(tagLcOf)), add = names.filter((n) => !have.has(tagLcOf(n)));
-        return add.length ? [...list, ...add] : list;
-      }),
-    remove: (names, target) => {
-      const drop = new Set(names.map(tagLcOf));
-      return editTagsWhere(target, (list) => (list.some((t) => drop.has(tagLcOf(t))) ? list.filter((t) => !drop.has(tagLcOf(t))) : list));
-    },
-    delete: (names) => {
-      const drop = new Set(names.map(tagLcOf));
-      const n = editTagsWhere("everywhere", (list) => (list.some((t) => drop.has(tagLcOf(t))) ? list.filter((t) => !drop.has(tagLcOf(t))) : list));
-      setTagLibrary((prev) => prev.filter((t) => !drop.has(tagLcOf(t))));
-      return n;
-    },
-  };
-  const tagManagerNode =
-    showTagManager &&
-    React.createElement(TagManagerModal, {
-      tags: tagUsage, targets: tagTargets,
-      onCreate: tagOps.create, onApply: tagOps.apply, onRemove: tagOps.remove, onDelete: tagOps.delete,
-      onClose: () => setShowTagManager(false),
-    });
   const removeTag = (tag) => {
     const normalizedTag = tag.toLowerCase().trim();
     if (activeCommercial) {
@@ -14706,7 +14568,8 @@ const App = () => {
       }));
     }
   };
-  const nounInputClass = `name-input w-full bg-transparent text-center text-2xl font-black uppercase tracking-widest focus:outline-none drop-shadow-md -mt-1 pointer-events-auto ${getGlobalDuplicate(names, crosshair?.activeSavedColor?.type === "pin" ? crosshair.activeSavedColor.id : crosshair?.nearestAnchorId, activeName, savedColors, crosshair?.activeSavedColor?.type === "pin" ? !!crosshair.activeSavedColor.nameOverride : true, crosshair?.activeSavedColor?.type === "pin" ? crosshair?.nearestAnchorId : null) ? "!text-red-500" : isPinned && !crosshair?.exactSavedColor.nameOverride ? "opacity-40 italic" : ""}`;
+  const adjInputClass = `name-input w-full bg-transparent text-center text-xs font-bold uppercase tracking-[0.2em] focus:outline-none drop-shadow-md pointer-events-auto ${getGlobalDuplicate(names, adjectives, crosshair?.activeSavedColor?.type === "pin" ? crosshair.activeSavedColor.id : crosshair?.nearestAdjId, activeAdj, savedColors, crosshair?.activeSavedColor?.type === "pin" ? !!crosshair.activeSavedColor.adjOverride : true, crosshair?.activeSavedColor?.type === "pin" ? crosshair?.nearestAdjId : null) ? "!text-red-500" : isPinned && !crosshair?.exactSavedColor.adjOverride ? "opacity-40 italic" : ""}`;
+  const nounInputClass = `name-input w-full bg-transparent text-center text-2xl font-black uppercase tracking-widest focus:outline-none drop-shadow-md -mt-1 pointer-events-auto ${getGlobalDuplicate(names, adjectives, crosshair?.activeSavedColor?.type === "pin" ? crosshair.activeSavedColor.id : crosshair?.nearestAnchorId, activeName, savedColors, crosshair?.activeSavedColor?.type === "pin" ? !!crosshair.activeSavedColor.nameOverride : true, crosshair?.activeSavedColor?.type === "pin" ? crosshair?.nearestAnchorId : null) ? "!text-red-500" : isPinned && !crosshair?.exactSavedColor.nameOverride ? "opacity-40 italic" : ""}`;
   let deltaEOK = null;
   let deltaE2000 = null;
   if (compSlotA && compSlotB) {
@@ -14722,6 +14585,10 @@ const App = () => {
     setActiveTab,
     names,
     setNames,
+    adjectives,
+    setAdjectives,
+    filterSameAdjective,
+    setFilterSameAdjective,
     filterSameNoun,
     setFilterSameNoun,
     dictNotes,
@@ -14759,15 +14626,6 @@ const App = () => {
     showVisibilityMenu,
     setShowVisibilityMenu,
     visibilityMenuRef,
-    focusTick,
-    dbFilters,
-    setDbFilters,
-    dbFilterMode,
-    pinsFilters,
-    pinsFilterMode,
-    dbColorData,
-    dbVisibility,
-    setDbVisibility,
     viewportSearchQuery,
     setViewportSearchQuery,
     viewMode,
@@ -14778,6 +14636,13 @@ const App = () => {
     setSwatchZoom,
     viewportTagFilter,
     setViewportTagFilter,
+    filterL,
+    setFilterL,
+    filterC,
+    setFilterC,
+    filterH,
+    setFilterH,
+    filterPt,
     scrubL,
     setScrubL,
     scrubC,
@@ -14849,6 +14714,8 @@ const App = () => {
     colorData,
     filteredColorData,
     updateColorData,
+    visualizeData,
+    setVisualizeData,
     history,
     isUndoing,
     currentStateStr,
@@ -14856,10 +14723,14 @@ const App = () => {
     handleRedo,
     canUndo,
     canRedo,
+    lockedNouns,
+    lockedAdjectives,
     filteredViewData,
     handleUpdate,
     handlePointClick,
+    handleVisualize,
     crosshair,
+    gridData,
     isLight,
     activeColorObj,
     labValues,
@@ -14867,16 +14738,17 @@ const App = () => {
     isOutOfGamut,
     crosshairHex,
     activeData,
+    activeAdj,
     activeName,
     activeNotes,
     isPinned,
-    isAnchorHere,
+    isAnchorLocked,
+    isInputDisabled,
     activeItemId,
     activeTags,
     addTag,
     removeTag,
-    tagManagerNode,
-    openTagManager: () => setShowTagManager(true),
+    adjInputClass,
     nounInputClass,
     deltaEOK,
     deltaE2000,
@@ -14908,9 +14780,10 @@ const App = () => {
     loadPalette,
     deleteSavedPalette,
     replaceInPalette,
+    onAdjChange,
     onNameChange,
     onNotesChange,
-    toggleAnchorHere,
+    toggleAnchorLock,
     togglePin,
     updateSavedColor,
     spectral,
@@ -14930,7 +14803,9 @@ const DatabaseManager = ({
   swatchZoom,
   handlePointClick,
   crosshair,
+  setFilterSameAdjective,
   setFilterSameNoun,
+  filterSameAdjective,
   filterSameNoun,
   globalFilters,
   setGlobalFilters,
@@ -14994,7 +14869,9 @@ const DatabaseManager = ({
         "div",
         { className: "flex-1 overflow-hidden" },
         React.createElement(ViewDatabase, {
+                setFilterSameAdjective,
                 setFilterSameNoun,
+                filterSameAdjective,
                 filterSameNoun,
                 globalFilters,
                 setGlobalFilters,
@@ -15106,7 +14983,9 @@ const DB_SORT_FIELDS = [
 ];
 
 const ViewDatabase = ({
+  setFilterSameAdjective,
   setFilterSameNoun,
+  filterSameAdjective,
   filterSameNoun,
   globalFilters,
   setGlobalFilters,
@@ -15125,6 +15004,7 @@ const ViewDatabase = ({
   setSearchTerm,
   tagFilter,
   setTagFilter,
+  filterPt,
   selectedIds,
   setSelectedIds,
   handleBatchTag,
@@ -15132,7 +15012,6 @@ const ViewDatabase = ({
   globalTags,
   onOpenAveryModal,
 }) => {
-  useDisplayGamut();
   const dataForUpdates = fullColorData || colorData;
   // Sort now lives in the global bar; this stays as the fallback for the
   // Database Manager modal, which renders outside that bar.
@@ -15143,10 +15022,7 @@ const ViewDatabase = ({
   const setSortBy = setLocalSortBy;
   const setSortAsc = setLocalSortAsc;
   const [dbAxis, setDbAxis] = useState("HxL");
-  // Brands are filtered with the Filters builder's Brand field; this stays
-  // empty and only keeps the old code paths valid.
-  const brandFilter = "";
-  const [listLimit, setListLimit] = useState(150);
+  const [brandFilter, setBrandFilter] = useState("");
   const [fullscreenImage, setFullscreenImage] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
   const [promptState, setPromptState] = useState(null);
@@ -15181,24 +15057,31 @@ const ViewDatabase = ({
         const idx = fullIndex[brand] && fullIndex[brand].has(c)
           ? fullIndex[brand].get(c)
           : filteredIdx;
+        if (filterPt && !filterPt(c)) return;
         let L = c.L;
         let C = c.C;
         let H = c.H;
         let hexVal = c.hex || "#000000";
         if (c.spectral && c.spectral.length === 31) {
-          const sp = fastItemLch(c);   // cached per record
-          if (sp) {
-            L = sp.L;
-            C = sp.C;
-            H = sp.H;
-            hexVal = sp.hex;
-          }
+          try {
+            const xyzStandard = calculateXYZFromSpectral(c.spectral, 2, "D65");
+            const col = new Color("xyz-d65", xyzStandard).to("oklch");
+            L = col.coords[0];
+            C = col.coords[1];
+            H = isNaN(col.coords[2]) ? 0 : ((col.coords[2] % 360) + 360) % 360;
+            hexVal = col.to("srgb").toString({ format: "hex" });
+          } catch (e) {}
         } else if (L === void 0 || L === null) {
-          const tc = c.hex ? fastHexToOklch(c.hex) : null;
+          let tc;
+          if (c.hex) {
+            try {
+              tc = createColorFromHex(c.hex).to("oklch");
+            } catch (e) {}
+          }
           if (tc) {
-            L = tc[0];
-            C = tc[1];
-            H = isNaN(tc[2]) ? 0 : tc[2];
+            L = tc.coords[0];
+            C = tc.coords[1];
+            H = isNaN(tc.coords[2]) ? 0 : ((tc.coords[2] % 360) + 360) % 360;
           } else {
             L = 0.5;
             C = 0;
@@ -15214,7 +15097,7 @@ const ViewDatabase = ({
           // than rebuilt for the whole list on every keystroke or slider move.
           _inGamut: (() => {
             try {
-              return fastInGamutSrgb(L, C, H);
+              return new Color("oklch", [L, C, H]).inGamut("srgb");
             } catch (e) {
               return true;
             }
@@ -15234,7 +15117,7 @@ const ViewDatabase = ({
       });
     });
     return items;
-  }, [colorData, dataForUpdates, DisplayGamut.id]);
+  }, [colorData, dataForUpdates, filterPt]);
   const allBrands = useMemo(
     () => Array.from(new Set(allDbItems.map((i) => i.brand))).sort(),
     [allDbItems],
@@ -15708,10 +15591,19 @@ const ViewDatabase = ({
     // scanned for, so every row carries it whenever there is a cursor to measure
     // against, even when the \u0394E limit itself is switched off.
     if (crosshair) {
-      const cL = crosshair.rawL, cC = crosshair.rawC, cH = crosshair.rawH;
+      const center = new Color("oklch", [
+        crosshair.rawL,
+        crosshair.rawC,
+        crosshair.rawH,
+      ]);
       items.forEach((item) => {
-        const d = fastDeltaEOK(cL, cC, cH, item.L, item.C, item.H);
-        item._d = isFinite(d) ? d : undefined;
+        try {
+          item._d =
+            center.deltaE(new Color("oklch", [item.L, item.C, item.H]), "OK") *
+            100;
+        } catch (e) {
+          item._d = undefined;
+        }
       });
     }
     if (brandFilter) {
@@ -15876,12 +15768,6 @@ const ViewDatabase = ({
       hex: editingItem.hex,
       tags: editingItem.tags,
       brand: editingItem.brand,
-      // the material specs edited in the modal (they were dropped on save)
-      sheen: editingItem.sheen ?? oldItem.sheen ?? "",
-      doorProfile: editingItem.doorProfile ?? oldItem.doorProfile ?? "",
-      visualTexture: editingItem.visualTexture ?? oldItem.visualTexture ?? "",
-      tactileTexture: editingItem.tactileTexture ?? oldItem.tactileTexture ?? "",
-      material: editingItem.material ?? oldItem.material ?? "",
       spectral: editingItem.spectralStr
         ? editingItem.spectralStr.split(",").map(Number)
         : oldItem.spectral,
@@ -15965,19 +15851,22 @@ const ViewDatabase = ({
       title: "New Brand Name:",
       value: "",
       onSubmit: (b) => {
-        if (b && !dataForUpdates[b]) updateColorData({ ...dataForUpdates, [b]: [] });
+        if (b && !dataForUpdates[b]) {
+          updateColorData({ ...dataForUpdates, [b]: [] });
+          setBrandFilter(b);
+        }
       }
     });
   };
-  const handleAddColor = (brand) => {
-    if (!brand) return;
+  const handleAddColor = () => {
+    if (!brandFilter) return setConfirmState({ message: "Select a brand first", onConfirm: () => {} });
     setPromptState({
-      title: `New ${getBrandDisplayName(brand)} colour name:`,
+      title: "Color Name:",
       value: "",
       onSubmit: (n) => {
         if (n) {
           const updated = { ...dataForUpdates };
-          updated[brand] = [{
+          updated[brandFilter] = [{
             name: n,
             hex: "#888888",
             L: 0.5,
@@ -15986,16 +15875,14 @@ const ViewDatabase = ({
             tags: [],
             url: "",
             image: "",
-          }, ...(updated[brand] || [])];
+          }, ...(updated[brandFilter] || [])];
           updateColorData(updated);
         }
       }
     });
   };
   // Plain render helper, not a component (see note on the other SortButtons).
-  // Rows arrive in pages as you scroll (it used to stop at 300).
-  useEffect(() => setListLimit(150), [sortedItems]);
-  const renderItems = sortedItems.slice(0, listLimit);
+  const renderItems = sortedItems.slice(0, 300);
   // The table is unusable below ~640px — eight columns behind a horizontal
   // scroll. The existing card list says the same thing in one column, so narrow
   // viewports fall back to it rather than getting a second render path.
@@ -16168,21 +16055,70 @@ const ViewDatabase = ({
       React.createElement(
         "div",
         { className: "flex flex-wrap items-center gap-2" },
-        React.createElement(BrandMenu, {
-          brands: allBrands,
-          brandLabel: getBrandDisplayName,
-          onAddBrand: handleAddBrand,
-          onAddColor: handleAddColor,
-          onDeleteBrand: (b) =>
-            setConfirmState({
-              message: `Delete entire brand '${getBrandDisplayName(b)}'?`,
-              onConfirm: () => {
-                const c = { ...dataForUpdates };
-                delete c[b];
-                updateColorData(c);
+        React.createElement(
+          "select",
+          {
+            value: brandFilter,
+            onChange: (e) => setBrandFilter(e.target.value),
+            className:
+              "bg-white dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 text-[9px] font-bold uppercase tracking-wider rounded px-2 py-1 outline-none",
+          },
+          React.createElement("option", { value: "" }, "All Brands"),
+          allBrands.map((b) =>
+            React.createElement(
+              "option",
+              { key: b, value: b },
+              getBrandDisplayName(b),
+            ),
+          ),
+        ),
+        React.createElement(
+          "button",
+          {
+            onClick: handleAddBrand,
+            className:
+              "px-2 py-1 text-[9px] font-bold bg-white dark:bg-neutral-800 hover:bg-slate-100 border border-slate-200 dark:border-neutral-700 uppercase tracking-wider rounded flex items-center gap-1",
+          },
+          React.createElement(Icon, { name: "plus", className: "w-3 h-3" }),
+          " Brand",
+        ),
+        brandFilter &&
+          React.createElement(
+            "button",
+            {
+              onClick: handleAddColor,
+              className:
+                "px-2 py-1 text-[9px] font-bold bg-sky-500 hover:bg-sky-600 text-white border border-sky-600 uppercase tracking-wider rounded flex items-center gap-1",
+            },
+            React.createElement(Icon, { name: "plus", className: "w-3 h-3" }),
+            " Color",
+          ),
+        brandFilter &&
+          React.createElement(
+            "button",
+            {
+              onClick: () => {
+                setConfirmState({
+                  message: `Delete entire brand '${brandFilter}'?`,
+                  onConfirm: () => {
+                    const c = { ...dataForUpdates };
+                    delete c[brandFilter];
+                    updateColorData(c);
+                    setBrandFilter("");
+                  }
+                });
               },
+              className:
+                "px-2 py-1 text-[9px] font-bold bg-rose-50 text-rose-600 border border-rose-200 hover:bg-rose-100 uppercase tracking-wider rounded flex items-center gap-1",
+            },
+            React.createElement(Icon, {
+              name: "trash-2",
+              className: "w-3 h-3",
             }),
-        }),
+            " Brand",
+          ),
+
+
         React.createElement(
           "button",
           {
@@ -16214,6 +16150,11 @@ const ViewDatabase = ({
         { className: "flex flex-wrap items-center gap-3" },
         React.createElement(FilterChips, {
           chips: [
+            brandFilter && {
+              key: "brand",
+              label: brandFilter,
+              onClear: () => setBrandFilter(""),
+            },
             searchTerm && {
               key: "search",
               label: `"${searchTerm}"`,
@@ -16224,9 +16165,15 @@ const ViewDatabase = ({
               label: tagFilter,
               onClear: () => setTagFilter && setTagFilter(""),
             },
+            filterSameAdjective && {
+              key: "adj",
+              label: "Same adjective",
+              onClear: () =>
+                setFilterSameAdjective && setFilterSameAdjective(false),
+            },
             filterSameNoun && {
               key: "noun",
-              label: "Same anchor",
+              label: "Same noun",
               onClear: () => setFilterSameNoun && setFilterSameNoun(false),
             },
             ...Object.keys(columnFilters || {}).map((col) => ({
@@ -16251,7 +16198,9 @@ const ViewDatabase = ({
             })),
           ].filter(Boolean),
           onClearAll: () => {
+            setBrandFilter("");
             setColumnFilters({});
+            if (setFilterSameAdjective) setFilterSameAdjective(false);
             if (setFilterSameNoun) setFilterSameNoun(false);
             if (setSearchTerm) setSearchTerm("");
             if (setTagFilter) setTagFilter("");
@@ -16264,7 +16213,9 @@ const ViewDatabase = ({
             className:
               "ml-auto text-[10px] font-black uppercase text-slate-400",
           },
-          sortedItems.length,
+          sortedItems.length > 300
+            ? "300 of " + sortedItems.length
+            : sortedItems.length,
           " ",
           "matching",
         ),
@@ -16334,7 +16285,15 @@ const ViewDatabase = ({
         ),
       // The list is capped at 300 rows. That used to just stop with no
       // explanation, which reads as missing data rather than a cap.
-
+      sortedItems.length > renderItems.length &&
+        React.createElement(
+          "div",
+          {
+            className:
+              "text-center text-slate-400 text-[11px] w-full p-4 italic border-t border-slate-200 dark:border-neutral-800 mt-2",
+          },
+          `Showing the first ${renderItems.length} of ${sortedItems.length} by the current sort \u2014 narrow the filters to see the rest.`,
+        ),
       effectiveLayout === "matrix" &&
         React.createElement(
           "div",
@@ -16442,7 +16401,7 @@ const ViewDatabase = ({
                 {
                   className: "rounded relative flex-shrink-0",
                   style: {
-                    backgroundColor: DisplayGamut.css(item.L, item.C, item.H, item.hex),
+                    backgroundColor: item.hex,
                     width: `${baseListSize * swatchZoom}px`,
                     height: `${baseListSize * swatchZoom}px`,
                   },
@@ -16453,13 +16412,8 @@ const ViewDatabase = ({
                 }),
                 (item.image || item.note?.startsWith("http")) &&
                   React.createElement("div", {
-                    className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
-                    style: {
-                      backgroundImage: `url(${item.image || item.note})`,
-                      opacity: SWATCH_PHOTO_OPACITY,
-                      WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                      maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                    },
+                    className: SWATCH_PHOTO_INSET,
+                    style: { backgroundImage: `url(${item.image || item.note})` },
                   }),
                 !item._inGamut &&
                   React.createElement("div", {
@@ -16735,19 +16689,14 @@ const ViewDatabase = ({
                       {
                         className: "w-8 h-8 rounded relative shadow-sm overflow-hidden",
                         style: {
-                          backgroundColor: DisplayGamut.css(item.L, item.C, item.H, item.hex),
+                          backgroundColor: item.hex,
                         },
                       },
                       React.createElement(SwatchTreatment, { item, size: 32 }),
                       (item.image || item.note?.startsWith("http")) &&
                         React.createElement("div", {
-                          className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
-                          style: {
-                            backgroundImage: `url(${item.image || item.note})`,
-                            opacity: SWATCH_PHOTO_OPACITY,
-                            WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                            maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                          },
+                          className: SWATCH_PHOTO_INSET,
+                          style: { backgroundImage: `url(${item.image || item.note})` },
                         }),
                       (item.image || item.note?.startsWith("http")) &&
                         React.createElement(
@@ -16788,12 +16737,12 @@ const ViewDatabase = ({
                     React.createElement(
                       "select",
                       {
-                        value: specOption(LABEL_OPTIONS.sheen, item.sheen),
+                        value: item.sheen || "",
                         onChange: (e) => handleInlineMetadataEdit(item, "sheen", e.target.value),
                         onClick: (e) => e.stopPropagation(),
                         className: "w-20 bg-transparent text-[9px] outline-none cursor-pointer"
                       },
-                      specOptions(LABEL_OPTIONS.sheen, item.sheen).map((opt) =>
+                      LABEL_OPTIONS.sheen.map((opt) =>
                         React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)
                       )
                     )
@@ -16804,12 +16753,12 @@ const ViewDatabase = ({
                     React.createElement(
                       "select",
                       {
-                        value: specOption(LABEL_OPTIONS.doorProfile, item.doorProfile),
+                        value: item.doorProfile || "",
                         onChange: (e) => handleInlineMetadataEdit(item, "doorProfile", e.target.value),
                         onClick: (e) => e.stopPropagation(),
                         className: "w-20 bg-transparent text-[9px] outline-none cursor-pointer"
                       },
-                      specOptions(LABEL_OPTIONS.doorProfile, item.doorProfile).map((opt) =>
+                      LABEL_OPTIONS.doorProfile.map((opt) =>
                         React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)
                       )
                     )
@@ -16820,12 +16769,12 @@ const ViewDatabase = ({
                     React.createElement(
                       "select",
                       {
-                        value: specOption(LABEL_OPTIONS.visualPattern, item.visualTexture),
+                        value: item.visualTexture || "",
                         onChange: (e) => handleInlineMetadataEdit(item, "visualTexture", e.target.value),
                         onClick: (e) => e.stopPropagation(),
                         className: "w-20 bg-transparent text-[9px] outline-none cursor-pointer"
                       },
-                      specOptions(LABEL_OPTIONS.visualPattern, item.visualTexture).map((opt) =>
+                      LABEL_OPTIONS.visualPattern.map((opt) =>
                         React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)
                       )
                     )
@@ -16836,12 +16785,12 @@ const ViewDatabase = ({
                     React.createElement(
                       "select",
                       {
-                        value: specOption(LABEL_OPTIONS.tactileTexture, item.tactileTexture),
+                        value: item.tactileTexture || "",
                         onChange: (e) => handleInlineMetadataEdit(item, "tactileTexture", e.target.value),
                         onClick: (e) => e.stopPropagation(),
                         className: "w-20 bg-transparent text-[9px] outline-none cursor-pointer"
                       },
-                      specOptions(LABEL_OPTIONS.tactileTexture, item.tactileTexture).map((opt) =>
+                      LABEL_OPTIONS.tactileTexture.map((opt) =>
                         React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)
                       )
                     )
@@ -16852,12 +16801,12 @@ const ViewDatabase = ({
                     React.createElement(
                       "select",
                       {
-                        value: specOption(LABEL_OPTIONS.material, item.material),
+                        value: item.material || "",
                         onChange: (e) => handleInlineMetadataEdit(item, "material", e.target.value),
                         onClick: (e) => e.stopPropagation(),
                         className: "w-20 bg-transparent text-[9px] outline-none cursor-pointer"
                       },
-                      specOptions(LABEL_OPTIONS.material, item.material).map((opt) =>
+                      LABEL_OPTIONS.material.map((opt) =>
                         React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)
                       )
                     )
@@ -16962,20 +16911,15 @@ const ViewDatabase = ({
                 {
                   className: `aspect-square relative flex items-center justify-center overflow-hidden transition-all text-[0px] rounded-xl group-hover:scale-[1.05] group-hover:shadow-md`,
                   style: {
-                    backgroundColor: DisplayGamut.css(item.L, item.C, item.H, item.hex),
+                    backgroundColor: item.hex,
                     width: "100%",
                   },
                 },
                 React.createElement(SwatchTreatment, { item, size: 96 }),
                 (item.image || item.note?.startsWith("http")) &&
                   React.createElement("div", {
-                    className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
-                    style: {
-                      backgroundImage: `url(${item.image || item.note})`,
-                      opacity: SWATCH_PHOTO_OPACITY,
-                      WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                      maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
-                    },
+                    className: SWATCH_PHOTO_INSET,
+                    style: { backgroundImage: `url(${item.image || item.note})` },
                   }),
                 !item._inGamut &&
                   React.createElement("div", {
@@ -17159,11 +17103,6 @@ const ViewDatabase = ({
             ),
           ),
         ),
-      sortedItems.length > renderItems.length &&
-        React.createElement(LoadMoreSentinel, {
-          left: sortedItems.length - renderItems.length,
-          onMore: () => setListLimit((n) => n + 300),
-        }),
     ),
     selectedIds &&
       selectedIds.length > 0 &&
@@ -17606,10 +17545,10 @@ const ViewDatabase = ({
                       field.label
                     ),
                     React.createElement("select", {
-                      value: specOption(field.options, editingItem[field.key]),
+                      value: editingItem[field.key] || "",
                       onChange: (e) => setEditingItem({ ...editingItem, [field.key]: e.target.value }),
                       className: "w-full bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-xs text-slate-900 dark:text-white outline-none cursor-pointer"
-                    }, specOptions(field.options, editingItem[field.key]).map(opt => React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)))
+                    }, field.options.map(opt => React.createElement("option", { key: opt, value: opt === '-' ? '' : opt }, opt === '-' ? 'None' : opt)))
                   )
                 )
               ),
@@ -17861,6 +17800,10 @@ const AppUI = ({
   setActiveTab,
   names,
   setNames,
+  adjectives,
+  setAdjectives,
+  filterSameAdjective,
+  setFilterSameAdjective,
   filterSameNoun,
   setFilterSameNoun,
   dictNotes,
@@ -17898,15 +17841,6 @@ const AppUI = ({
   showVisibilityMenu,
   setShowVisibilityMenu,
   visibilityMenuRef,
-  focusTick,
-  dbFilters,
-  setDbFilters,
-  dbFilterMode,
-  pinsFilters,
-  pinsFilterMode,
-  dbColorData,
-  dbVisibility,
-  setDbVisibility,
   viewportSearchQuery,
   setViewportSearchQuery,
   viewMode,
@@ -17917,6 +17851,13 @@ const AppUI = ({
   setSwatchZoom,
   viewportTagFilter,
   setViewportTagFilter,
+  filterL,
+  setFilterL,
+  filterC,
+  setFilterC,
+  filterH,
+  setFilterH,
+  filterPt,
   scrubL,
   setScrubL,
   scrubC,
@@ -17988,6 +17929,8 @@ const AppUI = ({
   colorData,
   filteredColorData,
   updateColorData,
+  visualizeData,
+  setVisualizeData,
   history,
   isUndoing,
   currentStateStr,
@@ -17995,10 +17938,14 @@ const AppUI = ({
   handleRedo,
   canUndo,
   canRedo,
+  lockedNouns,
+  lockedAdjectives,
   filteredViewData,
   handleUpdate,
   handlePointClick,
+  handleVisualize,
   crosshair,
+  gridData,
   isLight,
   activeColorObj,
   labValues,
@@ -18006,16 +17953,17 @@ const AppUI = ({
   isOutOfGamut,
   crosshairHex,
   activeData,
+  activeAdj,
   activeName,
   activeNotes,
   isPinned,
-  isAnchorHere,
+  isAnchorLocked,
+  isInputDisabled,
   activeItemId,
   activeTags,
   addTag,
   removeTag,
-  tagManagerNode,
-  openTagManager,
+  adjInputClass,
   nounInputClass,
   deltaEOK,
   deltaE2000,
@@ -18047,56 +17995,41 @@ const AppUI = ({
   loadPalette,
   deleteSavedPalette,
   replaceInPalette,
+  onAdjChange,
   onNameChange,
   onNotesChange,
-  toggleAnchorHere,
+  toggleAnchorLock,
   togglePin,
   updateSavedColor,
   spectral,
   tetheringPinId,
   setTetheringPinId,
 }) => {
-  const spaceSeenRef = useRef(false);
-  // Per-tab list state driven by the shared toolbar (Explore and Match keep
-  // sharing the viewport search and Match keeps the app's sort, as before).
-  const TABS_KEY = "color-samificator-tabs";
-  const tabsSaved = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem(TABS_KEY) || "{}"); } catch (e) { return {}; }
-  }, []);
-  const [pinsSearch, setPinsSearch] = useState("");
-  const [dbSearch, setDbSearch] = useState("");
-  const deferredDbSearch = useDeferredValue(dbSearch);
-  const [pinsZoom, setPinsZoom] = useState(tabsSaved.pinsZoom || 2);
-  const [anchorsZoom, setAnchorsZoom] = useState(tabsSaved.anchorsZoom || 2);
-  const [anchorsSearch, setAnchorsSearch] = useState("");
-  const [pinsLayout, setPinsLayout] = useState(tabsSaved.pinsLayout || "table");
-  const [anchorsLayout, setAnchorsLayout] = useState(tabsSaved.anchorsLayout || "table");
-  const [pinsSort, setPinsSort] = useState(tabsSaved.pinsSort || { by: "deltae", asc: true });
-  const [anchorsSort, setAnchorsSort] = useState(tabsSaved.anchorsSort || { by: "name", asc: true });
-  useEffect(() => {
-    try { localStorage.setItem(TABS_KEY, JSON.stringify({ pinsLayout, anchorsLayout, pinsSort, anchorsSort, pinsZoom, anchorsZoom })); } catch (e) {}
-  }, [pinsLayout, anchorsLayout, pinsSort, anchorsSort, pinsZoom, anchorsZoom]);
-  // Explore's View control sets every view's look at once; the toolbar shows
-  // the look they share (none when they differ).
-  const [explorePresetCmd, setExplorePresetCmd] = useState(null);
-  const [explorePreset, setExplorePreset] = useState(null);
-  if (["top", "chroma", "slice", "3d"].includes(activeTab)) spaceSeenRef.current = true;
   // The input stays bound to the raw value so typing never lags; the heavy
   // table/grid re-filter runs against this deferred copy instead.
+  const deferredSearch = useDeferredValue(viewportSearchQuery);
   // On a phone the sidebar took a fixed 45vh whether or not you were using it,
   // leaving the view you navigated to squeezed into what was left.
   const [mobilePanelsOpen, setMobilePanelsOpen] = useState(false);
   const [headerExpanded, setHeaderExpanded] = useState(false);
   const [showFilterBuilder, setShowFilterBuilder] = useState(false);
-  // Resolved once here so the anchor filter rows and the presets all
+  // Resolved once here so the noun/adjective filter rows and the presets all
   // agree with the labels shown beside the toggles.
   const sameGroupContext = useMemo(() => {
     try {
-      return getSameGroupContext(scrubL, scrubC, scrubH, savedColors, names);
+      return getSameGroupContext(
+        scrubL,
+        scrubC,
+        scrubH,
+        null,
+        savedColors,
+        names,
+        adjectives,
+      );
     } catch (e) {
       return null;
     }
-  }, [scrubL, scrubC, scrubH, savedColors, names]);
+  }, [scrubL, scrubC, scrubH, savedColors, names, adjectives]);
   // Values already present in the loaded data, so select-type rows offer real
   // choices instead of asking you to type a brand exactly right.
   const filterOptionsFor = useCallback(
@@ -18138,7 +18071,7 @@ const AppUI = ({
     explore: "grid-3x3",
     match: "list",
     catalog: "bookmark",
-    names: "anchor",
+    names: "type",
   };
   // Destinations render twice from one definition: a rail beside the content on
   // desktop, a thumb-height bar at the bottom on phones.
@@ -18215,23 +18148,40 @@ const AppUI = ({
     // permanently, so they have to resolve whether or not it is.
 
     const pretty = (k) =>
-      k && k.indexOf("name:") === 0 ? k.slice(5).toUpperCase() : k === "any" ? "" : "unnamed";
+      k && k.indexOf("name:") === 0 ? k.slice(5).toUpperCase() : "unnamed";
     try {
-      const ctx = getSameGroupContext(scrubL, scrubC, scrubH, savedColors, names);
-      return { noun: pretty(ctx.nounKey) };
+      const ctx = getSameGroupContext(
+        scrubL,
+        scrubC,
+        scrubH,
+        null,
+        savedColors,
+        names,
+        adjectives,
+      );
+      return { noun: pretty(ctx.nounKey), adj: pretty(ctx.adjectiveKey) };
     } catch (e) {
-      return { noun: "" };
+      return { noun: "", adj: "" };
     }
-  }, [scrubL, scrubC, scrubH, savedColors, names]);
+  }, [scrubL, scrubC, scrubH, savedColors, names, adjectives]);
   const filterPresets = useMemo(
     () => [
       {
         id: "same-noun",
-        label: "Same anchor",
-        hint: "Colors named by the same anchor as the cursor",
+        label: "Same noun",
+        hint: "Colors carrying the cursor's noun",
         apply: () =>
           setGlobalFilters((rows) =>
             mergeFilterRows(rows, [newFilterRow("noun", "is", "", "", true)]),
+          ),
+      },
+      {
+        id: "same-adj",
+        label: "Same adjective",
+        hint: "Colors at the cursor's adjective level",
+        apply: () =>
+          setGlobalFilters((rows) =>
+            mergeFilterRows(rows, [newFilterRow("adjective", "is", "", "", true)]),
           ),
       },
       {
@@ -18246,19 +18196,20 @@ const AppUI = ({
       {
         id: "color-match",
         label: "Color match",
-        hint: "Within \u0394E 2 of the cursor, named by the same anchor",
+        hint: "Within \u0394E 2 of the cursor, sharing its noun and adjective",
         apply: () =>
           setGlobalFilters((rows) =>
             mergeFilterRows(rows, [
               newFilterRow("deltaE", "lte", "2"),
               newFilterRow("noun", "is", "", "", true),
+              newFilterRow("adjective", "is", "", "", true),
             ]),
           ),
       },
       {
         id: "exact-material",
         label: "Exact material match",
-        hint: "Same material, sheen, profile, visual pattern and tactile texture as the selected color, named by the same anchor",
+        hint: "Same material, sheen, profile, visual pattern and tactile texture as the selected color, plus its noun and adjective",
         apply: () => {
           const sel =
             crosshair &&
@@ -18291,6 +18242,7 @@ const AppUI = ({
                 ? [newFilterRow("tactileTexture", "is", sel.tactileTexture)]
                 : []),
               newFilterRow("noun", "is", "", "", true),
+              newFilterRow("adjective", "is", "", "", true),
             ]),
           );
         },
@@ -18569,6 +18521,101 @@ const AppUI = ({
       window.print();
     }
   };
+  const filterPanel = React.createElement(
+    "div",
+    { className: "flex flex-col gap-4" },
+                      React.createElement(
+                        "div",
+                        { className: "flex flex-col gap-2" },
+                        React.createElement(
+                          "div",
+                          {
+                            className:
+                              "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono",
+                          },
+                          React.createElement("span", null, "Lightness"),
+                          React.createElement(
+                            "span",
+                            {
+                              className:
+                                "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded",
+                            },
+                            "\xB1 ",
+                            filterL.toFixed(2),
+                          ),
+                        ),
+                        React.createElement("input", {
+                          type: "range",
+                          min: "0",
+                          max: "1",
+                          step: "0.01",
+                          value: filterL,
+                          onChange: (e) => setFilterL(Number(e.target.value)),
+                          className: "w-full accent-sky-500",
+                        }),
+                      ),
+                      React.createElement(
+                        "div",
+                        { className: "flex flex-col gap-2" },
+                        React.createElement(
+                          "div",
+                          {
+                            className:
+                              "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono",
+                          },
+                          React.createElement("span", null, "Chroma"),
+                          React.createElement(
+                            "span",
+                            {
+                              className:
+                                "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded",
+                            },
+                            "\xB1 ",
+                            filterC.toFixed(2),
+                          ),
+                        ),
+                        React.createElement("input", {
+                          type: "range",
+                          min: "0",
+                          max: "0.4",
+                          step: "0.01",
+                          value: filterC,
+                          onChange: (e) => setFilterC(Number(e.target.value)),
+                          className: "w-full accent-sky-500",
+                        }),
+                      ),
+                      React.createElement(
+                        "div",
+                        { className: "flex flex-col gap-2" },
+                        React.createElement(
+                          "div",
+                          {
+                            className:
+                              "flex justify-between items-center text-[10px] uppercase text-slate-400 font-mono",
+                          },
+                          React.createElement("span", null, "Hue"),
+                          React.createElement(
+                            "span",
+                            {
+                              className:
+                                "bg-slate-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded",
+                            },
+                            "\xB1 ",
+                            filterH.toFixed(2),
+                            "\xB0",
+                          ),
+                        ),
+                        React.createElement("input", {
+                          type: "range",
+                          min: "0",
+                          max: "180",
+                          step: "0.01",
+                          value: filterH,
+                          onChange: (e) => setFilterH(Number(e.target.value)),
+                          className: "w-full accent-sky-500",
+                        }),
+                      ),
+  );
   return React.createElement(
     "div",
     { className: "flex flex-col md:flex-row h-screen overflow-hidden" },
@@ -18793,7 +18840,7 @@ const AppUI = ({
               className:
                 "block text-[10px] uppercase tracking-widest text-slate-400 truncate",
             },
-            "Anchor",
+            sameGroupLabels.adj || "\u2014",
           ),
           React.createElement(
             "span",
@@ -18829,7 +18876,7 @@ const AppUI = ({
                 {
                   className:
                     "h-44 w-full relative rounded-2xl shadow-inner border border-black/5 dark:border-white/5 overflow-hidden transition-colors duration-300",
-                  style: { backgroundColor: DisplayGamut.css(scrubL, scrubC, scrubH, crosshairHex) },
+                  style: { backgroundColor: crosshairHex },
                 },
                 crosshair?.activeCommercial &&
                   (() => {
@@ -18872,11 +18919,27 @@ const AppUI = ({
                         className:
                           "mt-1 inline-block px-1.5 py-0.5 bg-red-500/90 text-white text-[8px] font-bold uppercase tracking-widest rounded shadow-sm backdrop-blur-sm border border-red-400/30",
                       },
-                      `Out of ${DisplayGamut.label} gamut`,
+                      "Out of sRGB Gamut",
                     ),
                 ),
-                getGlobalDuplicate(
+                (getGlobalDuplicate(
+                  names,
+                  adjectives,
+                  crosshair?.activeSavedColor?.type === "pin"
+                    ? crosshair.activeSavedColor.id
+                    : crosshair?.nearestAdjId,
+                  activeAdj,
+                  savedColors,
+                  crosshair?.activeSavedColor?.type === "pin"
+                    ? !!crosshair.activeSavedColor.adjOverride
+                    : true,
+                  crosshair?.activeSavedColor?.type === "pin"
+                    ? crosshair?.nearestAdjId
+                    : null,
+                ) ||
+                  getGlobalDuplicate(
                     names,
+                    adjectives,
                     crosshair?.activeSavedColor?.type === "pin"
                       ? crosshair.activeSavedColor.id
                       : crosshair?.nearestAnchorId,
@@ -18888,7 +18951,7 @@ const AppUI = ({
                     crosshair?.activeSavedColor?.type === "pin"
                       ? crosshair?.nearestAnchorId
                       : null,
-                  ) &&
+                  )) &&
                   React.createElement(
                     "div",
                     {
@@ -18910,14 +18973,14 @@ const AppUI = ({
                   React.createElement(
                     "button",
                     {
-                      onClick: toggleAnchorHere,
-                      className: `p-1.5 rounded-lg transition-colors ${isAnchorHere ? "opacity-100" : "opacity-60 hover:opacity-100"}`,
-                      title: isAnchorHere
-                        ? "Remove the anchor here"
-                        : "Add an anchor here",
+                      onClick: toggleAnchorLock,
+                      className: `p-1.5 rounded-lg transition-colors ${isAnchorLocked ? "opacity-100" : "opacity-60 hover:opacity-100"}`,
+                      title: isAnchorLocked
+                        ? "Unlock Grid Anchor"
+                        : "Lock Grid Anchor",
                     },
                     React.createElement(Icon, {
-                      name: "anchor",
+                      name: isAnchorLocked ? "lock" : "unlock",
                       className: "w-3.5 h-3.5 drop-shadow-sm",
                     }),
                   ),
@@ -18952,7 +19015,7 @@ const AppUI = ({
                       "div",
                       {
                         className: "p-1.5 text-red-500 dark:text-red-400",
-                        title: `Out of ${DisplayGamut.label} gamut`,
+                        title: "Out of sRGB Gamut",
                       },
                       React.createElement(Icon, {
                         name: "alert-triangle",
@@ -18971,14 +19034,50 @@ const AppUI = ({
                     "div",
                     {
                       className:
+                        "relative w-full flex justify-center items-center group/adj",
+                    },
+                    React.createElement("input", {
+                      type: "text",
+                      value: activeAdj,
+                      onChange: (e) => onAdjChange(e.target.value),
+                      placeholder: "Adjective",
+                      className: adjInputClass,
+                      disabled:
+                        isInputDisabled ||
+                        (crosshair?.activeSavedColor?.type !== "pin" &&
+                          lockedAdjectives[crosshair?.nearestAdjId]),
+                    }),
+                    crosshair?.activeSavedColor?.type === "pin" &&
+                      crosshair.activeSavedColor.adjOverride &&
+                      React.createElement(
+                        "button",
+                        {
+                          onClick: () => updateSavedColor("adjOverride", ""),
+                          className: `absolute right-0 opacity-0 group-hover/adj:opacity-100 transition-opacity p-1 rounded-full pointer-events-auto ${isLight ? "hover:bg-black/10" : "hover:bg-white/10"}`,
+                          title: "Revert to inherited adjective",
+                        },
+                        React.createElement(Icon, {
+                          name: "rotate-ccw",
+                          className: "w-3 h-3",
+                        }),
+                      ),
+                  ),
+                  React.createElement(
+                    "div",
+                    {
+                      className:
                         "relative w-full flex justify-center items-center group/noun",
                     },
                     React.createElement("input", {
                       type: "text",
                       value: activeName,
                       onChange: (e) => onNameChange(e.target.value),
-                      placeholder: "Unnamed",
+                      placeholder: "Noun",
                       className: nounInputClass,
+                      disabled:
+                        isInputDisabled ||
+                        (crosshair?.activeSavedColor?.type !== "pin" &&
+                          lockedNouns[crosshair?.nearestAnchorId]),
                     }),
                     crosshair?.activeSavedColor?.type === "pin" &&
                       crosshair.activeSavedColor.nameOverride &&
@@ -18987,7 +19086,7 @@ const AppUI = ({
                         {
                           onClick: () => updateSavedColor("nameOverride", ""),
                           className: `absolute right-0 opacity-0 group-hover/noun:opacity-100 transition-opacity p-1 rounded-full pointer-events-auto ${isLight ? "hover:bg-black/10" : "hover:bg-white/10"}`,
-                          title: "Revert to the inherited name",
+                          title: "Revert to inherited noun",
                         },
                         React.createElement(Icon, {
                           name: "rotate-ccw",
@@ -19228,14 +19327,17 @@ const AppUI = ({
                   activeSavedColor: crosshair.activeSavedColor,
                 },
                 colorData,
+                filterSameAdjective,
                 filterSameNoun,
-                globalFilters: dbFilters,
-                setGlobalFilters: setDbFilters,
-                globalFilterMode: dbFilterMode,
+                globalFilters,
+                setGlobalFilters,
+                globalFilterMode,
                 globalSortBy,
                 globalSortAsc,
                 sameGroupContext,
                 names,
+                adjectives,
+                gridData,
                 savedColors,
                 onSelectColor: handlePointClick,
               }),
@@ -19679,7 +19781,7 @@ const AppUI = ({
                               compSlotA.L,
                               compSlotA.C,
                               compSlotA.H,
-                            ]).inGamut(DisplayGamut.space) &&
+                            ]).inGamut("srgb") &&
                               React.createElement("div", {
                                 className:
                                   "absolute inset-0 pointer-events-none",
@@ -19705,11 +19807,11 @@ const AppUI = ({
                               compSlotA.L,
                               compSlotA.C,
                               compSlotA.H,
-                            ]).inGamut(DisplayGamut.space) &&
+                            ]).inGamut("srgb") &&
                               React.createElement(Icon, {
                                 name: "alert-triangle",
                                 className: "w-3 h-3 text-red-500",
-                                title: `Out of ${DisplayGamut.label} gamut`,
+                                title: "Out of sRGB Gamut",
                               }),
                             React.createElement(
                               "span",
@@ -19762,9 +19864,14 @@ const AppUI = ({
                                 C: scrubC,
                                 H: scrubH,
                                 erpCode: crosshair?.activeErpCode || "",
+                                adjId: crosshair?.activeSavedColor
+                                  ? crosshair.activeSavedColor.adjId
+                                  : crosshair?.nearestAdjId,
                                 nounId: crosshair?.activeSavedColor
                                   ? crosshair.activeSavedColor.anchorId
                                   : crosshair?.nearestAnchorId,
+                                adjOverride:
+                                  crosshair?.activeSavedColor?.adjOverride,
                                 nameOverride:
                                   crosshair?.activeSavedColor?.nameOverride,
                                 type: crosshair?.activeSavedColor?.type,
@@ -19836,7 +19943,7 @@ const AppUI = ({
                               compSlotB.L,
                               compSlotB.C,
                               compSlotB.H,
-                            ]).inGamut(DisplayGamut.space) &&
+                            ]).inGamut("srgb") &&
                               React.createElement("div", {
                                 className:
                                   "absolute inset-0 pointer-events-none",
@@ -19862,11 +19969,11 @@ const AppUI = ({
                               compSlotB.L,
                               compSlotB.C,
                               compSlotB.H,
-                            ]).inGamut(DisplayGamut.space) &&
+                            ]).inGamut("srgb") &&
                               React.createElement(Icon, {
                                 name: "alert-triangle",
                                 className: "w-3 h-3 text-red-500",
-                                title: `Out of ${DisplayGamut.label} gamut`,
+                                title: "Out of sRGB Gamut",
                               }),
                             React.createElement(
                               "span",
@@ -19919,9 +20026,14 @@ const AppUI = ({
                                 C: scrubC,
                                 H: scrubH,
                                 erpCode: crosshair?.activeErpCode || "",
+                                adjId: crosshair?.activeSavedColor
+                                  ? crosshair.activeSavedColor.adjId
+                                  : crosshair?.nearestAdjId,
                                 nounId: crosshair?.activeSavedColor
                                   ? crosshair.activeSavedColor.anchorId
                                   : crosshair?.nearestAnchorId,
+                                adjOverride:
+                                  crosshair?.activeSavedColor?.adjOverride,
                                 nameOverride:
                                   crosshair?.activeSavedColor?.nameOverride,
                                 type: crosshair?.activeSavedColor?.type,
@@ -20159,6 +20271,7 @@ const AppUI = ({
                           onClick: () => removeTag(tag),
                           className:
                             "hover:text-red-500 transition-colors ml-0.5",
+                          disabled: isInputDisabled,
                         },
                         React.createElement(Icon, {
                           name: "x",
@@ -20182,6 +20295,7 @@ const AppUI = ({
                     {
                       className:
                         "w-full bg-slate-50 dark:bg-neutral-800/50 border border-slate-200 dark:border-neutral-700/50 rounded-lg p-2.5 text-[10px] uppercase font-bold tracking-wider focus:outline-none focus:border-sky-500 text-slate-900 dark:text-white transition-colors appearance-none cursor-pointer",
+                      disabled: isInputDisabled,
                       onChange: (e) => {
                         if (e.target.value) {
                           addTag(e.target.value);
@@ -20198,22 +20312,12 @@ const AppUI = ({
                       React.createElement("option", { key: t, value: t }, t),
                     ),
                   ),
-                  React.createElement(
-                    "button",
-                    {
-                      onClick: openTagManager,
-                      className:
-                        "w-full flex items-center justify-center gap-1.5 py-2 rounded-lg border border-slate-200 dark:border-neutral-700 text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-neutral-800 transition-colors",
-                    },
-                    React.createElement(Icon, { name: "tags", className: "w-3.5 h-3.5" }),
-                    "Manage all tags",
-                  ),
-                  tagManagerNode,
                   React.createElement("input", {
                     type: "text",
                     placeholder: "Or type new tag & press Enter...",
                     className:
                       "w-full bg-slate-50 dark:bg-neutral-800/50 border border-slate-200 dark:border-neutral-700/50 rounded-lg p-2.5 text-[10px] uppercase font-bold tracking-wider focus:outline-none focus:border-sky-500 text-slate-900 dark:text-white transition-colors",
+                    disabled: isInputDisabled,
                     onKeyDown: (e) => {
                       if (e.key === "Enter" && e.target.value.trim()) {
                         addTag(e.target.value.trim());
@@ -20259,6 +20363,7 @@ const AppUI = ({
                   placeholder: "Add notes...",
                   value: activeNotes,
                   onChange: (e) => onNotesChange(e.target.value),
+                  disabled: isInputDisabled,
                 }),
               ),
             ),
@@ -20275,7 +20380,9 @@ const AppUI = ({
       "div",
       {
         className:
-          "hidden md:flex shrink-0 items-center gap-2 px-4 py-1.5 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 relative z-20",
+          `${
+            mobilePanelsOpen ? "hidden md:flex" : "flex"
+          } shrink-0 items-center gap-2 px-4 py-1.5 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 relative z-20`,
       },
       React.createElement(
         "div",
@@ -20286,6 +20393,29 @@ const AppUI = ({
         renderDestinations("top"),
       ),
       React.createElement("div", { className: "ml-auto" }),
+      React.createElement(SortControl, {
+        fields: DB_SORT_FIELDS,
+        sortBy: globalSortBy,
+        setSortBy: setGlobalSortBy,
+        sortAsc: globalSortAsc,
+        setSortAsc: setGlobalSortAsc,
+        compact: true,
+      }),
+      React.createElement(
+        "button",
+        {
+          onClick: () => setShowFilterBuilder(!showFilterBuilder),
+          className: `flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-bold uppercase tracking-wider transition-colors ${
+            globalFilters.length
+              ? "border-sky-200 dark:border-sky-500/30 bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400"
+              : "border-slate-200 dark:border-neutral-700 text-slate-500 dark:text-neutral-400 hover:bg-slate-50 dark:hover:bg-neutral-800"
+          }`,
+        },
+        React.createElement(Icon, { name: "filter", className: "w-3.5 h-3.5" }),
+        globalFilters.length
+          ? `Filters \u00b7 ${globalFilters.length}`
+          : "Filters",
+      ),
       showFilterBuilder &&
         ReactDOM.createPortal(
           React.createElement(
@@ -20305,7 +20435,7 @@ const AppUI = ({
               "div",
               {
                 className:
-                  "relative md:absolute md:right-3 md:top-28 bg-white dark:bg-neutral-900 border-t md:border border-slate-200 dark:border-neutral-800 rounded-t-2xl md:rounded-xl shadow-2xl max-h-[80vh] md:max-h-[70vh] flex flex-col md:w-[540px]",
+                  "relative md:absolute md:right-3 md:top-28 bg-white dark:bg-neutral-900 border-t md:border border-slate-200 dark:border-neutral-800 rounded-t-2xl md:rounded-xl shadow-2xl max-h-[80vh] md:max-h-[70vh] flex flex-col md:w-[420px]",
               },
               React.createElement("div", {
                 className:
@@ -20349,7 +20479,23 @@ const AppUI = ({
                   mode: globalFilterMode,
                   setMode: setGlobalFilterMode,
                   ctx: sameGroupContext,
-                })
+                }),
+                React.createElement(
+                  "div",
+                  {
+                    className:
+                      "pt-3 border-t border-slate-200 dark:border-neutral-800",
+                  },
+                  React.createElement(
+                    "span",
+                    {
+                      className:
+                        "block text-[9px] font-bold uppercase tracking-widest text-slate-400 pb-2",
+                    },
+                    "Viewport tolerance",
+                  ),
+                  filterPanel,
+                ),
               ),
             ),
           ),
@@ -20419,53 +20565,257 @@ const AppUI = ({
             className:
               "absolute inset-4 rounded-xl border border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 overflow-hidden shadow-sm flex flex-col",
           },
-          (() => {
-            const isExplore = ["top", "chroma", "slice", "3d"].includes(activeTab);
-            const isDb = activeTab === "db";
-            const listTab = isDb || activeTab === "pins" || activeTab === "anchors";
-            const lay =
-              activeTab === "pins" ? [pinsLayout, setPinsLayout]
-              : activeTab === "anchors" ? [anchorsLayout, setAnchorsLayout]
-              : [swatchLayout, setSwatchLayout];
-            const srch =
-              activeTab === "pins" ? [pinsSearch, setPinsSearch, "Search pins, notes, codes\u2026"]
-              : activeTab === "anchors" ? [anchorsSearch, setAnchorsSearch, "Find anchor\u2026"]
-              : isDb ? [dbSearch, setDbSearch, "Search commercial colours\u2026"]
-              : [viewportSearchQuery, setViewportSearchQuery, "Search\u2026"];
-            const srt =
-              activeTab === "pins"
-                ? { fields: DB_SORT_FIELDS, by: pinsSort.by, asc: pinsSort.asc, setBy: (by) => setPinsSort((p) => ({ ...p, by })), setAsc: (asc) => setPinsSort((p) => ({ ...p, asc })) }
-                : activeTab === "anchors"
-                  ? { fields: ANCHOR_SORT_FIELDS, by: anchorsSort.by, asc: anchorsSort.asc, setBy: (by) => setAnchorsSort((p) => ({ ...p, by })), setAsc: (asc) => setAnchorsSort((p) => ({ ...p, asc })) }
-                  : { fields: DB_SORT_FIELDS, by: globalSortBy, asc: globalSortAsc, setBy: setGlobalSortBy, setAsc: setGlobalSortAsc };
-            const brands = colorData ? Object.keys(colorData) : [];
-            return React.createElement(TabToolbar, {
-              view: { enabled: isExplore, value: isExplore ? explorePreset : null, onChange: (id) => setExplorePresetCmd({ id, t: Date.now() }) },
-              layout: { enabled: listTab, value: listTab ? lay[0] : null, onChange: lay[1] },
-              visibility: {
-                enabled: isExplore || isDb,
-                kinds: !isDb,   // Match lists commercial colours only
-                vis: isDb ? dbVisibility : viewportVisibility,
-                setVis: isDb ? setDbVisibility : setViewportVisibility,
-                brands,
-                brandOn: (b) => (isDb ? dbVisibility.brands[b] !== false : viewportVisibility.brands[b] === true),
-                setBrand: (b, on) => (isDb ? setDbVisibility : setViewportVisibility)((p) => ({ ...p, brands: { ...p.brands, [b]: on } })),
-                brandLabel: getBrandDisplayName,
+          ["slice", "chroma", "top", "3d", "db"].includes(activeTab) &&
+            React.createElement(
+              "div",
+              {
+                className:
+                  "px-4 py-2 border-b border-slate-100 dark:border-neutral-800 bg-slate-50/30 dark:bg-neutral-900/30 flex flex-wrap items-center gap-4 z-20",
               },
-              search: { enabled: activeTab !== "groups", value: srch[0], onChange: srch[1], placeholder: srch[2] },
-              zoom: {
-                enabled: listTab && lay[0] !== "table",
-                value: activeTab === "pins" ? pinsZoom : activeTab === "anchors" ? anchorsZoom : swatchZoom,
-                onChange: activeTab === "pins" ? setPinsZoom : activeTab === "anchors" ? setAnchorsZoom : setSwatchZoom,
-              },
-              sort: { enabled: listTab, ...srt },
-              filters: {
-                enabled: isExplore || isDb || activeTab === "pins",
-                count: globalFilters.length,
-                onClick: () => setShowFilterBuilder(!showFilterBuilder),
-              },
-            });
-          })(),
+              React.createElement(
+                "div",
+                { className: "flex items-center gap-2" },
+                React.createElement(
+                  "span",
+                  {
+                    className: "text-[10px] font-bold text-slate-400 uppercase",
+                  },
+                  "View:",
+                ),
+                React.createElement(
+                  "select",
+                  {
+                    value: viewMode,
+                    onChange: (e) => setViewMode(e.target.value),
+                    className:
+                      "bg-slate-200/50 dark:bg-neutral-800 rounded px-2 py-1.5 text-[10px] font-black uppercase tracking-tight text-slate-700 dark:text-neutral-300 outline-none hover:bg-slate-300/50 dark:hover:bg-neutral-700 transition-colors cursor-pointer border border-transparent focus:border-sky-500",
+                  },
+                  React.createElement("option", { value: "dots" }, "Dots"),
+                  React.createElement("option", { value: "bins" }, "Bins"),
+                  React.createElement(
+                    "option",
+                    { value: "swatches" },
+                    "Swatches",
+                  ),
+                ),
+              ),
+              (viewMode === "swatches" || activeTab === "db") &&
+                React.createElement(
+                  "div",
+                  { className: "flex items-center gap-2" },
+                  React.createElement(
+                    "span",
+                    {
+                      className:
+                        "text-[10px] font-bold text-slate-400 uppercase",
+                    },
+                    "Layout:",
+                  ),
+                  React.createElement(
+                    "select",
+                    {
+                      value: swatchLayout,
+                      onChange: (e) => setSwatchLayout(e.target.value),
+                      className:
+                        "bg-slate-200/50 dark:bg-neutral-800 rounded px-2 py-1.5 text-[10px] font-black uppercase tracking-tight text-slate-700 dark:text-neutral-300 outline-none hover:bg-slate-300/50 dark:hover:bg-neutral-700 transition-colors cursor-pointer border border-transparent focus:border-sky-500",
+                    },
+                    React.createElement("option", { value: "table" }, "Table"),
+                    React.createElement(
+                      "option",
+                      { value: "gallery" },
+                      "Gallery",
+                    ),
+                    React.createElement(
+                      "option",
+                      { value: "matrix" },
+                      "Matrix",
+                    ),
+                  ),
+                ),
+              React.createElement("div", {
+                className: "h-4 w-px bg-slate-200 dark:bg-neutral-800",
+              }),
+              React.createElement(
+                "div",
+                { className: "flex items-center gap-3" },
+                React.createElement(
+                  "div",
+                  {
+                    className: "flex items-center gap-2 relative",
+                    ref: visibilityMenuRef,
+                  },
+                  React.createElement(Icon, {
+                    name: "eye",
+                    className: "w-3.5 h-3.5 text-slate-400",
+                  }),
+                  React.createElement(
+                    "button",
+                    {
+                      onClick: () => setShowVisibilityMenu(!showVisibilityMenu),
+                      className:
+                        "bg-transparent border-none rounded text-[10px] font-bold uppercase tracking-widest text-slate-700 dark:text-neutral-300 outline-none cursor-pointer flex items-center gap-1",
+                    },
+                    "Visibility",
+                    React.createElement(Icon, {
+                      name: "chevron-down",
+                      className: "w-3 h-3",
+                    }),
+                  ),
+                  showVisibilityMenu &&
+                    React.createElement(
+                      "div",
+                      {
+                        className:
+                          "absolute top-full left-0 mt-2 w-48 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-lg shadow-xl z-[200] flex flex-col p-2 text-xs",
+                      },
+                      React.createElement(
+                        "label",
+                        {
+                          className:
+                            "flex items-center gap-2 px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded cursor-pointer text-slate-700 dark:text-neutral-300",
+                        },
+                        React.createElement("input", {
+                          type: "checkbox",
+                          checked: viewportVisibility.pins,
+                          onChange: (e) =>
+                            setViewportVisibility((prev) => ({
+                              ...prev,
+                              pins: e.target.checked,
+                            })),
+                          className:
+                            "rounded border-slate-300 text-sky-500 focus:ring-sky-500",
+                        }),
+                        "Pins",
+                      ),
+                      React.createElement(
+                        "label",
+                        {
+                          className:
+                            "flex items-center gap-2 px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded cursor-pointer text-slate-700 dark:text-neutral-300",
+                        },
+                        React.createElement("input", {
+                          type: "checkbox",
+                          checked: viewportVisibility.anchors,
+                          onChange: (e) =>
+                            setViewportVisibility((prev) => ({
+                              ...prev,
+                              anchors: e.target.checked,
+                            })),
+                          className:
+                            "rounded border-slate-300 text-sky-500 focus:ring-sky-500",
+                        }),
+                        "Anchors (Grid)",
+                      ),
+                      React.createElement("div", {
+                        className: "h-px bg-slate-200 dark:bg-neutral-800 my-1",
+                      }),
+                      React.createElement(
+                        "details",
+                        { className: "px-2 py-1.5", open: true },
+                        React.createElement(
+                          "summary",
+                          { className: "cursor-pointer text-slate-700 dark:text-neutral-300 font-bold" },
+                          "Commercial Colors"
+                        ),
+                        colorData &&
+                          Object.keys(colorData).map((brand) =>
+                            React.createElement(
+                              "label",
+                              {
+                                key: brand,
+                                className:
+                                  "flex items-center gap-2 px-2 py-1 pl-4 hover:bg-slate-50 dark:hover:bg-neutral-800 rounded cursor-pointer text-slate-500 dark:text-neutral-400 mt-1",
+                              },
+                              React.createElement("input", {
+                                type: "checkbox",
+                                checked:
+                                  activeTab === "db" ? viewportVisibility.brands[brand] !== false : viewportVisibility.brands[brand] === true,
+                                onChange: (e) =>
+                                  setViewportVisibility((prev) => ({
+                                    ...prev,
+                                    brands: {
+                                      ...prev.brands,
+                                      [brand]: e.target.checked,
+                                    },
+                                  })),
+                                className:
+                                  "rounded border-slate-300 text-emerald-500 focus:ring-emerald-500 w-3 h-3",
+                              }),
+                              getBrandDisplayName(brand),
+                            ),
+                          ),
+                      ),
+                    ),
+                ),
+                React.createElement(
+                  "div",
+                  { className: "relative" },
+                  React.createElement(Icon, {
+                    name: "search",
+                    className:
+                      "absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400",
+                  }),
+                  React.createElement("input", {
+                    type: "text",
+                    value: viewportSearchQuery,
+                    onChange: (e) => setViewportSearchQuery(e.target.value),
+                    placeholder: "Search...",
+                    className:
+                      "w-32 bg-slate-200/40 dark:bg-neutral-800/50 border border-transparent rounded-lg pl-7 pr-2 py-1.5 text-[10px] font-bold uppercase tracking-widest focus:ring-1 focus:ring-sky-500 outline-none text-slate-900 dark:text-white placeholder:text-slate-400 transition-all",
+                  }),
+                ),
+                React.createElement(
+                  "div",
+                  { className: "relative" },
+                  React.createElement(Icon, {
+                    name: "tag",
+                    className:
+                      "absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400",
+                  }),
+                  React.createElement(
+                    "select",
+                    {
+                      value: viewportTagFilter,
+                      onChange: (e) => setViewportTagFilter(e.target.value),
+                      className:
+                        "w-32 bg-slate-200/40 dark:bg-neutral-800/50 border border-transparent rounded-lg pl-7 pr-2 py-1.5 text-[10px] font-bold uppercase tracking-widest focus:ring-1 focus:ring-sky-500 outline-none text-slate-900 dark:text-white transition-all appearance-none cursor-pointer",
+                    },
+                    React.createElement("option", { value: "" }, "All Tags"),
+                    globalTags.map((t) =>
+                      React.createElement("option", { key: t, value: t }, t),
+                    ),
+                  ),
+                ),
+              ),
+              (viewMode === "swatches" || activeTab === "db") &&
+                React.createElement(
+                  "div",
+                  { className: "ml-auto flex items-center gap-3" },
+                  React.createElement(Icon, {
+                    name: "zoom-in",
+                    className: "w-3.5 h-3.5 text-slate-400",
+                  }),
+                  React.createElement("input", {
+                    type: "range",
+                    min: "0.1",
+                    max: "5",
+                    step: "0.1",
+                    value: swatchZoom,
+                    onChange: (e) => setSwatchZoom(parseFloat(e.target.value)),
+                    className:
+                      "w-24 accent-sky-500 opacity-60 hover:opacity-100 transition-opacity cursor-pointer",
+                  }),
+                  React.createElement(
+                    "span",
+                    {
+                      className:
+                        "text-[10px] font-mono text-slate-400 min-w-[30px]",
+                    },
+                    Math.round(swatchZoom * 100),
+                    "%",
+                  ),
+                ),
+            ),
           React.createElement(
             "div",
             { className: "flex-1 relative overflow-hidden" },
@@ -20476,25 +20826,28 @@ const AppUI = ({
                 className: "w-full h-full"
               },
               React.createElement(ViewDatabase, {
+                setFilterSameAdjective,
                 setFilterSameNoun,
+                filterSameAdjective,
                 filterSameNoun,
-                globalFilters: dbFilters,
-                setGlobalFilters: setDbFilters,
-                globalFilterMode: dbFilterMode,
+                globalFilters,
+                setGlobalFilters,
+                globalFilterMode,
                 globalSortBy,
                 globalSortAsc,
                 sameGroupContext,
-                colorData: dbColorData,
+                colorData: filteredColorData,
                 fullColorData: colorData,
                 updateColorData,
                 swatchLayout,
                 swatchZoom,
                 handlePointClick,
                 crosshair,
-                searchTerm: deferredDbSearch,
-                setSearchTerm: setDbSearch,
+                searchTerm: deferredSearch,
+                setSearchTerm: setViewportSearchQuery,
                 tagFilter: viewportTagFilter,
                 setTagFilter: setViewportTagFilter,
+                filterPt,
                 selectedIds,
                 setSelectedIds,
                 handleBatchTag,
@@ -20508,76 +20861,138 @@ const AppUI = ({
                 },
               })
             ),
-            spaceSeenRef.current &&
-              React.createElement(
-                "div",
-                {
-                  style: { display: ["top", "chroma", "slice", "3d"].includes(activeTab) ? "block" : "none" },
-                  className: "w-full h-full",
-                },
-              React.createElement(ViewSpace, {
-                active: ["top", "chroma", "slice", "3d"].includes(activeTab),
-                points: filteredViewData.points,
+            activeTab === "3d" &&
+              React.createElement(View3D, {
                 colorData: filteredColorData,
-                names,
-                theme,
-                scrubL,
-                scrubC,
-                scrubH,
-                tether: crosshair ? crosshair.tether : null,
-                focusTick,
-                presetCmd: explorePresetCmd,
-                onPresetSummary: setExplorePreset,
+                points: filteredViewData.points,
+                crosshair,
+                viewMode,
                 handlePointClick,
-                onCursor: (L, C, H) => {
-                  setScrubL(L);
-                  setScrubC(C);
-                  setScrubH(H);
-                  setTemporarySpectral(null);
-                },
-              })),
+                theme,
+                names,
+                adjectives,
+                savedColors: filteredViewData.savedColors,
+                lockedNouns,
+                lockedAdjectives,
+                tetheringPinId,
+                filterPt,
+              }),
+            activeTab === "slice" &&
+              React.createElement(ViewVertical, {
+                colorData: filteredColorData,
+                points: filteredViewData.points,
+                crosshair,
+                handlePointClick,
+                theme,
+                names,
+                adjectives,
+                savedColors: filteredViewData.savedColors,
+                lockedNouns,
+                lockedAdjectives,
+                viewMode,
+                tetheringPinId,
+                swatchLayout,
+                swatchZoom,
+                viewportSearchQuery: deferredSearch,
+                filterPt,
+                filterL,
+                filterC,
+                filterH,
+                groupSettings,
+              }),
+            activeTab === "chroma" &&
+              React.createElement(ViewChromaRings, {
+                colorData: filteredColorData,
+                points: filteredViewData.points,
+                crosshair,
+                handlePointClick,
+                theme,
+                names,
+                adjectives,
+                savedColors: filteredViewData.savedColors,
+                lockedNouns,
+                lockedAdjectives,
+                viewMode,
+                tetheringPinId,
+                swatchLayout,
+                swatchZoom,
+                viewportSearchQuery: deferredSearch,
+                filterPt,
+                filterL,
+                filterC,
+                filterH,
+                groupSettings,
+              }),
+            activeTab === "top" &&
+              React.createElement(ViewTopDown, {
+                colorData: filteredColorData,
+                points: filteredViewData.points,
+                baseAnchors: filteredViewData.baseAnchors,
+                crosshair,
+                handlePointClick,
+                theme,
+                names,
+                adjectives,
+                savedColors: filteredViewData.savedColors,
+                lockedNouns,
+                lockedAdjectives,
+                viewMode,
+                tetheringPinId,
+                swatchLayout,
+                swatchZoom,
+                viewportSearchQuery: deferredSearch,
+                filterPt,
+                filterL,
+                filterC,
+                filterH,
+                groupSettings,
+              }),
             activeTab === "groups" &&
               React.createElement(ViewGroups, {
                 settings: groupSettings,
                 setSettings: setGroupSettings,
               }),
-            activeTab === "anchors" &&
-              React.createElement(ViewAnchors, {
+            activeTab === "adjectives" &&
+              React.createElement(ViewAdjectives, {
+                points: filteredViewData.points,
+                names,
+                adjectives,
+                setAdjectives,
+                handlePointClick,
+                crosshair,
+                lockedAdjectives,
                 savedColors,
-                setSavedColors,
+                onVisualize: handleVisualize,
+              }),
+            activeTab === "palette" &&
+              React.createElement(ViewPalette, {
+                baseAnchors: filteredViewData.baseAnchors,
+                points: filteredViewData.points,
+                handlePointClick,
                 names,
                 setNames,
-                scrubL,
-                scrubC,
-                scrubH,
-                handleUpdate,
-                setActiveTab,
-                query: anchorsSearch,
-                setQuery: setAnchorsSearch,
-                sort: anchorsSort,
-                setSort: setAnchorsSort,
-                layout: anchorsLayout,
-                swatchZoom: anchorsZoom,
+                adjectives,
+                setAdjectives,
+                dictNotes,
+                lockedNouns,
+                lockedAdjectives,
+                savedColors,
+                setSavedColors,
+                dictTags,
+                onVisualize: handleVisualize,
               }),
             activeTab === "pins" &&
               React.createElement(ViewPins, {
                 handlePointClick,
-                swatchZoom: pinsZoom,
-                setSwatchZoom: setPinsZoom,
-                globalSortBy: pinsSort.by,
-                globalSortAsc: pinsSort.asc,
-                searchTerm: pinsSearch,
-                layout: pinsLayout,
-                globalFilters: pinsFilters,
-                globalFilterMode: pinsFilterMode,
-                // Only rows that follow the cursor need its context; passing it
-                // otherwise re-rendered the whole catalog on every cursor move.
-                sameGroupContext: (pinsFilters || []).some(
-                  (r) => (!r.scope || r.scope === "viewport") && filterRowsSome([r], (x) => x.dynamic || x.field === "noun"),
-                )
-                  ? sameGroupContext
-                  : null,
+                swatchZoom,
+                setSwatchZoom,
+                globalSortBy,
+                globalSortAsc,
+                globalFilters,
+                globalFilterMode,
+                sameGroupContext,
                 names,
+                adjectives,
                 dictNotes,
                 savedColors,
                 setSavedColors,
@@ -20618,8 +21033,14 @@ const AppUI = ({
           .clone()
           .toGamut({ space: "srgb" })
           .toString({ format: "hex" });
-        const nA = getInheritedPinNames(compSlotA, savedColors, names).displayName;
-        const nB = getInheritedPinNames(compSlotB, savedColors, names).displayName;
+        const nA =
+          compSlotA.type === "pin"
+            ? `${compSlotA.adjOverride || adjectives[compSlotA.adjId] || ""} ${compSlotA.nameOverride || names[compSlotA.nounId] || ""}`.trim()
+            : `${adjectives[compSlotA.adjId] || ""} ${names[compSlotA.nounId] || ""}`.trim();
+        const nB =
+          compSlotB.type === "pin"
+            ? `${compSlotB.adjOverride || adjectives[compSlotB.adjId] || ""} ${compSlotB.nameOverride || names[compSlotB.nounId] || ""}`.trim()
+            : `${adjectives[compSlotB.adjId] || ""} ${names[compSlotB.nounId] || ""}`.trim();
         const displayA =
           nA || (compSlotA.erpCode ? `#${compSlotA.erpCode}` : "\u2014");
         const displayB =
@@ -20714,7 +21135,7 @@ const AppUI = ({
                   maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                 },
               }),
-            !cA.inGamut(DisplayGamut.space) &&
+            !cA.inGamut("srgb") &&
               React.createElement("div", {
                 className: "absolute inset-0 pointer-events-none",
                 style: {
@@ -20735,11 +21156,11 @@ const AppUI = ({
                     "text-6xl font-black mb-4 tracking-tight uppercase drop-shadow-md flex items-center justify-center gap-4",
                 },
                 displayA,
-                !cA.inGamut(DisplayGamut.space) &&
+                !cA.inGamut("srgb") &&
                   React.createElement(Icon, {
                     name: "alert-triangle",
                     className: "w-12 h-12 text-red-500 drop-shadow-md",
-                    title: `Out of ${DisplayGamut.label} gamut`,
+                    title: "Out of sRGB Gamut",
                   }),
               ),
               React.createElement(
@@ -20782,7 +21203,7 @@ const AppUI = ({
                   maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                 },
               }),
-            !cB.inGamut(DisplayGamut.space) &&
+            !cB.inGamut("srgb") &&
               React.createElement("div", {
                 className: "absolute inset-0 pointer-events-none",
                 style: {
@@ -20803,11 +21224,11 @@ const AppUI = ({
                     "text-6xl font-black mb-4 tracking-tight uppercase drop-shadow-md flex items-center justify-center gap-4",
                 },
                 displayB,
-                !cB.inGamut(DisplayGamut.space) &&
+                !cB.inGamut("srgb") &&
                   React.createElement(Icon, {
                     name: "alert-triangle",
                     className: "w-12 h-12 text-red-500 drop-shadow-md",
-                    title: `Out of ${DisplayGamut.label} gamut`,
+                    title: "Out of sRGB Gamut",
                   }),
               ),
               React.createElement(
@@ -21207,6 +21628,111 @@ const AppUI = ({
           }),
         ),
       ),
+    visualizeData &&
+      React.createElement(
+        "div",
+        {
+          className:
+            "fixed inset-0 z-[100] flex animate-in fade-in duration-300 bg-neutral-950/60 backdrop-blur-xl items-center justify-center p-8",
+        },
+        React.createElement(
+          "div",
+          {
+            className:
+              "bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col overflow-hidden border border-slate-200 dark:border-neutral-800",
+          },
+          React.createElement(
+            "div",
+            {
+              className:
+                "flex items-center justify-between p-6 border-b border-slate-200 dark:border-neutral-800",
+            },
+            React.createElement(
+              "h2",
+              {
+                className:
+                  "text-2xl font-black uppercase tracking-tight text-slate-900 dark:text-white",
+              },
+              visualizeData.title,
+            ),
+            React.createElement(
+              "button",
+              {
+                onClick: () => setVisualizeData(null),
+                className:
+                  "p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-full hover:bg-slate-100 dark:hover:bg-neutral-800 transition-colors",
+              },
+              React.createElement(Icon, { name: "x", className: "w-6 h-6" }),
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "flex-1 overflow-y-auto p-6 custom-scrollbar" },
+            React.createElement(
+              "div",
+              {
+                className:
+                  "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4",
+              },
+              visualizeData.items.map((item, i) => {
+                const c = new Color("oklch", [item.L, item.C, item.H]);
+                const hex = c
+                  .clone()
+                  .toGamut({ space: "srgb" })
+                  .toString({ format: "hex" })
+                  .toUpperCase();
+                return React.createElement(
+                  "div",
+                  {
+                    key: i,
+                    className: "flex flex-col gap-2 group cursor-pointer",
+                    onClick: () => {
+                      handleUpdate([item.L, item.C, item.H]);
+                      setVisualizeData(null);
+                    },
+                  },
+                  React.createElement(
+                    "div",
+                    {
+                      className:
+                        "w-full aspect-square rounded-xl shadow-sm border border-slate-200 dark:border-neutral-800 relative overflow-hidden transition-transform group-hover:scale-105",
+                      style: { backgroundColor: hex },
+                    },
+                    !c.inGamut("srgb") &&
+                      React.createElement("div", {
+                        className: "absolute inset-0 pointer-events-none",
+                        style: {
+                          backgroundImage:
+                            "repeating-linear-gradient(45deg, rgba(0,0,0,0.2), rgba(0,0,0,0.2) 5px, rgba(255,255,255,0.2) 5px, rgba(255,255,255,0.2) 10px)",
+                        },
+                      }),
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "flex flex-col" },
+                    React.createElement(
+                      "div",
+                      {
+                        className:
+                          "text-[10px] font-bold uppercase tracking-wider truncate text-slate-900 dark:text-white",
+                      },
+                      item.displayName,
+                    ),
+                    React.createElement(
+                      "div",
+                      {
+                        className:
+                          "text-[9px] font-mono mt-0.5 text-slate-500 dark:text-neutral-400",
+                      },
+                      item.erpCode,
+                    ),
+                  ),
+                );
+              }),
+            ),
+          ),
+        ),
+      ),
     showFullscreenPreview &&
       !showCompareFullscreen &&
       (() => {
@@ -21223,7 +21749,7 @@ const AppUI = ({
           {
             className:
               "fixed inset-0 z-[100] flex flex-col items-center justify-end p-20 animate-in fade-in duration-300 cursor-pointer overflow-hidden",
-            style: { backgroundColor: DisplayGamut.css(scrubL, scrubC, scrubH, crosshairHex) },
+            style: { backgroundColor: crosshairHex },
             onClick: () => setShowFullscreenPreview(false),
           },
           previewImage &&
@@ -21282,6 +21808,8 @@ const AppUI = ({
                 className:
                   "text-6xl font-black mb-4 tracking-tight uppercase drop-shadow-md",
               },
+              activeAdj,
+              " ",
               activeName,
             ),
             React.createElement(
@@ -21670,7 +22198,7 @@ const AppUI = ({
                     React.createElement(
                       "p",
                       { className: "text-sm leading-relaxed opacity-80" },
-                      "Every color takes the name of the nearest anchor in OkLab, the same cells you see in Explore. Add, rename and move anchors in the Anchors tab; a pin can override its name.",
+                      "Colors are named using an Adjective (based on Lightness) and a Noun (based on Hue and Chroma). You can override these names for specific pins.",
                     ),
                   ),
                 ),
@@ -21904,11 +22432,13 @@ const AppUI = ({
         swatchZoom,
         handlePointClick,
         crosshair,
+        setFilterSameAdjective,
         setFilterSameNoun,
+        filterSameAdjective,
         filterSameNoun,
-        globalFilters: dbFilters,
-        setGlobalFilters: setDbFilters,
-        globalFilterMode: dbFilterMode,
+        globalFilters,
+        setGlobalFilters,
+        globalFilterMode,
         globalSortBy,
         globalSortAsc,
         sameGroupContext,
