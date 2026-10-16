@@ -4518,6 +4518,28 @@ const SpacePresets = ({ value, onChange, compact }) =>
       ),
     ),
   );
+// What the bins (cells) are built around: anchors, pins, commercial colours or
+// a palette. Cells come from a Voronoi split of colour space, so any set of
+// colours can define them; very large sets are capped to keep it responsive.
+const SPACE_SEED_CAP = 8000;
+const SPACE_BIN_KEY = "csam-bin-source";
+const SpaceBinSource = ({ value, onChange, options, capped, compact }) =>
+  React.createElement(
+    "label",
+    { className: "flex items-center gap-1.5 shrink-0", title: "What the bins are built around" },
+    !compact && React.createElement("span", { className: "text-[9px] font-bold uppercase tracking-widest text-slate-400" }, "Bins from"),
+    React.createElement(
+      "select",
+      {
+        value, onChange: (e) => onChange(e.target.value), "aria-label": "Bins from",
+        className: `max-w-[200px] bg-transparent border rounded-md py-1 pl-1.5 pr-5 text-[10px] font-bold uppercase tracking-wider cursor-pointer focus:outline-none ${
+          value !== "anchors" ? "border-sky-300 text-sky-700 dark:text-sky-300 dark:border-sky-500/40" : "border-slate-200 dark:border-neutral-800 text-slate-600 dark:text-neutral-300"
+        }`,
+      },
+      options.map((o) => React.createElement("option", { key: o.id, value: o.id, disabled: !o.n && o.id !== value }, `${o.label} (${o.n.toLocaleString()})`)),
+    ),
+    capped > 0 && React.createElement("span", { className: "text-[9px] text-amber-600 dark:text-amber-400 whitespace-nowrap", title: `Bins are built around the first ${SPACE_SEED_CAP.toLocaleString()}; narrow Visibility or the filters to use the rest` }, `first ${SPACE_SEED_CAP.toLocaleString()}`),
+  );
 const SpaceIconButton = ({ icon, title, onClick, active }) =>
   React.createElement(
     "button",
@@ -4784,8 +4806,14 @@ const ViewSpaceInner = ({
   onCursor,
   handlePointClick,
   groupSettings = null,
+  // [{ id, name, colors: [{ L, C, H, hex, label }] }]: the working palette and saved ones
+  binPalettes = [],
 }) => {
   const rootRef = useRef(null);
+  const [binSource, setBinSourceState] = useState(() => {
+    try { return localStorage.getItem(SPACE_BIN_KEY) || "anchors"; } catch (e) { return "anchors"; }
+  });
+  const setBinSource = (v) => { setBinSourceState(v); try { localStorage.setItem(SPACE_BIN_KEY, v); } catch (e) {} };
   const groupLinesOn = useGroupLinesPref()[0];
   // Four fixed canvases: the large one and three small ones. `slots` says which
   // view each shows; maximizing a small view swaps it with the large one.
@@ -4979,6 +5007,48 @@ const ViewSpaceInner = ({
     return out;
   }, [points, colorData, names]);
 
+  // The colours the bins are built around, and the markers drawn besides them
+  // (a pin or commercial colour that is itself a bin is not drawn twice).
+  const seeds = useMemo(() => {
+    if (binSource === "anchors") return { list: anchors, capped: 0 };
+    const seen = new Set(), out = [];
+    let capped = 0;
+    const push = (L, C, H, hex, label, kind, pick) => {
+      if (!isFinite(L) || !isFinite(C)) return;
+      const h = isFinite(H) ? H : 0;
+      const key = `${L.toFixed(4)}|${C.toFixed(4)}|${C < 1e-4 ? 0 : h.toFixed(3)}`;
+      if (seen.has(key)) return; // one colour, one cell (twins in several profiles share it)
+      seen.add(key);
+      if (out.length >= SPACE_SEED_CAP) { capped++; return; }
+      out.push({ L, C, H: h, hex: spaceHexFor(hex, L, C, h), label, kind, pick });
+    };
+    const bare = (label) => String(label || "").split(" \u00b7 ").pop();
+    if (binSource === "pins") markers.forEach((m) => m.kind === "pin" && push(m.L, m.C, m.H, m.hex, bare(m.label), "anchor", m.pick));
+    else if (binSource === "commercial") markers.forEach((m) => m.kind === "brand" && push(m.L, m.C, m.H, m.hex, bare(m.label), "anchor", m.pick));
+    else if (binSource.startsWith("palette:")) {
+      const pal = (binPalettes || []).find((x) => `palette:${x.id}` === binSource);
+      (pal ? pal.colors : []).forEach((c) => push(c.L, c.C, c.H, c.hex, c.label || "", "anchor", [c.L, c.C, isFinite(c.H) ? c.H : 0]));
+    }
+    return { list: out, capped };
+  }, [binSource, anchors, markers, binPalettes]);
+  const markersShown = useMemo(
+    () => (binSource === "pins" ? markers.filter((m) => m.kind !== "pin") : binSource === "commercial" ? markers.filter((m) => m.kind !== "brand") : markers),
+    [binSource, markers],
+  );
+  const binOptions = useMemo(() => {
+    const nPins = markers.filter((m) => m.kind === "pin").length, nBrand = markers.length - nPins;
+    return [
+      { id: "anchors", label: "Anchors", n: anchors.length },
+      { id: "pins", label: "Pins", n: nPins },
+      { id: "commercial", label: "Commercial", n: nBrand },
+      ...(binPalettes || []).map((p) => ({ id: `palette:${p.id}`, label: p.name, n: (p.colors || []).length })),
+    ];
+  }, [anchors, markers, binPalettes]);
+  // a saved palette that was deleted: back to anchors
+  useEffect(() => {
+    if (binSource !== "anchors" && !binOptions.some((o) => o.id === binSource)) setBinSource("anchors");
+  }, [binOptions, binSource]);
+
   // Engine lifetime: one WebGL context per mount, released on unmount.
   useEffect(() => {
     let dead = false;
@@ -5009,8 +5079,8 @@ const ViewSpaceInner = ({
   // While another tab is showing, the view stays mounted (no rebuild, no new
   // WebGL context on return) but takes no updates; they apply when shown.
   const eng = active ? engineRef.current : null;
-  useEffect(() => { ready && eng && eng.setAnchors(anchors); }, [ready, anchors, active]);
-  useEffect(() => { ready && eng && eng.setMarkers(markers); }, [ready, markers, active]);
+  useEffect(() => { ready && eng && eng.setAnchors(seeds.list); }, [ready, seeds, active]);
+  useEffect(() => { ready && eng && eng.setMarkers(markersShown); }, [ready, markersShown, active]);
   useEffect(() => { ready && eng && eng.setTether(tether); }, [ready, tether, active]);
   useEffect(() => { ready && eng && eng.setCursor(scrubL, scrubC, ((scrubH % 360) + 360) % 360); }, [ready, scrubL, scrubC, scrubH, active]);
   // A jump to a colour elsewhere in the app: zoom so names are readable. One
@@ -5186,6 +5256,7 @@ const ViewSpaceInner = ({
             INFO[big].long,
             React.createElement("span", { className: "font-mono font-normal text-slate-400" }, INFO[big].value),
           ),
+        React.createElement(SpaceBinSource, { value: binSource, onChange: setBinSource, options: binOptions, capped: seeds.capped, compact: narrow }),
         React.createElement(SpacePresets, { value: presetOf(big), onChange: (id) => setPreset(big, id), compact: narrow }),
         big !== "3d" && React.createElement(SpaceIconButton, { icon: "rotate-ccw", title: "Reset zoom", onClick: () => reset(big) }),
         big !== "3d" && React.createElement(SpaceIconButton, { icon: "minimize-2", title: "Back to the 3D view", onClick: () => maximize("3d") }),
@@ -5217,7 +5288,7 @@ const ViewSpaceInner = ({
         ),
       ),
       // status
-      status.phase !== "ready" && !(status.phase === "empty" && markers.length) &&
+      status.phase !== "ready" && !(status.phase === "empty" && markersShown.length) &&
         React.createElement(
           "div",
           { className: "absolute inset-0 flex items-center justify-center pointer-events-none z-0" },
@@ -19896,6 +19967,18 @@ const AppUI = ({
   setTetheringPinId,
 }) => {
   const spaceSeenRef = useRef(false);
+  // Palettes the Explore bins can be built around: the working one and the saved ones.
+  const binPalettes = useMemo(() => {
+    const conv = (items) =>
+      (items || []).filter((it) => it && isFinite(it.L) && isFinite(it.C)).map((it) => {
+        const info = getPaletteItemInfo(it);
+        return { L: it.L, C: it.C, H: isFinite(it.H) ? it.H : 0, hex: info.hex, label: info.displayName };
+      });
+    return [
+      { id: "current", name: "Palette", colors: conv(palette) },
+      ...(savedPalettes || []).map((p) => ({ id: p.id, name: p.name || "Saved palette", colors: conv(p.colors) })),
+    ];
+  }, [palette, savedPalettes, getPaletteItemInfo]);
   // Per-tab list state driven by the shared toolbar (Explore and Match keep
   // sharing the viewport search and Match keeps the app's sort, as before).
   const TABS_KEY = "color-samificator-tabs";
@@ -22361,6 +22444,7 @@ const AppUI = ({
                 onPresetSummary: setExplorePreset,
                 handlePointClick,
                 groupSettings,
+                binPalettes,
                 onCursor: (L, C, H) => {
                   setScrubL(L);
                   setScrubC(C);
