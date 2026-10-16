@@ -8884,6 +8884,244 @@ const batchApplyRecord = (rec, ch, kind) => {
   return out;
 };
 
+// ─── Gradient ────────────────────────────────────────────────────────────────
+// Steps between two colours, three ways:
+//   straight line   — a straight path through OkLab (complements pass near grey)
+//   hue arc         — lightness and chroma move evenly while the hue turns
+//   even saturation — like the arc, but each step keeps the same share of the
+//                     most chroma the screen can show at its lightness and hue,
+//                     so the middle neither dulls nor runs out of gamut
+const GRADIENT_PREF_KEY = "csam-gradient-v1";
+const GRADIENT_METHODS = [
+  { id: "line", label: "Straight line", hint: "a straight path through OkLab; opposite hues pass close to grey" },
+  { id: "arc", label: "Hue arc", hint: "lightness and chroma change evenly while the hue turns round the wheel" },
+  { id: "sat", label: "Even saturation", hint: "the hue turns while every step keeps the same share of the most vivid colour available" },
+];
+const gradMaxChroma = (L, H) => {
+  if (!(L > 0) || !(L < 1)) return 0;
+  let lo = 0, hi = 0.5;
+  for (let i = 0; i < 18; i++) {
+    const mid = (lo + hi) / 2;
+    if (fastInGamutSrgb(L, mid, H)) lo = mid; else hi = mid;
+  }
+  return lo;
+};
+const gradHueSpan = (h1, h2, longWay) => {
+  let d = ((((h2 - h1) % 360) + 540) % 360) - 180; // shortest, −180…180
+  if (longWay) d = d > 0 ? d - 360 : d + 360;
+  return d;
+};
+const gradientSteps = (A, B, n, method, longWay) => {
+  const N = Math.max(2, Math.min(64, Math.round(n)));
+  const grey = 1e-4;
+  // a grey end has no hue of its own: borrow the other end's
+  const hA = A.C < grey ? B.H : A.H, hB = B.C < grey ? A.H : B.H;
+  const out = [];
+  for (let i = 0; i < N; i++) {
+    const t = i / (N - 1);
+    const L = A.L + (B.L - A.L) * t;
+    let C, H;
+    if (method === "line") {
+      const ra = (hA * Math.PI) / 180, rb = (hB * Math.PI) / 180;
+      const a = A.C * Math.cos(ra) + (B.C * Math.cos(rb) - A.C * Math.cos(ra)) * t;
+      const b = A.C * Math.sin(ra) + (B.C * Math.sin(rb) - A.C * Math.sin(ra)) * t;
+      C = Math.sqrt(a * a + b * b);
+      H = C < grey ? hA + gradHueSpan(hA, hB, false) * t : ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360;
+    } else {
+      H = (((hA + gradHueSpan(hA, hB, longWay) * t) % 360) + 360) % 360;
+      if (method === "sat") {
+        const mA = gradMaxChroma(A.L, hA), mB = gradMaxChroma(B.L, hB);
+        const sA = mA > 0 ? Math.min(1, A.C / mA) : 0, sB = mB > 0 ? Math.min(1, B.C / mB) : 0;
+        C = (sA + (sB - sA) * t) * gradMaxChroma(L, H);
+      } else C = A.C + (B.C - A.C) * t;
+    }
+    // the two ends stay exactly what was picked
+    if (i === 0) out.push({ L: A.L, C: A.C, H: A.H });
+    else if (i === N - 1) out.push({ L: B.L, C: B.C, H: B.H });
+    else out.push({ L, C: Math.max(0, C), H });
+  }
+  return out;
+};
+const GradientPanel = ({ L, C, H, onPick, onAddToPalette }) => {
+  const cursor = { L: L || 0, C: C || 0, H: H || 0 };
+  const [st, setSt] = useState(() => {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(GRADIENT_PREF_KEY) || "null"); } catch (e) { saved = null; }
+    if (saved && saved.a && saved.b) return saved;
+    return {
+      a: cursor,
+      b: (() => {
+        // the opposite hue at the opposite lightness, kept inside the screen's gamut
+        const bL = Math.min(0.9, Math.max(0.25, 1 - cursor.L)), bH = (cursor.H + 180) % 360;
+        return { L: bL, C: Math.min(cursor.C, gradMaxChroma(bL, bH) * 0.98), H: bH };
+      })(),
+      steps: 7, method: "arc", longWay: false,
+    };
+  });
+  const set = (patch) =>
+    setSt((p) => {
+      const n = { ...p, ...patch };
+      try { localStorage.setItem(GRADIENT_PREF_KEY, JSON.stringify(n)); } catch (e) {}
+      return n;
+    });
+  const steps = useMemo(() => gradientSteps(st.a, st.b, st.steps, st.method, st.longWay), [st]);
+  const gaps = useMemo(() => {
+    const d = [];
+    for (let i = 1; i < steps.length; i++) d.push(fastDeltaEOK(steps[i - 1].L, steps[i - 1].C, steps[i - 1].H, steps[i].L, steps[i].C, steps[i].H));
+    return d;
+  }, [steps]);
+  const avgGap = gaps.length ? gaps.reduce((s, x) => s + x, 0) / gaps.length : 0;
+  const spread = gaps.length ? Math.max(...gaps) - Math.min(...gaps) : 0;
+  const [copied, setCopied] = useState(false);
+  const fill = (p) => DisplayGamut.css(p.L, p.C, p.H, lchDisplayHex(p.L, p.C, p.H));
+  const hexOf = (p) => itemHexOf(p);
+  const lab = "text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400";
+  const end = (k, label) => {
+    const p = st[k];
+    return React.createElement(
+      "div",
+      { className: "flex-1 min-w-0 flex flex-col gap-1" },
+      React.createElement(
+        "button",
+        {
+          type: "button", onClick: () => onPick([p.L, p.C, p.H]),
+          title: `Go to ${label}`,
+          className: "h-10 rounded-md border border-slate-200 dark:border-neutral-700 shadow-sm relative overflow-hidden hover:ring-2 hover:ring-sky-500",
+          style: { backgroundColor: fill(p) },
+        },
+        React.createElement("span", { className: "absolute top-1 left-1.5 text-[9px] font-black", style: { color: p.L > 0.65 ? "rgba(0,0,0,.7)" : "rgba(255,255,255,.85)" } }, label),
+      ),
+      React.createElement("span", { className: "text-[9px] font-mono text-slate-400 truncate" }, `L ${p.L.toFixed(2)} · C ${p.C.toFixed(3)} · H ${p.H.toFixed(0)}°`),
+      React.createElement(
+        "button",
+        {
+          type: "button", onClick: () => set({ [k]: { ...cursor } }),
+          className: "flex items-center justify-center gap-1 py-1 rounded border border-slate-200 dark:border-neutral-700 text-[9px] font-bold uppercase tracking-wider text-slate-600 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-neutral-800",
+          title: `Set ${label} to the colour at the cursor`,
+        },
+        React.createElement(Icon, { name: "crosshair", className: "w-3 h-3" }),
+        "Use cursor",
+      ),
+    );
+  };
+  const method = GRADIENT_METHODS.find((m) => m.id === st.method) || GRADIENT_METHODS[1];
+  return React.createElement(
+    "div",
+    { className: "flex flex-col gap-3" },
+    React.createElement(
+      "div",
+      { className: "flex items-start gap-2" },
+      end("a", "A"),
+      React.createElement(
+        "button",
+        {
+          type: "button", onClick: () => set({ a: st.b, b: st.a }), title: "Swap A and B", "aria-label": "Swap A and B",
+          className: "mt-3 p-1.5 rounded hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500",
+        },
+        React.createElement(Icon, { name: "arrow-left-right", className: "w-3.5 h-3.5" }),
+      ),
+      end("b", "B"),
+    ),
+    React.createElement(
+      "div",
+      { className: "flex flex-col gap-1.5" },
+      React.createElement("span", { className: lab }, "Method"),
+      React.createElement(
+        "div",
+        { className: "flex gap-1", role: "radiogroup", "aria-label": "Gradient method" },
+        GRADIENT_METHODS.map((m) =>
+          React.createElement(
+            "button",
+            {
+              key: m.id, type: "button", role: "radio", "aria-checked": st.method === m.id, title: m.hint,
+              onClick: () => set({ method: m.id }),
+              className: `flex-1 px-1.5 py-1.5 rounded-md text-[9px] font-bold uppercase tracking-wider ${
+                st.method === m.id ? "bg-slate-900 text-white dark:bg-white dark:text-neutral-900" : "bg-slate-100 dark:bg-neutral-800 text-slate-600 dark:text-neutral-300 hover:bg-slate-200 dark:hover:bg-neutral-700"
+              }`,
+            },
+            m.label,
+          ),
+        ),
+      ),
+      React.createElement("span", { className: "text-[10px] text-slate-400 leading-snug" }, method.hint),
+      st.method !== "line" &&
+        React.createElement(
+          "label",
+          { className: "flex items-center gap-1.5 text-[10px] text-slate-500 dark:text-neutral-400 cursor-pointer" },
+          React.createElement("input", { type: "checkbox", checked: !!st.longWay, onChange: (e) => set({ longWay: e.target.checked }), className: "accent-sky-500" }),
+          "Go the long way round the hue wheel",
+        ),
+    ),
+    React.createElement(
+      "label",
+      { className: "flex items-center gap-2" },
+      React.createElement("span", { className: lab }, "Steps"),
+      React.createElement("input", {
+        type: "range", min: 2, max: 32, step: 1, value: st.steps, "aria-label": "Number of steps",
+        onChange: (e) => set({ steps: parseInt(e.target.value, 10) }),
+        className: "flex-1 accent-sky-500 cursor-pointer",
+      }),
+      React.createElement("input", {
+        type: "number", min: 2, max: 64, value: st.steps, "aria-label": "Number of steps (value)",
+        onChange: (e) => { const n = parseInt(e.target.value, 10); if (n >= 2 && n <= 64) set({ steps: n }); },
+        className: "w-12 bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-1 py-0.5 text-[10px] font-mono text-slate-700 dark:text-neutral-200 outline-none focus:border-sky-500",
+      }),
+    ),
+    React.createElement(
+      "div",
+      { className: "flex rounded-md overflow-hidden border border-slate-200 dark:border-neutral-700 shadow-sm" },
+      steps.map((p, i) => {
+        const out = !fastInGamutSrgb(p.L, p.C, p.H);
+        return React.createElement(
+          "button",
+          {
+            key: i, type: "button", onClick: () => onPick([p.L, p.C, p.H]),
+            title: `Step ${i + 1} · ${hexOf(p)} · L ${p.L.toFixed(3)} C ${p.C.toFixed(3)} H ${p.H.toFixed(1)}°${out ? " · outside this screen's gamut" : ""}`,
+            className: "relative flex-1 h-12 min-w-0 hover:z-10 hover:ring-2 hover:ring-sky-500 hover:ring-inset",
+            style: { backgroundColor: fill(p) },
+          },
+          out && React.createElement("span", {
+            className: "absolute inset-0 pointer-events-none",
+            style: { backgroundImage: "repeating-linear-gradient(45deg, rgba(0,0,0,0.2), rgba(0,0,0,0.2) 3px, rgba(255,255,255,0.2) 3px, rgba(255,255,255,0.2) 6px)" },
+          }),
+        );
+      }),
+    ),
+    React.createElement(
+      "span",
+      { className: "text-[10px] text-slate-400" },
+      `${steps.length} steps · ΔE ${avgGap.toFixed(2)} apart on average${gaps.length > 1 ? ` (varies by ${spread.toFixed(2)})` : ""}`,
+    ),
+    React.createElement(
+      "div",
+      { className: "flex gap-2" },
+      React.createElement(
+        "button",
+        {
+          type: "button", onClick: () => onAddToPalette(steps),
+          className: "flex-1 py-1.5 bg-sky-500 hover:bg-sky-600 text-white font-bold text-[10px] uppercase tracking-wider rounded flex items-center justify-center gap-1",
+        },
+        React.createElement(Icon, { name: "plus", className: "w-3.5 h-3.5" }),
+        "Add to palette",
+      ),
+      React.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: () => {
+            const txt = steps.map(hexOf).join(", ");
+            try { navigator.clipboard.writeText(txt).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); } catch (e) {}
+          },
+          className: "py-1.5 px-3 border border-slate-300 dark:border-neutral-700 hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-700 dark:text-neutral-300 font-bold text-[10px] uppercase tracking-wider rounded flex items-center justify-center gap-1",
+          title: "Copy the steps as hex codes",
+        },
+        React.createElement(Icon, { name: copied ? "check" : "copy", className: "w-3.5 h-3.5" }),
+        copied ? "Copied" : "Copy hex",
+      ),
+    ),
+  );
+};
+
 const ViewportSwatches = ({
   items,
   layout,
@@ -13419,7 +13657,7 @@ const App = () => {
       if (!pin && item.id && savedColors[item.id]?.type === "pin") {
         pin = savedColors[item.id];
       }
-      if (!pin) {
+      if (!pin && item.brand === undefined && item.erpCode) {
         pin = Object.values(savedColors).find(
           (sc) => sc.type === "pin" && sc.erpCode === item.erpCode,
         );
@@ -13460,7 +13698,9 @@ const App = () => {
       }
 
       if (item.brand !== undefined && item.originalIndex !== undefined) {
-        const cItem = colorData?.[item.brand]?.[item.originalIndex];
+        const cAt = colorData?.[item.brand]?.[item.originalIndex];
+        const cItem =
+          cAt && (!isFinite(cAt.L) || fastDeltaEOK(item.L, item.C, item.H, cAt.L, cAt.C, cAt.H) < 1) ? cAt : null;
         if (cItem) {
           if (!image) image = cItem.image || null;
           if (!sheen) sheen = cItem.sheen;
@@ -13471,6 +13711,7 @@ const App = () => {
         }
       }
 
+      if (image && !isImageRef(image)) image = null;
       return {
         hex,
         displayName,
@@ -15871,9 +16112,10 @@ const App = () => {
     let imageSrc = null;
     let brand = undefined;
     let originalIndex = undefined;
-    if (crosshair.activeCommercial) {
-      const match = colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
-      imageSrc = match?.image || null;
+    const cmAt = crosshair.activeCommercial && colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
+    if (cmAt && (!isFinite(cmAt.L) || fastDeltaEOK(scrubL, scrubC, scrubH, cmAt.L, cmAt.C, cmAt.H) < 1)) {
+      const match = cmAt;
+      imageSrc = match?.image && isImageRef(match.image) ? match.image : null;
       brand = crosshair.activeCommercial.brand;
       originalIndex = crosshair.activeCommercial.originalIndex;
     } else if (pinId && savedColors[pinId]) {
@@ -15945,9 +16187,10 @@ const App = () => {
     let imageSrc = null;
     let brand = undefined;
     let originalIndex = undefined;
-    if (crosshair.activeCommercial) {
-      const match = colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
-      imageSrc = match?.image || null;
+    const cmAt = crosshair.activeCommercial && colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
+    if (cmAt && (!isFinite(cmAt.L) || fastDeltaEOK(scrubL, scrubC, scrubH, cmAt.L, cmAt.C, cmAt.H) < 1)) {
+      const match = cmAt;
+      imageSrc = match?.image && isImageRef(match.image) ? match.image : null;
       brand = crosshair.activeCommercial.brand;
       originalIndex = crosshair.activeCommercial.originalIndex;
     } else if (pinId && savedColors[pinId]) {
@@ -15974,322 +16217,6 @@ const App = () => {
           : item,
       ),
     );
-  };
-  const generateAutoPalette = (type = "luxury_interior") => {
-    const schemeType = type || "luxury_interior";
-    const h0 = scrubH || 0;
-    const l0 = scrubL !== undefined && scrubL !== null ? scrubL : 0.65;
-    const c0 = scrubC !== undefined && scrubC !== null ? scrubC : 0.08;
-
-    // Helper functions for pure relative OKLCH math
-    const clampL = (val) => Math.max(0.06, Math.min(0.97, val));
-    const clampC = (val) => Math.max(0.004, Math.min(0.30, val));
-    const modH = (val) => ((val % 360) + 360) % 360;
-
-    // 60-30-10 Rule Metadata:
-    // 60% Dominant (4 swatches, 15% ratio each = 60%)
-    // 30% Secondary (2 swatches, 15% ratio each = 30%)
-    // 10% Accent (1 swatch, 10% ratio = 10%)
-    const roles = [
-      { group: "60%", name: "Dominant", ratio: 15 },
-      { group: "60%", name: "Dominant", ratio: 15 },
-      { group: "60%", name: "Dominant", ratio: 15 },
-      { group: "60%", name: "Dominant", ratio: 15 },
-      { group: "30%", name: "Secondary", ratio: 15 },
-      { group: "30%", name: "Secondary", ratio: 15 },
-      { group: "10%", name: "Accent", ratio: 10 }
-    ];
-
-    let hues = [];
-    let Ls = [];
-    let Cs = [];
-    let names = [];
-
-    switch (schemeType) {
-      case "luxury_interior":
-      case "creative_blend":
-      default:
-        // Signature 60-30-10 Architectural OKLCH Interior Suite
-        // 60% DOMINANT (4 Swatches): Plaster Wall, Primary Cabinetry, Secondary Millwork, Dark Trim
-        // 30% SECONDARY (2 Swatches): Island / Upholstery, Honed Marble Countertop
-        // 10% ACCENT (1 Swatch): Brushed Metal Hardware & Pop
-        hues = [
-          h0,                     // Wall Plaster (60%)
-          h0,                     // Primary Cabinetry (60%)
-          modH(h0 + 10),          // Secondary Millwork (60%)
-          h0,                     // Dark Trim & Base (60%)
-          modH(h0 - 15),          // Island / Upholstery (30%)
-          modH(h0 - 8),           // Marble Countertop (30%)
-          modH(h0 + 38)           // Hardware Accent (10%)
-        ];
-        Ls = [
-          clampL(l0 + 0.28),
-          l0,
-          clampL(l0 - 0.12),
-          clampL(l0 - 0.30),
-          clampL(l0 - 0.08),
-          clampL(l0 + 0.22),
-          clampL(l0 + 0.06)
-        ];
-        Cs = [
-          clampC(c0 * 0.35),
-          c0,
-          clampC(c0 * 0.85),
-          clampC(c0 * 0.65),
-          clampC(c0 * 0.90),
-          clampC(c0 * 0.40),
-          clampC(c0 * 1.25)
-        ];
-        names = [
-          "60% Dominant — Plaster Wall Canvas",
-          "60% Dominant — Primary Cabinetry Finish",
-          "60% Dominant — Secondary Millwork Tonal",
-          "60% Dominant — Architectural Trim & Shade",
-          "30% Secondary — Island & Upholstery",
-          "30% Secondary — Honed Marble Countertop",
-          "10% Accent — Metal Hardware & Pop"
-        ];
-        break;
-
-      case "quiet_luxury":
-      case "monochromatic":
-      case "shades":
-      case "monochromatic_layers":
-        // Quiet Luxury Monochromatic Spectrum (60-30-10 Rule)
-        // 60% DOMINANT (4 Swatches): Light Alabaster to Natural Wood
-        // 30% SECONDARY (2 Swatches): Deep Oak to Smoked Walnut
-        // 10% ACCENT (1 Swatch): Warm Bronze / Metallic Detail
-        hues = [h0, h0, h0, h0, h0, h0, modH(h0 + 25)];
-        Ls = [
-          clampL(l0 + 0.28),
-          clampL(l0 + 0.16),
-          l0,
-          clampL(l0 - 0.14),
-          clampL(l0 - 0.26),
-          clampL(l0 - 0.38),
-          clampL(l0 - 0.05)
-        ];
-        Cs = [
-          clampC(c0 * 0.35),
-          clampC(c0 * 0.60),
-          c0,
-          clampC(c0 * 0.85),
-          clampC(c0 * 0.75),
-          clampC(c0 * 0.50),
-          clampC(c0 * 1.20)
-        ];
-        names = [
-          "60% Dominant — Alabaster Wall Finish",
-          "60% Dominant — Sand Lime Plaster",
-          "60% Dominant — Primary Cabinetry Finish",
-          "60% Dominant — Natural Wood Grain",
-          "30% Secondary — Deep Oak Millwork",
-          "30% Secondary — Smoked Walnut Grounding",
-          "10% Accent — Warm Bronze Metallic Pop"
-        ];
-        break;
-
-      case "warm_wood_stone":
-      case "analogous":
-        // Warm Wood & Stone Organic Harmony (60-30-10 Rule)
-        // 60% DOMINANT (4 Swatches): Limestone Wall, Primary Wood, Honey Oak, Walnut Shade
-        // 30% SECONDARY (2 Swatches): Travertine Stone & Leather Upholstery
-        // 10% ACCENT (1 Swatch): Aged Brass Detail
-        hues = [
-          modH(h0 - 15),
-          h0,
-          modH(h0 + 12),
-          modH(h0 - 8),
-          modH(h0 + 22),
-          modH(h0 - 18),
-          modH(h0 + 35)
-        ];
-        Ls = [
-          clampL(l0 + 0.24),
-          l0,
-          clampL(l0 + 0.10),
-          clampL(l0 - 0.22),
-          clampL(l0 + 0.18),
-          clampL(l0 - 0.10),
-          clampL(l0 + 0.08)
-        ];
-        Cs = [
-          clampC(c0 * 0.45),
-          c0,
-          clampC(c0 * 0.80),
-          clampC(c0 * 0.70),
-          clampC(c0 * 0.50),
-          clampC(c0 * 0.90),
-          clampC(c0 * 1.25)
-        ];
-        names = [
-          "60% Dominant — Limestone Wall Base",
-          "60% Dominant — Main Cabinetry Finish",
-          "60% Dominant — Honey Oak Grain",
-          "60% Dominant — Deep Walnut Shade",
-          "30% Secondary — Travertine Stone Surface",
-          "30% Secondary — Leather Upholstery",
-          "10% Accent — Aged Brass Detail"
-        ];
-        break;
-
-      case "statement_millwork":
-      case "triadic":
-        // High-Contrast Architectural Millwork (60-30-10 Rule)
-        // 60% DOMINANT (4 Swatches): Crisp Architectural Wall, Deep Statement Cabinetry, Mid-Tone, Baseboard
-        // 30% SECONDARY (2 Swatches): Calacatta Quartz & Secondary Island Finish
-        // 10% ACCENT (1 Swatch): Polished Brass / Hardware Pop
-        hues = [
-          h0,                     // Wall (60%)
-          h0,                     // Statement Dark Cabinetry (60%)
-          modH(h0 + 8),           // Mid-Tone Transition (60%)
-          h0,                     // Baseboard Trim (60%)
-          modH(h0 - 12),          // Quartz Countertop (30%)
-          modH(h0 + 15),          // Secondary Island (30%)
-          modH(h0 + 40)           // Polished Brass (10%)
-        ];
-        Ls = [
-          clampL(l0 + 0.32),
-          clampL(l0 - 0.24),
-          l0,
-          clampL(l0 - 0.38),
-          clampL(l0 + 0.26),
-          clampL(l0 - 0.12),
-          clampL(l0 + 0.08)
-        ];
-        Cs = [
-          clampC(c0 * 0.30),
-          c0,
-          clampC(c0 * 0.85),
-          clampC(c0 * 0.50),
-          clampC(c0 * 0.35),
-          clampC(c0 * 0.90),
-          clampC(c0 * 1.30)
-        ];
-        names = [
-          "60% Dominant — Pure Architectural Wall",
-          "60% Dominant — Statement Dark Cabinetry",
-          "60% Dominant — Mid-Tone Millwork Finish",
-          "60% Dominant — Espresso Trim & Base",
-          "30% Secondary — Calacatta Quartz Surface",
-          "30% Secondary — Secondary Island Finish",
-          "10% Accent — Polished Brass Hardware"
-        ];
-        break;
-
-      case "muted_complement":
-      case "complementary":
-      case "split_complementary":
-      case "tetradic":
-        // Symmetrical OKLCH Complementary Matrix (60-30-10 Rule)
-        // 60% DOMINANT (4 Swatches): Primary Wall, Main Cabinetry, Soft Base Tint, Dark Shade
-        // 30% SECONDARY (2 Swatches): Muted Complement Accent Wall & Accent Cabinetry
-        // 10% ACCENT (1 Swatch): Warm Metal Detail
-        const hComp = modH(h0 + 180);
-        hues = [
-          h0,                     // Primary Wall (60%)
-          h0,                     // Main Cabinetry (60%)
-          h0,                     // Soft Base Tint (60%)
-          h0,                     // Dark Shade (60%)
-          hComp,                  // Complement Accent Wall (30%)
-          hComp,                  // Complement Cabinetry (30%)
-          modH(h0 + 32)           // Warm Metal Detail (10%)
-        ];
-        Ls = [
-          clampL(l0 + 0.26),
-          l0,
-          clampL(l0 + 0.12),
-          clampL(l0 - 0.26),
-          clampL(l0 + 0.20),
-          l0,
-          clampL(l0 + 0.08)
-        ];
-        Cs = [
-          clampC(c0 * 0.40),
-          c0,
-          clampC(c0 * 0.70),
-          clampC(c0 * 0.75),
-          clampC(c0 * 0.45),
-          clampC(c0 * 0.75),
-          clampC(c0 * 1.20)
-        ];
-        names = [
-          "60% Dominant — Primary Wall Canvas",
-          "60% Dominant — Main Cabinetry Finish",
-          "60% Dominant — Soft Base Tint",
-          "60% Dominant — Dark Millwork Shade",
-          "30% Secondary — Organic Muted Accent Wall",
-          "30% Secondary — Muted Accent Cabinetry",
-          "10% Accent — Warm Metal Detail"
-        ];
-        break;
-
-      case "atmospheric_interior":
-      case "atmospheric":
-        // Soft Atmospheric OKLCH Wash (60-30-10 Rule)
-        // 60% DOMINANT (4 Swatches): Plaster, Trim, Core Selection, Ambient Shadow
-        // 30% SECONDARY (2 Swatches): Marble Countertop, Secondary Wash
-        // 10% ACCENT (1 Swatch): Focal Hardware Pop
-        hues = [
-          h0,                     // Plaster (60%)
-          h0,                     // Linen Trim (60%)
-          modH(h0 + 8),           // Core Selection (60%)
-          modH(h0 - 8),           // Shadow (60%)
-          modH(h0 + 15),          // Marble Countertop (30%)
-          modH(h0 + 8),           // Secondary Wash (30%)
-          modH(h0 + 35)           // Hardware Pop (10%)
-        ];
-        Ls = [
-          clampL(l0 + 0.28),
-          clampL(l0 + 0.14),
-          l0,
-          clampL(l0 - 0.18),
-          clampL(l0 + 0.22),
-          clampL(l0 - 0.08),
-          clampL(l0 + 0.06)
-        ];
-        Cs = [
-          clampC(c0 * 0.30),
-          clampC(c0 * 0.55),
-          c0,
-          clampC(c0 * 0.80),
-          clampC(c0 * 0.35),
-          clampC(c0 * 0.90),
-          clampC(c0 * 1.25)
-        ];
-        names = [
-          "60% Dominant — Morning Light Plaster",
-          "60% Dominant — Soft Linen Trim",
-          "60% Dominant — Core Finish Selection",
-          "60% Dominant — Ambient Shadow Tone",
-          "30% Secondary — Soft Marble Countertop",
-          "30% Secondary — Secondary Millwork Wash",
-          "10% Accent — Focal Hardware Pop"
-        ];
-        break;
-    }
-
-    const newItems = hues.map((hue, i) => {
-      const targetL = Ls[i];
-      const targetC = Cs[i];
-      return {
-        id: crypto.randomUUID(),
-        L: targetL,
-        C: targetC,
-        H: hue,
-        erpCode: null,
-        nounId: null,
-        pinId: null,
-        image: null,
-        brand: undefined,
-        originalIndex: undefined,
-        nameOverride: names[i],
-        roleGroup: roles[i].group,
-        roleName: roles[i].name,
-        ratio: roles[i].ratio
-      };
-    });
-    setPalette(newItems);
   };
   const isLight = scrubL > 0.65;
   const activeColorObj = new Color("oklch", [scrubL, scrubC, scrubH]);
@@ -16586,7 +16513,6 @@ const App = () => {
     groupSettings,
     setGroupSettings,
     palette,
-    generateAutoPalette,
     setPalette,
     savedPalettes,
     setSavedPalettes,
@@ -19787,7 +19713,6 @@ const AppUI = ({
   groupSettings,
   setGroupSettings,
   palette,
-  generateAutoPalette,
   setPalette,
   savedPalettes,
   setSavedPalettes,
@@ -21385,7 +21310,7 @@ const AppUI = ({
                         }`,
                         style: { backgroundColor: h },
                         onClick: () => handleUpdate([item.L, item.C, item.H], item.spectral, item.brand !== undefined ? { brand: item.brand, originalIndex: item.originalIndex } : null),
-                        title: `${displayName} (${item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")} ${item.roleName || (idx < 4 ? "Dominant" : idx < 6 ? "Secondary" : "Accent")} - #${item.erpCode}) - Drag to reorder`,
+                        title: `${displayName} · #${info.erpCode} · drag to reorder`,
                       },
                       React.createElement(
                         "div",
@@ -21432,19 +21357,6 @@ const AppUI = ({
                           className: "w-2 h-2",
                         }),
                       ),
-                      React.createElement(
-                        "div",
-                        {
-                          className: `absolute bottom-0.5 right-0.5 px-1 py-0.2 rounded text-[7px] font-black uppercase tracking-tight pointer-events-none drop-shadow ${
-                            (item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")) === "60%"
-                              ? "bg-amber-950/80 text-amber-200 border border-amber-500/30"
-                              : (item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")) === "30%"
-                              ? "bg-sky-950/80 text-sky-200 border border-sky-500/30"
-                              : "bg-emerald-950/90 text-emerald-200 border border-emerald-500/30"
-                          }`
-                        },
-                        item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")
-                      ),
                     );
                   }),
                   React.createElement(
@@ -21460,28 +21372,6 @@ const AppUI = ({
                       className: "w-5 h-5",
                     }),
                   ),
-                ),
-                React.createElement(
-                  "div",
-                  { className: "flex gap-2 mt-1" },
-                  React.createElement(
-                    "select",
-                    {
-                      className: "flex-1 bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1.5 text-[10px] uppercase font-bold tracking-wider text-slate-700 dark:text-neutral-300 outline-none hover:bg-slate-100 hover:dark:bg-neutral-800 cursor-pointer transition-colors",
-                      onChange: (e) => {
-                        generateAutoPalette(e.target.value);
-                        e.target.value = "";
-                      },
-                      value: ""
-                    },
-                    React.createElement("option", { value: "", disabled: true }, "🏛️ Auto-Generate 60-30-10 Palette..."),
-                    React.createElement("option", { value: "luxury_interior" }, "🏛️ Signature 60-30-10 Interior Suite (4 Dominant, 2 Secondary, 1 Accent)"),
-                    React.createElement("option", { value: "quiet_luxury" }, "🤍 Quiet Luxury Tonal Suite (60-30-10 Rule)"),
-                    React.createElement("option", { value: "warm_wood_stone" }, "🪵 Warm Wood & Stone Harmony (60-30-10 Rule)"),
-                    React.createElement("option", { value: "statement_millwork" }, "♟️ High-Contrast Millwork (60-30-10 Rule)"),
-                    React.createElement("option", { value: "muted_complement" }, "🍃 Muted Organic Complement (60-30-10 Rule)"),
-                    React.createElement("option", { value: "atmospheric_interior" }, "🌌 Soft Atmospheric Interior (60-30-10 Rule)")
-                  )
                 ),
                 palette.length > 0 &&
                   React.createElement(
@@ -21534,6 +21424,23 @@ const AppUI = ({
                     ),
                   ),
               ),
+            ),
+            React.createElement(
+              CollapsiblePanel,
+              { title: "Gradient", icon: "blend", defaultOpen: false },
+              React.createElement(GradientPanel, {
+                L: scrubL, C: scrubC, H: scrubH,
+                onPick: (lch) => handleUpdate(lch),
+                onAddToPalette: (steps) =>
+                  setPalette((prev) => [
+                    ...prev,
+                    ...steps.map((p) => ({
+                      id: crypto.randomUUID(), L: p.L, C: p.C, H: p.H,
+                      erpCode: getExactErpCode(p.L, p.C, p.C === 0 ? 0 : p.H),
+                      nounId: null, pinId: null, image: null,
+                    })),
+                  ]),
+              }),
             ),
             React.createElement(
               CollapsiblePanel,
@@ -22920,20 +22827,6 @@ const AppUI = ({
         },
         React.createElement(
           "div",
-          { className: "absolute top-8 left-8 z-[110] flex items-center gap-3 bg-black/60 backdrop-blur-md border border-white/20 px-5 py-2.5 rounded-full text-white shadow-xl pointer-events-none select-none" },
-          React.createElement("span", { className: "text-amber-400 font-black text-xs tracking-wider uppercase flex items-center gap-1.5" },
-            React.createElement(Icon, { name: "layers", className: "w-4 h-4" }),
-            "60-30-10 Interior Design Rule"
-          ),
-          React.createElement("span", { className: "text-white/30 text-xs" }, "•"),
-          React.createElement("span", { className: "text-amber-200 text-xs font-bold" }, "60% Dominant (4 Swatches)"),
-          React.createElement("span", { className: "text-white/30 text-xs" }, "•"),
-          React.createElement("span", { className: "text-sky-200 text-xs font-bold" }, "30% Secondary (2 Swatches)"),
-          React.createElement("span", { className: "text-white/30 text-xs" }, "•"),
-          React.createElement("span", { className: "text-emerald-300 text-xs font-bold" }, "10% Accent (1 Swatch)")
-        ),
-        React.createElement(
-          "div",
           { className: "absolute top-8 right-8 z-[110] flex gap-2" },
           React.createElement(
             "button",
@@ -23056,7 +22949,7 @@ const AppUI = ({
                 }`,
                 style: {
                   backgroundColor: h,
-                  flex: `${item.ratio || (idx < 4 ? 15 : idx < 6 ? 15 : 10)} 1 0%`
+                  flex: "1 1 0%"
                 },
                 onClick: () => {
                   handleUpdate(
@@ -23072,17 +22965,6 @@ const AppUI = ({
                 { className: "absolute top-4 left-4 z-20 flex items-center gap-1.5 opacity-60 group-hover:opacity-100 transition-opacity bg-black/40 backdrop-blur-md px-3 py-1.5 rounded-full text-white text-[11px] font-bold tracking-wider uppercase pointer-events-none select-none shadow-md" },
                 React.createElement(Icon, { name: "grip-vertical", className: "w-3.5 h-3.5" }),
                 "Drag to reorder"
-              ),
-              React.createElement(
-                "div",
-                { className: `absolute top-4 right-4 z-20 flex items-center gap-1.5 backdrop-blur-md px-3 py-1.5 rounded-full text-white text-[11px] font-black tracking-widest uppercase pointer-events-none select-none shadow-md border border-white/20 ${
-                  (item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")) === "60%"
-                    ? "bg-amber-950/80 text-amber-200"
-                    : (item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")) === "30%"
-                    ? "bg-sky-950/80 text-sky-200"
-                    : "bg-emerald-950/90 text-emerald-200"
-                }` },
-                `${item.roleGroup || (idx < 4 ? "60%" : idx < 6 ? "30%" : "10%")} ${item.roleName || (idx < 4 ? "Dominant" : idx < 6 ? "Secondary" : "Accent")}`
               ),
               info.image &&
                 showFullscreenImageOverlay &&
