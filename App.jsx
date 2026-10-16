@@ -7386,7 +7386,7 @@ const GROUP_FIELDS = [
 ];
 const GROUP_FIELD = Object.fromEntries(GROUP_FIELDS.map((f) => [f.id, f]));
 const GROUP_SCOPE_FIELDS = {
-  pins: ["H", "L", "C", "colorGroup", "hueFamily", "material", "sheen", "visualTexture", "tactileTexture", "doorProfile", "tags", "notes"],
+  pins: ["H", "L", "C", "colorGroup", "hueFamily", "material", "sheen", "visualTexture", "tactileTexture", "doorProfile", "tags", "notes", "deltaE"],
   db: ["H", "L", "C", "colorGroup", "hueFamily", "brand", "material", "sheen", "visualTexture", "tactileTexture", "doorProfile", "tags", "notes", "spectral", "deltaE"],
   anchors: ["H", "L", "C", "colorGroup", "hueFamily"],
 };
@@ -7949,9 +7949,9 @@ const itemHexOf = (it) => {
 const SPEC_FIELD_IDS = ["material", "sheen", "visualTexture", "tactileTexture", "doorProfile"];
 const COLOUR_FIELD_IDS = ["L", "C", "H", "hex", "colorGroup"];
 const VIEW_FIELD_SETS = {
-  "pins:gallery": { avail: ["name", "code", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "code", ...SPEC_FIELD_IDS, "tags", "notes"] },
+  "pins:gallery": { avail: ["name", "deltaE", "code", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "code", ...SPEC_FIELD_IDS, "tags", "notes"] },
   "pins:table": { avail: ["code", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["code", "L", "C", "H", ...SPEC_FIELD_IDS, "tags", "notes"] },
-  "pins:matrix": { avail: ["name", "code", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "notes"] },
+  "pins:matrix": { avail: ["name", "deltaE", "code", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "notes"] },
   "db:gallery": { avail: ["name", "deltaE", "code", "brand", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "deltaE", "code", "brand", "notes"] },
   "db:table": {
     avail: ["brand", "sheen", "doorProfile", "visualTexture", "tactileTexture", "material", "code", "deltaE", "L", "C", "H", "tags", "notes"],
@@ -8612,6 +8612,276 @@ const pinTwinNotesIndex = (savedColors) => {
     if (!m.has(k)) m.set(k, n);
   });
   return m;
+};
+
+// ─── Batch edit ──────────────────────────────────────────────────────────────
+// Change the specs, notes, tags (and, for pins, the name; for commercial
+// colours, the photo) of every selected colour in one go. Each field starts on
+// "keep", so only what is touched changes; the summary at the bottom says
+// exactly what will.
+const BATCH_SPECS = [
+  { key: "material", label: "Material", options: LABEL_OPTIONS.material },
+  { key: "sheen", label: "Sheen", options: LABEL_OPTIONS.sheen },
+  { key: "visualTexture", label: "Visual pattern", options: LABEL_OPTIONS.visualPattern },
+  { key: "tactileTexture", label: "Tactile texture", options: LABEL_OPTIONS.tactileTexture },
+  { key: "doorProfile", label: "Profile", options: LABEL_OPTIONS.doorProfile },
+];
+const BATCH_KEEP = "\u0000keep", BATCH_CLEAR = "\u0000clear";
+// A text field's new value under a batch rule.
+const batchText = (old, rule) => {
+  const o = typeof old === "string" ? old : "";
+  if (!rule || rule.mode === "keep") return o;
+  const t = rule.text || "";
+  if (rule.mode === "replace") return t;
+  if (rule.mode === "clear") return "";
+  if (rule.mode === "append") return o.trim() ? `${o.replace(/\s+$/, "")}\n${t}` : t;
+  if (rule.mode === "prepend") return o.trim() ? `${t}\n${o.replace(/^\s+/, "")}` : t;
+  if (rule.mode === "find") return rule.find ? o.split(rule.find).join(t) : o;
+  return o;
+};
+const batchTags = (old, add, remove) => {
+  const rm = new Set(remove.map((t) => t.toLowerCase()));
+  const out = (old || []).filter((t) => !rm.has(String(t).toLowerCase()));
+  add.forEach((t) => { if (!out.some((x) => String(x).toLowerCase() === t.toLowerCase())) out.push(t); });
+  return out;
+};
+// Does a change set do anything?
+const batchHasChanges = (ch) =>
+  Object.keys(ch.specs).length > 0 || ch.notes.mode !== "keep" || ch.tags.add.length > 0 || ch.tags.remove.length > 0 ||
+  (ch.name && ch.name.mode !== "keep") || (ch.image && ch.image.mode !== "keep");
+
+const BatchEditModal = ({ kind, items, allTags = [], onApply, onClose }) => {
+  const [specs, setSpecs] = useState({});
+  const [notes, setNotes] = useState({ mode: "keep", text: "", find: "" });
+  const [name, setName] = useState({ mode: "keep", text: "" });
+  const [image, setImage] = useState({ mode: "keep", text: "" });
+  const [addDraft, setAddDraft] = useState("");
+  const [removeTags, setRemoveTags] = useState([]);
+  useEffect(() => {
+    const key = (e) => e.key === "Escape" && onClose();
+    document.addEventListener("keydown", key);
+    return () => document.removeEventListener("keydown", key);
+  }, []);
+  const n = items.length;
+  const specSummary = (f) => {
+    const counts = new Map();
+    items.forEach((it) => { const v = specOption(f.options, it[f.key]) || ""; counts.set(v, (counts.get(v) || 0) + 1); });
+    if (counts.size === 1) { const v = [...counts.keys()][0]; return v ? `All ${v}` : "None set"; }
+    return `Mixed · ${[...counts.entries()].sort((a, b) => b[1] - a[1]).map(([v, c]) => `${v || "none"} ${c}`).slice(0, 3).join(", ")}${counts.size > 3 ? "…" : ""}`;
+  };
+  const tagCounts = useMemo(() => {
+    const m = new Map();
+    items.forEach((it) => (it.tags || []).forEach((t) => {
+      const k = String(t).toLowerCase();
+      const cur = m.get(k) || { name: String(t), n: 0 };
+      cur.n++; m.set(k, cur);
+    }));
+    return [...m.values()].sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
+  }, [items]);
+  const withNotes = items.filter((it) => (typeof it.notes === "string" ? it.notes : it.displayNotes || "").trim()).length;
+  const addTags = [...new Set(addDraft.split(/[,\n]/).map((s) => s.trim()).filter(Boolean))];
+  const changes = {
+    specs: Object.fromEntries(Object.entries(specs).filter(([, v]) => v !== BATCH_KEEP).map(([k, v]) => [k, v === BATCH_CLEAR ? "" : v])),
+    notes,
+    tags: { add: addTags, remove: removeTags },
+    name: kind === "pins" ? name : null,
+    image: kind === "db" ? image : null,
+  };
+  const summary = [
+    ...Object.keys(changes.specs).map((k) => BATCH_SPECS.find((f) => f.key === k).label.toLowerCase()),
+    notes.mode !== "keep" && "notes",
+    addTags.length > 0 && `+${addTags.length} tag${addTags.length === 1 ? "" : "s"}`,
+    removeTags.length > 0 && `−${removeTags.length} tag${removeTags.length === 1 ? "" : "s"}`,
+    kind === "pins" && name.mode !== "keep" && "name",
+    kind === "db" && image.mode !== "keep" && "photo",
+  ].filter(Boolean);
+  const field = "bg-slate-50 dark:bg-neutral-800/60 border border-slate-200 dark:border-neutral-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-sky-500";
+  const lab = "text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400";
+  const section = (title, hint, ...kids) =>
+    React.createElement(
+      "section",
+      { className: "px-4 py-3 border-b border-slate-100 dark:border-neutral-800 flex flex-col gap-2" },
+      React.createElement(
+        "div",
+        { className: "flex items-baseline gap-2" },
+        React.createElement("h3", { className: "text-[10px] font-black uppercase tracking-widest text-slate-700 dark:text-neutral-200" }, title),
+        hint && React.createElement("span", { className: "text-[10px] text-slate-400" }, hint),
+      ),
+      ...kids,
+    );
+  const modes = (value, set, list) =>
+    React.createElement(
+      "div",
+      { className: "flex flex-wrap gap-1", role: "radiogroup" },
+      list.map(([id, label]) =>
+        React.createElement(
+          "button",
+          {
+            key: id, type: "button", role: "radio", "aria-checked": value.mode === id,
+            onClick: () => set({ ...value, mode: id }),
+            className: `px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider ${
+              value.mode === id ? "bg-slate-900 text-white dark:bg-white dark:text-neutral-900" : "bg-slate-100 dark:bg-neutral-800 text-slate-600 dark:text-neutral-300 hover:bg-slate-200 dark:hover:bg-neutral-700"
+            }`,
+          },
+          label,
+        ),
+      ),
+    );
+  const textRule = (value, set, opts) =>
+    React.createElement(
+      React.Fragment,
+      null,
+      modes(value, set, opts.modes),
+      value.mode === "find" &&
+        React.createElement(
+          "div",
+          { className: "grid grid-cols-2 gap-2" },
+          React.createElement("input", { value: value.find, onChange: (e) => set({ ...value, find: e.target.value }), placeholder: "Find…", "aria-label": `${opts.label}: find`, className: field }),
+          React.createElement("input", { value: value.text, onChange: (e) => set({ ...value, text: e.target.value }), placeholder: "Replace with…", "aria-label": `${opts.label}: replace with`, className: field }),
+        ),
+      ["replace", "append", "prepend"].includes(value.mode) &&
+        React.createElement(opts.multiline ? "textarea" : "input", {
+          value: value.text, rows: opts.multiline ? 3 : undefined,
+          onChange: (e) => set({ ...value, text: e.target.value }),
+          placeholder: opts.placeholder, "aria-label": opts.label,
+          className: `${field} ${opts.multiline ? "resize-y" : ""}`,
+        }),
+    );
+  return ReactDOM.createPortal(
+    React.createElement(
+      "div",
+      { className: "fixed inset-0 z-[120] flex items-center justify-center p-3 md:p-6", role: "dialog", "aria-modal": true, "aria-label": `Edit ${n} colours` },
+      React.createElement("div", { className: "absolute inset-0 bg-black/40", onClick: onClose }),
+      React.createElement(
+        "div",
+        { className: "relative w-full max-w-2xl max-h-full flex flex-col bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-neutral-800 overflow-hidden" },
+        // header: what is being edited
+        React.createElement(
+          "div",
+          { className: "flex items-center gap-2 px-4 py-3 border-b border-slate-200 dark:border-neutral-800" },
+          React.createElement(Icon, { name: "pencil-line", className: "w-4 h-4 text-slate-500" }),
+          React.createElement("h2", { className: "text-xs font-black uppercase tracking-widest text-slate-800 dark:text-neutral-100" }, `Edit ${n} ${kind === "pins" ? "pin" : "colour"}${n === 1 ? "" : "s"}`),
+          React.createElement(
+            "div",
+            { className: "flex -space-x-1 ml-2 overflow-hidden", "aria-hidden": true },
+            items.slice(0, 18).map((it, i) =>
+              React.createElement("span", { key: i, className: "w-4 h-4 rounded-[4px] ring-1 ring-white dark:ring-neutral-900", style: { backgroundColor: DisplayGamut.css(it.L, it.C, it.H, itemHexOf(it)) } }),
+            ),
+            n > 18 && React.createElement("span", { className: "pl-2 text-[10px] text-slate-400" }, `+${n - 18}`),
+          ),
+          React.createElement(
+            "button",
+            { onClick: onClose, title: "Close", "aria-label": "Close", className: "ml-auto p-1 rounded hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500" },
+            React.createElement(Icon, { name: "x", className: "w-4 h-4" }),
+          ),
+        ),
+        React.createElement(
+          "div",
+          { className: "flex-1 min-h-0 overflow-y-auto custom-scrollbar" },
+          section(
+            "Specs", "leave on Keep to leave as is",
+            React.createElement(
+              "div",
+              { className: "grid grid-cols-[110px_1fr_170px] gap-x-3 gap-y-1.5 items-center" },
+              BATCH_SPECS.map((f) => [
+                React.createElement("span", { key: `${f.key}l`, className: lab }, f.label),
+                React.createElement("span", { key: `${f.key}s`, className: "text-[10px] text-slate-500 dark:text-neutral-400 truncate", title: specSummary(f) }, specSummary(f)),
+                React.createElement(
+                  "select",
+                  {
+                    key: `${f.key}v`, value: specs[f.key] || BATCH_KEEP, "aria-label": `${f.label} for all`,
+                    onChange: (e) => setSpecs((p) => ({ ...p, [f.key]: e.target.value })),
+                    className: `${field} ${specs[f.key] && specs[f.key] !== BATCH_KEEP ? "border-sky-500 bg-sky-50 dark:bg-sky-500/10" : ""}`,
+                  },
+                  React.createElement("option", { value: BATCH_KEEP }, "Keep"),
+                  f.options.filter((o) => o !== "-").map((o) => React.createElement("option", { key: o, value: o }, o)),
+                  React.createElement("option", { value: BATCH_CLEAR }, "Clear (none)"),
+                ),
+              ]),
+            ),
+          ),
+          section(
+            "Notes", `${withNotes} of ${n} have notes`,
+            textRule(notes, setNotes, {
+              label: "Notes", multiline: true, placeholder: "Notes…",
+              modes: [["keep", "Keep"], ["replace", "Replace"], ["append", "Add to end"], ["prepend", "Add to start"], ["find", "Find & replace"], ["clear", "Clear"]],
+            }),
+          ),
+          section(
+            "Tags", tagCounts.length ? "click a tag to remove it from all" : "none yet",
+            React.createElement("input", {
+              value: addDraft, onChange: (e) => setAddDraft(e.target.value), list: "csam-batch-tags",
+              placeholder: "Add tags, separated by commas…", "aria-label": "Add tags", className: field,
+            }),
+            React.createElement("datalist", { id: "csam-batch-tags" }, allTags.slice(0, 500).map((t) => React.createElement("option", { key: t, value: t }))),
+            tagCounts.length > 0 &&
+              React.createElement(
+                "div",
+                { className: "flex flex-wrap gap-1" },
+                tagCounts.map((t) => {
+                  const off = removeTags.some((x) => x.toLowerCase() === t.name.toLowerCase());
+                  return React.createElement(
+                    "button",
+                    {
+                      key: t.name, type: "button", "aria-pressed": off,
+                      onClick: () => setRemoveTags((p) => (off ? p.filter((x) => x.toLowerCase() !== t.name.toLowerCase()) : [...p, t.name])),
+                      title: off ? "Will be removed from all; click to keep" : `On ${t.n} of ${n}; click to remove from all`,
+                      className: `px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${
+                        off ? "line-through bg-red-50 dark:bg-red-500/10 text-red-600 border-red-200 dark:border-red-500/30" : "bg-sky-50 dark:bg-sky-500/10 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-500/30"
+                      }`,
+                    },
+                    `${t.name} · ${t.n}`,
+                  );
+                }),
+              ),
+          ),
+          kind === "pins" &&
+            section(
+              "Name", "a name override replaces the anchor's name",
+              textRule(name, setName, { label: "Name override", placeholder: "Name…", modes: [["keep", "Keep"], ["replace", "Set"], ["find", "Find & replace"], ["clear", "Clear override"]] }),
+            ),
+          kind === "db" &&
+            section(
+              "Photo", "image URL shown on the swatch",
+              textRule(image, setImage, { label: "Image URL", placeholder: "https://…", modes: [["keep", "Keep"], ["replace", "Set"], ["clear", "Remove"]] }),
+            ),
+        ),
+        React.createElement(
+          "div",
+          { className: "flex items-center gap-2 px-4 py-3 border-t border-slate-200 dark:border-neutral-800 bg-slate-50/60 dark:bg-neutral-900" },
+          React.createElement(
+            "span",
+            { className: "text-[10px] text-slate-500 dark:text-neutral-400 truncate", role: "status" },
+            summary.length ? `Changes ${summary.join(", ")} on ${n} ${kind === "pins" ? "pin" : "colour"}${n === 1 ? "" : "s"}` : "Nothing to change yet",
+          ),
+          React.createElement("button", { onClick: onClose, className: "ml-auto px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-neutral-800" }, "Cancel"),
+          React.createElement(
+            "button",
+            {
+              onClick: () => { if (batchHasChanges(changes)) { onApply(changes); onClose(); } },
+              disabled: !batchHasChanges(changes),
+              className: "px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-sky-600 text-white hover:bg-sky-700 disabled:opacity-40 disabled:cursor-not-allowed",
+            },
+            `Apply to ${n}`,
+          ),
+        ),
+      ),
+    ),
+    document.body,
+  );
+};
+// The batch's edits on one record (pin or commercial colour).
+const batchApplyRecord = (rec, ch, kind) => {
+  const out = { ...rec };
+  Object.entries(ch.specs).forEach(([k, v]) => { out[k] = v; });
+  if (ch.notes.mode !== "keep") out.notes = batchText(rec.notes, ch.notes);
+  if (kind === "pins" && ch.name && ch.name.mode !== "keep") out.nameOverride = batchText(rec.nameOverride, ch.name);
+  if (kind === "db" && ch.image && ch.image.mode !== "keep") {
+    const v = batchText(rec.image, ch.image).trim();
+    if (v) out.image = v; else delete out.image;
+  }
+  if (kind === "db" && (ch.tags.add.length || ch.tags.remove.length)) out.tags = batchTags(rec.tags, ch.tags.add, ch.tags.remove);
+  return out;
 };
 
 const ViewportSwatches = ({
@@ -9767,6 +10037,7 @@ const ViewPinsInner = ({
   onOpenAveryModal,
   searchTerm: extSearch = "",
   layout: extLayout = "table",
+  cursorKey = "",
 }) => {
   // Sort, search and layout come from the shared toolbar. Tags are filtered
   // with the Filters builder's Tag field, like every other tab.
@@ -9893,6 +10164,13 @@ const ViewPinsInner = ({
 
   const sortedItemsBase = useMemo(() => {
     let items = [...filteredPinItems];
+    if (cursorKey) {
+      const [cL, cC, cH] = cursorKey.split(",").map(Number);
+      items = items.map((it) => {
+        const d = fastDeltaEOK(cL, cC, cH, it.L, it.C, it.H);
+        return { ...it, _d: isFinite(d) ? d : undefined };
+      });
+    }
     if (tagFilter) {
       // Tags are compared case-insensitively everywhere else; an exact
       // includes() here missed "Core" against a stored "core".
@@ -9969,10 +10247,29 @@ const ViewPinsInner = ({
       if (valA === valB) return a.C - b.C;
       return sortAsc ? (valA < valB ? -1 : 1) : valB < valA ? -1 : 1;
     });
-  }, [filteredPinItems, sortBy, sortAsc, tagFilter, searchTerm]);
+  }, [filteredPinItems, sortBy, sortAsc, tagFilter, searchTerm, cursorKey]);
   const sortedItems = useMultiSort("pins", sortedItemsBase, sortBy, sortAsc);
   const grp = useGrouping("pins", sortedItems);
   const fvT = useViewFields("pins", "table");
+  const [batchOpen, setBatchOpen] = useState(false);
+  const batchItems = batchOpen ? pinItems.filter((p) => selectedIds.includes(p.id)) : [];
+  const applyBatch = (ch) => {
+    const ids = batchItems.map((i) => i.id);
+    setSavedColors((prev) => {
+      const next = { ...prev };
+      ids.forEach((id) => { if (next[id]) next[id] = batchApplyRecord(next[id], ch, "pins"); });
+      return next;
+    });
+    if (ch.tags.add.length || ch.tags.remove.length)
+      setDictTags((prev) => {
+        const next = { ...prev };
+        ids.forEach((id) => {
+          const t = batchTags(next[id] || [], ch.tags.add, ch.tags.remove);
+          if (t.length) next[id] = t; else delete next[id];
+        });
+        return next;
+      });
+  };
   const handleUnlock = (id) => {
     setSavedColors((prev) => {
       const next = { ...prev };
@@ -10533,7 +10830,7 @@ const ViewPinsInner = ({
         "div",
         {
           className:
-            "absolute bottom-6 left-1/2 -translate-x-1/2 bg-white dark:bg-neutral-800 shadow-xl border border-slate-200 dark:border-neutral-700 rounded-full px-4 py-2 flex items-center gap-4 z-50 animate-in slide-in-from-bottom-4",
+            "absolute bottom-6 left-1/2 -translate-x-1/2 bg-white dark:bg-neutral-800 shadow-xl border border-slate-200 dark:border-neutral-700 rounded-full px-4 py-2 flex items-center gap-4 z-50 animate-in slide-in-from-bottom-4 whitespace-nowrap max-w-[calc(100%-1rem)] overflow-x-auto no-scrollbar",
         },
         React.createElement(
           "span",
@@ -10624,6 +10921,22 @@ const ViewPinsInner = ({
           React.createElement("div", {
             className: "w-px h-4 bg-slate-300 dark:bg-neutral-600 mx-1",
           }),
+          React.createElement(
+            "button",
+            {
+              onClick: () => setBatchOpen(true),
+              title: "Edit the selected colours together: specs, notes, tags",
+              className:
+                "px-3 py-1 bg-sky-600 hover:bg-sky-700 text-white text-[10px] font-bold uppercase tracking-wider rounded flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer",
+            },
+            React.createElement(Icon, { name: "pencil-line", className: "w-3.5 h-3.5" }),
+            "Edit",
+          ),
+          batchOpen && batchItems.length > 0 &&
+            React.createElement(BatchEditModal, {
+              kind: "pins", items: batchItems, allTags: globalTags || [],
+              onApply: applyBatch, onClose: () => setBatchOpen(false),
+            }),
           React.createElement(
             "button",
             {
@@ -17541,6 +17854,17 @@ const ViewDatabase = ({
   const grp = useGrouping("db", sortedItems);
   const fv = useViewFields("db", swatchLayout === "matrix" ? "matrix" : swatchLayout === "gallery" ? "gallery" : "table");
   const fvTable = useViewFields("db", "table");
+  const [batchOpen, setBatchOpen] = useState(false);
+  const batchItems = batchOpen ? allDbItems.filter((i) => selectedIds && selectedIds.includes(i.id)) : [];
+  const applyBatch = (ch) => {
+    const updated = { ...dataForUpdates }, copied = new Set();
+    batchItems.forEach((i) => {
+      if (!updated[i.brand] || !updated[i.brand][i.originalIndex]) return;
+      if (!copied.has(i.brand)) { updated[i.brand] = [...updated[i.brand]]; copied.add(i.brand); }
+      updated[i.brand][i.originalIndex] = batchApplyRecord(updated[i.brand][i.originalIndex], ch, "db");
+    });
+    updateColorData(updated);
+  };
   useColumnFieldCss("db-table", { brand: 4, sheen: 5, doorProfile: 6, visualTexture: 7, tactileTexture: 8, material: 9, code: 10, deltaE: 11, L: 12, C: 13, H: 14, tags: 15, notes: 16 }, fvTable);
   // The table is unusable below ~640px — eight columns behind a horizontal
   // scroll. The existing card list says the same thing in one column, so narrow
@@ -18724,7 +19048,7 @@ const ViewDatabase = ({
         "div",
         {
           className:
-            "absolute bottom-6 left-1/2 -translate-x-1/2 bg-white dark:bg-neutral-800 shadow-xl border border-slate-200 dark:border-neutral-700 rounded-full px-4 py-2 flex items-center gap-4 z-50 animate-in slide-in-from-bottom-4",
+            "absolute bottom-6 left-1/2 -translate-x-1/2 bg-white dark:bg-neutral-800 shadow-xl border border-slate-200 dark:border-neutral-700 rounded-full px-4 py-2 flex items-center gap-4 z-50 animate-in slide-in-from-bottom-4 whitespace-nowrap max-w-[calc(100%-1rem)] overflow-x-auto no-scrollbar",
         },
         React.createElement(
           "span",
@@ -18815,6 +19139,22 @@ const ViewDatabase = ({
           React.createElement("div", {
             className: "w-px h-4 bg-slate-300 dark:bg-neutral-600 mx-1",
           }),
+          React.createElement(
+            "button",
+            {
+              onClick: () => setBatchOpen(true),
+              title: "Edit the selected colours together: specs, notes, tags",
+              className:
+                "px-3 py-1 bg-sky-600 hover:bg-sky-700 text-white text-[10px] font-bold uppercase tracking-wider rounded flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer",
+            },
+            React.createElement(Icon, { name: "pencil-line", className: "w-3.5 h-3.5" }),
+            "Edit",
+          ),
+          batchOpen && batchItems.length > 0 &&
+            React.createElement(BatchEditModal, {
+              kind: "db", items: batchItems, allTags: globalTags || [],
+              onApply: applyBatch, onClose: () => setBatchOpen(false),
+            }),
           React.createElement(
             "button",
             {
@@ -22151,6 +22491,10 @@ const AppUI = ({
                 setSwatchZoom: setPinsZoom,
                 globalSortBy: pinsSort.by,
                 globalSortAsc: pinsSort.asc,
+                cursorKey:
+                  activeTab === "pins" && crosshair
+                    ? [crosshair.rawL, crosshair.rawC, crosshair.rawH].map((v) => (isFinite(v) ? Number(v).toFixed(4) : "0")).join(",")
+                    : "",
                 searchTerm: pinsSearch,
                 layout: pinsLayout,
                 globalFilters: pinsFilters,
