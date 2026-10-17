@@ -168,15 +168,8 @@ function getColorGroup(l, c, h, settings) {
     baseName = neutralName;
   } else {
     let hueName = "Unknown";
-    // Nearest midpoint wins; ties go to the lower angle for stability.
-    let best = null, bestD = Infinity;
-    (hues || []).forEach((hu) => {
-      const centre = hueCenterOf(hu, hues);
-      const d = hueArcDistance(h, centre);
-      if (d < bestD - 1e-9 || (Math.abs(d - bestD) < 1e-9 && best && centre < hueCenterOf(best, hues))) {
-        bestD = d; best = hu;
-      }
-    });
+    // The family people would name it by (or, by angle, the nearest hue centre).
+    const best = hueRegionOf(l, c, h, { ...(settings || defaultGroupSettings), hues });
     if (best) hueName = best.name;
     const lMod = l >= lightL ? "Light" : "Dark";
     const cMod = c >= vividC ? "Vivid" : "Muted";
@@ -2505,6 +2498,30 @@ function createSpaceEngine(opts) {
   const groupLines = new THREE.LineSegments(groupGeo, groupMat);
   groupLines.frustumCulled = false; groupLines.renderOrder = 4; groupLines.visible = false;
   overlay.add(groupLines);
+  // Hue families: the labelled survey colours that decide them, in OkLab
+  // (the same distance and vote the app names and groups colours by).
+  let famN = 0, famL = null, famA = null, famB = null, famF = null;
+  // the five nearest labelled colours vote, weighted by closeness (as the app does)
+  const FK = 5, fkI = new Int32Array(FK), fkD = new Float64Array(FK), fkV = new Float64Array(64);
+  const famAtLab = (L, a, b) => {
+    fkI.fill(-1); fkD.fill(Infinity);
+    for (let i = 0; i < famN; i++) {
+      const dL = famL[i] - L, da = famA[i] - a, db = famB[i] - b, d2 = dL * dL + da * da + db * db;
+      if (d2 >= fkD[FK - 1]) continue;
+      let j = FK - 1;
+      while (j > 0 && fkD[j - 1] > d2) { fkD[j] = fkD[j - 1]; fkI[j] = fkI[j - 1]; j--; }
+      fkD[j] = d2; fkI[j] = i;
+    }
+    fkV.fill(0);
+    let best = -1, bv = -1;
+    for (let j = 0; j < FK; j++) {
+      if (fkI[j] < 0) continue;
+      const f = famF[fkI[j]], v = (fkV[f] += 1 / (Math.sqrt(fkD[j]) + 0.004));
+      if (v > bv) { bv = v; best = f; }
+    }
+    return best;
+  };
+  const famAtLCH = (L, C, H) => { const r = (H * Math.PI) / 180; return famAtLab(L, C * Math.cos(r), C * Math.sin(r)); };
   const buildGroupLines3D = () => {
     const g = S.groups;
     if (!g) { groupLines.visible = false; requestRender(); return; }
@@ -2512,7 +2529,22 @@ function createSpaceEngine(opts) {
     const ring = (L, r) => { for (let i = 0; i < 72; i++) seg(spaceToWorld(L, r, i * 5), spaceToWorld(L, r, (i + 1) * 5)); };
     const Rmax = DisplayGamut.maxChroma;
     ring(g.lightL, g.neutralC); ring(g.lightL, g.vividC);
-    g.hueB.forEach((h) => {
+    if (g.anchorMode && famN) {
+      // family edges where they cross the light/dark plane, traced on a polar grid
+      const NR = 28, NA = 360, R0 = g.neutralC, R1 = Rmax;
+      for (let ri = 0; ri < NR; ri++) {
+        const r = R0 + ((R1 - R0) * (ri + 0.5)) / NR;
+        let prev = -9;
+        for (let ai = 0; ai <= NA; ai++) {
+          const h = ai % 360, w = spaceToWorld(g.lightL, r, h);
+          const f = spaceInGamutStrict(w[0], w[1], w[2]) ? famAtLCH(g.lightL, r, h) : -1;
+          if (prev >= 0 && f >= 0 && f !== prev)
+            seg(spaceToWorld(g.lightL, R0 + ((R1 - R0) * ri) / NR, ai - 0.5), spaceToWorld(g.lightL, R0 + ((R1 - R0) * (ri + 1)) / NR, ai - 0.5));
+          prev = f;
+        }
+      }
+    }
+    if (!g.anchorMode) g.hueB.forEach((h) => {
       seg(spaceToWorld(g.lightL, g.neutralC, h), spaceToWorld(g.lightL, Rmax, h));          // sector edge on the light/dark plane
       seg(spaceToWorld(0, g.neutralC, h), spaceToWorld(1, g.neutralC, h));                 // its seam on the neutral core
     });
@@ -3975,11 +4007,11 @@ function createSpaceEngine(opts) {
       // the neutral core and the muted/vivid edge as circles; hue sectors as rays
       const ox = u2px(v, 0), oy = v2py(v, 0), sc = Math.abs(u2px(v, 1) - ox);
       [g.neutralC, g.vividC].forEach((r) => { ctx.beginPath(); ctx.arc(ox, oy, r * sc, 0, Math.PI * 2); ctx.stroke(); });
-      g.hueB.forEach((hb) => { const h = (hb * Math.PI) / 180; seg(g.neutralC * Math.sin(h), g.neutralC * Math.cos(h), Rmax * Math.sin(h), Rmax * Math.cos(h)); });
+      if (!g.anchorMode) g.hueB.forEach((hb) => { const h = (hb * Math.PI) / 180; seg(g.neutralC * Math.sin(h), g.neutralC * Math.cos(h), Rmax * Math.sin(h), Rmax * Math.cos(h)); });
     } else if (k === "c") {
       if (C >= 0.002) {
         if (C >= g.neutralC) {
-          g.hueB.forEach((hb) => { const u = (((hb - 180) * Math.PI) / 180) * C; seg(u, 0, u, ky); });
+          if (!g.anchorMode) g.hueB.forEach((hb) => { const u = (((hb - 180) * Math.PI) / 180) * C; seg(u, 0, u, ky); });
           seg(-Math.PI * C, g.lightL * ky, Math.PI * C, g.lightL * ky);
         } else g.neutralLs.forEach((l) => seg(-Math.PI * C, l * ky, Math.PI * C, l * ky));
       }
@@ -3987,6 +4019,30 @@ function createSpaceEngine(opts) {
       seg(g.neutralC, 0, g.neutralC, ky); seg(g.vividC, 0, g.vividC, ky);
       seg(g.neutralC, g.lightL * ky, Rmax, g.lightL * ky);
       g.neutralLs.forEach((l) => seg(0, l * ky, g.neutralC, l * ky));
+    }
+    // By anchor, family edges follow the anchors rather than angles: found on
+    // a coarse grid and dotted wherever two neighbouring samples disagree.
+    if (g.anchorMode && famN) {
+      const W = v.cv.width, Hh = v.cv.height, s = Math.max(4, Math.round(5 * d));
+      const cols = Math.ceil(W / s) + 1, rows = Math.ceil(Hh / s) + 1, F = new Int32Array(cols * rows), P = [0, 0, 0];
+      for (let gy = 0; gy < rows; gy++)
+        for (let gx = 0; gx < cols; gx++) {
+          let f = -2;
+          if (mappingAt(k, px2u(v, gx * s), py2v(v, gy * s), 0, P) && spaceInGamutStrict(P[0], P[1], P[2])) {
+            const [L2, C2, H2] = spaceWorldToLCH(P[0], P[1], P[2]);
+            f = C2 >= g.neutralC ? famAtLCH(L2, C2, H2) : -1;
+          }
+          F[gy * cols + gx] = f;
+        }
+      ctx.fillStyle = S.dark ? "rgba(242,232,223,0.45)" : "rgba(1,13,0,0.4)";
+      const dot = Math.max(1, 1.4 * d);
+      for (let gy = 0; gy < rows; gy++)
+        for (let gx = 0; gx < cols; gx++) {
+          const f = F[gy * cols + gx];
+          if (f < 0) continue;
+          if (gx + 1 < cols) { const g2 = F[gy * cols + gx + 1]; if (g2 >= 0 && g2 !== f) ctx.fillRect(gx * s + s / 2 - dot / 2, gy * s - dot / 2, dot, dot); }
+          if (gy + 1 < rows) { const g2 = F[(gy + 1) * cols + gx]; if (g2 >= 0 && g2 !== f) ctx.fillRect(gx * s - dot / 2, gy * s + s / 2 - dot / 2, dot, dot); }
+        }
     }
     ctx.restore();
   };
@@ -4271,8 +4327,16 @@ function createSpaceEngine(opts) {
       buildCells();
     },
     // Colour-group settings (the app's groupSettings) and whether to draw them.
-    setGroups(gs, on = true) {
+    setGroups(gs, on = true, fam = null) {
       S.groupLinesOn = !!on;
+      const list = Array.isArray(fam) ? fam : [];
+      const ids = new Map();
+      famN = list.length; famL = new Float64Array(famN); famA = new Float64Array(famN); famB = new Float64Array(famN); famF = new Int32Array(famN);
+      list.forEach((p, i) => {
+        if (!ids.has(p.hueId)) ids.set(p.hueId, ids.size);
+        const r = (p.H * Math.PI) / 180;
+        famL[i] = p.L; famA[i] = p.C * Math.cos(r); famB[i] = p.C * Math.sin(r); famF[i] = ids.get(p.hueId);
+      });
       if (!gs) { S.groups = null; buildGroupLines3D(); scheduleSections(); return; }
       const num = (x, d) => (isFinite(+x) ? +x : d);
       const centres = (gs.hues || [])
@@ -4285,6 +4349,7 @@ function createSpaceEngine(opts) {
       S.groups = {
         neutralC: num(gs.neutralC, 0.02), vividC: num(gs.vividC, 0.1), lightL: num(gs.lightL, 0.5),
         hueB, neutralLs: ns.slice(0, -1).filter((l) => l > 0 && l < 1),   // the top region needs no line
+        anchorMode: gs.familyMode !== "angles" && famN > 0,   // families follow names, not angles
       };
       buildGroupLines3D(); scheduleSections();
     },
@@ -4527,12 +4592,12 @@ const SpaceBinSource = ({ value, onChange, options, capped, compact }) =>
   React.createElement(
     "label",
     { className: "flex items-center gap-1.5 shrink-0", title: "What the bins are built around" },
-    !compact && React.createElement("span", { className: "text-[9px] font-bold uppercase tracking-widest text-slate-400" }, "Bins from"),
+    !compact && React.createElement("span", { className: "hidden 2xl:inline text-[9px] font-bold uppercase tracking-widest text-slate-400" }, "Bins from"),
     React.createElement(
       "select",
       {
         value, onChange: (e) => onChange(e.target.value), "aria-label": "Bins from",
-        className: `max-w-[200px] bg-transparent border rounded-md py-1 pl-1.5 pr-5 text-[10px] font-bold uppercase tracking-wider cursor-pointer focus:outline-none ${
+        className: `max-w-[140px] 2xl:max-w-[200px] bg-transparent border rounded-md py-1 pl-1.5 pr-5 text-[10px] font-bold uppercase tracking-wider cursor-pointer focus:outline-none ${
           value !== "anchors" ? "border-sky-300 text-sky-700 dark:text-sky-300 dark:border-sky-500/40" : "border-slate-200 dark:border-neutral-800 text-slate-600 dark:text-neutral-300"
         }`,
       },
@@ -4808,6 +4873,8 @@ const ViewSpaceInner = ({
   groupSettings = null,
   // [{ id, name, colors: [{ L, C, H, hex, label }] }]: the working palette and saved ones
   binPalettes = [],
+  // labelled survey colours that decide hue families ([{ L, C, H, hueId }]), for the group lines
+  familySeeds = null,
 }) => {
   const rootRef = useRef(null);
   const [binSource, setBinSourceState] = useState(() => {
@@ -5110,8 +5177,8 @@ const ViewSpaceInner = ({
   }, [ready, look, scrubL, scrubC, active]);
   useEffect(() => {
     if (!ready || !eng || !eng.setGroups) return;
-    eng.setGroups(groupSettings, groupLinesOn);
-  }, [ready, groupSettings, groupLinesOn, active]);
+    eng.setGroups(groupSettings, groupLinesOn, familySeeds);
+  }, [ready, groupSettings, groupLinesOn, familySeeds, active]);
   useEffect(() => {
     if (!ready || !eng) return;
     const v3 = look.views["3d"];
@@ -7416,12 +7483,8 @@ let groupingColourSettings = null;
 const hueFamilyOf = (L, C, H, gs) => {
   const s = gs || defaultGroupSettings;
   if (!(C >= (s.neutralC ?? 0.02))) return "Neutral";
-  let best = null, bd = Infinity;
-  (s.hues || []).forEach((hu) => {
-    const d = hueArcDistance(H, hueCenterOf(hu, s.hues));
-    if (d < bd) { bd = d; best = hu; }
-  });
-  return best ? best.name : "Unknown";
+  const hu = hueRegionOf(L, C, H, s);
+  return hu ? hu.name : "Unknown";
 };
 const hueCentreByName = (name, gs) => {
   const s = gs || defaultGroupSettings;
@@ -7669,7 +7732,7 @@ const useGrouping = (scope, items) => {
   const collapsed = store.collapsed(scope);
   const gs = groupingColourSettings;
   const valid = useMemo(() => levels.filter((l) => GROUP_FIELD[l.field] && GROUP_SCOPE_FIELDS[scope]?.includes(l.field)), [levels, scope]);
-  const tree = useMemo(() => (valid.length && items && items.length ? buildGroupTree(items, valid, gs) : null), [items, valid, gs]);
+  const tree = useMemo(() => (valid.length && items && items.length ? buildGroupTree(items, valid, gs) : null), [items, valid, gs, colorFamilyIndex]);
   const entries = useMemo(() => {
     if (!tree) return null;
     const out = [];
@@ -9193,6 +9256,208 @@ const GradientPanel = ({ L, C, H, onPick, onAddToPalette }) => {
   );
 };
 
+// Colour names from the xkcd colour survey (Randall Munroe, 2010; ~222,000 people,
+// 954 most-agreed names, public domain, as published with matplotlib), each
+// with its OkLab centroid and the basic hue term the name belongs to.
+const SEMANTIC_TERMS = ["red", "orange", "brown", "yellow", "green", "cyan", "blue", "purple", "pink", "angle", "lime"];
+const SEMANTIC_SAMPLES_RAW = "cloudy blue|0.805|-0.014|-0.038|6;dark pastel green|0.675|-0.121|0.088|4;dust|0.695|0.010|0.065|9;electric lime|0.909|-0.158|0.187|10;fresh green|0.789|-0.156|0.130|4;light eggplant|0.499|0.108|-0.064|7;nasty green|0.695|-0.113|0.116|4;really light blue|0.970|-0.042|-0.012|6;warm purple|0.492|0.154|-0.088|7;yellowish tan|0.967|-0.047|0.138|3;dark grass green|0.532|-0.117|0.109|4;dusty teal|0.605|-0.072|-0.003|5;grey teal|0.643|-0.069|0.007|5;pinkish tan|0.743|0.061|0.056|8;spruce|0.429|-0.091|0.040|4;strong blue|0.445|-0.027|-0.302|6;toxic green|0.798|-0.176|0.155|4;windows blue|0.565|-0.038|-0.123|6;blue blue|0.452|-0.013|-0.208|6;blue with a hint of purple|0.471|0.045|-0.197|7;bright sea green|0.882|-0.189|0.072|4;dark green blue|0.454|-0.070|0.001|6;deep turquoise|0.503|-0.082|-0.023|5;green teal|0.683|-0.144|0.053|5;strong pink|0.649|0.261|-0.001|8;deep aqua|0.522|-0.081|-0.033|5;lavender pink|0.737|0.129|-0.076|8;light moss green|0.789|-0.070|0.092|4;light seafoam green|0.926|-0.112|0.069|4;olive yellow|0.764|-0.042|0.155|3;pig pink|0.745|0.111|0.007|8;deep lilac|0.610|0.073|-0.099|7;dusty lavender|0.667|0.057|-0.033|7;purpley grey|0.621|0.034|-0.023|7;candy pink|0.743|0.214|-0.106|8;light pastel green|0.919|-0.105|0.085|4;boring green|0.696|-0.111|0.079|4;kiwi green|0.836|-0.145|0.153|4;light grey green|0.864|-0.068|0.068|4;orange pink|0.713|0.152|0.099|8;tea green|0.919|-0.092|0.087|4;very light brown|0.789|0.011|0.074|2;eggplant purple|0.272|0.100|-0.058|7;powder pink|0.845|0.096|-0.010|8;reddish grey|0.596|0.041|0.021|9;stormy blue|0.565|-0.032|-0.062|6;ugly brown|0.543|-0.023|0.110|2;custard|0.970|-0.048|0.147|3;darkish pink|0.617|0.189|0.005|8;deep brown|0.238|0.081|0.048|2;greenish beige|0.835|-0.044|0.103|4;off blue|0.598|-0.032|-0.075|6;battleship grey|0.576|-0.015|-0.019|9;browny green|0.517|-0.033|0.103|4;kelley green|0.578|-0.143|0.091|4;sickly yellow|0.875|-0.084|0.172|3;sunny yellow|0.956|-0.062|0.193|3;green/yellow|0.804|-0.088|0.164|3;lichen|0.733|-0.066|0.065|4;light light green|0.943|-0.085|0.081|4;pale gold|0.905|-0.010|0.137|3;sun yellow|0.903|-0.026|0.179|3;tan green|0.767|-0.055|0.090|4;dark cream|0.954|-0.022|0.108|9;indian red|0.394|0.132|0.077|0;poison green|0.868|-0.220|0.177|4;bright yellow green|0.904|-0.168|0.186|10;squash|0.789|0.034|0.157|1;light pea green|0.931|-0.106|0.127|4;radioactive green|0.857|-0.223|0.172|4;baby purple|0.767|0.082|-0.109|7;light royal blue|0.494|0.008|-0.283|6;orangeish|0.753|0.103|0.121|1;rust brown|0.439|0.099|0.087|1;sand brown|0.742|0.015|0.097|2;swamp|0.573|-0.062|0.086|4;tealish green|0.784|-0.180|0.096|4;camo|0.622|-0.046|0.079|4;dusk blue|0.441|-0.026|-0.105|6;fern|0.668|-0.108|0.093|4;old rose|0.675|0.090|0.017|8;pale light green|0.919|-0.112|0.099|4;peachy pink|0.787|0.108|0.062|8;rosy pink|0.703|0.176|0.019|8;light bluish green|0.897|-0.151|0.075|4;light bright green|0.878|-0.199|0.146|4;light neon green|0.874|-0.203|0.150|4;light seafoam|0.922|-0.112|0.055|5;tiffany blue|0.885|-0.114|0.003|6;washed out green|0.912|-0.088|0.081|4;browny orange|0.625|0.083|0.126|1;nice blue|0.552|-0.062|-0.103|6;sapphire|0.407|-0.007|-0.184|6;greyish teal|0.665|-0.054|0.006|5;orangey yellow|0.827|0.026|0.166|3;straw|0.953|-0.041|0.141|3;very dark brown|0.151|0.045|0.030|2;terracota|0.626|0.103|0.089|1;ugly blue|0.490|-0.039|-0.071|6;clear blue|0.606|-0.039|-0.208|6;foam green|0.908|-0.133|0.077|4;grey/green|0.678|-0.044|0.040|4;light gold|0.899|-0.012|0.148|3;seafoam blue|0.797|-0.094|0.013|6;violet pink|0.743|0.216|-0.137|8;yellow tan|0.916|-0.015|0.139|3;dark fuchsia|0.456|0.182|-0.011|8;indigo blue|0.387|0.036|-0.211|6;light yellowish green|0.933|-0.106|0.121|10;pale magenta|0.669|0.155|-0.045|8;rich purple|0.371|0.152|-0.051|7;sunflower yellow|0.893|-0.021|0.182|3;green/blue|0.716|-0.144|0.037|6;racing green|0.342|-0.092|0.071|4;vivid purple|0.555|0.158|-0.245|7;dark royal blue|0.252|-0.014|-0.164|6;muted pink|0.673|0.117|0.006|8;canary|0.970|-0.059|0.163|3;cool grey|0.705|-0.014|-0.009|9;dark taupe|0.533|0.017|0.045|9;darkish purple|0.407|0.139|-0.083|7;true green|0.578|-0.154|0.119|4;coral pink|0.698|0.178|0.075|8;dark sage|0.572|-0.068|0.052|4;dark slate blue|0.383|-0.030|-0.054|6;flat blue|0.542|-0.036|-0.095|6;mushroom|0.718|0.023|0.039|9;rich blue|0.456|-0.030|-0.298|6;dirty purple|0.465|0.064|-0.023|7;icky green|0.703|-0.085|0.136|4;light khaki|0.934|-0.044|0.093|9;warm blue|0.527|0.012|-0.199|6;dark hot pink|0.570|0.228|0.019|8;deep sea blue|0.428|-0.047|-0.091|6;carmine|0.439|0.160|0.076|0;dark yellow green|0.606|-0.080|0.124|10;pale peach|0.930|0.006|0.077|1;plum purple|0.303|0.112|-0.073|7;golden rod|0.828|0.016|0.168|3;neon red|0.633|0.234|0.096|0;old pink|0.663|0.097|0.016|8;very pale blue|0.971|-0.041|-0.011|6;blood orange|0.664|0.180|0.133|1;sand yellow|0.909|-0.018|0.143|3;clay brown|0.608|0.057|0.090|2;dark blue grey|0.339|-0.024|-0.040|6;flat green|0.640|-0.089|0.088|4;light green blue|0.884|-0.169|0.077|6;warm pink|0.685|0.201|0.029|8;dodger blue|0.628|-0.030|-0.193|6;gross green|0.755|-0.090|0.151|4;metallic blue|0.539|-0.028|-0.052|6;pale salmon|0.829|0.078|0.059|8;sap green|0.581|-0.096|0.114|4;algae|0.672|-0.113|0.067|4;bluey grey|0.693|-0.018|-0.030|6;greeny grey|0.670|-0.053|0.041|4;highlighter green|0.860|-0.229|0.177|4;light light blue|0.963|-0.053|-0.010|6;light mint|0.935|-0.097|0.065|4;raw umber|0.555|0.063|0.110|2;vivid blue|0.482|-0.023|-0.292|6;deep lavender|0.570|0.084|-0.112|7;dull teal|0.652|-0.069|0.004|5;light greenish blue|0.879|-0.150|0.053|6;mud green|0.488|-0.044|0.100|4;red wine|0.409|0.161|0.030|0;tan brown|0.627|0.033|0.081|2;pale mauve|0.910|0.065|-0.041|7;claret|0.328|0.124|0.042|0;dandelion|0.902|-0.029|0.184|3;ruby|0.534|0.207|0.050|0;greenish turquoise|0.874|-0.181|0.057|5;pastel red|0.630|0.151|0.067|0;bright cyan|0.906|-0.138|-0.038|5;dark coral|0.602|0.145|0.067|8;algae green|0.720|-0.157|0.077|4;darkish red|0.463|0.165|0.089|0;reddy brown|0.348|0.111|0.066|2;blush pink|0.749|0.145|0.042|8;camouflage green|0.459|-0.059|0.086|4;lawn green|0.639|-0.138|0.130|4;putty|0.755|0.003|0.052|9;vibrant blue|0.484|-0.028|-0.277|6;dark sand|0.660|0.006|0.078|9;purple/blue|0.460|0.075|-0.225|6;warm brown|0.502|0.067|0.101|2;bubble gum pink|0.727|0.194|-0.020|8;duck egg blue|0.948|-0.057|-0.007|6;greenish cyan|0.885|-0.176|0.052|5;butter|0.975|-0.048|0.140|3;dusty orange|0.719|0.099|0.123|1;off yellow|0.933|-0.065|0.176|3;pale olive green|0.820|-0.070|0.096|4;leaf|0.675|-0.106|0.119|4;light blue grey|0.830|-0.009|-0.039|6;dried blood|0.260|0.092|0.051|0;lightish purple|0.608|0.131|-0.175|7;rusty red|0.501|0.140|0.096|0;lavender blue|0.680|0.035|-0.158|6;light grass green|0.888|-0.145|0.141|4;light mint green|0.915|-0.109|0.068|4;sunflower|0.852|0.010|0.172|3;brick orange|0.563|0.123|0.111|1;lightish red|0.647|0.221|0.085|0;pure blue|0.414|-0.029|-0.283|6;twilight blue|0.381|-0.032|-0.104|6;violet red|0.467|0.189|0.001|0;yellowy brown|0.651|-0.001|0.131|3;muddy yellow|0.738|-0.030|0.150|3;dark seafoam green|0.675|-0.123|0.051|4;deep rose|0.582|0.162|0.024|8;dusty red|0.555|0.137|0.050|0;grey/blue|0.576|-0.021|-0.033|6;lemon lime|0.921|-0.133|0.183|10;purple/pink|0.632|0.228|-0.152|8;brown yellow|0.681|-0.015|0.138|3;purple brown|0.405|0.062|0.015|7;banana yellow|0.964|-0.067|0.177|3;lipstick red|0.511|0.192|0.072|0;water blue|0.599|-0.064|-0.125|6;brown grey|0.614|-0.002|0.042|9;vibrant purple|0.560|0.194|-0.194|7;baby green|0.908|-0.143|0.091|4;eggshell blue|0.958|-0.060|-0.006|6;sandy yellow|0.937|-0.031|0.141|3;cool green|0.692|-0.145|0.080|4;blue/grey|0.633|-0.017|-0.039|6;hot magenta|0.657|0.267|-0.102|8;brownish pink|0.662|0.078|0.035|8;dark aquamarine|0.502|-0.084|-0.019|5;light mustard|0.880|-0.008|0.140|3;pale sky blue|0.937|-0.052|-0.026|6;turtle green|0.715|-0.111|0.108|4;bright olive|0.742|-0.091|0.152|4;dark grey blue|0.381|-0.024|-0.044|6;greeny brown|0.483|-0.022|0.097|4;lemon green|0.896|-0.146|0.184|4;light periwinkle|0.841|0.014|-0.074|6;seaweed green|0.665|-0.130|0.061|4;sunshine yellow|0.965|-0.064|0.186|3;ugly purple|0.545|0.148|-0.088|7;medium pink|0.692|0.185|0.002|8;faded yellow|0.974|-0.050|0.142|3;very pale green|0.946|-0.071|0.067|4;vibrant green|0.778|-0.209|0.160|4;bright lime|0.889|-0.183|0.183|10;light aquamarine|0.906|-0.134|0.038|5;light sage|0.894|-0.073|0.066|4;dark seafoam|0.685|-0.139|0.050|5;deep teal|0.409|-0.065|-0.026|5;heather|0.657|0.052|-0.045|7;rust orange|0.583|0.110|0.116|1;dirty blue|0.574|-0.054|-0.058|6;fern green|0.586|-0.091|0.079|4;bright lilac|0.678|0.161|-0.171|7;weird green|0.814|-0.174|0.093|4;peacock blue|0.488|-0.057|-0.091|6;avocado green|0.685|-0.087|0.132|4;faded orange|0.749|0.078|0.116|1;grape purple|0.341|0.115|-0.052|7;hot green|0.869|-0.226|0.172|4;lime yellow|0.932|-0.118|0.188|3;mango|0.796|0.059|0.151|1;shamrock|0.672|-0.163|0.099|4;bubblegum|0.732|0.191|-0.027|8;purplish brown|0.428|0.056|0.012|2;pale cyan|0.951|-0.070|-0.013|5;key lime|0.918|-0.134|0.142|10;tomato red|0.609|0.193|0.122|0;night blue|0.191|-0.005|-0.120|6;purpleish pink|0.662|0.201|-0.095|8;apple|0.757|-0.144|0.135|4;green apple|0.792|-0.177|0.158|4;yellow/green|0.925|-0.120|0.175|10;cool blue|0.596|-0.039|-0.093|6;leafy green|0.693|-0.144|0.119|4;mustard brown|0.622|0.016|0.126|3;dull brown|0.554|0.015|0.057|2;frog green|0.707|-0.154|0.145|4;vivid green|0.829|-0.215|0.170|4;bright light green|0.870|-0.214|0.150|4;fluro green|0.867|-0.233|0.179|4;seaweed|0.758|-0.166|0.077|4;navy green|0.404|-0.066|0.078|4;ultramarine blue|0.410|-0.015|-0.274|6;pastel orange|0.771|0.093|0.121|1;yellowish orange|0.804|0.048|0.162|1;tealish|0.716|-0.122|-0.003|5;dark plum|0.247|0.099|-0.027|7;pinkish orange|0.716|0.146|0.106|1;midnight purple|0.209|0.070|-0.072|7;dark mint|0.721|-0.137|0.074|4;greenish tan|0.812|-0.049|0.094|4;light burgundy|0.522|0.136|0.018|0;turquoise blue|0.696|-0.105|-0.057|6;ugly pink|0.663|0.110|0.019|8;sandy|0.888|-0.013|0.119|9;electric pink|0.651|0.264|-0.011|8;muted purple|0.526|0.062|-0.051|7;mid green|0.653|-0.124|0.097|4;neon yellow|0.933|-0.122|0.191|3;banana|0.975|-0.049|0.143|3;carnation pink|0.753|0.160|0.005|8;muddy brown|0.535|0.006|0.107|2;turquoise green|0.849|-0.192|0.094|4;buff|0.960|-0.026|0.106|3;fawn|0.770|0.014|0.077|9;muted blue|0.532|-0.037|-0.085|6;pale rose|0.866|0.067|0.017|8;dark mint green|0.713|-0.152|0.070|4;amethyst|0.592|0.101|-0.116|7;blue/green|0.621|-0.107|-0.008|4;sick green|0.740|-0.082|0.139|4;pea|0.758|-0.085|0.149|4;rusty orange|0.602|0.114|0.120|1;stone|0.721|-0.004|0.043|9;rose red|0.509|0.196|0.056|0;pale aqua|0.948|-0.075|0.006|5;deep orange|0.610|0.146|0.123|1;mossy green|0.587|-0.085|0.105|4;grassy green|0.613|-0.139|0.126|4;pale lime green|0.919|-0.134|0.149|10;light grey blue|0.780|-0.023|-0.042|6;asparagus|0.685|-0.090|0.092|4;purple red|0.440|0.176|0.013|0;pale lime|0.924|-0.115|0.139|10;greenish teal|0.717|-0.138|0.049|5;caramel|0.596|0.045|0.119|9;deep magenta|0.461|0.187|-0.014|8;light peach|0.906|0.026|0.062|1;milk chocolate|0.471|0.043|0.080|2;ocher|0.702|-0.004|0.141|1;off green|0.657|-0.092|0.086|4;purply pink|0.743|0.175|-0.099|8;dusky blue|0.491|-0.008|-0.090|6;golden|0.830|0.006|0.169|3;light beige|0.981|-0.027|0.087|9;butter yellow|0.970|-0.049|0.150|3;dusky purple|0.532|0.070|-0.027|7;french blue|0.530|-0.020|-0.112|6;ugly yellow|0.798|-0.040|0.163|3;greeny yellow|0.911|-0.122|0.187|3;orangish red|0.629|0.192|0.125|0;shamrock green|0.707|-0.174|0.109|4;orangish brown|0.572|0.074|0.115|2;tree green|0.522|-0.121|0.099|4;deep violet|0.289|0.106|-0.064|7;blue/purple|0.477|0.065|-0.271|7;cherry|0.541|0.203|0.075|0;sandy brown|0.737|0.006|0.095|2;warm grey|0.643|0.012|0.013|9;dark indigo|0.239|0.034|-0.117|7;bluey green|0.677|-0.132|0.048|4;grey pink|0.705|0.063|0.005|8;soft purple|0.625|0.089|-0.078|7;blood|0.358|0.128|0.071|0;brown red|0.444|0.115|0.087|0;purpley pink|0.604|0.196|-0.101|8;light salmon|0.813|0.086|0.061|8;easter purple|0.694|0.127|-0.164|7;light yellow green|0.934|-0.098|0.130|10;dark navy blue|0.143|-0.009|-0.089|6;light rose|0.877|0.065|0.013|8;purplish red|0.487|0.191|0.026|0;slime green|0.780|-0.115|0.160|4;irish green|0.582|-0.149|0.104|4;pink/purple|0.670|0.255|-0.146|7;dark navy|0.160|-0.010|-0.095|6;greeny blue|0.694|-0.110|0.015|6;light plum|0.553|0.103|-0.032|7;pinkish grey|0.768|0.030|0.014|8;dirty orange|0.642|0.064|0.129|1;rust red|0.484|0.143|0.096|0;pale lilac|0.880|0.045|-0.060|7;orangey red|0.650|0.190|0.118|0;primary blue|0.446|-0.029|-0.304|6;kermit green|0.682|-0.141|0.141|4;brownish purple|0.446|0.073|0.007|7;murky green|0.549|-0.057|0.109|4;wheat|0.903|-0.005|0.120|3;very dark purple|0.210|0.074|-0.065|7;bottle green|0.356|-0.093|0.070|4;watermelon|0.665|0.205|0.074|8;deep sky blue|0.588|-0.043|-0.209|6;fire engine red|0.626|0.224|0.125|0;yellow ochre|0.719|0.007|0.146|1;pumpkin orange|0.722|0.112|0.145|1;pale olive|0.813|-0.051|0.087|4;light lilac|0.882|0.059|-0.060|7;lightish green|0.810|-0.164|0.122|4;carolina blue|0.777|-0.022|-0.110|6;shocking pink|0.655|0.268|-0.038|8;bright lime green|0.879|-0.205|0.181|10;pinkish brown|0.615|0.068|0.049|8;bright sky blue|0.785|-0.106|-0.102|6;celery|0.930|-0.100|0.107|4;dirt brown|0.527|0.018|0.070|2;strawberry|0.638|0.220|0.090|8;dark lime|0.716|-0.111|0.147|10;copper|0.586|0.078|0.104|1;medium brown|0.476|0.035|0.089|2;muted green|0.643|-0.100|0.083|4;robin's egg|0.880|-0.103|-0.051|6;bright aqua|0.885|-0.153|-0.019|5;bright lavender|0.681|0.156|-0.176|7;ivory|0.987|-0.020|0.064|9;very light purple|0.900|0.059|-0.046|7;light navy|0.423|-0.036|-0.098|6;pink red|0.617|0.236|0.069|0;olive brown|0.449|-0.010|0.090|4;mustard green|0.738|-0.070|0.151|4;ocean green|0.617|-0.101|0.031|4;very dark blue|0.148|-0.010|-0.098|6;dusty green|0.684|-0.076|0.057|4;light navy blue|0.458|-0.029|-0.085|6;minty green|0.855|-0.199|0.109|4;jade green|0.668|-0.137|0.064|4;bright light blue|0.888|-0.139|-0.045|6;light lime|0.913|-0.132|0.142|10;dark khaki|0.647|-0.011|0.078|9;orange yellow|0.807|0.045|0.164|3;maize|0.866|-0.007|0.145|3;faded pink|0.763|0.079|0.005|8;british racing green|0.350|-0.088|0.064|4;mud brown|0.412|0.012|0.076|2;light sea green|0.897|-0.116|0.064|4;robin egg blue|0.900|-0.088|-0.043|6;aqua marine|0.833|-0.153|0.024|5;dark sea green|0.553|-0.111|0.036|4;soft pink|0.835|0.091|0.009|8;orangey brown|0.572|0.071|0.116|1;cherry red|0.615|0.226|0.105|0;burnt yellow|0.758|-0.002|0.153|3;brownish grey|0.577|0.007|0.039|9;camel|0.724|0.016|0.099|9;purplish grey|0.542|0.031|-0.027|9;greyish pink|0.703|0.071|0.014|8;pale turquoise|0.923|-0.095|0.026|5;pastel yellow|0.971|-0.052|0.153|3;bluey purple|0.492|0.062|-0.187|7;canary yellow|0.968|-0.064|0.183|3;faded red|0.598|0.161|0.065|0;sepia|0.537|0.051|0.086|2;coffee|0.627|0.021|0.081|2;bright magenta|0.690|0.275|-0.137|8;mocha|0.596|0.031|0.064|2;ecru|0.986|-0.022|0.064|9;purpleish|0.549|0.102|-0.051|7;darkish green|0.519|-0.109|0.072|4;brown orange|0.599|0.066|0.121|1;dusky rose|0.613|0.103|0.022|8;sickly green|0.716|-0.086|0.141|4;purply blue|0.495|0.080|-0.258|6;purpleish blue|0.525|0.053|-0.239|6;hospital green|0.858|-0.095|0.055|4;mid blue|0.520|-0.038|-0.128|6;amber|0.817|0.035|0.166|1;easter green|0.899|-0.153|0.122|4;soft blue|0.646|-0.008|-0.152|6;cerulean blue|0.566|-0.042|-0.206|6;golden brown|0.621|0.030|0.126|3;bright turquoise|0.902|-0.150|-0.033|5;red pink|0.639|0.225|0.070|8;red purple|0.398|0.157|-0.006|7;greyish brown|0.532|0.007|0.044|2;vermillion|0.627|0.196|0.123|0;steel grey|0.594|-0.018|-0.018|6;lighter purple|0.628|0.121|-0.187|7;bright violet|0.585|0.183|-0.232|7;prussian blue|0.382|-0.038|-0.097|6;slate green|0.605|-0.057|0.033|4;dirty pink|0.668|0.095|0.027|8;dark blue green|0.394|-0.070|-0.003|4;pine|0.432|-0.073|0.046|4;yellowy green|0.891|-0.118|0.176|10;dark gold|0.678|-0.006|0.135|3;darkish blue|0.380|-0.032|-0.120|6;dull red|0.544|0.146|0.065|0;pinky red|0.638|0.224|0.085|0;bronze|0.607|0.019|0.124|9;pale teal|0.787|-0.081|0.014|5;military green|0.554|-0.053|0.074|4;barbie pink|0.686|0.231|-0.026|8;bubblegum pink|0.769|0.165|-0.043|8;pea soup green|0.688|-0.071|0.136|4;dark mustard|0.640|-0.006|0.130|3;medium purple|0.539|0.140|-0.095|7;very dark green|0.264|-0.065|0.051|4;dusky pink|0.672|0.103|0.012|8;red violet|0.462|0.189|-0.035|7;lemon yellow|0.968|-0.069|0.187|3;pistachio|0.921|-0.101|0.115|4;dull yellow|0.885|-0.029|0.146|3;dark lime green|0.727|-0.124|0.150|10;denim blue|0.473|-0.016|-0.096|6;teal blue|0.577|-0.083|-0.059|6;lightish blue|0.612|-0.025|-0.204|6;purpley blue|0.502|0.060|-0.239|6;light indigo|0.548|0.050|-0.166|7;swamp green|0.582|-0.064|0.120|4;brown green|0.519|-0.030|0.100|4;dark maroon|0.225|0.085|0.032|0;hot purple|0.619|0.224|-0.199|7;dark forest green|0.258|-0.067|0.049|4;faded blue|0.630|-0.024|-0.080|6;drab green|0.628|-0.066|0.078|4;light lime green|0.924|-0.126|0.150|10;yellowish|0.933|-0.038|0.151|3;light blue green|0.898|-0.139|0.061|4;light mauve|0.710|0.061|-0.002|7;marigold|0.839|0.013|0.171|1;muddy green|0.531|-0.047|0.080|4;dull orange|0.693|0.067|0.116|1;steel|0.608|-0.013|-0.029|6;electric purple|0.592|0.170|-0.231|7;fluorescent green|0.867|-0.233|0.179|4;yellowish brown|0.595|0.001|0.121|3;blush|0.779|0.089|0.054|8;soft green|0.742|-0.112|0.076|4;bright orange|0.683|0.162|0.138|1;lemon|0.969|-0.064|0.174|3;purple grey|0.571|0.036|-0.023|7;acid green|0.895|-0.178|0.184|10;pale lavender|0.895|0.050|-0.051|7;violet blue|0.427|0.067|-0.233|6;light forest green|0.597|-0.094|0.065|4;burnt red|0.460|0.137|0.090|0;khaki green|0.587|-0.056|0.090|4;cerise|0.580|0.227|0.029|8;faded purple|0.588|0.058|-0.049|7;apricot|0.821|0.061|0.109|1;dark olive green|0.392|-0.051|0.079|4;grey brown|0.551|0.005|0.046|2;green grey|0.629|-0.045|0.040|4;true blue|0.389|-0.026|-0.259|6;pale violet|0.805|0.061|-0.092|7;periwinkle blue|0.716|0.019|-0.141|6;light sky blue|0.955|-0.051|-0.019|6;green brown|0.417|-0.021|0.084|4;bright teal|0.874|-0.169|0.027|5;brownish yellow|0.756|-0.024|0.154|3;pea soup|0.655|-0.057|0.134|4;forest|0.392|-0.099|0.076|4;barney purple|0.491|0.193|-0.107|7;ultramarine|0.355|0.003|-0.231|6;bluish grey|0.623|-0.020|-0.025|9;dark periwinkle|0.552|0.035|-0.167|6;dark lilac|0.603|0.077|-0.062|7;light maroon|0.522|0.117|0.025|0;dusty purple|0.536|0.058|-0.045|7;avocado|0.712|-0.084|0.128|4;marine blue|0.339|-0.031|-0.097|6;teal green|0.636|-0.125|0.045|4;slate grey|0.499|-0.011|-0.016|9;lighter green|0.886|-0.178|0.142|4;electric green|0.861|-0.228|0.177|4;dusty blue|0.604|-0.031|-0.070|6;golden yellow|0.853|0.008|0.171|3;bright yellow|0.964|-0.069|0.198|3;light lavender|0.864|0.048|-0.067|7;umber|0.580|0.065|0.118|2;dark peach|0.691|0.099|0.082|1;jungle green|0.532|-0.122|0.063|4;denim|0.489|-0.027|-0.076|6;yellow brown|0.679|-0.005|0.139|3;dull purple|0.523|0.068|-0.037|7;chocolate brown|0.270|0.047|0.055|2;wine red|0.372|0.140|0.042|0;neon blue|0.816|-0.117|-0.086|6;dirty green|0.556|-0.062|0.093|4;light tan|0.944|-0.012|0.084|9;ice blue|0.972|-0.040|-0.010|6;cadet blue|0.545|-0.027|-0.063|6;dark mauve|0.493|0.084|-0.005|7;very light blue|0.971|-0.041|-0.012|6;grey purple|0.566|0.037|-0.038|7;pastel pink|0.858|0.083|0.001|8;very light green|0.952|-0.071|0.068|4;dark sky blue|0.640|-0.041|-0.143|6;dull pink|0.708|0.100|0.002|8;aubergine|0.254|0.090|-0.040|7;reddish orange|0.652|0.181|0.123|1;deep green|0.403|-0.105|0.076|4;purple pink|0.658|0.219|-0.125|8;dusty pink|0.713|0.091|0.018|8;faded green|0.709|-0.083|0.065|4;camo green|0.476|-0.051|0.077|4;pinky purple|0.624|0.180|-0.098|7;pink purple|0.662|0.202|-0.125|7;brownish red|0.481|0.120|0.076|0;dark rose|0.552|0.139|0.028|8;mud|0.485|-0.000|0.092|2;emerald green|0.565|-0.147|0.106|4;pale brown|0.677|0.022|0.058|2;dull blue|0.547|-0.031|-0.072|6;burnt umber|0.503|0.095|0.097|2;medium green|0.661|-0.144|0.099|4;light aqua|0.922|-0.116|0.018|5;light olive green|0.761|-0.068|0.109|4;brownish orange|0.648|0.070|0.120|1;dark aqua|0.473|-0.076|-0.023|5;purplish pink|0.644|0.160|-0.059|8;dark salmon|0.603|0.128|0.062|8;greenish grey|0.723|-0.039|0.037|4;jade|0.647|-0.128|0.042|4;ugly green|0.631|-0.082|0.129|4;dark beige|0.674|0.008|0.072|9;emerald|0.617|-0.147|0.085|4;pale red|0.620|0.151|0.074|0;light magenta|0.739|0.214|-0.131|8;sky|0.810|-0.051|-0.088|6;light cyan|0.946|-0.078|-0.018|5;yellow orange|0.809|0.037|0.165|1;reddish purple|0.431|0.170|-0.008|7;reddish pink|0.647|0.226|0.074|8;orchid|0.680|0.124|-0.075|7;dirty yellow|0.804|-0.049|0.164|3;orange red|0.654|0.193|0.123|0;deep red|0.432|0.153|0.087|0;orange brown|0.597|0.080|0.121|1;cobalt blue|0.336|-0.021|-0.222|6;neon pink|0.652|0.267|-0.027|8;rose pink|0.751|0.135|0.024|8;greyish purple|0.582|0.040|-0.038|7;raspberry|0.485|0.192|0.028|8;aqua green|0.803|-0.170|0.065|4;salmon pink|0.735|0.149|0.058|8;tangerine|0.764|0.083|0.154|1;brownish green|0.518|-0.042|0.103|4;red brown|0.436|0.107|0.076|0;greenish brown|0.486|-0.022|0.092|4;pumpkin|0.677|0.092|0.137|1;pine green|0.353|-0.079|0.048|4;baby pink|0.853|0.088|-0.003|8;cornflower|0.628|0.015|-0.186|6;blue violet|0.473|0.073|-0.263|7;chocolate|0.269|0.037|0.052|2;greyish green|0.687|-0.056|0.044|4;scarlet|0.505|0.184|0.090|0;green yellow|0.929|-0.125|0.185|3;dark olive|0.345|-0.035|0.070|4;pastel purple|0.779|0.077|-0.115|7;terracotta|0.622|0.104|0.089|1;aqua blue|0.805|-0.125|-0.058|6;sage green|0.721|-0.070|0.064|4;blood red|0.427|0.153|0.085|0;deep pink|0.543|0.218|0.013|8;grass|0.668|-0.129|0.122|4;moss|0.641|-0.066|0.074|4;pastel blue|0.806|-0.008|-0.095|6;bluish green|0.643|-0.130|0.041|4;green blue|0.685|-0.134|0.026|6;dark tan|0.651|0.020|0.091|9;greenish blue|0.576|-0.095|-0.019|6;pale orange|0.801|0.069|0.124|1;forrest green|0.341|-0.078|0.066|4;dark lavender|0.562|0.054|-0.061|7;dark violet|0.238|0.086|-0.073|7;purple blue|0.501|0.069|-0.244|6;dark cyan|0.569|-0.091|-0.027|5;olive drab|0.545|-0.038|0.084|4;pinkish|0.654|0.132|0.022|8;cobalt|0.414|-0.021|-0.125|6;neon purple|0.608|0.199|-0.221|7;light turquoise|0.887|-0.120|0.023|5;apple green|0.764|-0.145|0.149|4;dull green|0.673|-0.081|0.074|4;wine|0.388|0.156|0.004|0;powder blue|0.852|-0.017|-0.067|6;off white|0.993|-0.010|0.034|9;electric blue|0.529|-0.031|-0.260|6;dark turquoise|0.430|-0.071|-0.015|5;blue purple|0.459|0.062|-0.221|7;azure|0.664|-0.069|-0.153|6;bright red|0.628|0.226|0.123|0;pinkish red|0.609|0.228|0.078|0;cornflower blue|0.575|-0.005|-0.161|6;light olive|0.771|-0.056|0.099|4;grape|0.415|0.091|-0.042|7;greyish blue|0.588|-0.026|-0.052|6;purplish blue|0.503|0.065|-0.272|6;yellowish green|0.835|-0.111|0.169|10;greenish yellow|0.927|-0.121|0.191|3;medium blue|0.538|-0.038|-0.132|6;dusty rose|0.641|0.094|0.024|8;light violet|0.824|0.061|-0.085|7;midnight blue|0.151|-0.004|-0.101|6;bluish purple|0.525|0.080|-0.225|7;red orange|0.649|0.194|0.129|1;dark magenta|0.439|0.179|-0.014|8;greenish|0.642|-0.116|0.056|4;ocean blue|0.517|-0.063|-0.087|6;coral|0.682|0.177|0.091|8;cream|0.985|-0.024|0.074|9;reddish brown|0.410|0.096|0.077|2;brick|0.484|0.122|0.077|0;sage|0.707|-0.066|0.065|4;grey green|0.652|-0.055|0.044|4;robin's egg blue|0.900|-0.077|-0.036|6;moss green|0.590|-0.077|0.092|4;steel blue|0.575|-0.026|-0.054|6;eggplant|0.246|0.083|-0.046|7;light yellow|0.972|-0.049|0.146|3;leaf green|0.659|-0.132|0.135|4;pinkish purple|0.651|0.200|-0.127|7;sea blue|0.521|-0.068|-0.072|6;pale purple|0.714|0.068|-0.080|7;slate blue|0.573|-0.024|-0.053|6;blue grey|0.571|-0.023|-0.036|6;hunter green|0.325|-0.079|0.061|4;fuchsia|0.654|0.259|-0.131|8;crimson|0.403|0.147|0.072|0;pale yellow|0.976|-0.047|0.138|3;ochre|0.680|0.012|0.138|1;mustard yellow|0.792|-0.032|0.161|3;light red|0.667|0.201|0.090|0;cerulean|0.596|-0.063|-0.135|6;pale pink|0.900|0.056|0.000|8;deep blue|0.255|-0.013|-0.171|6;rust|0.503|0.116|0.098|1;light teal|0.855|-0.093|0.023|5;slate|0.495|-0.017|-0.027|9;dark yellow|0.780|-0.018|0.158|3;army green|0.448|-0.053|0.081|4;grey blue|0.622|-0.024|-0.046|6;seafoam|0.892|-0.138|0.066|5;puce|0.621|0.028|0.072|9;spring green|0.902|-0.130|0.134|4;dark orange|0.580|0.118|0.117|1;sand|0.841|-0.007|0.107|9;pastel green|0.926|-0.114|0.097|4;mint|0.918|-0.119|0.072|4;light orange|0.802|0.057|0.136|1;bright pink|0.661|0.271|-0.060|8;chartreuse|0.908|-0.127|0.186|10;deep purple|0.242|0.088|-0.071|7;dark brown|0.254|0.023|0.049|2;taupe|0.724|0.012|0.051|9;pea green|0.695|-0.084|0.139|4;kelly green|0.644|-0.166|0.116|4;seafoam green|0.890|-0.143|0.068|4;blue green|0.533|-0.093|0.003|4;khaki|0.713|-0.024|0.086|9;burgundy|0.315|0.124|0.021|0;dark teal|0.381|-0.062|-0.018|5;brick red|0.418|0.135|0.083|0;royal purple|0.319|0.103|-0.125|7;plum|0.319|0.113|-0.032|7;mint green|0.910|-0.140|0.090|4;gold|0.782|-0.008|0.158|3;baby blue|0.839|-0.028|-0.077|6;yellow green|0.915|-0.128|0.180|10;bright purple|0.607|0.206|-0.220|7;dark red|0.385|0.138|0.077|0;pale blue|0.965|-0.045|-0.013|6;grass green|0.610|-0.138|0.124|4;navy|0.211|-0.014|-0.083|6;aquamarine|0.787|-0.149|0.016|5;burnt orange|0.566|0.115|0.114|1;neon green|0.867|-0.232|0.178|4;bright blue|0.559|-0.038|-0.235|6;rose|0.633|0.136|0.026|8;light pink|0.904|0.055|-0.002|8;mustard|0.767|-0.023|0.157|3;indigo|0.316|0.061|-0.166|7;lime|0.912|-0.152|0.177|10;sea green|0.883|-0.171|0.078|4;periwinkle|0.675|0.046|-0.172|6;dark pink|0.583|0.175|0.018|8;olive green|0.545|-0.064|0.111|4;peach|0.822|0.068|0.093|1;pale green|0.939|-0.081|0.073|4;light brown|0.635|0.032|0.079|2;hot pink|0.650|0.264|-0.007|8;lilac|0.785|0.078|-0.108|7;navy blue|0.210|-0.013|-0.101|6;royal blue|0.337|-0.020|-0.228|6;beige|0.885|-0.008|0.068|9;salmon|0.731|0.147|0.077|8;olive|0.539|-0.047|0.106|4;maroon|0.323|0.126|0.028|0;bright green|0.867|-0.233|0.179|4;dark purple|0.245|0.081|-0.067|7;mauve|0.617|0.080|0.004|7;forest green|0.347|-0.087|0.064|4;aqua|0.839|-0.153|0.007|5;cyan|0.905|-0.149|-0.039|5;tan|0.776|0.007|0.093|9;dark blue|0.217|-0.015|-0.144|6;lavender|0.768|0.071|-0.095|7;turquoise|0.730|-0.131|-0.002|5;dark green|0.286|-0.075|0.059|4;violet|0.546|0.163|-0.222|7;light purple|0.697|0.118|-0.149|7;lime green|0.892|-0.182|0.184|10;sky blue|0.772|-0.044|-0.110|6;yellow|0.968|-0.070|0.196|3;magenta|0.534|0.219|-0.027|8;light green|0.894|-0.142|0.122|4;orange|0.704|0.124|0.142|1;teal|0.596|-0.105|-0.007|5;light blue|0.833|-0.042|-0.076|6;red|0.579|0.207|0.116|0;brown|0.386|0.042|0.079|2;pink|0.763|0.165|-0.028|8;blue|0.472|-0.028|-0.239|6;green|0.658|-0.171|0.130|4;purple|0.452|0.141|-0.135|7";
+// ─── Hue families from common colour names ───────────────────────────────────
+// Hue angles alone call a dark, muted 95° colour "yellow", but almost nobody
+// does: dark yellows are olives (green) or browns. So a colour's hue family is
+// decided by the names people actually give the colours around it — the
+// nearest few xkcd-survey names, each counted by its hue word ("olive drab" is
+// green, "mud brown" is brown, "dark mustard" is yellow) and weighted by
+// closeness. Each hue word goes to the family of that name (Purple → a Purple
+// or Magenta family, brown → Brown if there is one, else Orange), or to the
+// family nearest its hue. Light/Dark, Vivid/Muted, the neutral split and the
+// overrides work as before.
+//
+// settings.familyMode: "semantic" (default) or "angles" (the old wedges).
+const familyModeOf = (s) => ((s && s.familyMode) === "angles" ? "angles" : "semantic");
+const SEMANTIC_K = 5;
+// The hue region whose centre is nearest an angle (ties to the lower angle).
+const hueByAngle = (h, hues) => {
+  let best = null, bestD = Infinity;
+  (hues || []).forEach((hu) => {
+    const centre = hueCenterOf(hu, hues);
+    const d = hueArcDistance(h, centre);
+    if (d < bestD - 1e-9 || (Math.abs(d - bestD) < 1e-9 && best && centre < hueCenterOf(best, hues))) { bestD = d; best = hu; }
+  });
+  return best;
+};
+const SEMANTIC_SAMPLES = SEMANTIC_SAMPLES_RAW.split(";").map((r) => {
+  const p = r.split("|");
+  return { name: p[0], L: +p[1], a: +p[2], b: +p[3], term: SEMANTIC_TERMS[+p[4]] };
+});
+// Which family each hue word means, by the families' names first.
+const SEMANTIC_SYNONYMS = {
+  red: ["red", "crimson", "scarlet"],
+  orange: ["orange"],
+  brown: ["brown", "tan", "orange"],
+  yellow: ["yellow", "gold"],
+  green: ["green", "olive"],
+  lime: ["chartreuse", "lime", "green"],
+  cyan: ["cyan", "teal", "turquoise", "aqua"],
+  blue: ["blue", "navy"],
+  purple: ["purple", "violet", "lavender", "magenta"],
+  pink: ["pink", "rose", "fuchsia", "magenta"],
+};
+const semanticTermFamilies = (hues) => {
+  const out = {};
+  const lower = (hues || []).map((h) => String(h.name || "").trim().toLowerCase());
+  Object.keys(SEMANTIC_SYNONYMS).forEach((term) => {
+    for (const syn of SEMANTIC_SYNONYMS[term]) {
+      const i = lower.findIndex((n) => n === syn || n.split(/\s+/).includes(syn));
+      if (i >= 0) { out[term] = hues[i]; return; }
+    }
+    // no family by that name: the one nearest the word's typical hue
+    let sa = 0, sb = 0;
+    SEMANTIC_SAMPLES.forEach((s) => { if (s.term === term) { sa += s.a; sb += s.b; } });
+    out[term] = hueByAngle(((Math.atan2(sb, sa) * 180) / Math.PI + 360) % 360, hues);
+  });
+  return out;
+};
+
+// The labelled survey colours for the current hue families, as flat arrays.
+let colorFamilyIndex = null;
+const buildColorFamilyIndex = (settings) => {
+  const s = settings || defaultGroupSettings, hues = s.hues || [];
+  const fam = semanticTermFamilies(hues);
+  const pts = [];
+  SEMANTIC_SAMPLES.forEach((smp) => {
+    const hue = smp.term === "angle" ? hueByAngle(((Math.atan2(smp.b, smp.a) * 180) / Math.PI + 360) % 360, hues) : fam[smp.term];
+    if (!hue) return;
+    const C = Math.hypot(smp.a, smp.b), H = ((Math.atan2(smp.b, smp.a) * 180) / Math.PI + 360) % 360;
+    pts.push({ name: smp.name, L: smp.L, C, H, a: smp.a, b: smp.b, hueId: hue.id });
+  });
+  const n = pts.length, PL = new Float64Array(n), PA = new Float64Array(n), PB = new Float64Array(n);
+  pts.forEach((p, i) => { PL[i] = p.L; PA[i] = p.a; PB[i] = p.b; });
+  return { n, PL, PA, PB, pts, hues };
+};
+// The nearest K survey colours to (L, a, b): [index, distance] pairs.
+const semanticNearest = (idx, L, a, b, K = SEMANTIC_K) => {
+  const bi = new Int32Array(K).fill(-1), bd = new Float64Array(K).fill(Infinity);
+  for (let i = 0; i < idx.n; i++) {
+    const dL = idx.PL[i] - L, da = idx.PA[i] - a, db = idx.PB[i] - b, d = dL * dL + da * da + db * db;
+    if (d >= bd[K - 1]) continue;
+    let j = K - 1;
+    while (j > 0 && bd[j - 1] > d) { bd[j] = bd[j - 1]; bi[j] = bi[j - 1]; j--; }
+    bd[j] = d; bi[j] = i;
+  }
+  const out = [];
+  for (let j = 0; j < K; j++) if (bi[j] >= 0) out.push([bi[j], Math.sqrt(bd[j])]);
+  return out;
+};
+// The hue region of a chromatic colour under the current rule.
+const hueRegionOf = (l, c, h, s) => {
+  const hues = (s && s.hues) || defaultGroupSettings.hues;
+  const idx = colorFamilyIndex;
+  if (familyModeOf(s) === "semantic" && idx && idx.n) {
+    const r = (h * Math.PI) / 180, near = semanticNearest(idx, l, c * Math.cos(r), c * Math.sin(r));
+    const votes = new Map();
+    near.forEach(([i, d]) => { const id = idx.pts[i].hueId; votes.set(id, (votes.get(id) || 0) + 1 / (d + 0.004)); });
+    let bestId = null, bv = -1;
+    votes.forEach((v, id) => { if (v > bv) { bv = v; bestId = id; } });
+    const hit = bestId && hues.find((x) => x.id === bestId);
+    if (hit) return hit;
+  }
+  return hueByAngle(h, hues);
+};
+// The survey names nearest a colour (to explain why it lands where it does).
+const semanticNamesNear = (l, c, h, k = 3) => {
+  const idx = colorFamilyIndex;
+  if (!idx || !idx.n) return [];
+  const r = (h * Math.PI) / 180;
+  return semanticNearest(idx, l, c * Math.cos(r), c * Math.sin(r), k).map(([i]) => idx.pts[i].name);
+};
+
+// The Color Groups tab: which rule decides hue families, with a strip of
+// survey colours per family so the split can be seen at a glance.
+const HueFamilyRule = ({ settings, setSettings }) => {
+  const mode = familyModeOf(settings);
+  const hues = settings.hues || [];
+  const perFamily = useMemo(() => {
+    const idx = colorFamilyIndex && colorFamilyIndex.hues === hues ? colorFamilyIndex : buildColorFamilyIndex(settings);
+    const m = new Map(hues.map((h) => [h.id, []]));
+    idx.pts.forEach((p) => { if (m.has(p.hueId) && p.C >= (settings.neutralC ?? 0.02)) m.get(p.hueId).push(p); });
+    // a spread from dark to light, muted to vivid
+    m.forEach((list, id) => {
+      list.sort((p, q) => p.L - q.L);
+      const want = 14, step = Math.max(1, list.length / want);
+      const pick = [];
+      for (let i = 0; i < list.length && pick.length < want; i += step) pick.push(list[Math.floor(i)]);
+      m.set(id, { n: list.length, pick });
+    });
+    return m;
+  }, [settings]);
+  const option = (id, title, body) =>
+    React.createElement(
+      "button",
+      {
+        type: "button", role: "radio", "aria-checked": mode === id,
+        onClick: () => setSettings({ ...settings, familyMode: id }),
+        className: `flex-1 text-left p-3 rounded-lg border transition-colors ${
+          mode === id ? "border-sky-500 bg-sky-50 dark:bg-sky-500/10" : "border-slate-200 dark:border-neutral-800 hover:border-slate-300 dark:hover:border-neutral-700"
+        }`,
+      },
+      React.createElement(
+        "div",
+        { className: "flex items-center gap-2 mb-1" },
+        React.createElement("span", { className: `w-3 h-3 rounded-full border-2 ${mode === id ? "border-sky-500 bg-sky-500" : "border-slate-300 dark:border-neutral-600"}` }),
+        React.createElement("span", { className: "text-[11px] font-black uppercase tracking-widest text-slate-800 dark:text-neutral-100" }, title),
+      ),
+      React.createElement("p", { className: "text-[11px] leading-snug text-slate-600 dark:text-neutral-400" }, body),
+    );
+  return React.createElement(
+    "div",
+    { className: "mb-6" },
+    React.createElement(
+      "div",
+      { className: "flex items-center gap-4 mb-4" },
+      React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400" }, "How colours get their hue family"),
+      React.createElement("div", { className: "flex-1 h-px bg-slate-200 dark:bg-neutral-800" }),
+    ),
+    React.createElement(
+      "div",
+      { className: "bg-white dark:bg-neutral-900 p-5 rounded-xl border border-slate-200 dark:border-neutral-800 shadow-sm flex flex-col gap-4" },
+      React.createElement(
+        "div",
+        { className: "flex flex-col md:flex-row gap-3", role: "radiogroup", "aria-label": "Hue family rule" },
+        option("semantic", "Common colour names", "Automatic. A colour joins the family people would name it by: its nearest colours in the xkcd colour survey, by their hue word. Dark muted yellows come out olive (Green) or brown (Orange), the way most people see them; bright and light yellows stay Yellow."),
+        option("angles", "Hue angles", "Colours split into wedges halfway between the hue centres below, whatever their lightness or chroma."),
+      ),
+      mode === "semantic" &&
+        React.createElement(
+          "div",
+          { className: "flex flex-col gap-1.5" },
+          React.createElement("span", { className: "text-[10px] text-slate-400" }, "Survey colours in each family, dark to light (hover for their names)"),
+          hues.map((h) => {
+            const e = perFamily.get(h.id) || { n: 0, pick: [] };
+            return React.createElement(
+              "div",
+              { key: h.id, className: "flex items-center gap-2" },
+              React.createElement("span", { className: "w-20 shrink-0 text-[10px] font-black uppercase tracking-widest text-slate-700 dark:text-neutral-200 truncate" }, h.name),
+              React.createElement(
+                "div",
+                { className: "flex-1 flex h-5 rounded overflow-hidden" },
+                e.n
+                  ? e.pick.map((p, i) =>
+                      React.createElement("span", { key: i, className: "flex-1", title: p.name, style: { backgroundColor: lchDisplayHex(p.L, p.C, p.H) } }),
+                    )
+                  : React.createElement(
+                      "span",
+                      { className: "flex-1 flex items-center px-2 text-[10px] italic text-slate-400 bg-slate-50 dark:bg-neutral-800/60" },
+                      "No colour names map to this family, so no colour lands here. Name it after a colour word (Red, Brown, Purple, Pink, Lime…) or remove it.",
+                    ),
+              ),
+              React.createElement("span", { className: "w-14 shrink-0 text-right text-[10px] font-mono text-slate-400" }, `${e.n} names`),
+            );
+          }),
+        ),
+    ),
+  );
+};
+
 const ViewportSwatches = ({
   items,
   layout,
@@ -9353,7 +9618,7 @@ const ViewportSwatches = ({
       col.per = Math.ceil(Math.sqrt(most));
     });
     return m;
-  }, [layout, sortedItems, axesKey, groupingColourSettings]);
+  }, [layout, sortedItems, axesKey, groupingColourSettings, colorFamilyIndex]);
   // Full-size photo, opened from the eye button in any layout.
   const imagePreview =
     fullscreenImage &&
@@ -11513,6 +11778,7 @@ const ViewGroups = ({ settings, setSettings }) => {
         ),
       ),
     ),
+    React.createElement(HueFamilyRule, { settings, setSettings }),
     React.createElement(
       "div",
       { className: "mb-6" },
@@ -11525,7 +11791,7 @@ const ViewGroups = ({ settings, setSettings }) => {
             className:
               "text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400",
           },
-          "Hue Regions (0\xB0 - 360\xB0)",
+          familyModeOf(settings) === "semantic" ? "Hue families and their centres (used to match the names)" : "Hue Regions (0\xB0 - 360\xB0)",
         ),
         React.createElement("div", {
           className: "flex-1 h-px bg-slate-200 dark:bg-neutral-800",
@@ -12444,6 +12710,8 @@ const processCSVData = (
         newGroupSettings.lightL = parseFloat(row.OKLCH_L);
       if (prop === "neutralC" && row.OKLCH_C)
         newGroupSettings.neutralC = parseFloat(row.OKLCH_C);
+      if (prop === "familyMode" && row.Note)
+        newGroupSettings.familyMode = String(row.Note).trim().toLowerCase() === "angles" ? "angles" : "semantic";
       if (prop === "vividC" && row.OKLCH_C)
         newGroupSettings.vividC = parseFloat(row.OKLCH_C);
       return;
@@ -13806,6 +14074,9 @@ const App = () => {
     initialState?.groupSettings || defaultGroupSettings,
   );
   const [palette, setPalette] = useState(initialState?.palette || []);
+  // the hue-family lookup every colour-group call uses
+  const colorFamilyIdx = useMemo(() => buildColorFamilyIndex(groupSettings), [groupSettings]);
+  colorFamilyIndex = colorFamilyIdx;
   const [savedPalettes, setSavedPalettes] = useState(
     initialState?.savedPalettes || [],
   );
@@ -15809,6 +16080,11 @@ const App = () => {
           Type: "SETTING",
           Noun: "neutralC",
           OKLCH_C: groupSettings.neutralC,
+        });
+        anchorsCsv.push({
+          Type: "SETTING",
+          Noun: "familyMode",
+          Note: familyModeOf(groupSettings),
         });
         anchorsCsv.push({
           Type: "SETTING",
@@ -19967,6 +20243,11 @@ const AppUI = ({
   setTetheringPinId,
 }) => {
   const spaceSeenRef = useRef(false);
+  // The labelled survey colours, for Explore's group lines.
+  const familySeeds = useMemo(
+    () => (colorFamilyIndex ? colorFamilyIndex.pts.map((p) => ({ L: p.L, C: p.C, H: p.H, hueId: p.hueId })) : []),
+    [colorFamilyIndex],
+  );
   // Palettes the Explore bins can be built around: the working one and the saved ones.
   const binPalettes = useMemo(() => {
     const conv = (items) =>
@@ -22445,6 +22726,7 @@ const AppUI = ({
                 handlePointClick,
                 groupSettings,
                 binPalettes,
+                familySeeds,
                 onCursor: (L, C, H) => {
                   setScrubL(L);
                   setScrubC(C);
