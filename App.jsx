@@ -148,6 +148,11 @@ function getColorGroup(l, c, h, settings) {
     overrides = defaultGroupSettings.overrides,
     neutrals = defaultGroupSettings.neutrals,
   } = settings || defaultGroupSettings;
+  // your words: the word that claims this colour, with no splits
+  if (familyModeOf(settings || defaultGroupSettings) === "words") {
+    const w = colorWordOf(l, c, h);
+    if (w) return w.name;
+  }
   let baseName = "";
   if (c < neutralC) {
     const sortedNeutrals = [
@@ -2498,26 +2503,30 @@ function createSpaceEngine(opts) {
   const groupLines = new THREE.LineSegments(groupGeo, groupMat);
   groupLines.frustumCulled = false; groupLines.renderOrder = 4; groupLines.visible = false;
   overlay.add(groupLines);
-  // Hue families: the labelled survey colours that decide them, in OkLab
-  // (the same distance and vote the app names and groups colours by).
-  let famN = 0, famL = null, famA = null, famB = null, famF = null;
-  // the five nearest labelled colours vote, weighted by closeness (as the app does)
-  const FK = 5, fkI = new Int32Array(FK), fkD = new Float64Array(FK), fkV = new Float64Array(64);
+  // Colour words: the labelled colour names that decide them, in OkLab, by
+  // the same rule the app names and groups colours by (semanticTermAt): each
+  // word a Gaussian cloud round its names, its four strongest summed, with a
+  // weak prior on how many names it has.
+  let famN = 0, famL = null, famA = null, famB = null, famF = null, famW = null, famT = 0, famLogW = null, famTop = null;
+  const FK = 4, FH = 0.025, FPRIOR = 0.4, FK2 = 1 / (2 * FH * FH);
   const famAtLab = (L, a, b) => {
-    fkI.fill(-1); fkD.fill(Infinity);
+    famTop.fill(-Infinity);
     for (let i = 0; i < famN; i++) {
-      const dL = famL[i] - L, da = famA[i] - a, db = famB[i] - b, d2 = dL * dL + da * da + db * db;
-      if (d2 >= fkD[FK - 1]) continue;
+      const dL = famL[i] - L, da = famA[i] - a, db = famB[i] - b;
+      const e = famW[i] - (dL * dL + da * da + db * db) * FK2, o = famF[i] * FK;
+      if (e <= famTop[o + FK - 1]) continue;
       let j = FK - 1;
-      while (j > 0 && fkD[j - 1] > d2) { fkD[j] = fkD[j - 1]; fkI[j] = fkI[j - 1]; j--; }
-      fkD[j] = d2; fkI[j] = i;
+      while (j > 0 && famTop[o + j - 1] < e) { famTop[o + j] = famTop[o + j - 1]; j--; }
+      famTop[o + j] = e;
     }
-    fkV.fill(0);
-    let best = -1, bv = -1;
-    for (let j = 0; j < FK; j++) {
-      if (fkI[j] < 0) continue;
-      const f = famF[fkI[j]], v = (fkV[f] += 1 / (Math.sqrt(fkD[j]) + 0.004));
-      if (v > bv) { bv = v; best = f; }
+    let best = -1, bs = -Infinity;
+    for (let t = 0; t < famT; t++) {
+      const o = t * FK, mx = famTop[o];
+      if (mx === -Infinity) continue;
+      let sum = 0;
+      for (let j = 0; j < FK; j++) if (famTop[o + j] > -Infinity) sum += Math.exp(famTop[o + j] - mx);
+      const sc = mx + Math.log(sum) - (1 - FPRIOR) * famLogW[t];
+      if (sc > bs) { bs = sc; best = t; }
     }
     return best;
   };
@@ -2528,27 +2537,37 @@ function createSpaceEngine(opts) {
     const P = [], seg = (a, b) => P.push(a[0], a[1], a[2], b[0], b[1], b[2]);
     const ring = (L, r) => { for (let i = 0; i < 72; i++) seg(spaceToWorld(L, r, i * 5), spaceToWorld(L, r, (i + 1) * 5)); };
     const Rmax = DisplayGamut.maxChroma;
-    ring(g.lightL, g.neutralC); ring(g.lightL, g.vividC);
     if (g.anchorMode && famN) {
-      // family edges where they cross the light/dark plane, traced on a polar grid
-      const NR = 28, NA = 360, R0 = g.neutralC, R1 = Rmax;
-      for (let ri = 0; ri < NR; ri++) {
-        const r = R0 + ((R1 - R0) * (ri + 0.5)) / NR;
-        let prev = -9;
-        for (let ai = 0; ai <= NA; ai++) {
-          const h = ai % 360, w = spaceToWorld(g.lightL, r, h);
-          const f = spaceInGamutStrict(w[0], w[1], w[2]) ? famAtLCH(g.lightL, r, h) : -1;
-          if (prev >= 0 && f >= 0 && f !== prev)
-            seg(spaceToWorld(g.lightL, R0 + ((R1 - R0) * ri) / NR, ai - 0.5), spaceToWorld(g.lightL, R0 + ((R1 - R0) * (ri + 1)) / NR, ai - 0.5));
-          prev = f;
-        }
-      }
-    }
+      // word edges, traced on a polar grid on a stack of lightness planes
+      // (radially and round the circle), so the partition reads in depth
+      const NR = 24, NA = 180, R1 = Rmax;
+      [0.2, 0.35, 0.5, 0.65, 0.8, 0.93].forEach((Lp) => {
+        const F = new Int32Array((NR + 1) * NA).fill(-1);
+        for (let ri = 0; ri <= NR; ri++)
+          for (let ai = 0; ai < NA; ai++) {
+            const r = (R1 * ri) / NR, h = (ai * 360) / NA, w = spaceToWorld(Lp, r, h);
+            F[ri * NA + ai] = spaceInGamutStrict(w[0], w[1], w[2]) ? famAtLCH(Lp, r, h) : -1;
+          }
+        const dh = 360 / NA, dr = R1 / NR;
+        for (let ri = 0; ri <= NR; ri++)
+          for (let ai = 0; ai < NA; ai++) {
+            const f = F[ri * NA + ai];
+            if (f < 0) continue;
+            const r = dr * ri, h = dh * ai;
+            const f2 = F[ri * NA + ((ai + 1) % NA)];   // neighbour round the circle: a radial edge piece
+            if (f2 >= 0 && f2 !== f) seg(spaceToWorld(Lp, Math.max(0, r - dr / 2), h + dh / 2), spaceToWorld(Lp, r + dr / 2, h + dh / 2));
+            if (ri < NR) {                               // neighbour outward: an arc piece
+              const f3 = F[(ri + 1) * NA + ai];
+              if (f3 >= 0 && f3 !== f) seg(spaceToWorld(Lp, r + dr / 2, h - dh / 2), spaceToWorld(Lp, r + dr / 2, h + dh / 2));
+            }
+          }
+      });
+    } else { ring(g.lightL, g.neutralC); ring(g.lightL, g.vividC); }
     if (!g.anchorMode) g.hueB.forEach((h) => {
       seg(spaceToWorld(g.lightL, g.neutralC, h), spaceToWorld(g.lightL, Rmax, h));          // sector edge on the light/dark plane
       seg(spaceToWorld(0, g.neutralC, h), spaceToWorld(1, g.neutralC, h));                 // its seam on the neutral core
     });
-    g.neutralLs.forEach((l) => ring(l, g.neutralC));
+    if (!g.anchorMode) g.neutralLs.forEach((l) => ring(l, g.neutralC));
     if (groupGeo.attributes.position) groupGeo.dispose();
     groupGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(P), 3));
     groupLines.computeLineDistances();
@@ -4003,7 +4022,9 @@ function createSpaceEngine(opts) {
     ctx.setLineDash([4 * d, 4 * d]); ctx.lineWidth = d;
     ctx.strokeStyle = S.dark ? "rgba(242,232,223,0.32)" : "rgba(1,13,0,0.28)";
     const seg = (u0, w0, u1, w1) => { ctx.beginPath(); ctx.moveTo(u2px(v, u0), v2py(v, w0)); ctx.lineTo(u2px(v, u1), v2py(v, w1)); ctx.stroke(); };
-    if (k === "l") {
+    if (g.anchorMode && famN) {
+      // words: no splits to draw, only the edges between words (below)
+    } else if (k === "l") {
       // the neutral core and the muted/vivid edge as circles; hue sectors as rays
       const ox = u2px(v, 0), oy = v2py(v, 0), sc = Math.abs(u2px(v, 1) - ox);
       [g.neutralC, g.vividC].forEach((r) => { ctx.beginPath(); ctx.arc(ox, oy, r * sc, 0, Math.PI * 2); ctx.stroke(); });
@@ -4020,8 +4041,8 @@ function createSpaceEngine(opts) {
       seg(g.neutralC, g.lightL * ky, Rmax, g.lightL * ky);
       g.neutralLs.forEach((l) => seg(0, l * ky, g.neutralC, l * ky));
     }
-    // By anchor, family edges follow the anchors rather than angles: found on
-    // a coarse grid and dotted wherever two neighbouring samples disagree.
+    // Words: edges between them, found on a coarse grid and dotted wherever
+    // two neighbouring samples disagree.
     if (g.anchorMode && famN) {
       const W = v.cv.width, Hh = v.cv.height, s = Math.max(4, Math.round(5 * d));
       const cols = Math.ceil(W / s) + 1, rows = Math.ceil(Hh / s) + 1, F = new Int32Array(cols * rows), P = [0, 0, 0];
@@ -4030,7 +4051,7 @@ function createSpaceEngine(opts) {
           let f = -2;
           if (mappingAt(k, px2u(v, gx * s), py2v(v, gy * s), 0, P) && spaceInGamutStrict(P[0], P[1], P[2])) {
             const [L2, C2, H2] = spaceWorldToLCH(P[0], P[1], P[2]);
-            f = C2 >= g.neutralC ? famAtLCH(L2, C2, H2) : -1;
+            f = famAtLCH(L2, C2, H2);
           }
           F[gy * cols + gx] = f;
         }
@@ -4331,12 +4352,17 @@ function createSpaceEngine(opts) {
       S.groupLinesOn = !!on;
       const list = Array.isArray(fam) ? fam : [];
       const ids = new Map();
-      famN = list.length; famL = new Float64Array(famN); famA = new Float64Array(famN); famB = new Float64Array(famN); famF = new Int32Array(famN);
+      famN = list.length; famL = new Float64Array(famN); famA = new Float64Array(famN); famB = new Float64Array(famN); famF = new Int32Array(famN); famW = new Float64Array(famN);
       list.forEach((p, i) => {
         if (!ids.has(p.hueId)) ids.set(p.hueId, ids.size);
         const r = (p.H * Math.PI) / 180;
         famL[i] = p.L; famA[i] = p.C * Math.cos(r); famB[i] = p.C * Math.sin(r); famF[i] = ids.get(p.hueId);
+        famW[i] = Math.log(p.w > 0 ? p.w : 1);
       });
+      famT = ids.size; famTop = new Float64Array(Math.max(1, famT) * FK);
+      const ws = new Float64Array(famT);
+      list.forEach((p, i) => { ws[famF[i]] += p.w > 0 ? p.w : 1; });
+      famLogW = Array.from(ws, (w) => Math.log(Math.max(w, 1e-9)));
       if (!gs) { S.groups = null; buildGroupLines3D(); scheduleSections(); return; }
       const num = (x, d) => (isFinite(+x) ? +x : d);
       const centres = (gs.hues || [])
@@ -4349,7 +4375,7 @@ function createSpaceEngine(opts) {
       S.groups = {
         neutralC: num(gs.neutralC, 0.02), vividC: num(gs.vividC, 0.1), lightL: num(gs.lightL, 0.5),
         hueB, neutralLs: ns.slice(0, -1).filter((l) => l > 0 && l < 1),   // the top region needs no line
-        anchorMode: gs.familyMode !== "angles" && famN > 0,   // families follow names, not angles
+        anchorMode: gs.familyMode !== "angles" && famN > 0,   // groups follow your words, not splits
       };
       buildGroupLines3D(); scheduleSections();
     },
@@ -7482,6 +7508,10 @@ const itemNotes = (it) => {
 let groupingColourSettings = null;
 const hueFamilyOf = (L, C, H, gs) => {
   const s = gs || defaultGroupSettings;
+  if (familyModeOf(s) === "words") {
+    const w = colorWordOf(L, C, H);
+    if (w) return w.family;
+  }
   if (!(C >= (s.neutralC ?? 0.02))) return "Neutral";
   const hu = hueRegionOf(L, C, H, s);
   return hu ? hu.name : "Unknown";
@@ -7575,6 +7605,8 @@ const groupRank = (f, g, gs) => {
   if (f.kind === "num") return [0, g.rank, ""];
   if (f.rank) return [0, f.rank(g.label), g.label.toLowerCase()];
   if (f.colourOrder) {
+    const wr = colorWordRank(g.label);
+    if (wr !== null) return [0, wr, ""];
     if (g.n && g.neutral / g.n > 0.5) return [0, -10 + g.sumL / g.n, ""];
     const c = hueCentreByName(g.label.split(" ").pop(), gs);
     const meanH = ((Math.atan2(g.sumB, g.sumA) * 180) / Math.PI + 360) % 360;
@@ -9022,14 +9054,15 @@ const batchApplyRecord = (rec, ch, kind) => {
 // Steps between two colours, three ways:
 //   straight line   — a straight path through OkLab (complements pass near grey)
 //   hue arc         — lightness and chroma move evenly while the hue turns
-//   even saturation — like the arc, but each step keeps the same share of the
-//                     most chroma the screen can show at its lightness and hue,
-//                     so the middle neither dulls nor runs out of gamut
+//   even saturation — lightness and saturation (S = C / L, as the app shows it)
+//                     both move in equal steps while the hue turns; chroma
+//                     follows as C = S × L. Same S at both ends keeps chroma in
+//                     proportion to lightness; a hue-only change keeps C fixed
 const GRADIENT_PREF_KEY = "csam-gradient-v1";
 const GRADIENT_METHODS = [
   { id: "line", label: "Straight line", hint: "a straight path through OkLab; opposite hues pass close to grey" },
   { id: "arc", label: "Hue arc", hint: "lightness and chroma change evenly while the hue turns round the wheel" },
-  { id: "sat", label: "Even saturation", hint: "the hue turns while every step keeps the same share of the most vivid colour available" },
+  { id: "sat", label: "Even saturation", hint: "lightness and saturation (S = C/L) change in equal steps while the hue turns; chroma follows as S × L" },
 ];
 const gradMaxChroma = (L, H) => {
   if (!(L > 0) || !(L < 1)) return 0;
@@ -9044,6 +9077,15 @@ const gradHueSpan = (h1, h2, longWay) => {
   let d = ((((h2 - h1) % 360) + 540) % 360) - 180; // shortest, −180…180
   if (longWay) d = d > 0 ? d - 360 : d + 360;
   return d;
+};
+// Saturation as the app defines it, S = C / L
+const gradSat = (p) => (p.L > 0 ? p.C / p.L : 0);
+const GRAD_BLACK_L = 0.005;
+const gradSatEnds = (A, B) => {
+  const aBlack = A.L < GRAD_BLACK_L, bBlack = B.L < GRAD_BLACK_L;
+  const sA = aBlack ? (bBlack ? 0 : gradSat(B)) : gradSat(A);
+  const sB = bBlack ? sA : gradSat(B);
+  return [sA, sB];
 };
 const gradientSteps = (A, B, n, method, longWay) => {
   const N = Math.max(2, Math.min(64, Math.round(n)));
@@ -9064,9 +9106,10 @@ const gradientSteps = (A, B, n, method, longWay) => {
     } else {
       H = (((hA + gradHueSpan(hA, hB, longWay) * t) % 360) + 360) % 360;
       if (method === "sat") {
-        const mA = gradMaxChroma(A.L, hA), mB = gradMaxChroma(B.L, hB);
-        const sA = mA > 0 ? Math.min(1, A.C / mA) : 0, sB = mB > 0 ? Math.min(1, B.C / mB) : 0;
-        C = (sA + (sB - sA) * t) * gradMaxChroma(L, H);
+        // black has no saturation of its own (0/0): it borrows the other
+        // end's, so a shade toward black keeps S and chroma falls with L
+        const [sA, sB] = gradSatEnds(A, B);
+        C = (sA + (sB - sA) * t) * L;
       } else C = A.C + (B.C - A.C) * t;
     }
     // the two ends stay exactly what was picked
@@ -9125,7 +9168,7 @@ const GradientPanel = ({ L, C, H, onPick, onAddToPalette }) => {
         },
         React.createElement("span", { className: "absolute top-1 left-1.5 text-[9px] font-black", style: { color: p.L > 0.65 ? "rgba(0,0,0,.7)" : "rgba(255,255,255,.85)" } }, label),
       ),
-      React.createElement("span", { className: "text-[9px] font-mono text-slate-400 truncate" }, `L ${p.L.toFixed(2)} · C ${p.C.toFixed(3)} · H ${p.H.toFixed(0)}°`),
+      React.createElement("span", { className: "text-[9px] font-mono text-slate-400 whitespace-pre-line leading-tight" }, `L ${p.L.toFixed(2)} · C ${p.C.toFixed(3)} · H ${p.H.toFixed(0)}°\nS ${gradSat(p).toFixed(3)} (C/L)`),
       React.createElement(
         "button",
         {
@@ -9210,7 +9253,7 @@ const GradientPanel = ({ L, C, H, onPick, onAddToPalette }) => {
           "button",
           {
             key: i, type: "button", onClick: () => onPick([p.L, p.C, p.H]),
-            title: `Step ${i + 1} · ${hexOf(p)} · L ${p.L.toFixed(3)} C ${p.C.toFixed(3)} H ${p.H.toFixed(1)}°${out ? " · outside this screen's gamut" : ""}`,
+            title: `Step ${i + 1} · ${hexOf(p)} · L ${p.L.toFixed(3)} C ${p.C.toFixed(3)} H ${p.H.toFixed(1)}° S ${gradSat(p).toFixed(3)}${out ? " · outside this screen's gamut" : ""}`,
             className: "relative flex-1 h-12 min-w-0 hover:z-10 hover:ring-2 hover:ring-sky-500 hover:ring-inset",
             style: { backgroundColor: fill(p) },
           },
@@ -9226,6 +9269,16 @@ const GradientPanel = ({ L, C, H, onPick, onAddToPalette }) => {
       { className: "text-[10px] text-slate-400" },
       `${steps.length} steps · ΔE ${avgGap.toFixed(2)} apart on average${gaps.length > 1 ? ` (varies by ${spread.toFixed(2)})` : ""}`,
     ),
+    st.method === "sat" && steps.length > 1 &&
+      React.createElement(
+        "span",
+        { className: "text-[10px] text-slate-400 font-mono leading-snug break-words" },
+        (() => {
+          const [s0, s1] = gradSatEnds(st.a, st.b);
+          const n = steps.length - 1, dS = (s1 - s0) / n, dC = n ? (steps[n].C - steps[0].C) / n : 0;
+          return `S ${s0.toFixed(3)} → ${s1.toFixed(3)} (${dS >= 0 ? "+" : ""}${dS.toFixed(4)} a step) · C ${steps.map((p) => p.C.toFixed(3)).join(" ")}`;
+        })(),
+      ),
     React.createElement(
       "div",
       { className: "flex gap-2" },
@@ -9256,25 +9309,37 @@ const GradientPanel = ({ L, C, H, onPick, onAddToPalette }) => {
   );
 };
 
-// Colour names from the xkcd colour survey (Randall Munroe, 2010; ~222,000 people,
-// 954 most-agreed names, public domain, as published with matplotlib), each
-// with its OkLab centroid and the basic hue term the name belongs to.
-const SEMANTIC_TERMS = ["red", "orange", "brown", "yellow", "green", "cyan", "blue", "purple", "pink", "angle", "lime"];
-const SEMANTIC_SAMPLES_RAW = "cloudy blue|0.805|-0.014|-0.038|6;dark pastel green|0.675|-0.121|0.088|4;dust|0.695|0.010|0.065|9;electric lime|0.909|-0.158|0.187|10;fresh green|0.789|-0.156|0.130|4;light eggplant|0.499|0.108|-0.064|7;nasty green|0.695|-0.113|0.116|4;really light blue|0.970|-0.042|-0.012|6;warm purple|0.492|0.154|-0.088|7;yellowish tan|0.967|-0.047|0.138|3;dark grass green|0.532|-0.117|0.109|4;dusty teal|0.605|-0.072|-0.003|5;grey teal|0.643|-0.069|0.007|5;pinkish tan|0.743|0.061|0.056|8;spruce|0.429|-0.091|0.040|4;strong blue|0.445|-0.027|-0.302|6;toxic green|0.798|-0.176|0.155|4;windows blue|0.565|-0.038|-0.123|6;blue blue|0.452|-0.013|-0.208|6;blue with a hint of purple|0.471|0.045|-0.197|7;bright sea green|0.882|-0.189|0.072|4;dark green blue|0.454|-0.070|0.001|6;deep turquoise|0.503|-0.082|-0.023|5;green teal|0.683|-0.144|0.053|5;strong pink|0.649|0.261|-0.001|8;deep aqua|0.522|-0.081|-0.033|5;lavender pink|0.737|0.129|-0.076|8;light moss green|0.789|-0.070|0.092|4;light seafoam green|0.926|-0.112|0.069|4;olive yellow|0.764|-0.042|0.155|3;pig pink|0.745|0.111|0.007|8;deep lilac|0.610|0.073|-0.099|7;dusty lavender|0.667|0.057|-0.033|7;purpley grey|0.621|0.034|-0.023|7;candy pink|0.743|0.214|-0.106|8;light pastel green|0.919|-0.105|0.085|4;boring green|0.696|-0.111|0.079|4;kiwi green|0.836|-0.145|0.153|4;light grey green|0.864|-0.068|0.068|4;orange pink|0.713|0.152|0.099|8;tea green|0.919|-0.092|0.087|4;very light brown|0.789|0.011|0.074|2;eggplant purple|0.272|0.100|-0.058|7;powder pink|0.845|0.096|-0.010|8;reddish grey|0.596|0.041|0.021|9;stormy blue|0.565|-0.032|-0.062|6;ugly brown|0.543|-0.023|0.110|2;custard|0.970|-0.048|0.147|3;darkish pink|0.617|0.189|0.005|8;deep brown|0.238|0.081|0.048|2;greenish beige|0.835|-0.044|0.103|4;off blue|0.598|-0.032|-0.075|6;battleship grey|0.576|-0.015|-0.019|9;browny green|0.517|-0.033|0.103|4;kelley green|0.578|-0.143|0.091|4;sickly yellow|0.875|-0.084|0.172|3;sunny yellow|0.956|-0.062|0.193|3;green/yellow|0.804|-0.088|0.164|3;lichen|0.733|-0.066|0.065|4;light light green|0.943|-0.085|0.081|4;pale gold|0.905|-0.010|0.137|3;sun yellow|0.903|-0.026|0.179|3;tan green|0.767|-0.055|0.090|4;dark cream|0.954|-0.022|0.108|9;indian red|0.394|0.132|0.077|0;poison green|0.868|-0.220|0.177|4;bright yellow green|0.904|-0.168|0.186|10;squash|0.789|0.034|0.157|1;light pea green|0.931|-0.106|0.127|4;radioactive green|0.857|-0.223|0.172|4;baby purple|0.767|0.082|-0.109|7;light royal blue|0.494|0.008|-0.283|6;orangeish|0.753|0.103|0.121|1;rust brown|0.439|0.099|0.087|1;sand brown|0.742|0.015|0.097|2;swamp|0.573|-0.062|0.086|4;tealish green|0.784|-0.180|0.096|4;camo|0.622|-0.046|0.079|4;dusk blue|0.441|-0.026|-0.105|6;fern|0.668|-0.108|0.093|4;old rose|0.675|0.090|0.017|8;pale light green|0.919|-0.112|0.099|4;peachy pink|0.787|0.108|0.062|8;rosy pink|0.703|0.176|0.019|8;light bluish green|0.897|-0.151|0.075|4;light bright green|0.878|-0.199|0.146|4;light neon green|0.874|-0.203|0.150|4;light seafoam|0.922|-0.112|0.055|5;tiffany blue|0.885|-0.114|0.003|6;washed out green|0.912|-0.088|0.081|4;browny orange|0.625|0.083|0.126|1;nice blue|0.552|-0.062|-0.103|6;sapphire|0.407|-0.007|-0.184|6;greyish teal|0.665|-0.054|0.006|5;orangey yellow|0.827|0.026|0.166|3;straw|0.953|-0.041|0.141|3;very dark brown|0.151|0.045|0.030|2;terracota|0.626|0.103|0.089|1;ugly blue|0.490|-0.039|-0.071|6;clear blue|0.606|-0.039|-0.208|6;foam green|0.908|-0.133|0.077|4;grey/green|0.678|-0.044|0.040|4;light gold|0.899|-0.012|0.148|3;seafoam blue|0.797|-0.094|0.013|6;violet pink|0.743|0.216|-0.137|8;yellow tan|0.916|-0.015|0.139|3;dark fuchsia|0.456|0.182|-0.011|8;indigo blue|0.387|0.036|-0.211|6;light yellowish green|0.933|-0.106|0.121|10;pale magenta|0.669|0.155|-0.045|8;rich purple|0.371|0.152|-0.051|7;sunflower yellow|0.893|-0.021|0.182|3;green/blue|0.716|-0.144|0.037|6;racing green|0.342|-0.092|0.071|4;vivid purple|0.555|0.158|-0.245|7;dark royal blue|0.252|-0.014|-0.164|6;muted pink|0.673|0.117|0.006|8;canary|0.970|-0.059|0.163|3;cool grey|0.705|-0.014|-0.009|9;dark taupe|0.533|0.017|0.045|9;darkish purple|0.407|0.139|-0.083|7;true green|0.578|-0.154|0.119|4;coral pink|0.698|0.178|0.075|8;dark sage|0.572|-0.068|0.052|4;dark slate blue|0.383|-0.030|-0.054|6;flat blue|0.542|-0.036|-0.095|6;mushroom|0.718|0.023|0.039|9;rich blue|0.456|-0.030|-0.298|6;dirty purple|0.465|0.064|-0.023|7;icky green|0.703|-0.085|0.136|4;light khaki|0.934|-0.044|0.093|9;warm blue|0.527|0.012|-0.199|6;dark hot pink|0.570|0.228|0.019|8;deep sea blue|0.428|-0.047|-0.091|6;carmine|0.439|0.160|0.076|0;dark yellow green|0.606|-0.080|0.124|10;pale peach|0.930|0.006|0.077|1;plum purple|0.303|0.112|-0.073|7;golden rod|0.828|0.016|0.168|3;neon red|0.633|0.234|0.096|0;old pink|0.663|0.097|0.016|8;very pale blue|0.971|-0.041|-0.011|6;blood orange|0.664|0.180|0.133|1;sand yellow|0.909|-0.018|0.143|3;clay brown|0.608|0.057|0.090|2;dark blue grey|0.339|-0.024|-0.040|6;flat green|0.640|-0.089|0.088|4;light green blue|0.884|-0.169|0.077|6;warm pink|0.685|0.201|0.029|8;dodger blue|0.628|-0.030|-0.193|6;gross green|0.755|-0.090|0.151|4;metallic blue|0.539|-0.028|-0.052|6;pale salmon|0.829|0.078|0.059|8;sap green|0.581|-0.096|0.114|4;algae|0.672|-0.113|0.067|4;bluey grey|0.693|-0.018|-0.030|6;greeny grey|0.670|-0.053|0.041|4;highlighter green|0.860|-0.229|0.177|4;light light blue|0.963|-0.053|-0.010|6;light mint|0.935|-0.097|0.065|4;raw umber|0.555|0.063|0.110|2;vivid blue|0.482|-0.023|-0.292|6;deep lavender|0.570|0.084|-0.112|7;dull teal|0.652|-0.069|0.004|5;light greenish blue|0.879|-0.150|0.053|6;mud green|0.488|-0.044|0.100|4;red wine|0.409|0.161|0.030|0;tan brown|0.627|0.033|0.081|2;pale mauve|0.910|0.065|-0.041|7;claret|0.328|0.124|0.042|0;dandelion|0.902|-0.029|0.184|3;ruby|0.534|0.207|0.050|0;greenish turquoise|0.874|-0.181|0.057|5;pastel red|0.630|0.151|0.067|0;bright cyan|0.906|-0.138|-0.038|5;dark coral|0.602|0.145|0.067|8;algae green|0.720|-0.157|0.077|4;darkish red|0.463|0.165|0.089|0;reddy brown|0.348|0.111|0.066|2;blush pink|0.749|0.145|0.042|8;camouflage green|0.459|-0.059|0.086|4;lawn green|0.639|-0.138|0.130|4;putty|0.755|0.003|0.052|9;vibrant blue|0.484|-0.028|-0.277|6;dark sand|0.660|0.006|0.078|9;purple/blue|0.460|0.075|-0.225|6;warm brown|0.502|0.067|0.101|2;bubble gum pink|0.727|0.194|-0.020|8;duck egg blue|0.948|-0.057|-0.007|6;greenish cyan|0.885|-0.176|0.052|5;butter|0.975|-0.048|0.140|3;dusty orange|0.719|0.099|0.123|1;off yellow|0.933|-0.065|0.176|3;pale olive green|0.820|-0.070|0.096|4;leaf|0.675|-0.106|0.119|4;light blue grey|0.830|-0.009|-0.039|6;dried blood|0.260|0.092|0.051|0;lightish purple|0.608|0.131|-0.175|7;rusty red|0.501|0.140|0.096|0;lavender blue|0.680|0.035|-0.158|6;light grass green|0.888|-0.145|0.141|4;light mint green|0.915|-0.109|0.068|4;sunflower|0.852|0.010|0.172|3;brick orange|0.563|0.123|0.111|1;lightish red|0.647|0.221|0.085|0;pure blue|0.414|-0.029|-0.283|6;twilight blue|0.381|-0.032|-0.104|6;violet red|0.467|0.189|0.001|0;yellowy brown|0.651|-0.001|0.131|3;muddy yellow|0.738|-0.030|0.150|3;dark seafoam green|0.675|-0.123|0.051|4;deep rose|0.582|0.162|0.024|8;dusty red|0.555|0.137|0.050|0;grey/blue|0.576|-0.021|-0.033|6;lemon lime|0.921|-0.133|0.183|10;purple/pink|0.632|0.228|-0.152|8;brown yellow|0.681|-0.015|0.138|3;purple brown|0.405|0.062|0.015|7;banana yellow|0.964|-0.067|0.177|3;lipstick red|0.511|0.192|0.072|0;water blue|0.599|-0.064|-0.125|6;brown grey|0.614|-0.002|0.042|9;vibrant purple|0.560|0.194|-0.194|7;baby green|0.908|-0.143|0.091|4;eggshell blue|0.958|-0.060|-0.006|6;sandy yellow|0.937|-0.031|0.141|3;cool green|0.692|-0.145|0.080|4;blue/grey|0.633|-0.017|-0.039|6;hot magenta|0.657|0.267|-0.102|8;brownish pink|0.662|0.078|0.035|8;dark aquamarine|0.502|-0.084|-0.019|5;light mustard|0.880|-0.008|0.140|3;pale sky blue|0.937|-0.052|-0.026|6;turtle green|0.715|-0.111|0.108|4;bright olive|0.742|-0.091|0.152|4;dark grey blue|0.381|-0.024|-0.044|6;greeny brown|0.483|-0.022|0.097|4;lemon green|0.896|-0.146|0.184|4;light periwinkle|0.841|0.014|-0.074|6;seaweed green|0.665|-0.130|0.061|4;sunshine yellow|0.965|-0.064|0.186|3;ugly purple|0.545|0.148|-0.088|7;medium pink|0.692|0.185|0.002|8;faded yellow|0.974|-0.050|0.142|3;very pale green|0.946|-0.071|0.067|4;vibrant green|0.778|-0.209|0.160|4;bright lime|0.889|-0.183|0.183|10;light aquamarine|0.906|-0.134|0.038|5;light sage|0.894|-0.073|0.066|4;dark seafoam|0.685|-0.139|0.050|5;deep teal|0.409|-0.065|-0.026|5;heather|0.657|0.052|-0.045|7;rust orange|0.583|0.110|0.116|1;dirty blue|0.574|-0.054|-0.058|6;fern green|0.586|-0.091|0.079|4;bright lilac|0.678|0.161|-0.171|7;weird green|0.814|-0.174|0.093|4;peacock blue|0.488|-0.057|-0.091|6;avocado green|0.685|-0.087|0.132|4;faded orange|0.749|0.078|0.116|1;grape purple|0.341|0.115|-0.052|7;hot green|0.869|-0.226|0.172|4;lime yellow|0.932|-0.118|0.188|3;mango|0.796|0.059|0.151|1;shamrock|0.672|-0.163|0.099|4;bubblegum|0.732|0.191|-0.027|8;purplish brown|0.428|0.056|0.012|2;pale cyan|0.951|-0.070|-0.013|5;key lime|0.918|-0.134|0.142|10;tomato red|0.609|0.193|0.122|0;night blue|0.191|-0.005|-0.120|6;purpleish pink|0.662|0.201|-0.095|8;apple|0.757|-0.144|0.135|4;green apple|0.792|-0.177|0.158|4;yellow/green|0.925|-0.120|0.175|10;cool blue|0.596|-0.039|-0.093|6;leafy green|0.693|-0.144|0.119|4;mustard brown|0.622|0.016|0.126|3;dull brown|0.554|0.015|0.057|2;frog green|0.707|-0.154|0.145|4;vivid green|0.829|-0.215|0.170|4;bright light green|0.870|-0.214|0.150|4;fluro green|0.867|-0.233|0.179|4;seaweed|0.758|-0.166|0.077|4;navy green|0.404|-0.066|0.078|4;ultramarine blue|0.410|-0.015|-0.274|6;pastel orange|0.771|0.093|0.121|1;yellowish orange|0.804|0.048|0.162|1;tealish|0.716|-0.122|-0.003|5;dark plum|0.247|0.099|-0.027|7;pinkish orange|0.716|0.146|0.106|1;midnight purple|0.209|0.070|-0.072|7;dark mint|0.721|-0.137|0.074|4;greenish tan|0.812|-0.049|0.094|4;light burgundy|0.522|0.136|0.018|0;turquoise blue|0.696|-0.105|-0.057|6;ugly pink|0.663|0.110|0.019|8;sandy|0.888|-0.013|0.119|9;electric pink|0.651|0.264|-0.011|8;muted purple|0.526|0.062|-0.051|7;mid green|0.653|-0.124|0.097|4;neon yellow|0.933|-0.122|0.191|3;banana|0.975|-0.049|0.143|3;carnation pink|0.753|0.160|0.005|8;muddy brown|0.535|0.006|0.107|2;turquoise green|0.849|-0.192|0.094|4;buff|0.960|-0.026|0.106|3;fawn|0.770|0.014|0.077|9;muted blue|0.532|-0.037|-0.085|6;pale rose|0.866|0.067|0.017|8;dark mint green|0.713|-0.152|0.070|4;amethyst|0.592|0.101|-0.116|7;blue/green|0.621|-0.107|-0.008|4;sick green|0.740|-0.082|0.139|4;pea|0.758|-0.085|0.149|4;rusty orange|0.602|0.114|0.120|1;stone|0.721|-0.004|0.043|9;rose red|0.509|0.196|0.056|0;pale aqua|0.948|-0.075|0.006|5;deep orange|0.610|0.146|0.123|1;mossy green|0.587|-0.085|0.105|4;grassy green|0.613|-0.139|0.126|4;pale lime green|0.919|-0.134|0.149|10;light grey blue|0.780|-0.023|-0.042|6;asparagus|0.685|-0.090|0.092|4;purple red|0.440|0.176|0.013|0;pale lime|0.924|-0.115|0.139|10;greenish teal|0.717|-0.138|0.049|5;caramel|0.596|0.045|0.119|9;deep magenta|0.461|0.187|-0.014|8;light peach|0.906|0.026|0.062|1;milk chocolate|0.471|0.043|0.080|2;ocher|0.702|-0.004|0.141|1;off green|0.657|-0.092|0.086|4;purply pink|0.743|0.175|-0.099|8;dusky blue|0.491|-0.008|-0.090|6;golden|0.830|0.006|0.169|3;light beige|0.981|-0.027|0.087|9;butter yellow|0.970|-0.049|0.150|3;dusky purple|0.532|0.070|-0.027|7;french blue|0.530|-0.020|-0.112|6;ugly yellow|0.798|-0.040|0.163|3;greeny yellow|0.911|-0.122|0.187|3;orangish red|0.629|0.192|0.125|0;shamrock green|0.707|-0.174|0.109|4;orangish brown|0.572|0.074|0.115|2;tree green|0.522|-0.121|0.099|4;deep violet|0.289|0.106|-0.064|7;blue/purple|0.477|0.065|-0.271|7;cherry|0.541|0.203|0.075|0;sandy brown|0.737|0.006|0.095|2;warm grey|0.643|0.012|0.013|9;dark indigo|0.239|0.034|-0.117|7;bluey green|0.677|-0.132|0.048|4;grey pink|0.705|0.063|0.005|8;soft purple|0.625|0.089|-0.078|7;blood|0.358|0.128|0.071|0;brown red|0.444|0.115|0.087|0;purpley pink|0.604|0.196|-0.101|8;light salmon|0.813|0.086|0.061|8;easter purple|0.694|0.127|-0.164|7;light yellow green|0.934|-0.098|0.130|10;dark navy blue|0.143|-0.009|-0.089|6;light rose|0.877|0.065|0.013|8;purplish red|0.487|0.191|0.026|0;slime green|0.780|-0.115|0.160|4;irish green|0.582|-0.149|0.104|4;pink/purple|0.670|0.255|-0.146|7;dark navy|0.160|-0.010|-0.095|6;greeny blue|0.694|-0.110|0.015|6;light plum|0.553|0.103|-0.032|7;pinkish grey|0.768|0.030|0.014|8;dirty orange|0.642|0.064|0.129|1;rust red|0.484|0.143|0.096|0;pale lilac|0.880|0.045|-0.060|7;orangey red|0.650|0.190|0.118|0;primary blue|0.446|-0.029|-0.304|6;kermit green|0.682|-0.141|0.141|4;brownish purple|0.446|0.073|0.007|7;murky green|0.549|-0.057|0.109|4;wheat|0.903|-0.005|0.120|3;very dark purple|0.210|0.074|-0.065|7;bottle green|0.356|-0.093|0.070|4;watermelon|0.665|0.205|0.074|8;deep sky blue|0.588|-0.043|-0.209|6;fire engine red|0.626|0.224|0.125|0;yellow ochre|0.719|0.007|0.146|1;pumpkin orange|0.722|0.112|0.145|1;pale olive|0.813|-0.051|0.087|4;light lilac|0.882|0.059|-0.060|7;lightish green|0.810|-0.164|0.122|4;carolina blue|0.777|-0.022|-0.110|6;shocking pink|0.655|0.268|-0.038|8;bright lime green|0.879|-0.205|0.181|10;pinkish brown|0.615|0.068|0.049|8;bright sky blue|0.785|-0.106|-0.102|6;celery|0.930|-0.100|0.107|4;dirt brown|0.527|0.018|0.070|2;strawberry|0.638|0.220|0.090|8;dark lime|0.716|-0.111|0.147|10;copper|0.586|0.078|0.104|1;medium brown|0.476|0.035|0.089|2;muted green|0.643|-0.100|0.083|4;robin's egg|0.880|-0.103|-0.051|6;bright aqua|0.885|-0.153|-0.019|5;bright lavender|0.681|0.156|-0.176|7;ivory|0.987|-0.020|0.064|9;very light purple|0.900|0.059|-0.046|7;light navy|0.423|-0.036|-0.098|6;pink red|0.617|0.236|0.069|0;olive brown|0.449|-0.010|0.090|4;mustard green|0.738|-0.070|0.151|4;ocean green|0.617|-0.101|0.031|4;very dark blue|0.148|-0.010|-0.098|6;dusty green|0.684|-0.076|0.057|4;light navy blue|0.458|-0.029|-0.085|6;minty green|0.855|-0.199|0.109|4;jade green|0.668|-0.137|0.064|4;bright light blue|0.888|-0.139|-0.045|6;light lime|0.913|-0.132|0.142|10;dark khaki|0.647|-0.011|0.078|9;orange yellow|0.807|0.045|0.164|3;maize|0.866|-0.007|0.145|3;faded pink|0.763|0.079|0.005|8;british racing green|0.350|-0.088|0.064|4;mud brown|0.412|0.012|0.076|2;light sea green|0.897|-0.116|0.064|4;robin egg blue|0.900|-0.088|-0.043|6;aqua marine|0.833|-0.153|0.024|5;dark sea green|0.553|-0.111|0.036|4;soft pink|0.835|0.091|0.009|8;orangey brown|0.572|0.071|0.116|1;cherry red|0.615|0.226|0.105|0;burnt yellow|0.758|-0.002|0.153|3;brownish grey|0.577|0.007|0.039|9;camel|0.724|0.016|0.099|9;purplish grey|0.542|0.031|-0.027|9;greyish pink|0.703|0.071|0.014|8;pale turquoise|0.923|-0.095|0.026|5;pastel yellow|0.971|-0.052|0.153|3;bluey purple|0.492|0.062|-0.187|7;canary yellow|0.968|-0.064|0.183|3;faded red|0.598|0.161|0.065|0;sepia|0.537|0.051|0.086|2;coffee|0.627|0.021|0.081|2;bright magenta|0.690|0.275|-0.137|8;mocha|0.596|0.031|0.064|2;ecru|0.986|-0.022|0.064|9;purpleish|0.549|0.102|-0.051|7;darkish green|0.519|-0.109|0.072|4;brown orange|0.599|0.066|0.121|1;dusky rose|0.613|0.103|0.022|8;sickly green|0.716|-0.086|0.141|4;purply blue|0.495|0.080|-0.258|6;purpleish blue|0.525|0.053|-0.239|6;hospital green|0.858|-0.095|0.055|4;mid blue|0.520|-0.038|-0.128|6;amber|0.817|0.035|0.166|1;easter green|0.899|-0.153|0.122|4;soft blue|0.646|-0.008|-0.152|6;cerulean blue|0.566|-0.042|-0.206|6;golden brown|0.621|0.030|0.126|3;bright turquoise|0.902|-0.150|-0.033|5;red pink|0.639|0.225|0.070|8;red purple|0.398|0.157|-0.006|7;greyish brown|0.532|0.007|0.044|2;vermillion|0.627|0.196|0.123|0;steel grey|0.594|-0.018|-0.018|6;lighter purple|0.628|0.121|-0.187|7;bright violet|0.585|0.183|-0.232|7;prussian blue|0.382|-0.038|-0.097|6;slate green|0.605|-0.057|0.033|4;dirty pink|0.668|0.095|0.027|8;dark blue green|0.394|-0.070|-0.003|4;pine|0.432|-0.073|0.046|4;yellowy green|0.891|-0.118|0.176|10;dark gold|0.678|-0.006|0.135|3;darkish blue|0.380|-0.032|-0.120|6;dull red|0.544|0.146|0.065|0;pinky red|0.638|0.224|0.085|0;bronze|0.607|0.019|0.124|9;pale teal|0.787|-0.081|0.014|5;military green|0.554|-0.053|0.074|4;barbie pink|0.686|0.231|-0.026|8;bubblegum pink|0.769|0.165|-0.043|8;pea soup green|0.688|-0.071|0.136|4;dark mustard|0.640|-0.006|0.130|3;medium purple|0.539|0.140|-0.095|7;very dark green|0.264|-0.065|0.051|4;dusky pink|0.672|0.103|0.012|8;red violet|0.462|0.189|-0.035|7;lemon yellow|0.968|-0.069|0.187|3;pistachio|0.921|-0.101|0.115|4;dull yellow|0.885|-0.029|0.146|3;dark lime green|0.727|-0.124|0.150|10;denim blue|0.473|-0.016|-0.096|6;teal blue|0.577|-0.083|-0.059|6;lightish blue|0.612|-0.025|-0.204|6;purpley blue|0.502|0.060|-0.239|6;light indigo|0.548|0.050|-0.166|7;swamp green|0.582|-0.064|0.120|4;brown green|0.519|-0.030|0.100|4;dark maroon|0.225|0.085|0.032|0;hot purple|0.619|0.224|-0.199|7;dark forest green|0.258|-0.067|0.049|4;faded blue|0.630|-0.024|-0.080|6;drab green|0.628|-0.066|0.078|4;light lime green|0.924|-0.126|0.150|10;yellowish|0.933|-0.038|0.151|3;light blue green|0.898|-0.139|0.061|4;light mauve|0.710|0.061|-0.002|7;marigold|0.839|0.013|0.171|1;muddy green|0.531|-0.047|0.080|4;dull orange|0.693|0.067|0.116|1;steel|0.608|-0.013|-0.029|6;electric purple|0.592|0.170|-0.231|7;fluorescent green|0.867|-0.233|0.179|4;yellowish brown|0.595|0.001|0.121|3;blush|0.779|0.089|0.054|8;soft green|0.742|-0.112|0.076|4;bright orange|0.683|0.162|0.138|1;lemon|0.969|-0.064|0.174|3;purple grey|0.571|0.036|-0.023|7;acid green|0.895|-0.178|0.184|10;pale lavender|0.895|0.050|-0.051|7;violet blue|0.427|0.067|-0.233|6;light forest green|0.597|-0.094|0.065|4;burnt red|0.460|0.137|0.090|0;khaki green|0.587|-0.056|0.090|4;cerise|0.580|0.227|0.029|8;faded purple|0.588|0.058|-0.049|7;apricot|0.821|0.061|0.109|1;dark olive green|0.392|-0.051|0.079|4;grey brown|0.551|0.005|0.046|2;green grey|0.629|-0.045|0.040|4;true blue|0.389|-0.026|-0.259|6;pale violet|0.805|0.061|-0.092|7;periwinkle blue|0.716|0.019|-0.141|6;light sky blue|0.955|-0.051|-0.019|6;green brown|0.417|-0.021|0.084|4;bright teal|0.874|-0.169|0.027|5;brownish yellow|0.756|-0.024|0.154|3;pea soup|0.655|-0.057|0.134|4;forest|0.392|-0.099|0.076|4;barney purple|0.491|0.193|-0.107|7;ultramarine|0.355|0.003|-0.231|6;bluish grey|0.623|-0.020|-0.025|9;dark periwinkle|0.552|0.035|-0.167|6;dark lilac|0.603|0.077|-0.062|7;light maroon|0.522|0.117|0.025|0;dusty purple|0.536|0.058|-0.045|7;avocado|0.712|-0.084|0.128|4;marine blue|0.339|-0.031|-0.097|6;teal green|0.636|-0.125|0.045|4;slate grey|0.499|-0.011|-0.016|9;lighter green|0.886|-0.178|0.142|4;electric green|0.861|-0.228|0.177|4;dusty blue|0.604|-0.031|-0.070|6;golden yellow|0.853|0.008|0.171|3;bright yellow|0.964|-0.069|0.198|3;light lavender|0.864|0.048|-0.067|7;umber|0.580|0.065|0.118|2;dark peach|0.691|0.099|0.082|1;jungle green|0.532|-0.122|0.063|4;denim|0.489|-0.027|-0.076|6;yellow brown|0.679|-0.005|0.139|3;dull purple|0.523|0.068|-0.037|7;chocolate brown|0.270|0.047|0.055|2;wine red|0.372|0.140|0.042|0;neon blue|0.816|-0.117|-0.086|6;dirty green|0.556|-0.062|0.093|4;light tan|0.944|-0.012|0.084|9;ice blue|0.972|-0.040|-0.010|6;cadet blue|0.545|-0.027|-0.063|6;dark mauve|0.493|0.084|-0.005|7;very light blue|0.971|-0.041|-0.012|6;grey purple|0.566|0.037|-0.038|7;pastel pink|0.858|0.083|0.001|8;very light green|0.952|-0.071|0.068|4;dark sky blue|0.640|-0.041|-0.143|6;dull pink|0.708|0.100|0.002|8;aubergine|0.254|0.090|-0.040|7;reddish orange|0.652|0.181|0.123|1;deep green|0.403|-0.105|0.076|4;purple pink|0.658|0.219|-0.125|8;dusty pink|0.713|0.091|0.018|8;faded green|0.709|-0.083|0.065|4;camo green|0.476|-0.051|0.077|4;pinky purple|0.624|0.180|-0.098|7;pink purple|0.662|0.202|-0.125|7;brownish red|0.481|0.120|0.076|0;dark rose|0.552|0.139|0.028|8;mud|0.485|-0.000|0.092|2;emerald green|0.565|-0.147|0.106|4;pale brown|0.677|0.022|0.058|2;dull blue|0.547|-0.031|-0.072|6;burnt umber|0.503|0.095|0.097|2;medium green|0.661|-0.144|0.099|4;light aqua|0.922|-0.116|0.018|5;light olive green|0.761|-0.068|0.109|4;brownish orange|0.648|0.070|0.120|1;dark aqua|0.473|-0.076|-0.023|5;purplish pink|0.644|0.160|-0.059|8;dark salmon|0.603|0.128|0.062|8;greenish grey|0.723|-0.039|0.037|4;jade|0.647|-0.128|0.042|4;ugly green|0.631|-0.082|0.129|4;dark beige|0.674|0.008|0.072|9;emerald|0.617|-0.147|0.085|4;pale red|0.620|0.151|0.074|0;light magenta|0.739|0.214|-0.131|8;sky|0.810|-0.051|-0.088|6;light cyan|0.946|-0.078|-0.018|5;yellow orange|0.809|0.037|0.165|1;reddish purple|0.431|0.170|-0.008|7;reddish pink|0.647|0.226|0.074|8;orchid|0.680|0.124|-0.075|7;dirty yellow|0.804|-0.049|0.164|3;orange red|0.654|0.193|0.123|0;deep red|0.432|0.153|0.087|0;orange brown|0.597|0.080|0.121|1;cobalt blue|0.336|-0.021|-0.222|6;neon pink|0.652|0.267|-0.027|8;rose pink|0.751|0.135|0.024|8;greyish purple|0.582|0.040|-0.038|7;raspberry|0.485|0.192|0.028|8;aqua green|0.803|-0.170|0.065|4;salmon pink|0.735|0.149|0.058|8;tangerine|0.764|0.083|0.154|1;brownish green|0.518|-0.042|0.103|4;red brown|0.436|0.107|0.076|0;greenish brown|0.486|-0.022|0.092|4;pumpkin|0.677|0.092|0.137|1;pine green|0.353|-0.079|0.048|4;baby pink|0.853|0.088|-0.003|8;cornflower|0.628|0.015|-0.186|6;blue violet|0.473|0.073|-0.263|7;chocolate|0.269|0.037|0.052|2;greyish green|0.687|-0.056|0.044|4;scarlet|0.505|0.184|0.090|0;green yellow|0.929|-0.125|0.185|3;dark olive|0.345|-0.035|0.070|4;pastel purple|0.779|0.077|-0.115|7;terracotta|0.622|0.104|0.089|1;aqua blue|0.805|-0.125|-0.058|6;sage green|0.721|-0.070|0.064|4;blood red|0.427|0.153|0.085|0;deep pink|0.543|0.218|0.013|8;grass|0.668|-0.129|0.122|4;moss|0.641|-0.066|0.074|4;pastel blue|0.806|-0.008|-0.095|6;bluish green|0.643|-0.130|0.041|4;green blue|0.685|-0.134|0.026|6;dark tan|0.651|0.020|0.091|9;greenish blue|0.576|-0.095|-0.019|6;pale orange|0.801|0.069|0.124|1;forrest green|0.341|-0.078|0.066|4;dark lavender|0.562|0.054|-0.061|7;dark violet|0.238|0.086|-0.073|7;purple blue|0.501|0.069|-0.244|6;dark cyan|0.569|-0.091|-0.027|5;olive drab|0.545|-0.038|0.084|4;pinkish|0.654|0.132|0.022|8;cobalt|0.414|-0.021|-0.125|6;neon purple|0.608|0.199|-0.221|7;light turquoise|0.887|-0.120|0.023|5;apple green|0.764|-0.145|0.149|4;dull green|0.673|-0.081|0.074|4;wine|0.388|0.156|0.004|0;powder blue|0.852|-0.017|-0.067|6;off white|0.993|-0.010|0.034|9;electric blue|0.529|-0.031|-0.260|6;dark turquoise|0.430|-0.071|-0.015|5;blue purple|0.459|0.062|-0.221|7;azure|0.664|-0.069|-0.153|6;bright red|0.628|0.226|0.123|0;pinkish red|0.609|0.228|0.078|0;cornflower blue|0.575|-0.005|-0.161|6;light olive|0.771|-0.056|0.099|4;grape|0.415|0.091|-0.042|7;greyish blue|0.588|-0.026|-0.052|6;purplish blue|0.503|0.065|-0.272|6;yellowish green|0.835|-0.111|0.169|10;greenish yellow|0.927|-0.121|0.191|3;medium blue|0.538|-0.038|-0.132|6;dusty rose|0.641|0.094|0.024|8;light violet|0.824|0.061|-0.085|7;midnight blue|0.151|-0.004|-0.101|6;bluish purple|0.525|0.080|-0.225|7;red orange|0.649|0.194|0.129|1;dark magenta|0.439|0.179|-0.014|8;greenish|0.642|-0.116|0.056|4;ocean blue|0.517|-0.063|-0.087|6;coral|0.682|0.177|0.091|8;cream|0.985|-0.024|0.074|9;reddish brown|0.410|0.096|0.077|2;brick|0.484|0.122|0.077|0;sage|0.707|-0.066|0.065|4;grey green|0.652|-0.055|0.044|4;robin's egg blue|0.900|-0.077|-0.036|6;moss green|0.590|-0.077|0.092|4;steel blue|0.575|-0.026|-0.054|6;eggplant|0.246|0.083|-0.046|7;light yellow|0.972|-0.049|0.146|3;leaf green|0.659|-0.132|0.135|4;pinkish purple|0.651|0.200|-0.127|7;sea blue|0.521|-0.068|-0.072|6;pale purple|0.714|0.068|-0.080|7;slate blue|0.573|-0.024|-0.053|6;blue grey|0.571|-0.023|-0.036|6;hunter green|0.325|-0.079|0.061|4;fuchsia|0.654|0.259|-0.131|8;crimson|0.403|0.147|0.072|0;pale yellow|0.976|-0.047|0.138|3;ochre|0.680|0.012|0.138|1;mustard yellow|0.792|-0.032|0.161|3;light red|0.667|0.201|0.090|0;cerulean|0.596|-0.063|-0.135|6;pale pink|0.900|0.056|0.000|8;deep blue|0.255|-0.013|-0.171|6;rust|0.503|0.116|0.098|1;light teal|0.855|-0.093|0.023|5;slate|0.495|-0.017|-0.027|9;dark yellow|0.780|-0.018|0.158|3;army green|0.448|-0.053|0.081|4;grey blue|0.622|-0.024|-0.046|6;seafoam|0.892|-0.138|0.066|5;puce|0.621|0.028|0.072|9;spring green|0.902|-0.130|0.134|4;dark orange|0.580|0.118|0.117|1;sand|0.841|-0.007|0.107|9;pastel green|0.926|-0.114|0.097|4;mint|0.918|-0.119|0.072|4;light orange|0.802|0.057|0.136|1;bright pink|0.661|0.271|-0.060|8;chartreuse|0.908|-0.127|0.186|10;deep purple|0.242|0.088|-0.071|7;dark brown|0.254|0.023|0.049|2;taupe|0.724|0.012|0.051|9;pea green|0.695|-0.084|0.139|4;kelly green|0.644|-0.166|0.116|4;seafoam green|0.890|-0.143|0.068|4;blue green|0.533|-0.093|0.003|4;khaki|0.713|-0.024|0.086|9;burgundy|0.315|0.124|0.021|0;dark teal|0.381|-0.062|-0.018|5;brick red|0.418|0.135|0.083|0;royal purple|0.319|0.103|-0.125|7;plum|0.319|0.113|-0.032|7;mint green|0.910|-0.140|0.090|4;gold|0.782|-0.008|0.158|3;baby blue|0.839|-0.028|-0.077|6;yellow green|0.915|-0.128|0.180|10;bright purple|0.607|0.206|-0.220|7;dark red|0.385|0.138|0.077|0;pale blue|0.965|-0.045|-0.013|6;grass green|0.610|-0.138|0.124|4;navy|0.211|-0.014|-0.083|6;aquamarine|0.787|-0.149|0.016|5;burnt orange|0.566|0.115|0.114|1;neon green|0.867|-0.232|0.178|4;bright blue|0.559|-0.038|-0.235|6;rose|0.633|0.136|0.026|8;light pink|0.904|0.055|-0.002|8;mustard|0.767|-0.023|0.157|3;indigo|0.316|0.061|-0.166|7;lime|0.912|-0.152|0.177|10;sea green|0.883|-0.171|0.078|4;periwinkle|0.675|0.046|-0.172|6;dark pink|0.583|0.175|0.018|8;olive green|0.545|-0.064|0.111|4;peach|0.822|0.068|0.093|1;pale green|0.939|-0.081|0.073|4;light brown|0.635|0.032|0.079|2;hot pink|0.650|0.264|-0.007|8;lilac|0.785|0.078|-0.108|7;navy blue|0.210|-0.013|-0.101|6;royal blue|0.337|-0.020|-0.228|6;beige|0.885|-0.008|0.068|9;salmon|0.731|0.147|0.077|8;olive|0.539|-0.047|0.106|4;maroon|0.323|0.126|0.028|0;bright green|0.867|-0.233|0.179|4;dark purple|0.245|0.081|-0.067|7;mauve|0.617|0.080|0.004|7;forest green|0.347|-0.087|0.064|4;aqua|0.839|-0.153|0.007|5;cyan|0.905|-0.149|-0.039|5;tan|0.776|0.007|0.093|9;dark blue|0.217|-0.015|-0.144|6;lavender|0.768|0.071|-0.095|7;turquoise|0.730|-0.131|-0.002|5;dark green|0.286|-0.075|0.059|4;violet|0.546|0.163|-0.222|7;light purple|0.697|0.118|-0.149|7;lime green|0.892|-0.182|0.184|10;sky blue|0.772|-0.044|-0.110|6;yellow|0.968|-0.070|0.196|3;magenta|0.534|0.219|-0.027|8;light green|0.894|-0.142|0.122|4;orange|0.704|0.124|0.142|1;teal|0.596|-0.105|-0.007|5;light blue|0.833|-0.042|-0.076|6;red|0.579|0.207|0.116|0;brown|0.386|0.042|0.079|2;pink|0.763|0.165|-0.028|8;blue|0.472|-0.028|-0.239|6;green|0.658|-0.171|0.130|4;purple|0.452|0.141|-0.135|7";
-// ─── Hue families from common colour names ───────────────────────────────────
-// Hue angles alone call a dark, muted 95° colour "yellow", but almost nobody
-// does: dark yellows are olives (green) or browns. So a colour's hue family is
-// decided by the names people actually give the colours around it — the
-// nearest few xkcd-survey names, each counted by its hue word ("olive drab" is
-// green, "mud brown" is brown, "dark mustard" is yellow) and weighted by
-// closeness. Each hue word goes to the family of that name (Purple → a Purple
-// or Magenta family, brown → Brown if there is one, else Orange), or to the
-// family nearest its hue. Light/Dark, Vivid/Muted, the neutral split and the
-// overrides work as before.
+// Labelled colour names: the xkcd colour survey (2010; the 949 names its
+// ~222,000 participants agreed on most, CC0, as shipped with matplotlib; a
+// few slang names left out) and the 267 ISCC-NBS colour names (NBS Special
+// Publication 440, US public domain), each with its OkLab centroid.
+// Entry: name | L | a | b | basic term index | source (0 xkcd, 1 ISCC-NBS)
+const SEMANTIC_TERMS = ["red", "orange", "brown", "yellow", "green", "cyan", "blue", "purple", "pink", "angle", "lime", "white", "grey", "black"];
+const SEMANTIC_SOURCES = ["xkcd survey", "ISCC-NBS"];
+const SEMANTIC_SAMPLES_RAW = "cloudy blue|0.805|-0.014|-0.038|6|0;dark pastel green|0.675|-0.121|0.088|4|0;dust|0.695|0.010|0.065|3|0;electric lime|0.909|-0.158|0.187|10|0;fresh green|0.789|-0.156|0.130|4|0;light eggplant|0.499|0.108|-0.064|7|0;nasty green|0.695|-0.113|0.116|4|0;really light blue|0.970|-0.042|-0.012|6|0;tea|0.682|-0.089|0.044|4|0;warm purple|0.492|0.154|-0.088|7|0;yellowish tan|0.967|-0.047|0.138|3|0;cement|0.712|-0.005|0.025|12|0;dark grass green|0.532|-0.117|0.109|4|0;dusty teal|0.605|-0.072|-0.003|5|0;grey teal|0.643|-0.069|0.007|5|0;macaroni and cheese|0.804|0.021|0.149|1|0;pinkish tan|0.743|0.061|0.056|8|0;spruce|0.429|-0.091|0.040|4|0;strong blue|0.445|-0.027|-0.302|6|0;toxic green|0.798|-0.176|0.155|4|0;windows blue|0.565|-0.038|-0.123|6|0;blue blue|0.452|-0.013|-0.208|6|0;blue with a hint of purple|0.471|0.045|-0.197|7|0;bright sea green|0.882|-0.189|0.072|4|0;dark green blue|0.454|-0.070|0.001|6|0;deep turquoise|0.503|-0.082|-0.023|5|0;green teal|0.683|-0.144|0.053|5|0;strong pink|0.649|0.261|-0.001|8|0;bland|0.730|-0.004|0.041|12|0;deep aqua|0.522|-0.081|-0.033|5|0;lavender pink|0.737|0.129|-0.076|8|0;light moss green|0.789|-0.070|0.092|4|0;light seafoam green|0.926|-0.112|0.069|4|0;olive yellow|0.764|-0.042|0.155|3|0;pig pink|0.745|0.111|0.007|8|0;deep lilac|0.610|0.073|-0.099|7|0;desert|0.759|0.004|0.103|3|0;dusty lavender|0.667|0.057|-0.033|7|0;purpley grey|0.621|0.034|-0.023|12|0;purply|0.536|0.138|-0.126|7|0;candy pink|0.743|0.214|-0.106|8|0;light pastel green|0.919|-0.105|0.085|4|0;boring green|0.696|-0.111|0.079|4|0;kiwi green|0.836|-0.145|0.153|4|0;light grey green|0.864|-0.068|0.068|4|0;orange pink|0.713|0.152|0.099|8|0;tea green|0.919|-0.092|0.087|4|0;very light brown|0.789|0.011|0.074|2|0;egg shell|0.980|-0.019|0.069|11|0;eggplant purple|0.272|0.100|-0.058|7|0;powder pink|0.845|0.096|-0.010|8|0;reddish grey|0.596|0.041|0.021|12|0;liliac|0.742|0.094|-0.133|7|0;stormy blue|0.565|-0.032|-0.062|6|0;ugly brown|0.543|-0.023|0.110|2|0;custard|0.970|-0.048|0.147|3|0;darkish pink|0.617|0.189|0.005|8|0;deep brown|0.238|0.081|0.048|2|0;greenish beige|0.835|-0.044|0.103|4|0;manilla|0.966|-0.039|0.133|3|0;off blue|0.598|-0.032|-0.075|6|0;battleship grey|0.576|-0.015|-0.019|12|0;browny green|0.517|-0.033|0.103|4|0;bruise|0.467|0.098|-0.044|7|0;kelley green|0.578|-0.143|0.091|4|0;sickly yellow|0.875|-0.084|0.172|3|0;sunny yellow|0.956|-0.062|0.193|3|0;azul|0.534|-0.028|-0.223|6|0;darkgreen|0.353|-0.091|0.068|4|0;green/yellow|0.804|-0.088|0.164|3|0;lichen|0.733|-0.066|0.065|4|0;light light green|0.943|-0.085|0.081|4|0;pale gold|0.905|-0.010|0.137|3|0;sun yellow|0.903|-0.026|0.179|3|0;tan green|0.767|-0.055|0.090|4|0;burple|0.504|0.076|-0.231|6|0;butterscotch|0.815|0.046|0.140|1|0;toupe|0.757|0.011|0.069|2|0;dark cream|0.954|-0.022|0.108|11|0;indian red|0.394|0.132|0.077|0|0;light lavendar|0.869|0.072|-0.065|7|0;poison green|0.868|-0.220|0.177|4|0;bright yellow green|0.904|-0.168|0.186|10|0;charcoal grey|0.371|-0.006|-0.004|12|0;squash|0.789|0.034|0.157|1|0;cinnamon|0.537|0.092|0.107|1|0;light pea green|0.931|-0.106|0.127|4|0;radioactive green|0.857|-0.223|0.172|4|0;raw sienna|0.544|0.038|0.111|2|0;baby purple|0.767|0.082|-0.109|7|0;cocoa|0.521|0.037|0.056|2|0;light royal blue|0.494|0.008|-0.283|6|0;orangeish|0.753|0.103|0.121|1|0;rust brown|0.439|0.099|0.087|1|0;sand brown|0.742|0.015|0.097|2|0;swamp|0.573|-0.062|0.086|4|0;tealish green|0.784|-0.180|0.096|4|0;burnt siena|0.558|0.100|0.112|1|0;camo|0.622|-0.046|0.079|4|0;dusk blue|0.441|-0.026|-0.105|6|0;fern|0.668|-0.108|0.093|4|0;old rose|0.675|0.090|0.017|8|0;pale light green|0.919|-0.112|0.099|4|0;peachy pink|0.787|0.108|0.062|8|0;rosy pink|0.703|0.176|0.019|8|0;light bluish green|0.897|-0.151|0.075|4|0;light bright green|0.878|-0.199|0.146|4|0;light neon green|0.874|-0.203|0.150|4|0;light seafoam|0.922|-0.112|0.055|5|0;tiffany blue|0.885|-0.114|0.003|6|0;washed out green|0.912|-0.088|0.081|4|0;browny orange|0.625|0.083|0.126|1|0;nice blue|0.552|-0.062|-0.103|6|0;sapphire|0.407|-0.007|-0.184|6|0;greyish teal|0.665|-0.054|0.006|5|0;orangey yellow|0.827|0.026|0.166|3|0;parchment|0.975|-0.028|0.093|11|0;straw|0.953|-0.041|0.141|3|0;very dark brown|0.151|0.045|0.030|2|0;terracota|0.626|0.103|0.089|1|0;ugly blue|0.490|-0.039|-0.071|6|0;clear blue|0.606|-0.039|-0.208|6|0;creme|0.983|-0.028|0.087|11|0;foam green|0.908|-0.133|0.077|4|0;grey/green|0.678|-0.044|0.040|4|0;light gold|0.899|-0.012|0.148|3|0;seafoam blue|0.797|-0.094|0.013|6|0;topaz|0.714|-0.122|-0.014|5|0;violet pink|0.743|0.216|-0.137|8|0;wintergreen|0.863|-0.195|0.102|4|0;yellow tan|0.916|-0.015|0.139|3|0;dark fuchsia|0.456|0.182|-0.011|8|0;indigo blue|0.387|0.036|-0.211|6|0;light yellowish green|0.933|-0.106|0.121|10|0;pale magenta|0.669|0.155|-0.045|8|0;rich purple|0.371|0.152|-0.051|7|0;sunflower yellow|0.893|-0.021|0.182|3|0;green/blue|0.716|-0.144|0.037|6|0;leather|0.605|0.042|0.098|2|0;racing green|0.342|-0.092|0.071|4|0;vivid purple|0.555|0.158|-0.245|7|0;dark royal blue|0.252|-0.014|-0.164|6|0;hazel|0.573|-0.007|0.109|4|0;muted pink|0.673|0.117|0.006|8|0;canary|0.970|-0.059|0.163|3|0;cool grey|0.705|-0.014|-0.009|12|0;dark taupe|0.533|0.017|0.045|2|0;darkish purple|0.407|0.139|-0.083|7|0;true green|0.578|-0.154|0.119|4|0;coral pink|0.698|0.178|0.075|8|0;dark sage|0.572|-0.068|0.052|4|0;dark slate blue|0.383|-0.030|-0.054|6|0;flat blue|0.542|-0.036|-0.095|6|0;mushroom|0.718|0.023|0.039|3|0;rich blue|0.456|-0.030|-0.298|6|0;dirty purple|0.465|0.064|-0.023|7|0;greenblue|0.729|-0.144|0.045|6|0;icky green|0.703|-0.085|0.136|4|0;light khaki|0.934|-0.044|0.093|3|0;warm blue|0.527|0.012|-0.199|6|0;dark hot pink|0.570|0.228|0.019|8|0;deep sea blue|0.428|-0.047|-0.091|6|0;carmine|0.439|0.160|0.076|0|0;dark yellow green|0.606|-0.080|0.124|10|0;pale peach|0.930|0.006|0.077|1|0;plum purple|0.303|0.112|-0.073|7|0;golden rod|0.828|0.016|0.168|3|0;neon red|0.633|0.234|0.096|0|0;old pink|0.663|0.097|0.016|8|0;very pale blue|0.971|-0.041|-0.011|6|0;blood orange|0.664|0.180|0.133|1|0;grapefruit|0.684|0.181|0.085|8|0;sand yellow|0.909|-0.018|0.143|3|0;clay brown|0.608|0.057|0.090|2|0;dark blue grey|0.339|-0.024|-0.040|12|0;flat green|0.640|-0.089|0.088|4|0;light green blue|0.884|-0.169|0.077|6|0;warm pink|0.685|0.201|0.029|8|0;dodger blue|0.628|-0.030|-0.193|6|0;gross green|0.755|-0.090|0.151|4|0;ice|0.970|-0.042|-0.006|6|0;metallic blue|0.539|-0.028|-0.052|6|0;pale salmon|0.829|0.078|0.059|8|0;sap green|0.581|-0.096|0.114|4|0;algae|0.672|-0.113|0.067|4|0;bluey grey|0.693|-0.018|-0.030|12|0;greeny grey|0.670|-0.053|0.041|12|0;highlighter green|0.860|-0.229|0.177|4|0;light light blue|0.963|-0.053|-0.010|6|0;light mint|0.935|-0.097|0.065|4|0;raw umber|0.555|0.063|0.110|2|0;vivid blue|0.482|-0.023|-0.292|6|0;deep lavender|0.570|0.084|-0.112|7|0;dull teal|0.652|-0.069|0.004|5|0;light greenish blue|0.879|-0.150|0.053|6|0;mud green|0.488|-0.044|0.100|4|0;pinky|0.760|0.147|0.005|8|0;red wine|0.409|0.161|0.030|0|0;tan brown|0.627|0.033|0.081|2|0;darkblue|0.238|-0.012|-0.150|6|0;rosa|0.761|0.147|0.014|8|0;lipstick|0.563|0.209|0.051|8|0;pale mauve|0.910|0.065|-0.041|7|0;claret|0.328|0.124|0.042|0|0;dandelion|0.902|-0.029|0.184|3|0;orangered|0.656|0.190|0.129|0|0;ruby|0.534|0.207|0.050|0|0;dark|0.258|-0.006|-0.027|12|0;greenish turquoise|0.874|-0.181|0.057|5|0;pastel red|0.630|0.151|0.067|0|0;bright cyan|0.906|-0.138|-0.038|5|0;dark coral|0.602|0.145|0.067|8|0;algae green|0.720|-0.157|0.077|4|0;darkish red|0.463|0.165|0.089|0|0;reddy brown|0.348|0.111|0.066|0|0;blush pink|0.749|0.145|0.042|8|0;camouflage green|0.459|-0.059|0.086|4|0;lawn green|0.639|-0.138|0.130|4|0;putty|0.755|0.003|0.052|3|0;vibrant blue|0.484|-0.028|-0.277|6|0;dark sand|0.660|0.006|0.078|2|0;purple/blue|0.460|0.075|-0.225|6|0;saffron|0.815|0.036|0.165|1|0;twilight|0.460|0.016|-0.092|6|0;warm brown|0.502|0.067|0.101|2|0;bluegrey|0.698|-0.026|-0.030|12|0;bubble gum pink|0.727|0.194|-0.020|8|0;duck egg blue|0.948|-0.057|-0.007|6|0;greenish cyan|0.885|-0.176|0.052|5|0;petrol|0.444|-0.067|-0.036|5|0;royal|0.323|-0.012|-0.192|6|0;butter|0.975|-0.048|0.140|3|0;dusty orange|0.719|0.099|0.123|1|0;off yellow|0.933|-0.065|0.176|3|0;pale olive green|0.820|-0.070|0.096|4|0;orangish|0.735|0.119|0.114|1|0;leaf|0.675|-0.106|0.119|4|0;light blue grey|0.830|-0.009|-0.039|12|0;dried blood|0.260|0.092|0.051|0|0;lightish purple|0.608|0.131|-0.175|7|0;rusty red|0.501|0.140|0.096|0|0;lavender blue|0.680|0.035|-0.158|6|0;light grass green|0.888|-0.145|0.141|4|0;light mint green|0.915|-0.109|0.068|4|0;sunflower|0.852|0.010|0.172|3|0;velvet|0.377|0.149|-0.034|7|0;brick orange|0.563|0.123|0.111|1|0;lightish red|0.647|0.221|0.085|0|0;pure blue|0.414|-0.029|-0.283|6|0;twilight blue|0.381|-0.032|-0.104|6|0;violet red|0.467|0.189|0.001|0|0;yellowy brown|0.651|-0.001|0.131|3|0;carnation|0.735|0.158|0.032|8|0;muddy yellow|0.738|-0.030|0.150|3|0;dark seafoam green|0.675|-0.123|0.051|4|0;deep rose|0.582|0.162|0.024|8|0;dusty red|0.555|0.137|0.050|0|0;grey/blue|0.576|-0.021|-0.033|6|0;lemon lime|0.921|-0.133|0.183|10|0;purple/pink|0.632|0.228|-0.152|8|0;brown yellow|0.681|-0.015|0.138|3|0;purple brown|0.405|0.062|0.015|7|0;wisteria|0.657|0.074|-0.082|7|0;banana yellow|0.964|-0.067|0.177|3|0;lipstick red|0.511|0.192|0.072|0|0;water blue|0.599|-0.064|-0.125|6|0;brown grey|0.614|-0.002|0.042|12|0;vibrant purple|0.560|0.194|-0.194|7|0;baby green|0.908|-0.143|0.091|4|0;eggshell blue|0.958|-0.060|-0.006|6|0;sandy yellow|0.937|-0.031|0.141|3|0;cool green|0.692|-0.145|0.080|4|0;pale|0.976|-0.010|0.052|11|0;blue/grey|0.633|-0.017|-0.039|12|0;hot magenta|0.657|0.267|-0.102|8|0;greyblue|0.686|-0.036|-0.041|6|0;purpley|0.580|0.087|-0.186|7|0;brownish pink|0.662|0.078|0.035|8|0;dark aquamarine|0.502|-0.084|-0.019|5|0;diarrhea|0.618|-0.008|0.126|3|0;light mustard|0.880|-0.008|0.140|3|0;pale sky blue|0.937|-0.052|-0.026|6|0;turtle green|0.715|-0.111|0.108|4|0;bright olive|0.742|-0.091|0.152|4|0;dark grey blue|0.381|-0.024|-0.044|6|0;greeny brown|0.483|-0.022|0.097|4|0;lemon green|0.896|-0.146|0.184|4|0;light periwinkle|0.841|0.014|-0.074|6|0;seaweed green|0.665|-0.130|0.061|4|0;sunshine yellow|0.965|-0.064|0.186|3|0;ugly purple|0.545|0.148|-0.088|7|0;medium pink|0.692|0.185|0.002|8|0;very light pink|0.975|0.011|0.006|8|0;viridian|0.585|-0.113|0.035|4|0;bile|0.780|-0.074|0.159|3|0;faded yellow|0.974|-0.050|0.142|3|0;very pale green|0.946|-0.071|0.067|4|0;vibrant green|0.778|-0.209|0.160|4|0;bright lime|0.889|-0.183|0.183|10|0;spearmint|0.857|-0.201|0.117|4|0;light aquamarine|0.906|-0.134|0.038|5|0;light sage|0.894|-0.073|0.066|4|0;yellowgreen|0.907|-0.134|0.185|10|0;dark seafoam|0.685|-0.139|0.050|5|0;deep teal|0.409|-0.065|-0.026|5|0;heather|0.657|0.052|-0.045|7|0;rust orange|0.583|0.110|0.116|1|0;dirty blue|0.574|-0.054|-0.058|6|0;fern green|0.586|-0.091|0.079|4|0;bright lilac|0.678|0.161|-0.171|7|0;weird green|0.814|-0.174|0.093|4|0;peacock blue|0.488|-0.057|-0.091|6|0;avocado green|0.685|-0.087|0.132|4|0;faded orange|0.749|0.078|0.116|1|0;grape purple|0.341|0.115|-0.052|7|0;hot green|0.869|-0.226|0.172|4|0;lime yellow|0.932|-0.118|0.188|3|0;mango|0.796|0.059|0.151|1|0;shamrock|0.672|-0.163|0.099|4|0;bubblegum|0.732|0.191|-0.027|8|0;purplish brown|0.428|0.056|0.012|7|0;pale cyan|0.951|-0.070|-0.013|5|0;key lime|0.918|-0.134|0.142|10|0;tomato red|0.609|0.193|0.122|0|0;lightgreen|0.894|-0.171|0.123|4|0;merlot|0.360|0.146|0.001|0|0;night blue|0.191|-0.005|-0.120|6|0;purpleish pink|0.662|0.201|-0.095|8|0;apple|0.757|-0.144|0.135|4|0;green apple|0.792|-0.177|0.158|4|0;heliotrope|0.678|0.196|-0.162|7|0;yellow/green|0.925|-0.120|0.175|10|0;almost black|0.152|-0.010|-0.003|13|0;cool blue|0.596|-0.039|-0.093|6|0;leafy green|0.693|-0.144|0.119|4|0;mustard brown|0.622|0.016|0.126|3|0;dusk|0.461|0.009|-0.073|6|0;dull brown|0.554|0.015|0.057|2|0;frog green|0.707|-0.154|0.145|4|0;vivid green|0.829|-0.215|0.170|4|0;bright light green|0.870|-0.214|0.150|4|0;fluro green|0.867|-0.233|0.179|4|0;kiwi|0.867|-0.144|0.159|4|0;seaweed|0.758|-0.166|0.077|4|0;navy green|0.404|-0.066|0.078|4|0;ultramarine blue|0.410|-0.015|-0.274|6|0;iris|0.527|0.038|-0.158|6|0;pastel orange|0.771|0.093|0.121|1|0;yellowish orange|0.804|0.048|0.162|1|0;perrywinkle|0.681|0.032|-0.129|6|0;tealish|0.716|-0.122|-0.003|5|0;dark plum|0.247|0.099|-0.027|7|0;pear|0.919|-0.103|0.153|10|0;pinkish orange|0.716|0.146|0.106|1|0;midnight purple|0.209|0.070|-0.072|7|0;light urple|0.673|0.113|-0.163|7|0;dark mint|0.721|-0.137|0.074|4|0;greenish tan|0.812|-0.049|0.094|4|0;light burgundy|0.522|0.136|0.018|0|0;turquoise blue|0.696|-0.105|-0.057|6|0;ugly pink|0.663|0.110|0.019|8|0;sandy|0.888|-0.013|0.119|3|0;electric pink|0.651|0.264|-0.011|8|0;muted purple|0.526|0.062|-0.051|7|0;mid green|0.653|-0.124|0.097|4|0;greyish|0.718|-0.002|0.022|12|0;neon yellow|0.933|-0.122|0.191|3|0;banana|0.975|-0.049|0.143|3|0;carnation pink|0.753|0.160|0.005|8|0;tomato|0.630|0.183|0.112|0|0;sea|0.626|-0.087|-0.013|5|0;muddy brown|0.535|0.006|0.107|2|0;turquoise green|0.849|-0.192|0.094|4|0;buff|0.960|-0.026|0.106|3|0;fawn|0.770|0.014|0.077|3|0;muted blue|0.532|-0.037|-0.085|6|0;pale rose|0.866|0.067|0.017|8|0;dark mint green|0.713|-0.152|0.070|4|0;amethyst|0.592|0.101|-0.116|7|0;blue/green|0.621|-0.107|-0.008|4|0;chestnut|0.386|0.086|0.077|0|0;sick green|0.740|-0.082|0.139|4|0;pea|0.758|-0.085|0.149|4|0;rusty orange|0.602|0.114|0.120|1|0;stone|0.721|-0.004|0.043|12|0;rose red|0.509|0.196|0.056|0|0;pale aqua|0.948|-0.075|0.006|5|0;deep orange|0.610|0.146|0.123|1|0;earth|0.565|0.058|0.076|2|0;mossy green|0.587|-0.085|0.105|4|0;grassy green|0.613|-0.139|0.126|4|0;pale lime green|0.919|-0.134|0.149|10|0;light grey blue|0.780|-0.023|-0.042|6|0;pale grey|0.994|0.000|-0.001|12|0;asparagus|0.685|-0.090|0.092|4|0;blueberry|0.428|0.027|-0.132|6|0;purple red|0.440|0.176|0.013|0|0;pale lime|0.924|-0.115|0.139|10|0;greenish teal|0.717|-0.138|0.049|5|0;caramel|0.596|0.045|0.119|1|0;deep magenta|0.461|0.187|-0.014|8|0;light peach|0.906|0.026|0.062|1|0;milk chocolate|0.471|0.043|0.080|2|0;ocher|0.702|-0.004|0.141|1|0;off green|0.657|-0.092|0.086|4|0;purply pink|0.743|0.175|-0.099|8|0;lightblue|0.800|-0.056|-0.083|6|0;dusky blue|0.491|-0.008|-0.090|6|0;golden|0.830|0.006|0.169|3|0;light beige|0.981|-0.027|0.087|11|0;butter yellow|0.970|-0.049|0.150|3|0;dusky purple|0.532|0.070|-0.027|7|0;french blue|0.530|-0.020|-0.112|6|0;ugly yellow|0.798|-0.040|0.163|3|0;greeny yellow|0.911|-0.122|0.187|3|0;orangish red|0.629|0.192|0.125|0|0;shamrock green|0.707|-0.174|0.109|4|0;orangish brown|0.572|0.074|0.115|1|0;tree green|0.522|-0.121|0.099|4|0;deep violet|0.289|0.106|-0.064|7|0;gunmetal|0.485|-0.015|-0.013|12|0;blue/purple|0.477|0.065|-0.271|7|0;cherry|0.541|0.203|0.075|0|0;sandy brown|0.737|0.006|0.095|2|0;warm grey|0.643|0.012|0.013|12|0;dark indigo|0.239|0.034|-0.117|7|0;midnight|0.142|0.001|-0.088|6|0;bluey green|0.677|-0.132|0.048|4|0;grey pink|0.705|0.063|0.005|8|0;soft purple|0.625|0.089|-0.078|7|0;blood|0.358|0.128|0.071|0|0;brown red|0.444|0.115|0.087|0|0;medium grey|0.594|-0.004|0.004|12|0;berry|0.446|0.171|0.009|0|0;purpley pink|0.604|0.196|-0.101|8|0;light salmon|0.813|0.086|0.061|8|0;easter purple|0.694|0.127|-0.164|7|0;light yellow green|0.934|-0.098|0.130|10|0;dark navy blue|0.143|-0.009|-0.089|6|0;drab|0.595|-0.029|0.080|4|0;light rose|0.877|0.065|0.013|8|0;rouge|0.478|0.175|0.049|0|0;purplish red|0.487|0.191|0.026|0|0;slime green|0.780|-0.115|0.160|4|0;irish green|0.582|-0.149|0.104|4|0;pink/purple|0.670|0.255|-0.146|7|0;dark navy|0.160|-0.010|-0.095|6|0;greeny blue|0.694|-0.110|0.015|6|0;light plum|0.553|0.103|-0.032|7|0;pinkish grey|0.768|0.030|0.014|12|0;dirty orange|0.642|0.064|0.129|1|0;rust red|0.484|0.143|0.096|0|0;pale lilac|0.880|0.045|-0.060|7|0;orangey red|0.650|0.190|0.118|0|0;primary blue|0.446|-0.029|-0.304|6|0;kermit green|0.682|-0.141|0.141|4|0;brownish purple|0.446|0.073|0.007|7|0;murky green|0.549|-0.057|0.109|4|0;wheat|0.903|-0.005|0.120|3|0;very dark purple|0.210|0.074|-0.065|7|0;bottle green|0.356|-0.093|0.070|4|0;watermelon|0.665|0.205|0.074|8|0;deep sky blue|0.588|-0.043|-0.209|6|0;fire engine red|0.626|0.224|0.125|0|0;yellow ochre|0.719|0.007|0.146|1|0;pumpkin orange|0.722|0.112|0.145|1|0;pale olive|0.813|-0.051|0.087|4|0;light lilac|0.882|0.059|-0.060|7|0;lightish green|0.810|-0.164|0.122|4|0;carolina blue|0.777|-0.022|-0.110|6|0;mulberry|0.432|0.169|-0.003|8|0;shocking pink|0.655|0.268|-0.038|8|0;auburn|0.464|0.116|0.093|0|0;bright lime green|0.879|-0.205|0.181|10|0;celadon|0.934|-0.089|0.069|4|0;pinkish brown|0.615|0.068|0.049|8|0;bright sky blue|0.785|-0.106|-0.102|6|0;celery|0.930|-0.100|0.107|4|0;dirt brown|0.527|0.018|0.070|2|0;strawberry|0.638|0.220|0.090|8|0;dark lime|0.716|-0.111|0.147|10|0;copper|0.586|0.078|0.104|1|0;medium brown|0.476|0.035|0.089|2|0;muted green|0.643|-0.100|0.083|4|0;robin's egg|0.880|-0.103|-0.051|6|0;bright aqua|0.885|-0.153|-0.019|5|0;bright lavender|0.681|0.156|-0.176|7|0;ivory|0.987|-0.020|0.064|11|0;very light purple|0.900|0.059|-0.046|7|0;light navy|0.423|-0.036|-0.098|6|0;pink red|0.617|0.236|0.069|0|0;olive brown|0.449|-0.010|0.090|4|0;mustard green|0.738|-0.070|0.151|4|0;ocean green|0.617|-0.101|0.031|4|0;very dark blue|0.148|-0.010|-0.098|6|0;dusty green|0.684|-0.076|0.057|4|0;light navy blue|0.458|-0.029|-0.085|6|0;minty green|0.855|-0.199|0.109|4|0;adobe|0.615|0.083|0.080|1|0;barney|0.540|0.192|-0.137|7|0;jade green|0.668|-0.137|0.064|4|0;bright light blue|0.888|-0.139|-0.045|6|0;light lime|0.913|-0.132|0.142|10|0;dark khaki|0.647|-0.011|0.078|3|0;orange yellow|0.807|0.045|0.164|3|0;ocre|0.712|0.002|0.145|1|0;maize|0.866|-0.007|0.145|3|0;faded pink|0.763|0.079|0.005|8|0;british racing green|0.350|-0.088|0.064|4|0;sandstone|0.761|0.006|0.082|3|0;mud brown|0.412|0.012|0.076|2|0;light sea green|0.897|-0.116|0.064|4|0;robin egg blue|0.900|-0.088|-0.043|6|0;aqua marine|0.833|-0.153|0.024|5|0;dark sea green|0.553|-0.111|0.036|4|0;soft pink|0.835|0.091|0.009|8|0;orangey brown|0.572|0.071|0.116|1|0;cherry red|0.615|0.226|0.105|0|0;burnt yellow|0.758|-0.002|0.153|3|0;brownish grey|0.577|0.007|0.039|12|0;camel|0.724|0.016|0.099|2|0;purplish grey|0.542|0.031|-0.027|12|0;marine|0.307|-0.024|-0.096|6|0;greyish pink|0.703|0.071|0.014|8|0;pale turquoise|0.923|-0.095|0.026|5|0;pastel yellow|0.971|-0.052|0.153|3|0;bluey purple|0.492|0.062|-0.187|7|0;canary yellow|0.968|-0.064|0.183|3|0;faded red|0.598|0.161|0.065|0|0;sepia|0.537|0.051|0.086|2|0;coffee|0.627|0.021|0.081|2|0;bright magenta|0.690|0.275|-0.137|8|0;mocha|0.596|0.031|0.064|2|0;ecru|0.986|-0.022|0.064|11|0;purpleish|0.549|0.102|-0.051|7|0;cranberry|0.446|0.175|0.036|0|0;darkish green|0.519|-0.109|0.072|4|0;brown orange|0.599|0.066|0.121|1|0;dusky rose|0.613|0.103|0.022|8|0;melon|0.726|0.140|0.100|8|0;sickly green|0.716|-0.086|0.141|4|0;silver|0.832|-0.005|0.001|12|0;purply blue|0.495|0.080|-0.258|6|0;purpleish blue|0.525|0.053|-0.239|6|0;hospital green|0.858|-0.095|0.055|4|0;mid blue|0.520|-0.038|-0.128|6|0;amber|0.817|0.035|0.166|1|0;easter green|0.899|-0.153|0.122|4|0;soft blue|0.646|-0.008|-0.152|6|0;cerulean blue|0.566|-0.042|-0.206|6|0;golden brown|0.621|0.030|0.126|3|0;bright turquoise|0.902|-0.150|-0.033|5|0;red pink|0.639|0.225|0.070|8|0;red purple|0.398|0.157|-0.006|7|0;greyish brown|0.532|0.007|0.044|2|0;vermillion|0.627|0.196|0.123|0|0;russet|0.488|0.112|0.096|1|0;steel grey|0.594|-0.018|-0.018|12|0;lighter purple|0.628|0.121|-0.187|7|0;bright violet|0.585|0.183|-0.232|7|0;prussian blue|0.382|-0.038|-0.097|6|0;slate green|0.605|-0.057|0.033|4|0;dirty pink|0.668|0.095|0.027|8|0;dark blue green|0.394|-0.070|-0.003|4|0;pine|0.432|-0.073|0.046|4|0;yellowy green|0.891|-0.118|0.176|10|0;dark gold|0.678|-0.006|0.135|3|0;bluish|0.553|-0.046|-0.122|6|0;darkish blue|0.380|-0.032|-0.120|6|0;dull red|0.544|0.146|0.065|0|0;pinky red|0.638|0.224|0.085|0|0;bronze|0.607|0.019|0.124|3|0;pale teal|0.787|-0.081|0.014|5|0;military green|0.554|-0.053|0.074|4|0;barbie pink|0.686|0.231|-0.026|8|0;bubblegum pink|0.769|0.165|-0.043|8|0;pea soup green|0.688|-0.071|0.136|4|0;dark mustard|0.640|-0.006|0.130|3|0;medium purple|0.539|0.140|-0.095|7|0;very dark green|0.264|-0.065|0.051|4|0;dirt|0.556|0.016|0.065|2|0;dusky pink|0.672|0.103|0.012|8|0;red violet|0.462|0.189|-0.035|7|0;lemon yellow|0.968|-0.069|0.187|3|0;pistachio|0.921|-0.101|0.115|4|0;dull yellow|0.885|-0.029|0.146|3|0;dark lime green|0.727|-0.124|0.150|10|0;denim blue|0.473|-0.016|-0.096|6|0;teal blue|0.577|-0.083|-0.059|6|0;lightish blue|0.612|-0.025|-0.204|6|0;purpley blue|0.502|0.060|-0.239|6|0;light indigo|0.548|0.050|-0.166|7|0;swamp green|0.582|-0.064|0.120|4|0;brown green|0.519|-0.030|0.100|4|0;dark maroon|0.225|0.085|0.032|0|0;hot purple|0.619|0.224|-0.199|7|0;dark forest green|0.258|-0.067|0.049|4|0;faded blue|0.630|-0.024|-0.080|6|0;drab green|0.628|-0.066|0.078|4|0;light lime green|0.924|-0.126|0.150|10|0;yellowish|0.933|-0.038|0.151|3|0;light blue green|0.898|-0.139|0.061|4|0;bordeaux|0.372|0.146|0.029|0|0;light mauve|0.710|0.061|-0.002|7|0;ocean|0.538|-0.077|-0.058|6|0;marigold|0.839|0.013|0.171|1|0;muddy green|0.531|-0.047|0.080|4|0;dull orange|0.693|0.067|0.116|1|0;steel|0.608|-0.013|-0.029|6|0;electric purple|0.592|0.170|-0.231|7|0;fluorescent green|0.867|-0.233|0.179|4|0;yellowish brown|0.595|0.001|0.121|3|0;blush|0.779|0.089|0.054|8|0;soft green|0.742|-0.112|0.076|4|0;bright orange|0.683|0.162|0.138|1|0;lemon|0.969|-0.064|0.174|3|0;purple grey|0.571|0.036|-0.023|12|0;acid green|0.895|-0.178|0.184|4|0;pale lavender|0.895|0.050|-0.051|7|0;violet blue|0.427|0.067|-0.233|6|0;light forest green|0.597|-0.094|0.065|4|0;burnt red|0.460|0.137|0.090|0|0;khaki green|0.587|-0.056|0.090|4|0;cerise|0.580|0.227|0.029|8|0;faded purple|0.588|0.058|-0.049|7|0;apricot|0.821|0.061|0.109|1|0;dark olive green|0.392|-0.051|0.079|4|0;grey brown|0.551|0.005|0.046|2|0;green grey|0.629|-0.045|0.040|12|0;true blue|0.389|-0.026|-0.259|6|0;pale violet|0.805|0.061|-0.092|7|0;periwinkle blue|0.716|0.019|-0.141|6|0;light sky blue|0.955|-0.051|-0.019|6|0;blurple|0.474|0.049|-0.207|7|0;green brown|0.417|-0.021|0.084|4|0;bluegreen|0.524|-0.087|-0.021|4|0;bright teal|0.874|-0.169|0.027|5|0;brownish yellow|0.756|-0.024|0.154|3|0;pea soup|0.655|-0.057|0.134|4|0;forest|0.392|-0.099|0.076|4|0;barney purple|0.491|0.193|-0.107|7|0;ultramarine|0.355|0.003|-0.231|6|0;purplish|0.543|0.097|-0.052|7|0;bluish grey|0.623|-0.020|-0.025|12|0;dark periwinkle|0.552|0.035|-0.167|6|0;dark lilac|0.603|0.077|-0.062|7|0;reddish|0.563|0.151|0.070|0|0;light maroon|0.522|0.117|0.025|0|0;dusty purple|0.536|0.058|-0.045|7|0;terra cotta|0.616|0.104|0.093|1|0;avocado|0.712|-0.084|0.128|4|0;marine blue|0.339|-0.031|-0.097|6|0;teal green|0.636|-0.125|0.045|4|0;slate grey|0.499|-0.011|-0.016|12|0;lighter green|0.886|-0.178|0.142|4|0;electric green|0.861|-0.228|0.177|4|0;dusty blue|0.604|-0.031|-0.070|6|0;golden yellow|0.853|0.008|0.171|3|0;bright yellow|0.964|-0.069|0.198|3|0;light lavender|0.864|0.048|-0.067|7|0;umber|0.580|0.065|0.118|2|0;dark peach|0.691|0.099|0.082|1|0;jungle green|0.532|-0.122|0.063|4|0;eggshell|0.989|-0.017|0.053|11|0;denim|0.489|-0.027|-0.076|6|0;yellow brown|0.679|-0.005|0.139|3|0;dull purple|0.523|0.068|-0.037|7|0;chocolate brown|0.270|0.047|0.055|2|0;wine red|0.372|0.140|0.042|0|0;neon blue|0.816|-0.117|-0.086|6|0;dirty green|0.556|-0.062|0.093|4|0;light tan|0.944|-0.012|0.084|3|0;ice blue|0.972|-0.040|-0.010|6|0;cadet blue|0.545|-0.027|-0.063|6|0;dark mauve|0.493|0.084|-0.005|7|0;very light blue|0.971|-0.041|-0.012|6|0;grey purple|0.566|0.037|-0.038|7|0;pastel pink|0.858|0.083|0.001|8|0;very light green|0.952|-0.071|0.068|4|0;dark sky blue|0.640|-0.041|-0.143|6|0;evergreen|0.352|-0.074|0.030|4|0;dull pink|0.708|0.100|0.002|8|0;aubergine|0.254|0.090|-0.040|7|0;mahogany|0.258|0.091|0.052|0|0;reddish orange|0.652|0.181|0.123|1|0;deep green|0.403|-0.105|0.076|4|0;purple pink|0.658|0.219|-0.125|8|0;dusty pink|0.713|0.091|0.018|8|0;faded green|0.709|-0.083|0.065|4|0;camo green|0.476|-0.051|0.077|4|0;pinky purple|0.624|0.180|-0.098|7|0;pink purple|0.662|0.202|-0.125|7|0;brownish red|0.481|0.120|0.076|0|0;dark rose|0.552|0.139|0.028|8|0;mud|0.485|-0.000|0.092|2|0;brownish|0.578|0.048|0.049|2|0;emerald green|0.565|-0.147|0.106|4|0;pale brown|0.677|0.022|0.058|2|0;dull blue|0.547|-0.031|-0.072|6|0;burnt umber|0.503|0.095|0.097|2|0;medium green|0.661|-0.144|0.099|4|0;clay|0.603|0.081|0.067|1|0;light aqua|0.922|-0.116|0.018|5|0;light olive green|0.761|-0.068|0.109|4|0;brownish orange|0.648|0.070|0.120|1|0;dark aqua|0.473|-0.076|-0.023|5|0;purplish pink|0.644|0.160|-0.059|8|0;dark salmon|0.603|0.128|0.062|8|0;greenish grey|0.723|-0.039|0.037|12|0;jade|0.647|-0.128|0.042|4|0;ugly green|0.631|-0.082|0.129|4|0;dark beige|0.674|0.008|0.072|3|0;emerald|0.617|-0.147|0.085|4|0;pale red|0.620|0.151|0.074|0|0;light magenta|0.739|0.214|-0.131|8|0;sky|0.810|-0.051|-0.088|6|0;light cyan|0.946|-0.078|-0.018|5|0;yellow orange|0.809|0.037|0.165|1|0;reddish purple|0.431|0.170|-0.008|7|0;reddish pink|0.647|0.226|0.074|8|0;orchid|0.680|0.124|-0.075|7|0;dirty yellow|0.804|-0.049|0.164|3|0;orange red|0.654|0.193|0.123|0|0;deep red|0.432|0.153|0.087|0|0;orange brown|0.597|0.080|0.121|1|0;cobalt blue|0.336|-0.021|-0.222|6|0;neon pink|0.652|0.267|-0.027|8|0;rose pink|0.751|0.135|0.024|8|0;greyish purple|0.582|0.040|-0.038|7|0;raspberry|0.485|0.192|0.028|8|0;aqua green|0.803|-0.170|0.065|4|0;salmon pink|0.735|0.149|0.058|8|0;tangerine|0.764|0.083|0.154|1|0;brownish green|0.518|-0.042|0.103|4|0;red brown|0.436|0.107|0.076|0|0;greenish brown|0.486|-0.022|0.092|4|0;pumpkin|0.677|0.092|0.137|1|0;pine green|0.353|-0.079|0.048|4|0;charcoal|0.336|-0.006|0.000|12|0;baby pink|0.853|0.088|-0.003|8|0;cornflower|0.628|0.015|-0.186|6|0;blue violet|0.473|0.073|-0.263|7|0;chocolate|0.269|0.037|0.052|2|0;greyish green|0.687|-0.056|0.044|4|0;scarlet|0.505|0.184|0.090|0|0;green yellow|0.929|-0.125|0.185|3|0;dark olive|0.345|-0.035|0.070|4|0;sienna|0.545|0.082|0.098|1|0;pastel purple|0.779|0.077|-0.115|7|0;terracotta|0.622|0.104|0.089|1|0;aqua blue|0.805|-0.125|-0.058|6|0;sage green|0.721|-0.070|0.064|4|0;blood red|0.427|0.153|0.085|0|0;deep pink|0.543|0.218|0.013|8|0;grass|0.668|-0.129|0.122|4|0;moss|0.641|-0.066|0.074|4|0;pastel blue|0.806|-0.008|-0.095|6|0;bluish green|0.643|-0.130|0.041|4|0;green blue|0.685|-0.134|0.026|6|0;dark tan|0.651|0.020|0.091|2|0;greenish blue|0.576|-0.095|-0.019|6|0;pale orange|0.801|0.069|0.124|1|0;forrest green|0.341|-0.078|0.066|4|0;dark lavender|0.562|0.054|-0.061|7|0;dark violet|0.238|0.086|-0.073|7|0;purple blue|0.501|0.069|-0.244|6|0;dark cyan|0.569|-0.091|-0.027|5|0;olive drab|0.545|-0.038|0.084|4|0;pinkish|0.654|0.132|0.022|8|0;cobalt|0.414|-0.021|-0.125|6|0;neon purple|0.608|0.199|-0.221|7|0;light turquoise|0.887|-0.120|0.023|5|0;apple green|0.764|-0.145|0.149|4|0;dull green|0.673|-0.081|0.074|4|0;wine|0.388|0.156|0.004|0|0;powder blue|0.852|-0.017|-0.067|6|0;off white|0.993|-0.010|0.034|11|0;electric blue|0.529|-0.031|-0.260|6|0;dark turquoise|0.430|-0.071|-0.015|5|0;blue purple|0.459|0.062|-0.221|7|0;azure|0.664|-0.069|-0.153|6|0;bright red|0.628|0.226|0.123|0|0;pinkish red|0.609|0.228|0.078|0|0;cornflower blue|0.575|-0.005|-0.161|6|0;light olive|0.771|-0.056|0.099|4|0;grape|0.415|0.091|-0.042|7|0;greyish blue|0.588|-0.026|-0.052|6|0;purplish blue|0.503|0.065|-0.272|6|0;yellowish green|0.835|-0.111|0.169|10|0;greenish yellow|0.927|-0.121|0.191|3|0;medium blue|0.538|-0.038|-0.132|6|0;dusty rose|0.641|0.094|0.024|8|0;light violet|0.824|0.061|-0.085|7|0;midnight blue|0.151|-0.004|-0.101|6|0;bluish purple|0.525|0.080|-0.225|7|0;red orange|0.649|0.194|0.129|1|0;dark magenta|0.439|0.179|-0.014|8|0;greenish|0.642|-0.116|0.056|4|0;ocean blue|0.517|-0.063|-0.087|6|0;coral|0.682|0.177|0.091|8|0;cream|0.985|-0.024|0.074|11|0;reddish brown|0.410|0.096|0.077|0|0;burnt sienna|0.542|0.099|0.105|1|0;brick|0.484|0.122|0.077|0|0;sage|0.707|-0.066|0.065|4|0;grey green|0.652|-0.055|0.044|4|0;white|1.000|0.000|0.000|11|0;robin's egg blue|0.900|-0.077|-0.036|6|0;moss green|0.590|-0.077|0.092|4|0;steel blue|0.575|-0.026|-0.054|6|0;eggplant|0.246|0.083|-0.046|7|0;light yellow|0.972|-0.049|0.146|3|0;leaf green|0.659|-0.132|0.135|4|0;light grey|0.890|-0.006|0.006|12|0;pinkish purple|0.651|0.200|-0.127|7|0;sea blue|0.521|-0.068|-0.072|6|0;pale purple|0.714|0.068|-0.080|7|0;slate blue|0.573|-0.024|-0.053|6|0;blue grey|0.571|-0.023|-0.036|12|0;hunter green|0.325|-0.079|0.061|4|0;fuchsia|0.654|0.259|-0.131|8|0;crimson|0.403|0.147|0.072|0|0;pale yellow|0.976|-0.047|0.138|3|0;ochre|0.680|0.012|0.138|1|0;mustard yellow|0.792|-0.032|0.161|3|0;light red|0.667|0.201|0.090|0|0;cerulean|0.596|-0.063|-0.135|6|0;pale pink|0.900|0.056|0.000|8|0;deep blue|0.255|-0.013|-0.171|6|0;rust|0.503|0.116|0.098|1|0;light teal|0.855|-0.093|0.023|5|0;slate|0.495|-0.017|-0.027|12|0;goldenrod|0.841|0.008|0.171|3|0;dark yellow|0.780|-0.018|0.158|3|0;dark grey|0.336|-0.001|-0.000|12|0;army green|0.448|-0.053|0.081|4|0;grey blue|0.622|-0.024|-0.046|6|0;seafoam|0.892|-0.138|0.066|5|0;puce|0.621|0.028|0.072|2|0;spring green|0.902|-0.130|0.134|4|0;dark orange|0.580|0.118|0.117|1|0;sand|0.841|-0.007|0.107|3|0;pastel green|0.926|-0.114|0.097|4|0;mint|0.918|-0.119|0.072|4|0;light orange|0.802|0.057|0.136|1|0;bright pink|0.661|0.271|-0.060|8|0;chartreuse|0.908|-0.127|0.186|10|0;deep purple|0.242|0.088|-0.071|7|0;dark brown|0.254|0.023|0.049|2|0;taupe|0.724|0.012|0.051|3|0;pea green|0.695|-0.084|0.139|4|0;kelly green|0.644|-0.166|0.116|4|0;seafoam green|0.890|-0.143|0.068|4|0;blue green|0.533|-0.093|0.003|4|0;khaki|0.713|-0.024|0.086|2|0;burgundy|0.315|0.124|0.021|0|0;dark teal|0.381|-0.062|-0.018|5|0;brick red|0.418|0.135|0.083|0|0;royal purple|0.319|0.103|-0.125|7|0;plum|0.319|0.113|-0.032|7|0;mint green|0.910|-0.140|0.090|4|0;gold|0.782|-0.008|0.158|3|0;baby blue|0.839|-0.028|-0.077|6|0;yellow green|0.915|-0.128|0.180|10|0;bright purple|0.607|0.206|-0.220|7|0;dark red|0.385|0.138|0.077|0|0;pale blue|0.965|-0.045|-0.013|6|0;grass green|0.610|-0.138|0.124|4|0;navy|0.211|-0.014|-0.083|6|0;aquamarine|0.787|-0.149|0.016|5|0;burnt orange|0.566|0.115|0.114|1|0;neon green|0.867|-0.232|0.178|4|0;bright blue|0.559|-0.038|-0.235|6|0;rose|0.633|0.136|0.026|8|0;light pink|0.904|0.055|-0.002|8|0;mustard|0.767|-0.023|0.157|3|0;indigo|0.316|0.061|-0.166|7|0;lime|0.912|-0.152|0.177|10|0;sea green|0.883|-0.171|0.078|4|0;periwinkle|0.675|0.046|-0.172|6|0;dark pink|0.583|0.175|0.018|8|0;olive green|0.545|-0.064|0.111|4|0;peach|0.822|0.068|0.093|1|0;pale green|0.939|-0.081|0.073|4|0;light brown|0.635|0.032|0.079|2|0;hot pink|0.650|0.264|-0.007|8|0;black|0.000|0.000|0.000|13|0;lilac|0.785|0.078|-0.108|7|0;navy blue|0.210|-0.013|-0.101|6|0;royal blue|0.337|-0.020|-0.228|6|0;beige|0.885|-0.008|0.068|3|0;salmon|0.731|0.147|0.077|8|0;olive|0.539|-0.047|0.106|4|0;maroon|0.323|0.126|0.028|0|0;bright green|0.867|-0.233|0.179|4|0;dark purple|0.245|0.081|-0.067|7|0;mauve|0.617|0.080|0.004|7|0;forest green|0.347|-0.087|0.064|4|0;aqua|0.839|-0.153|0.007|5|0;cyan|0.905|-0.149|-0.039|5|0;tan|0.776|0.007|0.093|3|0;dark blue|0.217|-0.015|-0.144|6|0;lavender|0.768|0.071|-0.095|7|0;turquoise|0.730|-0.131|-0.002|5|0;dark green|0.286|-0.075|0.059|4|0;violet|0.546|0.163|-0.222|7|0;light purple|0.697|0.118|-0.149|7|0;lime green|0.892|-0.182|0.184|10|0;grey|0.666|-0.005|0.005|12|0;sky blue|0.772|-0.044|-0.110|6|0;yellow|0.968|-0.070|0.196|3|0;magenta|0.534|0.219|-0.027|8|0;light green|0.894|-0.142|0.122|4|0;orange|0.704|0.124|0.142|1|0;teal|0.596|-0.105|-0.007|5|0;light blue|0.833|-0.042|-0.076|6|0;red|0.579|0.207|0.116|0|0;brown|0.386|0.042|0.079|2|0;pink|0.763|0.165|-0.028|8|0;blue|0.472|-0.028|-0.239|6|0;green|0.658|-0.171|0.130|4|0;purple|0.452|0.141|-0.135|7|0;vivid pink|0.844|0.084|0.022|8|1;strong pink|0.754|0.102|0.028|8|1;deep pink|0.685|0.137|0.041|8|1;light pink|0.884|0.048|0.018|8|1;moderate pink|0.775|0.064|0.023|8|1;dark pink|0.666|0.076|0.025|8|1;pale pink|0.897|0.019|0.007|8|1;grayish pink|0.769|0.024|0.009|8|1;pinkish white|0.921|0.007|0.005|11|1;pinkish gray|0.785|0.011|0.008|12|1;vivid red|0.507|0.192|0.067|0|1;strong red|0.548|0.151|0.053|0|1;deep red|0.406|0.133|0.041|0|1;very deep red|0.311|0.112|0.020|0|1;moderate red|0.543|0.115|0.041|0|1;dark red|0.401|0.092|0.025|0|1;very dark red|0.272|0.066|-0.005|0|1;light grayish red|0.661|0.041|0.020|0|1;grayish red|0.534|0.063|0.022|0|1;dark grayish red|0.386|0.032|0.007|0|1;blackish red|0.254|0.027|0.002|0|1;reddish gray|0.615|0.015|0.008|12|1;dark reddish gray|0.443|0.015|0.006|12|1;reddish black|0.254|0.013|0.000|13|1;vivid yellowish pink|0.842|0.073|0.050|8|1;strong yellowish pink|0.765|0.106|0.074|8|1;deep yellowish pink|0.668|0.144|0.067|8|1;light yellowish pink|0.858|0.054|0.018|8|1;moderate yellowish pink|0.773|0.058|0.015|8|1;dark yellowish pink|0.674|0.072|0.040|8|1;pale yellowish pink|0.888|0.018|0.028|8|1;grayish yellowish pink|0.767|0.025|0.023|8|1;brownish pink|0.758|0.017|0.033|8|1;vivid reddish orange|0.634|0.142|0.116|1|1;strong reddish orange|0.634|0.128|0.098|1|1;deep reddish orange|0.503|0.128|0.087|1|1;moderate reddish orange|0.636|0.100|0.077|1|1;dark reddish orange|0.506|0.099|0.069|1|1;grayish reddish orange|0.621|0.067|0.056|1|1;strong reddish brown|0.430|0.106|0.073|0|1;deep reddish brown|0.292|0.099|0.046|0|1;light reddish brown|0.626|0.046|0.038|0|1;moderate reddish brown|0.448|0.065|0.038|0|1;dark reddish brown|0.277|0.049|0.017|0|1;light grayish reddish brown|0.615|0.023|0.026|0|1;grayish reddish brown|0.444|0.033|0.019|0|1;dark grayish reddish brown|0.330|0.025|0.012|0|1;vivid orange|0.722|0.092|0.147|1|1;brilliant orange|0.764|0.089|0.131|1|1;strong orange|0.720|0.087|0.132|1|1;deep orange|0.599|0.081|0.115|1|1;light orange|0.826|0.055|0.091|1|1;moderate orange|0.716|0.062|0.096|1|1;brownish orange|0.587|0.064|0.089|1|1;strong brown|0.457|0.057|0.078|2|1;deep brown|0.363|0.040|0.054|2|1;light brown|0.618|0.038|0.059|2|1;moderate brown|0.454|0.032|0.047|2|1;dark brown|0.299|0.035|0.035|2|1;light grayish brown|0.615|0.018|0.030|2|1;grayish brown|0.450|0.018|0.022|2|1;dark grayish brown|0.328|0.014|0.015|2|1;light brownish gray|0.615|0.010|0.017|12|1;brownish gray|0.442|0.013|0.006|12|1;brownish black|0.251|0.010|0.011|13|1;vivid orange yellow|0.784|0.045|0.160|3|1;brilliant orange yellow|0.847|0.026|0.143|3|1;strong orange yellow|0.764|0.039|0.148|3|1;deep orange yellow|0.670|0.041|0.136|3|1;light orange yellow|0.864|0.026|0.105|3|1;moderate orange yellow|0.771|0.035|0.115|3|1;dark orange yellow|0.670|0.031|0.108|3|1;pale orange yellow|0.895|0.019|0.073|3|1;strong yellowish brown|0.550|0.035|0.105|3|1;deep yellowish brown|0.418|0.026|0.061|3|1;light yellowish brown|0.711|0.025|0.074|3|1;moderate yellowish brown|0.530|0.019|0.057|3|1;dark yellowish brown|0.351|0.019|0.041|3|1;light grayish yellowish brown|0.699|0.011|0.040|3|1;grayish yellowish brown|0.545|0.012|0.033|3|1;dark grayish yellowish brown|0.366|0.011|0.021|3|1;vivid yellow|0.836|-0.002|0.171|3|1;brilliant yellow|0.892|-0.012|0.145|3|1;strong yellow|0.767|-0.003|0.139|3|1;deep yellow|0.657|-0.002|0.130|3|1;light yellow|0.902|-0.010|0.119|3|1;moderate yellow|0.758|-0.002|0.106|3|1;dark yellow|0.665|-0.001|0.101|3|1;pale yellow|0.919|-0.008|0.076|3|1;grayish yellow|0.765|-0.003|0.069|3|1;dark grayish yellow|0.655|0.001|0.068|3|1;yellowish white|0.936|-0.001|0.027|11|1;yellowish gray|0.783|-0.000|0.027|12|1;light olive brown|0.571|0.012|0.109|4|1;moderate olive brown|0.460|0.007|0.077|4|1;dark olive brown|0.319|0.006|0.030|4|1;vivid greenish yellow|0.847|-0.052|0.174|3|1;brilliant greenish yellow|0.897|-0.049|0.157|3|1;strong greenish yellow|0.762|-0.042|0.143|3|1;deep greenish yellow|0.652|-0.039|0.134|3|1;light greenish yellow|0.906|-0.038|0.126|3|1;moderate greenish yellow|0.755|-0.031|0.109|3|1;dark greenish yellow|0.652|-0.031|0.104|3|1;pale greenish yellow|0.917|-0.024|0.084|3|1;grayish greenish yellow|0.763|-0.019|0.072|3|1;light olive|0.585|-0.021|0.091|4|1;moderate olive|0.474|-0.016|0.081|4|1;dark olive|0.355|-0.010|0.043|4|1;light grayish olive|0.619|-0.008|0.045|4|1;grayish olive|0.457|-0.007|0.033|4|1;dark grayish olive|0.326|-0.006|0.023|4|1;light olive gray|0.621|-0.004|0.025|12|1;olive gray|0.449|-0.002|0.014|12|1;olive black|0.259|-0.002|0.013|13|1;vivid yellow green|0.720|-0.101|0.148|10|1;brilliant yellow green|0.841|-0.081|0.137|10|1;strong yellow green|0.656|-0.081|0.118|10|1;deep yellow green|0.500|-0.079|0.080|10|1;light yellow green|0.861|-0.053|0.095|10|1;moderate yellow green|0.658|-0.045|0.076|10|1;pale yellow green|0.890|-0.021|0.049|10|1;grayish yellow green|0.662|-0.022|0.038|10|1;strong olive green|0.400|-0.050|0.082|4|1;deep olive green|0.284|-0.039|0.058|4|1;moderate olive green|0.449|-0.049|0.071|4|1;dark olive green|0.337|-0.034|0.030|4|1;grayish olive green|0.446|-0.016|0.026|4|1;dark grayish olive green|0.324|-0.012|0.016|4|1;vivid yellowish green see #115|0.638|-0.143|0.088|10|1;brilliant yellowish green|0.794|-0.113|0.086|10|1;strong yellowish green|0.598|-0.110|0.077|10|1;deep yellowish green|0.434|-0.102|0.056|10|1;very deep yellowish green|0.275|-0.062|0.029|10|1;very light yellowish green|0.875|-0.069|0.055|10|1;light yellowish green|0.775|-0.072|0.052|10|1;moderate yellowish green|0.617|-0.065|0.046|10|1;dark yellowish green|0.441|-0.062|0.039|10|1;very dark yellowish green|0.302|-0.048|0.026|10|1;vivid green|0.552|-0.119|0.046|4|1;brilliant green|0.693|-0.119|0.032|4|1;strong green|0.511|-0.102|0.024|4|1;deep green|0.396|-0.079|0.018|4|1;very light green|0.807|-0.078|0.022|4|1;light green|0.689|-0.077|0.022|4|1;moderate green|0.525|-0.072|0.017|4|1;dark green|0.382|-0.059|0.010|4|1;very dark green|0.306|-0.034|0.005|4|1;very pale green|0.898|-0.037|0.010|4|1;pale green|0.695|-0.028|0.007|4|1;grayish green|0.531|-0.025|0.004|4|1;dark grayish green|0.397|-0.023|0.000|4|1;blackish green|0.250|-0.015|0.001|4|1;greenish white|0.934|-0.016|0.002|11|1;light greenish gray|0.790|-0.016|0.008|12|1;greenish gray|0.619|-0.016|0.003|12|1;dark greenish gray|0.448|-0.012|-0.000|12|1;greenish black|0.250|-0.008|0.001|13|1;vivid bluish green|0.565|-0.097|-0.016|4|1;brilliant bluish green|0.650|-0.117|-0.002|4|1;strong bluish green|0.522|-0.090|-0.014|4|1;deep bluish green|0.348|-0.060|-0.007|4|1;very light bluish green|0.849|-0.074|-0.002|4|1;light bluish green|0.698|-0.073|-0.007|4|1;moderate bluish green|0.526|-0.070|-0.011|4|1;dark bluish green|0.373|-0.063|-0.013|4|1;very dark bluish green|0.258|-0.043|-0.009|4|1;vivid greenish blue|0.570|-0.080|-0.066|6|1;brilliant greenish blue|0.648|-0.086|-0.066|6|1;strong greenish blue|0.527|-0.073|-0.062|6|1;deep greenish blue|0.570|-0.070|-0.046|6|1;very light greenish blue|0.828|-0.048|-0.030|6|1;light greenish blue|0.700|-0.059|-0.044|6|1;moderate greenish blue|0.529|-0.054|-0.046|6|1;dark greenish blue|0.374|-0.053|-0.041|6|1;very dark greenish blue|0.279|-0.038|-0.035|6|1;vivid blue, ultramarine|0.655|-0.092|-0.075|6|1;brilliant blue, celestial blue|0.652|-0.052|-0.102|6|1;strong blue, bright blue|0.497|-0.052|-0.115|6|1;deep blue, royal blue|0.363|-0.039|-0.083|6|1;very light blue, baby blue|0.823|-0.027|-0.065|6|1;light blue, sky blue|0.695|-0.036|-0.073|6|1;moderate blue, cerulean blue|0.517|-0.027|-0.076|6|1;dark blue, navy blue|0.297|-0.033|-0.064|6|1;very pale blue, cloud blue|0.858|-0.018|-0.031|6|1;pale blue, alice blue|0.706|-0.014|-0.024|6|1;grayish blue, slate blue|0.506|-0.017|-0.031|6|1;dark grayish blue|0.381|-0.014|-0.022|6|1;blackish blue|0.273|-0.007|-0.017|6|1;bluish white|0.935|0.002|-0.005|11|1;light bluish gray|0.790|-0.007|-0.008|12|1;bluish gray|0.620|-0.005|-0.008|12|1;dark bluish gray|0.456|-0.006|-0.012|12|1;bluish black|0.258|-0.004|-0.009|13|1;vivid purplish blue|0.337|0.027|-0.134|6|1;brilliant purplish blue|0.592|0.007|-0.097|6|1;strong purplish blue|0.500|0.016|-0.120|6|1;deep purplish blue|0.296|0.019|-0.089|6|1;very light purplish blue|0.801|0.004|-0.055|6|1;light purplish blue|0.666|0.006|-0.069|6|1;moderate purplish blue|0.453|0.013|-0.075|6|1;dark purplish blue|0.276|0.012|-0.050|6|1;very pale purplish blue|0.834|0.001|-0.036|6|1;pale purplish blue|0.664|0.003|-0.039|6|1;grayish purplish blue|0.442|0.005|-0.046|6|1;vivid violet|0.596|0.080|-0.130|7|1;brilliant violet|0.594|0.036|-0.098|7|1;strong violet|0.477|0.045|-0.106|7|1;deep violet|0.274|0.053|-0.080|7|1;very light violet|0.882|0.029|-0.058|7|1;light violet|0.635|0.030|-0.072|7|1;moderate violet|0.464|0.041|-0.072|7|1;dark violet|0.280|0.032|-0.048|7|1;very pale violet|0.826|0.011|-0.035|7|1;pale violet|0.668|0.017|-0.036|7|1;grayish violet|0.437|0.023|-0.042|7|1;vivid purple|0.555|0.122|-0.106|7|1;brilliant purple|0.765|0.091|-0.083|7|1;strong purple|0.530|0.082|-0.069|7|1;deep purple|0.396|0.085|-0.072|7|1;very deep purple|0.298|0.070|-0.065|7|1;very light purple|0.822|0.042|-0.035|7|1;light purple|0.714|0.053|-0.048|7|1;moderate purple|0.545|0.064|-0.053|7|1;dark purple|0.398|0.047|-0.040|7|1;very dark purple|0.257|0.045|-0.036|7|1;very pale purple|0.854|0.020|-0.021|7|1;pale purple|0.701|0.027|-0.017|7|1;grayish purple|0.539|0.027|-0.017|7|1;dark grayish purple|0.393|0.027|-0.014|7|1;blackish purple|0.253|0.022|-0.014|7|1;purplish white|0.920|0.006|-0.001|11|1;light purplish gray|0.792|0.008|-0.003|12|1;purplish gray|0.623|0.009|-0.004|12|1;dark purplish gray|0.459|0.013|-0.006|12|1;purplish black|0.252|0.006|-0.004|13|1;vivid reddish purple|0.426|0.172|-0.076|7|1;strong reddish purple|0.543|0.118|-0.046|7|1;deep reddish purple|0.406|0.113|-0.052|7|1;very deep reddish purple|0.330|0.098|-0.052|7|1;light reddish purple|0.674|0.073|-0.029|7|1;moderate reddish purple|0.546|0.081|-0.034|7|1;dark reddish purple|0.397|0.059|-0.026|7|1;very dark reddish purple|0.258|0.054|-0.030|7|1;pale reddish purple|0.669|0.045|-0.016|7|1;grayish reddish purple|0.541|0.047|-0.018|7|1;brilliant purplish pink|0.885|0.065|0.002|8|1;strong purplish pink|0.748|0.111|-0.003|8|1;deep purplish pink|0.685|0.148|-0.017|8|1;light purplish pink|0.843|0.063|-0.003|8|1;moderate purplish pink|0.743|0.080|-0.007|8|1;dark purplish pink|0.668|0.086|0.002|8|1;pale purplish pink|0.872|0.034|-0.005|8|1;grayish purplish pink|0.754|0.037|-0.004|8|1;vivid purplish red|0.596|0.175|0.007|0|1;strong purplish red|0.548|0.149|0.002|0|1;deep purplish red|0.390|0.137|-0.014|0|1;very deep purplish red|0.313|0.103|-0.024|0|1;moderate purplish red|0.551|0.118|0.001|0|1;dark purplish red|0.392|0.082|-0.006|0|1;very dark purplish red|0.258|0.062|-0.020|0|1;light grayish purplish red|0.662|0.051|0.005|0|1;grayish purplish red|0.544|0.068|0.002|0|1;white|0.964|-0.001|-0.002|11|1;light gray|0.783|-0.000|0.004|12|1;medium gray|0.613|-0.001|0.003|12|1;dark gray|0.450|0.000|0.000|12|1;black|0.252|0.000|0.000|13|1";
+// ─── Colour groups from your own words ───────────────────────────────────────
+// In "words" mode a colour's group is one of the words you list (White,
+// Off-white, Light grey, Taupe, Olive, Blue…), with no angle, chroma or
+// lightness splits to set. Each word claims the colour names that use it —
+// about 1,200 names from the xkcd colour survey and the ISCC-NBS dictionary,
+// each with the colour people gave it — and then the part of the colour solid
+// nearest those names (in OkLab; see semanticTermAt for the rule). A word claims a name when it is the name's
+// head ("light grey" claims "light grey", "grey" claims "bluish grey"), else
+// when it appears in it ("olive" claims "olive brown" if there is no Brown),
+// else, for a basic colour word, when the name belongs to that basic colour
+// ("green" claims "sage" unless Sage is listed). Colours you add as examples
+// of a word count as names too.
 //
-// settings.familyMode: "semantic" (default) or "angles" (the old wedges).
-const familyModeOf = (s) => ((s && s.familyMode) === "angles" ? "angles" : "semantic");
-const SEMANTIC_K = 5;
+// settings.familyMode: "words" (default) or "angles" (hue wedges with
+// lightness and chroma splits, as before).
+const familyModeOf = (s) => ((s && s.familyMode) === "angles" ? "angles" : "words");
+const DEFAULT_COLOR_WORDS = [
+  "White", "Off-white", "Cream", "Beige", "Light grey", "Grey", "Dark grey", "Black", "Taupe", "Brown",
+  "Tan", "Red", "Burgundy", "Pink", "Orange", "Rust", "Yellow", "Mustard", "Olive", "Green", "Sage", "Teal",
+  "Blue", "Navy", "Purple", "Lavender",
+].map((name, i) => ({ id: `w${i + 1}`, name }));
+const colorWordsOf = (s) => (s && Array.isArray(s.terms) ? s.terms : DEFAULT_COLOR_WORDS);
+
 // The hue region whose centre is nearest an angle (ties to the lower angle).
 const hueByAngle = (h, hues) => {
   let best = null, bestD = Infinity;
@@ -9285,111 +9350,337 @@ const hueByAngle = (h, hues) => {
   });
   return best;
 };
+// angles mode: the hue region of a chromatic colour
+const hueRegionOf = (l, c, h, s) => hueByAngle(h, (s && s.hues) || defaultGroupSettings.hues);
+
+// ── words ──
+const SEMANTIC_BASIC = {
+  red: "red", orange: "orange", brown: "brown", yellow: "yellow", green: "green", cyan: "cyan", aqua: "cyan",
+  blue: "blue", purple: "purple", violet: "purple", pink: "pink", white: "white", grey: "grey", black: "black",
+  lime: "lime", chartreuse: "lime",
+};
+const SEMANTIC_FAMILY_NAME = {
+  red: "Red", orange: "Orange", brown: "Brown", yellow: "Yellow", green: "Green", lime: "Green", cyan: "Cyan",
+  blue: "Blue", purple: "Purple", pink: "Pink", white: "Neutral", grey: "Neutral", black: "Neutral",
+};
+const SEMANTIC_FAMILY_ORDER = ["Neutral", "Red", "Pink", "Orange", "Brown", "Yellow", "Green", "Cyan", "Blue", "Purple"];
 const SEMANTIC_SAMPLES = SEMANTIC_SAMPLES_RAW.split(";").map((r) => {
   const p = r.split("|");
-  return { name: p[0], L: +p[1], a: +p[2], b: +p[3], term: SEMANTIC_TERMS[+p[4]] };
+  return { name: p[0], L: +p[1], a: +p[2], b: +p[3], cat: SEMANTIC_TERMS[+p[4]], src: +p[5] || 0 };
 });
-// Which family each hue word means, by the families' names first.
-const SEMANTIC_SYNONYMS = {
-  red: ["red", "crimson", "scarlet"],
-  orange: ["orange"],
-  brown: ["brown", "tan", "orange"],
-  yellow: ["yellow", "gold"],
-  green: ["green", "olive"],
-  lime: ["chartreuse", "lime", "green"],
-  cyan: ["cyan", "teal", "turquoise", "aqua"],
-  blue: ["blue", "navy"],
-  purple: ["purple", "violet", "lavender", "magenta"],
-  pink: ["pink", "rose", "fuchsia", "magenta"],
-};
-const semanticTermFamilies = (hues) => {
-  const out = {};
-  const lower = (hues || []).map((h) => String(h.name || "").trim().toLowerCase());
-  Object.keys(SEMANTIC_SYNONYMS).forEach((term) => {
-    for (const syn of SEMANTIC_SYNONYMS[term]) {
-      const i = lower.findIndex((n) => n === syn || n.split(/\s+/).includes(syn));
-      if (i >= 0) { out[term] = hues[i]; return; }
+const SEMANTIC_VOCAB = (() => {
+  const v = new Set(Object.keys(SEMANTIC_BASIC).concat(["light", "dark", "pale", "deep", "bright", "dull", "dusty", "off"]));
+  SEMANTIC_SAMPLES.forEach((s) => s.name.replace(/gray/g, "grey").split(/[\s/'\-_,]+/).forEach((w) => w.length > 2 && v.add(w)));
+  return v;
+})();
+const semanticStem = (w) => {
+  if (SEMANTIC_VOCAB.has(w)) return w;
+  for (const suf of ["ish", "y"]) {
+    if (w.endsWith(suf) && w.length > suf.length + 2) {
+      const b = w.slice(0, -suf.length);
+      const cands = [b, b + "e", b.length > 2 && b[b.length - 1] === b[b.length - 2] ? b.slice(0, -1) : null];
+      for (const c of cands) if (c && SEMANTIC_VOCAB.has(c) && (Object.prototype.hasOwnProperty.call(SEMANTIC_BASIC, c) || c.length > 3)) return c;
     }
-    // no family by that name: the one nearest the word's typical hue
-    let sa = 0, sb = 0;
-    SEMANTIC_SAMPLES.forEach((s) => { if (s.term === term) { sa += s.a; sb += s.b; } });
-    out[term] = hueByAngle(((Math.atan2(sb, sa) * 180) / Math.PI + 360) % 360, hues);
+  }
+  return w;
+};
+// "Bluey-grey" → ["blue", "grey"]; "offwhite" → ["off", "white"]
+const semanticWords = (name) => {
+  const out = [];
+  String(name || "").toLowerCase().replace(/gray/g, "grey").split(/[\s/'\-_,.]+/).forEach((w) => {
+    if (!w) return;
+    if (!SEMANTIC_VOCAB.has(w) && semanticStem(w) === w) {
+      for (let i = 3; i <= w.length - 3; i++) {
+        const a = semanticStem(w.slice(0, i)), b = semanticStem(w.slice(i));
+        if (SEMANTIC_VOCAB.has(a) && SEMANTIC_VOCAB.has(b)) { out.push(a, b); return; }
+      }
+    }
+    out.push(semanticStem(w));
   });
   return out;
 };
+SEMANTIC_SAMPLES.forEach((s) => { s.words = semanticWords(s.name); });
 
-// The labelled survey colours for the current hue families, as flat arrays.
+// Trade words the survey has (almost) no names for, and the names that mean them.
+const SEMANTIC_ALIASES = {
+  "off white": ["off white", "ivory", "eggshell", "ecru", "bone", "yellowish white", "pinkish white", "greenish white", "yellowish grey"],
+  "greige": ["brownish grey", "brown grey", "greyish brown", "light brownish grey", "light greyish brown", "yellowish grey", "light greyish yellowish brown"],
+};
+SEMANTIC_SAMPLES.forEach((s) => { s.key = s.words.join(" "); });
+Object.keys(SEMANTIC_ALIASES).forEach((k) => { SEMANTIC_ALIASES[k] = SEMANTIC_ALIASES[k].map((n) => semanticWords(n).join(" ")); });
+// How strongly a word (its stems) claims a name: an alias of it > head >
+// anywhere > basic colour.
+const semanticClaim = (tw, s) => {
+  const w = s.words, m = tw.length, n = w.length;
+  if (!m) return 0;
+  const al = SEMANTIC_ALIASES[tw.join(" ")];
+  if (al && al.includes(s.key)) return 115;
+  if (m <= n) {
+    let head = true;
+    for (let j = 0; j < m; j++) if (w[n - m + j] !== tw[j]) { head = false; break; }
+    if (head) return 100 + 10 * m;
+    for (let i = 0; i + m <= n; i++) {
+      let ok = true;
+      for (let j = 0; j < m; j++) if (w[i + j] !== tw[j]) { ok = false; break; }
+      if (ok) return 50 + 10 * m;
+    }
+  }
+  if (m === 1) {
+    // by basic colour: a hue word for its hue's names ("green" for sage);
+    // grey, white and black for theirs (silver, ivory) count for less
+    const basic = SEMANTIC_BASIC[tw[0]];
+    if (basic && basic === s.cat) return basic === "white" || basic === "grey" || basic === "black" ? 5 : 10;
+    if (basic === "green" && s.cat === "lime") return 9; // no Lime word: lime names are green
+  }
+  return 0;
+};
+
+// The index for the current words: which names each word claims, as flat
+// arrays for the nearest-name search.
 let colorFamilyIndex = null;
 const buildColorFamilyIndex = (settings) => {
-  const s = settings || defaultGroupSettings, hues = s.hues || [];
-  const fam = semanticTermFamilies(hues);
+  const s = settings || defaultGroupSettings;
+  if (familyModeOf(s) !== "words") return { mode: "angles", n: 0, pts: [], terms: [] };
+  const words = colorWordsOf(s).filter((t) => String(t.name || "").trim());
+  const tws = words.map((t) => semanticWords(t.name));
   const pts = [];
   SEMANTIC_SAMPLES.forEach((smp) => {
-    const hue = smp.term === "angle" ? hueByAngle(((Math.atan2(smp.b, smp.a) * 180) / Math.PI + 360) % 360, hues) : fam[smp.term];
-    if (!hue) return;
-    const C = Math.hypot(smp.a, smp.b), H = ((Math.atan2(smp.b, smp.a) * 180) / Math.PI + 360) % 360;
-    pts.push({ name: smp.name, L: smp.L, C, H, a: smp.a, b: smp.b, hueId: hue.id });
+    let best = -1, bs = 0;
+    for (let i = 0; i < words.length; i++) {
+      const sc = semanticClaim(tws[i], smp);
+      if (sc > bs || (sc === bs && sc > 0 && tws[i].length > tws[best].length)) { bs = sc; best = i; }
+    }
+    if (best >= 0) pts.push({ ...smp, ti: best, claim: bs });
   });
-  const n = pts.length, PL = new Float64Array(n), PA = new Float64Array(n), PB = new Float64Array(n);
-  pts.forEach((p, i) => { PL[i] = p.L; PA[i] = p.a; PB[i] = p.b; });
-  return { n, PL, PA, PB, pts, hues };
+  words.forEach((t, i) =>
+    (Array.isArray(t.examples) ? t.examples : []).forEach((e) => {
+      const r = ((e.H || 0) * Math.PI) / 180;
+      pts.push({ name: "your example", L: e.L, a: e.C * Math.cos(r), b: e.C * Math.sin(r), cat: null, src: 2, ti: i, claim: 200 });
+    }),
+  );
+  const n = pts.length, PL = new Float64Array(n), PA = new Float64Array(n), PB = new Float64Array(n), PT = new Int32Array(n), PW = new Float64Array(n);
+  const count = new Array(words.length).fill(0), cats = words.map(() => ({})), wsum = new Array(words.length).fill(0);
+  pts.forEach((p, i) => {
+    p.w = semanticWeightOf(p.claim);
+    PL[i] = p.L; PA[i] = p.a; PB[i] = p.b; PT[i] = p.ti; PW[i] = Math.log(p.w); count[p.ti]++; wsum[p.ti] += p.w;
+    p.C = Math.hypot(p.a, p.b); p.H = ((Math.atan2(p.b, p.a) * 180) / Math.PI + 360) % 360;
+    p.hueId = words[p.ti].id;
+    const f = p.cat && SEMANTIC_FAMILY_NAME[p.cat];
+    if (f) cats[p.ti][f] = (cats[p.ti][f] || 0) + (p.claim >= 100 ? 2 : 1);
+  });
+  const terms = words.map((t, i) => {
+    let fam = null, fv = 0;
+    Object.entries(cats[i]).forEach(([k, v]) => { if (v > fv) { fv = v; fam = k; } });
+    return { id: t.id, name: String(t.name).trim(), n: count[i], family: fam || "Other", order: i };
+  });
+  return { mode: "words", n, PL, PA, PB, PT, PW, logW: wsum.map((w) => Math.log(Math.max(w, 1e-9))), pts, terms, cache: new Map() };
 };
-// The nearest K survey colours to (L, a, b): [index, distance] pairs.
-const semanticNearest = (idx, L, a, b, K = SEMANTIC_K) => {
-  const bi = new Int32Array(K).fill(-1), bd = new Float64Array(K).fill(Infinity);
+// The word (term index) for an OkLab colour. Each word is a smooth cloud
+// around its names (a Gaussian of width SEMANTIC_H round each), and every
+// word starts on a near-equal footing however many names it has (a prior of
+// only total-weight^0.4), so a specific word like Navy or Taupe holds its own
+// ground next to Blue's or Brown's hundreds of names. Names a word claims
+// weakly count for less: head 1, inside the name 0.6, by basic colour 0.5
+// (0.25 for greys, whites and blacks);
+// your own examples 3. Only each word's four strongest names are summed
+// (the rest add nothing measurable).
+const SEMANTIC_H = 0.025, SEMANTIC_PRIOR = 0.4, SEMANTIC_TOP = 4;
+const semanticWeightOf = (claim) => (claim >= 200 ? 3 : claim >= 100 ? 1 : claim >= 50 ? 0.6 : claim >= 10 ? 0.5 : 0.25);
+const semanticTermAt = (idx, L, a, b) => {
+  const T = idx.terms.length;
+  if (!T || !idx.n) return -1;
+  const key = `${Math.round(L * 4000)},${Math.round(a * 4000)},${Math.round(b * 4000)}`;
+  const hit = idx.cache.get(key);
+  if (hit !== undefined) return hit;
+  const K = SEMANTIC_TOP, top = idx.top || (idx.top = new Float64Array(T * K)), k2 = 1 / (2 * SEMANTIC_H * SEMANTIC_H);
+  top.fill(-Infinity);
   for (let i = 0; i < idx.n; i++) {
-    const dL = idx.PL[i] - L, da = idx.PA[i] - a, db = idx.PB[i] - b, d = dL * dL + da * da + db * db;
-    if (d >= bd[K - 1]) continue;
+    const dL = idx.PL[i] - L, da = idx.PA[i] - a, db = idx.PB[i] - b;
+    const e = idx.PW[i] - (dL * dL + da * da + db * db) * k2, o = idx.PT[i] * K;
+    if (e <= top[o + K - 1]) continue;
     let j = K - 1;
-    while (j > 0 && bd[j - 1] > d) { bd[j] = bd[j - 1]; bi[j] = bi[j - 1]; j--; }
-    bd[j] = d; bi[j] = i;
+    while (j > 0 && top[o + j - 1] < e) { top[o + j] = top[o + j - 1]; j--; }
+    top[o + j] = e;
   }
-  const out = [];
-  for (let j = 0; j < K; j++) if (bi[j] >= 0) out.push([bi[j], Math.sqrt(bd[j])]);
-  return out;
-};
-// The hue region of a chromatic colour under the current rule.
-const hueRegionOf = (l, c, h, s) => {
-  const hues = (s && s.hues) || defaultGroupSettings.hues;
-  const idx = colorFamilyIndex;
-  if (familyModeOf(s) === "semantic" && idx && idx.n) {
-    const r = (h * Math.PI) / 180, near = semanticNearest(idx, l, c * Math.cos(r), c * Math.sin(r));
-    const votes = new Map();
-    near.forEach(([i, d]) => { const id = idx.pts[i].hueId; votes.set(id, (votes.get(id) || 0) + 1 / (d + 0.004)); });
-    let bestId = null, bv = -1;
-    votes.forEach((v, id) => { if (v > bv) { bv = v; bestId = id; } });
-    const hit = bestId && hues.find((x) => x.id === bestId);
-    if (hit) return hit;
+  let best = -1, bs = -Infinity;
+  for (let t = 0; t < T; t++) {
+    const o = t * K, mx = top[o];
+    if (mx === -Infinity) continue;
+    let sum = 0;
+    for (let j = 0; j < K; j++) if (top[o + j] > -Infinity) sum += Math.exp(top[o + j] - mx);
+    const sc = mx + Math.log(sum) - (1 - SEMANTIC_PRIOR) * idx.logW[t];
+    if (sc > bs) { bs = sc; best = t; }
   }
-  return hueByAngle(h, hues);
+  if (idx.cache.size > 300000) idx.cache.clear();
+  idx.cache.set(key, best);
+  return best;
 };
-// The survey names nearest a colour (to explain why it lands where it does).
-const semanticNamesNear = (l, c, h, k = 3) => {
+const colorWordOf = (l, c, h) => {
   const idx = colorFamilyIndex;
-  if (!idx || !idx.n) return [];
-  const r = (h * Math.PI) / 180;
-  return semanticNearest(idx, l, c * Math.cos(r), c * Math.sin(r), k).map(([i]) => idx.pts[i].name);
+  if (!idx || idx.mode !== "words" || !idx.n) return null;
+  const r = ((h || 0) * Math.PI) / 180, t = semanticTermAt(idx, l, (c || 0) * Math.cos(r), (c || 0) * Math.sin(r));
+  return t < 0 ? null : idx.terms[t];
+};
+// Order of words (and their families) for grouped views: as listed.
+const colorWordRank = (label) => {
+  const idx = colorFamilyIndex;
+  if (!idx || idx.mode !== "words") return null;
+  const k = String(label || "").toLowerCase();
+  const t = idx.terms.find((x) => x.name.toLowerCase() === k);
+  if (t) return t.order;
+  const f = SEMANTIC_FAMILY_ORDER.indexOf(label);
+  return f >= 0 ? f : null;
 };
 
-// The Color Groups tab: which rule decides hue families, with a strip of
-// survey colours per family so the split can be seen at a glance.
-const HueFamilyRule = ({ settings, setSettings }) => {
-  const mode = familyModeOf(settings);
-  const hues = settings.hues || [];
-  const perFamily = useMemo(() => {
-    const idx = colorFamilyIndex && colorFamilyIndex.hues === hues ? colorFamilyIndex : buildColorFamilyIndex(settings);
-    const m = new Map(hues.map((h) => [h.id, []]));
-    idx.pts.forEach((p) => { if (m.has(p.hueId) && p.C >= (settings.neutralC ?? 0.02)) m.get(p.hueId).push(p); });
-    // a spread from dark to light, muted to vivid
-    m.forEach((list, id) => {
-      list.sort((p, q) => p.L - q.L);
-      const want = 14, step = Math.max(1, list.length / want);
-      const pick = [];
-      for (let i = 0; i < list.length && pick.length < want; i += step) pick.push(list[Math.floor(i)]);
-      m.set(id, { n: list.length, pick });
+// sRGB → OkLab, for sampling the screen's whole colour solid
+const semSrgbToOklab = (R, G, B) => {
+  const f = (c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+  const r = f(R), g = f(G), b = f(B);
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  return [0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s, 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s, 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s];
+};
+// What each word captures of the sRGB solid: share, ranges, a spread of
+// its colours, and its typical colour.
+const semanticCoverage = (idx) => {
+  const T = idx.terms.length, N = 17;
+  const acc = idx.terms.map(() => ({ k: 0, L: [], C: [], sa: 0, sb: 0, sL: 0, cells: [] }));
+  let total = 0;
+  for (let i = 0; i < N; i++)
+    for (let j = 0; j < N; j++)
+      for (let k = 0; k < N; k++) {
+        const [L, a, b] = semSrgbToOklab(i / (N - 1), j / (N - 1), k / (N - 1));
+        const t = semanticTermAt(idx, L, a, b);
+        total++;
+        if (t < 0) continue;
+        const e = acc[t], C = Math.hypot(a, b);
+        e.k++; e.L.push(L); e.C.push(C); e.sa += a; e.sb += b; e.sL += L;
+        e.cells.push([L, C, ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360]);
+      }
+  const pct = (arr, q) => { if (!arr.length) return 0; const s = [...arr].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(q * (s.length - 1)))]; };
+  return acc.map((e, t) => {
+    const out = { share: e.k / total, n: e.k };
+    if (!e.k) return { ...out, rep: null, cells: [] };
+    out.L = [pct(e.L, 0.05), pct(e.L, 0.95)];
+    out.C = [pct(e.C, 0.05), pct(e.C, 0.95)];
+    const mL = e.sL / e.k, ma = e.sa / e.k, mb = e.sb / e.k;
+    out.rep = [mL, Math.hypot(ma, mb), ((Math.atan2(mb, ma) * 180) / Math.PI + 360) % 360];
+    // a spread, dark to light then muted to vivid
+    const cells = e.cells.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+    const want = 16, step = Math.max(1, cells.length / want), pick = [];
+    for (let i = 0; i < cells.length && pick.length < want; i += step) pick.push(cells[Math.floor(i)]);
+    out.cells = pick;
+    return out;
+  });
+};
+
+// A map of the solid: hue across, lightness up, at three chroma levels
+// (share of the most the screen shows there), each spot painted with the
+// typical colour of the word that claims it.
+const SEM_MAP_W = 120, SEM_MAP_H = 44, SEM_MAP_LEVELS = [0, 0.3, 0.6, 0.95];
+const semMaxChroma = (L, H) => {
+  if (!(L > 0) || !(L < 1)) return 0;
+  let lo = 0, hi = 0.4;
+  for (let i = 0; i < 14; i++) { const mid = (lo + hi) / 2; if (fastInGamutSrgb(L, mid, H)) lo = mid; else hi = mid; }
+  return lo;
+};
+const SemanticSolidMap = ({ idx, cov, onCursor }) => {
+  const ref = useRef(null);
+  const [hover, setHover] = useState(null);
+  const grid = useMemo(() => {
+    const out = SEM_MAP_LEVELS.map(() => new Int32Array(SEM_MAP_W * SEM_MAP_H).fill(-1));
+    const pos = SEM_MAP_LEVELS.map(() => new Float32Array(SEM_MAP_W * SEM_MAP_H * 3));
+    for (let y = 0; y < SEM_MAP_H; y++) {
+      const L = 1 - (y + 0.5) / SEM_MAP_H;
+      for (let x = 0; x < SEM_MAP_W; x++) {
+        const H = ((x + 0.5) / SEM_MAP_W) * 360, mc = semMaxChroma(L, H), r = (H * Math.PI) / 180;
+        SEM_MAP_LEVELS.forEach((f, li) => {
+          const C = f * mc, q = y * SEM_MAP_W + x;
+          out[li][q] = semanticTermAt(idx, L, C * Math.cos(r), C * Math.sin(r));
+          pos[li][q * 3] = L; pos[li][q * 3 + 1] = C; pos[li][q * 3 + 2] = H;
+        });
+      }
+    }
+    return { out, pos };
+  }, [idx]);
+  useEffect(() => {
+    const cv = ref.current;
+    if (!cv) return;
+    const ctx = cv.getContext("2d"), gap = 6, PW = SEM_MAP_W, PH = SEM_MAP_H;
+    cv.width = PW * SEM_MAP_LEVELS.length + gap * (SEM_MAP_LEVELS.length - 1);
+    cv.height = PH;
+    const img = ctx.createImageData(cv.width, PH);
+    const repRgb = cov.map((c) => {
+      if (!c.rep) return [200, 200, 200];
+      const hx = lchDisplayHex(c.rep[0], c.rep[1], c.rep[2]);
+      try { const s = new Color(hx).to("srgb").coords; return s.map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255)); } catch (e) { return [200, 200, 200]; }
     });
-    return m;
-  }, [settings]);
+    SEM_MAP_LEVELS.forEach((f, li) => {
+      const ox = li * (PW + gap);
+      for (let y = 0; y < PH; y++)
+        for (let x = 0; x < PW; x++) {
+          const t = grid.out[li][y * PW + x], o = (y * cv.width + ox + x) * 4;
+          const c = t >= 0 ? repRgb[t] : [235, 235, 235];
+          // edges between words, darkened
+          const right = x + 1 < PW ? grid.out[li][y * PW + x + 1] : t, down = y + 1 < PH ? grid.out[li][(y + 1) * PW + x] : t;
+          const edge = right !== t || down !== t;
+          img.data[o] = edge ? c[0] * 0.55 : c[0]; img.data[o + 1] = edge ? c[1] * 0.55 : c[1]; img.data[o + 2] = edge ? c[2] * 0.55 : c[2]; img.data[o + 3] = 255;
+        }
+    });
+    ctx.putImageData(img, 0, 0);
+  }, [grid, cov]);
+  const locate = (e) => {
+    const cv = ref.current, r = cv.getBoundingClientRect();
+    const px = ((e.clientX - r.left) / r.width) * cv.width, py = ((e.clientY - r.top) / r.height) * cv.height;
+    const li = Math.floor(px / (SEM_MAP_W + 6)), x = Math.floor(px - li * (SEM_MAP_W + 6)), y = Math.floor(py);
+    if (li < 0 || li >= SEM_MAP_LEVELS.length || x < 0 || x >= SEM_MAP_W || y < 0 || y >= SEM_MAP_H) return null;
+    const q = y * SEM_MAP_W + x, P = grid.pos[li];
+    return { t: grid.out[li][q], L: P[q * 3], C: P[q * 3 + 1], H: P[q * 3 + 2], li };
+  };
+  return React.createElement(
+    "div",
+    { className: "flex flex-col gap-1" },
+    React.createElement(
+      "div",
+      { className: "grid grid-cols-4 gap-[6px] text-[9px] font-bold uppercase tracking-wider text-slate-400" },
+      ["Greys (no chroma)", "Muted (30%)", "Medium (60%)", "Vivid (95%)"].map((t) => React.createElement("span", { key: t }, t)),
+    ),
+    React.createElement("canvas", {
+      ref, className: "w-full rounded cursor-crosshair", style: { imageRendering: "pixelated", aspectRatio: `${SEM_MAP_W * 4 + 18} / ${SEM_MAP_H}`, height: "auto" },
+      onMouseMove: (e) => setHover(locate(e)), onMouseLeave: () => setHover(null),
+      onClick: (e) => { const h = locate(e); if (h && onCursor) onCursor(h.L, h.C, h.H); },
+    }),
+    React.createElement(
+      "div",
+      { className: "flex justify-between text-[9px] text-slate-400 font-mono" },
+      React.createElement("span", null, hover ? `${hover.t >= 0 ? idx.terms[hover.t].name : "—"} · L ${hover.L.toFixed(2)} C ${hover.C.toFixed(3)} H ${hover.H.toFixed(0)}° (click to go there)` : "Each panel: hue 0–360° across, lightness up; chroma as a share of the most this screen can show"),
+    ),
+  );
+};
+
+// The Color Groups tab's rule card: words (with what each one captures) or angles.
+const HueFamilyRule = ({ settings, setSettings, cursor, onCursor }) => {
+  const mode = familyModeOf(settings);
+  const words = colorWordsOf(settings);
+  const idx = useMemo(() => (mode === "words" ? buildColorFamilyIndex(settings) : null), [settings, mode]);
+  const cov = useMemo(() => (idx ? semanticCoverage(idx) : []), [idx]);
+  const [draft, setDraft] = useState("");
+  const [open, setOpen] = useState(null);
+  const setWords = (list) => setSettings({ ...settings, familyMode: "words", terms: list });
+  const addWord = (name) => {
+    const nm = String(name || "").trim();
+    if (!nm || words.some((w) => w.name.trim().toLowerCase() === nm.toLowerCase())) return;
+    setWords([...words, { id: crypto.randomUUID(), name: nm }]);
+  };
+  // common head words in the survey not yet listed, to add with a click
+  const suggestions = useMemo(() => {
+    if (mode !== "words") return [];
+    const have = new Set(words.map((w) => semanticWords(w.name).join(" ")));
+    const cnt = new Map();
+    SEMANTIC_SAMPLES.forEach((s) => { if (s.src !== 0) return; const h = s.words[s.words.length - 1]; if (h && h.length > 2) cnt.set(h, (cnt.get(h) || 0) + 1); });
+    return [...cnt.entries()].filter(([w, n]) => n >= 2 && !have.has(w)).sort((a, b) => b[1] - a[1]).slice(0, 18).map(([w]) => w[0].toUpperCase() + w.slice(1));
+  }, [mode, words]);
   const option = (id, title, body) =>
     React.createElement(
       "button",
@@ -9408,53 +9699,137 @@ const HueFamilyRule = ({ settings, setSettings }) => {
       ),
       React.createElement("p", { className: "text-[11px] leading-snug text-slate-600 dark:text-neutral-400" }, body),
     );
+  const sw = (L, C, H, key, title) =>
+    React.createElement("span", { key, className: "flex-1 min-w-[6px]", title, style: { backgroundColor: lchDisplayHex(L, C, H) } });
+  const head = (t) =>
+    React.createElement(
+      "div",
+      { className: "flex items-center gap-4 mb-3" },
+      React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400" }, t),
+      React.createElement("div", { className: "flex-1 h-px bg-slate-200 dark:bg-neutral-800" }),
+    );
+  const card = "bg-white dark:bg-neutral-900 p-5 rounded-xl border border-slate-200 dark:border-neutral-800 shadow-sm";
   return React.createElement(
     "div",
-    { className: "mb-6" },
+    { className: "mb-6 flex flex-col gap-6" },
     React.createElement(
       "div",
-      { className: "flex items-center gap-4 mb-4" },
-      React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-400" }, "How colours get their hue family"),
-      React.createElement("div", { className: "flex-1 h-px bg-slate-200 dark:bg-neutral-800" }),
-    ),
-    React.createElement(
-      "div",
-      { className: "bg-white dark:bg-neutral-900 p-5 rounded-xl border border-slate-200 dark:border-neutral-800 shadow-sm flex flex-col gap-4" },
+      null,
+      head("How colours get their group"),
       React.createElement(
         "div",
-        { className: "flex flex-col md:flex-row gap-3", role: "radiogroup", "aria-label": "Hue family rule" },
-        option("semantic", "Common colour names", "Automatic. A colour joins the family people would name it by: its nearest colours in the xkcd colour survey, by their hue word. Dark muted yellows come out olive (Green) or brown (Orange), the way most people see them; bright and light yellows stay Yellow."),
-        option("angles", "Hue angles", "Colours split into wedges halfway between the hue centres below, whatever their lightness or chroma."),
+        { className: `${card} flex flex-col md:flex-row gap-3`, role: "radiogroup", "aria-label": "Colour group rule" },
+        option("words", "Your words", "List the words you name colours by. Each one takes the colours people call by that word (about 1,200 names from the xkcd colour survey and the ISCC-NBS dictionary) and the part of the colour solid nearest them. There are no angles, chroma or lightness splits to set."),
+        option("angles", "Hue angles", "Hue wedges halfway between the hue centres, with Light/Dark and Vivid/Muted splits and lightness bands for the greys, set by hand below."),
       ),
-      mode === "semantic" &&
+    ),
+    mode === "words" && idx &&
+      React.createElement(
+        "div",
+        null,
+        head(`Your words (${words.length}), in the order groups are listed`),
         React.createElement(
           "div",
-          { className: "flex flex-col gap-1.5" },
-          React.createElement("span", { className: "text-[10px] text-slate-400" }, "Survey colours in each family, dark to light (hover for their names)"),
-          hues.map((h) => {
-            const e = perFamily.get(h.id) || { n: 0, pick: [] };
+          { className: `${card} flex flex-col gap-1` },
+          words.map((w, i) => {
+            const t = idx.terms.find((x) => x.id === w.id), c = t ? cov[idx.terms.indexOf(t)] : null;
+            const names = idx.pts.filter((p) => p.hueId === w.id);
+            const rep = c && c.rep;
+            const ex = Array.isArray(w.examples) ? w.examples : [];
+            const upd = (patch) => setWords(words.map((x) => (x.id === w.id ? { ...x, ...patch } : x)));
             return React.createElement(
               "div",
-              { key: h.id, className: "flex items-center gap-2" },
-              React.createElement("span", { className: "w-20 shrink-0 text-[10px] font-black uppercase tracking-widest text-slate-700 dark:text-neutral-200 truncate" }, h.name),
+              { key: w.id, className: "flex flex-col gap-1 py-1.5 border-b last:border-b-0 border-slate-100 dark:border-neutral-800" },
               React.createElement(
                 "div",
-                { className: "flex-1 flex h-5 rounded overflow-hidden" },
-                e.n
-                  ? e.pick.map((p, i) =>
-                      React.createElement("span", { key: i, className: "flex-1", title: p.name, style: { backgroundColor: lchDisplayHex(p.L, p.C, p.H) } }),
-                    )
-                  : React.createElement(
-                      "span",
-                      { className: "flex-1 flex items-center px-2 text-[10px] italic text-slate-400 bg-slate-50 dark:bg-neutral-800/60" },
-                      "No colour names map to this family, so no colour lands here. Name it after a colour word (Red, Brown, Purple, Pink, Lime…) or remove it.",
-                    ),
+                { className: "flex items-center gap-2" },
+                React.createElement("span", { className: "w-6 h-6 rounded border border-black/10 shrink-0", style: { backgroundColor: rep ? lchDisplayHex(rep[0], rep[1], rep[2]) : "transparent" }, title: rep ? "Typical colour of what this word captures" : "Captures nothing" }),
+                React.createElement("input", {
+                  value: w.name, "aria-label": `Colour word ${i + 1}`,
+                  onChange: (e) => upd({ name: e.target.value }),
+                  className: "w-32 shrink-0 bg-transparent border-b border-slate-200 dark:border-neutral-700 text-[12px] font-bold text-slate-800 dark:text-neutral-100 outline-none focus:border-sky-500",
+                }),
+                React.createElement(
+                  "div",
+                  { className: "flex-1 min-w-0 flex h-5 rounded overflow-hidden bg-slate-50 dark:bg-neutral-800" },
+                  c && c.cells.length
+                    ? c.cells.map((p, k) => sw(p[0], p[1], p[2], k, `L ${p[0].toFixed(2)} C ${p[1].toFixed(3)} H ${p[2].toFixed(0)}°`))
+                    : React.createElement("span", { className: "px-2 text-[10px] italic text-slate-400 self-center truncate" }, names.length ? "Captures no screen colours (its names are taken by nearer words)" : "No colour name uses this word: add an example colour, or check the spelling"),
+                ),
+                React.createElement(
+                  "span",
+                  { className: "w-44 shrink-0 text-[10px] font-mono text-slate-400 text-right leading-tight hidden lg:block" },
+                  c && c.n ? `${(c.share * 100).toFixed(1)}% · L ${c.L[0].toFixed(2)}–${c.L[1].toFixed(2)} · C ${c.C[0].toFixed(2)}–${c.C[1].toFixed(2)}` : "—",
+                ),
+                React.createElement(
+                  "button",
+                  { type: "button", onClick: () => setOpen(open === w.id ? null : w.id), className: "w-16 shrink-0 text-[10px] text-sky-600 dark:text-sky-400 hover:underline text-right", title: "The colour names this word claims" },
+                  `${names.filter((p) => p.src !== 2).length} names`,
+                ),
+                React.createElement(
+                  "button",
+                  {
+                    type: "button", disabled: !cursor, title: "Add the colour at the cursor as an example of this word",
+                    onClick: () => cursor && upd({ examples: [...ex, { L: cursor[0], C: cursor[1], H: cursor[2] }] }),
+                    className: "p-1 rounded text-slate-400 hover:text-sky-600 hover:bg-slate-100 dark:hover:bg-neutral-800",
+                  },
+                  React.createElement(Icon, { name: "crosshair", className: "w-3.5 h-3.5" }),
+                ),
+                React.createElement("button", { type: "button", disabled: i === 0, onClick: () => { const l = [...words]; [l[i - 1], l[i]] = [l[i], l[i - 1]]; setWords(l); }, title: "Move up", className: "p-1 rounded text-slate-400 hover:bg-slate-100 dark:hover:bg-neutral-800 disabled:opacity-30" }, React.createElement(Icon, { name: "chevron-up", className: "w-3.5 h-3.5" })),
+                React.createElement("button", { type: "button", onClick: () => setWords(words.filter((x) => x.id !== w.id)), title: "Remove this word", className: "p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-500/10" }, React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" })),
               ),
-              React.createElement("span", { className: "w-14 shrink-0 text-right text-[10px] font-mono text-slate-400" }, `${e.n} names`),
+              (ex.length > 0 || open === w.id) &&
+                React.createElement(
+                  "div",
+                  { className: "pl-8 flex flex-wrap items-center gap-1 text-[10px] text-slate-500 dark:text-neutral-400" },
+                  ex.map((e, k) =>
+                    React.createElement(
+                      "button",
+                      { key: `e${k}`, type: "button", onClick: () => upd({ examples: ex.filter((_, j) => j !== k) }), title: "Your example (click to remove)", className: "flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-200 dark:border-neutral-700 hover:border-rose-400" },
+                      React.createElement("span", { className: "w-3 h-3 rounded-sm", style: { backgroundColor: lchDisplayHex(e.L, e.C, e.H) } }),
+                      "example ×",
+                    ),
+                  ),
+                  open === w.id &&
+                    names.filter((p) => p.src !== 2).sort((p, q) => q.claim - p.claim || p.L - q.L).slice(0, 80).map((p, k) =>
+                      React.createElement(
+                        "span",
+                        { key: k, className: "flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-50 dark:bg-neutral-800", title: `${SEMANTIC_SOURCES[p.src] || ""}${p.claim < 100 ? (p.claim < 50 ? " · counted by its basic colour" : " · the word is not the name's head") : ""}` },
+                        React.createElement("span", { className: "w-3 h-3 rounded-sm", style: { backgroundColor: lchDisplayHex(p.L, p.C, p.H) } }),
+                        p.claim < 50 ? React.createElement("i", null, p.name) : p.name,
+                      ),
+                    ),
+                ),
             );
           }),
+          React.createElement(
+            "form",
+            { className: "flex items-center gap-2 pt-2", onSubmit: (e) => { e.preventDefault(); addWord(draft); setDraft(""); } },
+            React.createElement("input", {
+              value: draft, onChange: (e) => setDraft(e.target.value), placeholder: "Add a word (e.g. greige, sage, charcoal)…", "aria-label": "New colour word",
+              className: "flex-1 bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1 text-[11px] outline-none focus:border-sky-500",
+            }),
+            React.createElement("button", { type: "submit", className: "px-3 py-1 rounded bg-sky-500 hover:bg-sky-600 text-white text-[10px] font-bold uppercase tracking-wider" }, "Add"),
+            React.createElement("button", { type: "button", onClick: () => setWords(DEFAULT_COLOR_WORDS.map((w) => ({ ...w }))), className: "px-2 py-1 rounded border border-slate-200 dark:border-neutral-700 text-[10px] text-slate-500 hover:bg-slate-100 dark:hover:bg-neutral-800", title: "Replace the list with the suggested words" }, "Reset"),
+          ),
+          suggestions.length > 0 &&
+            React.createElement(
+              "div",
+              { className: "flex flex-wrap items-center gap-1 pt-1" },
+              React.createElement("span", { className: "text-[10px] text-slate-400 mr-1" }, "Common in the survey:"),
+              suggestions.map((s) =>
+                React.createElement("button", { key: s, type: "button", onClick: () => addWord(s), className: "px-1.5 py-0.5 rounded-full border border-slate-200 dark:border-neutral-700 text-[10px] text-slate-600 dark:text-neutral-300 hover:border-sky-500" }, `+ ${s}`),
+              ),
+            ),
         ),
-    ),
+      ),
+    mode === "words" && idx &&
+      React.createElement(
+        "div",
+        null,
+        head("What each word captures of the colour solid"),
+        React.createElement("div", { className: card }, React.createElement(SemanticSolidMap, { idx, cov, onCursor })),
+      ),
   );
 };
 
@@ -11538,7 +11913,14 @@ const ViewPinsInner = ({
   );
 };
 const ViewPins = withStableCallbacks(ViewPinsInner);
-const ViewGroups = ({ settings, setSettings }) => {
+const ViewGroups = ({ settings, setSettings, cursor, onCursor }) => {
+  // your words: nothing to split by hand, so only the words themselves
+  if (familyModeOf(settings) === "words")
+    return React.createElement(
+      "div",
+      { className: "h-full flex flex-col overflow-y-auto custom-scrollbar p-6" },
+      React.createElement(HueFamilyRule, { settings, setSettings, cursor, onCursor }),
+    );
   const updateSetting = (key, val) => setSettings({ ...settings, [key]: val });
   const updateHue = (index, field, val) => {
     const newHues = [...settings.hues];
@@ -11613,6 +11995,7 @@ const ViewGroups = ({ settings, setSettings }) => {
   return React.createElement(
     "div",
     { className: "h-full flex flex-col overflow-y-auto custom-scrollbar p-6" },
+    React.createElement(HueFamilyRule, { settings, setSettings, cursor, onCursor }),
     React.createElement(
       "div",
       { className: "mb-6" },
@@ -11778,7 +12161,6 @@ const ViewGroups = ({ settings, setSettings }) => {
         ),
       ),
     ),
-    React.createElement(HueFamilyRule, { settings, setSettings }),
     React.createElement(
       "div",
       { className: "mb-6" },
@@ -12711,9 +13093,19 @@ const processCSVData = (
       if (prop === "neutralC" && row.OKLCH_C)
         newGroupSettings.neutralC = parseFloat(row.OKLCH_C);
       if (prop === "familyMode" && row.Note)
-        newGroupSettings.familyMode = String(row.Note).trim().toLowerCase() === "angles" ? "angles" : "semantic";
+        newGroupSettings.familyMode = String(row.Note).trim().toLowerCase() === "angles" ? "angles" : "words";
       if (prop === "vividC" && row.OKLCH_C)
         newGroupSettings.vividC = parseFloat(row.OKLCH_C);
+      return;
+    }
+    if (targetType === "COLOR_TERM") {
+      if (!newGroupSettings)
+        newGroupSettings = { lightL: 0.5, neutralC: 0.02, vividC: 0.1, neutrals: [], hues: [], overrides: [] };
+      if (!Array.isArray(newGroupSettings.terms)) newGroupSettings.terms = [];
+      let examples = [];
+      try { const v = row.Note ? JSON.parse(row.Note) : []; if (Array.isArray(v)) examples = v.filter((e) => e && isFinite(e.L) && isFinite(e.C) && isFinite(e.H)); } catch (e) {}
+      if (String(row.Noun || "").trim())
+        newGroupSettings.terms.push({ id: row.ID || crypto.randomUUID(), name: String(row.Noun).trim(), ...(examples.length ? { examples } : {}) });
       return;
     }
     if (targetType === "NEUTRAL_REGION") {
@@ -16091,6 +16483,15 @@ const App = () => {
           Noun: "vividC",
           OKLCH_C: groupSettings.vividC,
         });
+        // your colour words, in order (examples as JSON in Note)
+        colorWordsOf(groupSettings).forEach((t) =>
+          anchorsCsv.push({
+            Type: "COLOR_TERM",
+            ID: t.id,
+            Noun: t.name,
+            Note: Array.isArray(t.examples) && t.examples.length ? JSON.stringify(t.examples) : "",
+          }),
+        );
         (groupSettings.neutrals || []).forEach((n) =>
           anchorsCsv.push({
             Type: "NEUTRAL_REGION",
@@ -20245,7 +20646,7 @@ const AppUI = ({
   const spaceSeenRef = useRef(false);
   // The labelled survey colours, for Explore's group lines.
   const familySeeds = useMemo(
-    () => (colorFamilyIndex ? colorFamilyIndex.pts.map((p) => ({ L: p.L, C: p.C, H: p.H, hueId: p.hueId })) : []),
+    () => (colorFamilyIndex ? colorFamilyIndex.pts.map((p) => ({ L: p.L, C: p.C, H: p.H, hueId: p.hueId, w: p.w })) : []),
     [colorFamilyIndex],
   );
   // Palettes the Explore bins can be built around: the working one and the saved ones.
@@ -22738,6 +23139,8 @@ const AppUI = ({
               React.createElement(ViewGroups, {
                 settings: groupSettings,
                 setSettings: setGroupSettings,
+                cursor: [scrubL, scrubC, scrubH],
+                onCursor: (L, C, H) => { setScrubL(L); setScrubC(C); setScrubH(H); setTemporarySpectral(null); },
               }),
             activeTab === "anchors" &&
               React.createElement(ViewAnchors, {
