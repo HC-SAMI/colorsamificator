@@ -2924,6 +2924,72 @@ function createSpaceEngine(opts) {
   const DOT_FILL = 0.005, CELL_MIN = 0.06;
   const cellScale = () => CELL_MIN + (1 - CELL_MIN) * Math.min(1, (S.fill - DOT_FILL) / (1 - DOT_FILL));
   const inflR = (i, r) => (S.fill < DOT_FILL ? dotR[i] : r * cellScale());
+  // ── Region bins (colour groups) ──
+  // Instead of a Voronoi split, each cell is the part of its colour group
+  // seen from its seed: the app passes a label volume (each voxel's group)
+  // and which group each seed belongs to. A cell's surface is where its
+  // group ends (the group's share of the voxel corners round a point drops
+  // below half), so the bins have the groups' own shapes.
+  let region = null; // { nx, ny, nz, x0, y0, z0, dx, dy, dz, labels, seedGroup, seedsOf }
+  const regionWeights = new Map();
+  // the group with the largest trilinear share at a world point (-1 outside the volume)
+  const regionLabelAt = (x, y, z) => {
+    const R = region;
+    const fx = (x - R.x0) / R.dx, fy = (y - R.y0) / R.dy, fz = (z - R.z0) / R.dz;
+    if (!(fx >= 0 && fy >= 0 && fz >= 0 && fx <= R.nx - 1 && fy <= R.ny - 1 && fz <= R.nz - 1)) return -1;
+    const ix = Math.min(R.nx - 2, Math.floor(fx)), iy = Math.min(R.ny - 2, Math.floor(fy)), iz = Math.min(R.nz - 2, Math.floor(fz));
+    const tx = fx - ix, ty = fy - iy, tz = fz - iz;
+    regionWeights.clear();
+    let best = -1, bw = -1;
+    for (let c = 0; c < 8; c++) {
+      const ox = c & 1, oy = (c >> 1) & 1, oz = (c >> 2) & 1;
+      const w = (ox ? tx : 1 - tx) * (oy ? ty : 1 - ty) * (oz ? tz : 1 - tz);
+      if (w <= 0) continue;
+      const g = R.labels[((iz + oz) * R.ny + (iy + oy)) * R.nx + (ix + ox)];
+      const v = (regionWeights.get(g) || 0) + w;
+      regionWeights.set(g, v);
+      if (v > bw) { bw = v; best = g; }
+    }
+    return best;
+  };
+  // a group's share (0–1) at a world point
+  const regionShare = (g, x, y, z) => {
+    const R = region;
+    const fx = (x - R.x0) / R.dx, fy = (y - R.y0) / R.dy, fz = (z - R.z0) / R.dz;
+    if (!(fx >= 0 && fy >= 0 && fz >= 0 && fx <= R.nx - 1 && fy <= R.ny - 1 && fz <= R.nz - 1)) return 0;
+    const ix = Math.min(R.nx - 2, Math.floor(fx)), iy = Math.min(R.ny - 2, Math.floor(fy)), iz = Math.min(R.nz - 2, Math.floor(fz));
+    const tx = fx - ix, ty = fy - iy, tz = fz - iz;
+    let sh = 0;
+    for (let c = 0; c < 8; c++) {
+      const ox = c & 1, oy = (c >> 1) & 1, oz = (c >> 2) & 1;
+      if (R.labels[((iz + oz) * R.ny + (iy + oy)) * R.nx + (ix + ox)] === g) sh += (ox ? tx : 1 - tx) * (oy ? ty : 1 - ty) * (oz ? tz : 1 - tz);
+    }
+    return sh;
+  };
+  // which cell a world point belongs to: its group's (first) seed, so a group
+  // reads as one bin in the sections, the labels and the selection; a
+  // Voronoi split otherwise
+  const cellOf = (x, y, z) => {
+    if (region && region.seedGroup.length === N) {
+      const g = regionLabelAt(x, y, z), list = g >= 0 ? region.seedsOf[g] : null;
+      if (list && list.length) return list[0]; // a group is one bin wherever it is cut
+    }
+    return grid.nearest(x, y, z);
+  };
+  // how far a seed's group reaches along a direction
+  const regionRay = (i, dx, dy, dz) => {
+    const g = region.seedGroup[i], X = px[i], Y = py[i], Z = pz[i];
+    const st = Math.min(region.dx, region.dy, region.dz) * 0.5;
+    let r = 0;
+    while (r < 4) {
+      const n = r + st;
+      if (regionShare(g, X + dx * n, Y + dy * n, Z + dz * n) < 0.5) break;
+      r = n;
+    }
+    let lo = r, hi = r + st;
+    for (let k = 0; k < 6; k++) { const m = (lo + hi) / 2; if (regionShare(g, X + dx * m, Y + dy * m, Z + dz * m) >= 0.5) lo = m; else hi = m; }
+    return Math.max(lo, 0.002);
+  };
   const buildCells = () => {
     const token = ++buildToken;
     ready = false;
@@ -2979,12 +3045,14 @@ function createSpaceEngine(opts) {
           return lo;
         };
         let need = 0;
-        for (let v = 0; v < NV; v++) {
+        const useRegion = region && region.seedGroup.length === N && region.seedGroup[i] >= 0;
+        for (let v = 0; v < NV && useRegion; v++) radii[v] = regionRay(i, D[v * 3], D[v * 3 + 1], D[v * 3 + 2]);
+        for (let v = 0; v < NV && !useRegion; v++) {
           let r = voronoi(v, near, 8);
           if (r > 0.6) { r = gamut(v, r); if (r > 0.6) need = Math.max(need, r); }
           radii[v] = r;
         }
-        if (need) { // a few directions reach past the first search radius: widen it for those
+        if (need && !useRegion) { // a few directions reach past the first search radius: widen it for those
           near = grid.within(X, Y, Z, 2 * need + 0.01, i);
           for (let v = 0; v < NV; v++) if (radii[v] > 0.6) radii[v] = voronoi(v, near, radii[v]);
         }
@@ -3167,8 +3235,22 @@ function createSpaceEngine(opts) {
   }
   // Just the highlighted cell (cheap: runs on every cursor move).
   function rebuildActive() {
-    let m = ready && selIdx >= 0 ? cellMesh(selIdx, constraints()) : null;
-    if (m === "whole") m = wholeMesh(selIdx);
+    // a colour group seen whole: all of its cells together
+    const same = ready && selIdx >= 0 && region && region.seedGroup.length === N && region.seedsOf[region.seedGroup[selIdx]] ? region.seedsOf[region.seedGroup[selIdx]] : [selIdx];
+    let m = null, owners = null;
+    if (ready && selIdx >= 0) {
+      const cons = constraints(), P = [], K = [], T = [];
+      owners = [];
+      for (const id of same) {
+        let mm = cellMesh(id, cons);
+        if (mm === "whole") mm = wholeMesh(id);
+        if (!mm) continue;
+        const base = K.length;
+        for (let v = 0; v < mm.K.length; v++) { P.push(mm.P[v * 3], mm.P[v * 3 + 1], mm.P[v * 3 + 2]); K.push(mm.K[v]); owners.push(id); }
+        for (let q = 0; q < mm.T.length; q++) T.push(mm.T[q] + base);
+      }
+      if (K.length) m = { P, K, T };
+    }
     activeMesh.visible = activeRim.visible = !!m && !cardsOn();
     if (m) {
       const nv = m.K.length, ni = m.T.length;
@@ -3184,10 +3266,11 @@ function createSpaceEngine(opts) {
         activeGeo.setIndex(dyn(new Uint32Array(aCapI), 1));
       }
       const A = activeGeo.attributes, pos = A.position.array, cen = A.aCenter.array, col = A.aColor.array, cap = A.aCap.array, idx = activeGeo.index.array;
-      const X = px[selIdx], Y = py[selIdx], Z = pz[selIdx], r = cols[selIdx * 3], g = cols[selIdx * 3 + 1], b = cols[selIdx * 3 + 2];
+      const r = cols[selIdx * 3], g = cols[selIdx * 3 + 1], b = cols[selIdx * 3 + 2];
       for (let v = 0; v < nv; v++) {
+        const o = owners[v];
         pos[v * 3] = m.P[v * 3]; pos[v * 3 + 1] = m.P[v * 3 + 1]; pos[v * 3 + 2] = m.P[v * 3 + 2];
-        cen[v * 3] = X; cen[v * 3 + 1] = Y; cen[v * 3 + 2] = Z;
+        cen[v * 3] = px[o]; cen[v * 3 + 1] = py[o]; cen[v * 3 + 2] = pz[o];
         col[v * 3] = r; col[v * 3 + 1] = g; col[v * 3 + 2] = b;
         cap[v] = m.K[v];
       }
@@ -3207,7 +3290,7 @@ function createSpaceEngine(opts) {
     const [L, C, H] = S.cursor, w = spaceToWorld(L, C, H);
     cursorWorld.set(w[0], w[1], w[2]);
     const prev = selIdx;
-    selIdx = ready && N ? grid.nearest(w[0], w[1], w[2]) : -1;
+    selIdx = ready && N ? cellOf(w[0], w[1], w[2]) : -1;
     orb.ox = orb.oy = orb.oz = 0;
     placeMarker();
     updatePlanes();
@@ -3244,7 +3327,7 @@ function createSpaceEngine(opts) {
     const n = mOwner.length / 3;
     for (let i = 0; i < n; i++) {
       if (!ready || !N) { mOwner[i * 3] = mOwner[i * 3 + 1] = mOwner[i * 3 + 2] = 0; continue; }
-      const j = grid.nearest(markerPos[i * 3], markerPos[i * 3 + 1], markerPos[i * 3 + 2]);
+      const j = cellOf(markerPos[i * 3], markerPos[i * 3 + 1], markerPos[i * 3 + 2]);
       mOwner[i * 3] = px[j]; mOwner[i * 3 + 1] = py[j]; mOwner[i * 3 + 2] = pz[j];
     }
     if (dotGeo.attributes.aOwner) dotGeo.attributes.aOwner.needsUpdate = true;
@@ -3254,7 +3337,7 @@ function createSpaceEngine(opts) {
   // Where a world point is drawn once separated: moved with its cell.
   const sepOffset = (x, y, z, out) => {
     const s = S.sep;
-    if (s && ready && N) { const j = grid.nearest(x, y, z); out[0] = x + px[j] * s; out[1] = y + py[j] * s; out[2] = z + pz[j] * s; }
+    if (s && ready && N) { const j = cellOf(x, y, z); out[0] = x + px[j] * s; out[1] = y + py[j] * s; out[2] = z + pz[j] * s; }
     else { out[0] = x; out[1] = y; out[2] = z; }
     return out;
   };
@@ -3618,7 +3701,7 @@ function createSpaceEngine(opts) {
   const binHit = [0, 0];
   const binAt = (k, u, w, P) => {
     const t = gamutAt(k, u, w, P);
-    binHit[0] = t >= 0 && ready && N ? grid.nearest(P[0], P[1], P[2]) : -1;
+    binHit[0] = t >= 0 && ready && N ? cellOf(P[0], P[1], P[2]) : -1;
     binHit[1] = Math.max(0, t);
     return binHit;
   };
@@ -3638,7 +3721,7 @@ function createSpaceEngine(opts) {
           if (t >= 0) {
             const [L, C, Hh] = spaceWorldToLCH(P[0], P[1], P[2]);
             dm = (inRangeLCH(L, C, Hh, k) ? 1 : 0.3) * (1 - 0.45 * t);
-            if (bins) id = grid.nearest(P[0], P[1], P[2]);
+            if (bins) id = cellOf(P[0], P[1], P[2]);
             if (gOn) { spaceWorldSrgb(P[0], P[1], P[2], rgb); has = 1; }
           }
         }
@@ -4348,9 +4431,15 @@ function createSpaceEngine(opts) {
   // ── Public API ───────────────────────────────────────────────────────────
   const api = {
     // Renames and other label-only changes keep the built cells.
-    setAnchors(list) {
-      const sig = list.map((a) => `${a.L},${a.C},${a.H},${a.hex}`).join(";");
+    // regions: null for Voronoi bins, or a colour-group label volume (see region)
+    setAnchors(list, regions = null) {
+      const sig = list.map((a) => `${a.L},${a.C},${a.H},${a.hex}`).join(";") + (regions ? `|r${regions.id}` : "");
       S.anchors = list;
+      if (regions) {
+        const seedsOf = [];
+        regions.seedGroup.forEach((g, i) => { if (g >= 0) (seedsOf[g] = seedsOf[g] || []).push(i); });
+        region = { ...regions, seedsOf };
+      } else region = null;
       if (sig === anchorSig && N === list.length) return;
       anchorSig = sig;
       buildCells();
@@ -4622,36 +4711,84 @@ const SpacePresets = ({ value, onChange, compact }) =>
 // a palette. Cells come from a Voronoi split of colour space, so any set of
 // colours can define them; very large sets are capped to keep it responsive.
 const SPACE_SEED_CAP = 8000;
-// The colour solid sampled every 0.03 in OkLab (inside this screen's gamut),
-// each sample with its colour group; and each group's mean colour.
-const spaceGroupGrid = (gs) => {
-  const cells = [], acc = new Map();
-  for (let L = 0.015; L < 1; L += 0.03)
-    for (let a = -0.33; a <= 0.33; a += 0.03)
-      for (let b = -0.33; b <= 0.33; b += 0.03) {
-        const C = Math.hypot(a, b), H = C < 1e-6 ? 0 : ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360;
-        if (!fastInGamutSrgb(L, C, H)) continue;
-        const k = getColorGroup(L, C, H, gs);
-        cells.push({ L, C, H, k });
-        const e = acc.get(k) || { n: 0, L: 0, a: 0, b: 0 };
-        e.n++; e.L += L; e.a += a; e.b += b; acc.set(k, e);
+// Colour groups as bins: every voxel of a 40³ grid over the colour space
+// named by its colour group (in slices, so the page stays responsive); then
+// each group gets a seed at its most central colour, and more seeds where
+// the first can't see all of the group in straight lines (a crescent round
+// the greys, say). The engine grows each seed's cell to where its group ends.
+const SPACE_REGION_N = 40;
+let spaceRegionId = 0;
+const spaceBuildGroupRegion = (gs, cancelled) =>
+  new Promise((resolve) => {
+    const n = SPACE_REGION_N, AM = SPACE_AMAX;
+    const x0 = -AM * SPACE_CW, z0 = x0, dx = (2 * AM * SPACE_CW) / (n - 1), dz = dx;
+    const y0 = (0 - SPACE_LC) * SPACE_LW, dy = SPACE_LW / (n - 1);
+    const labels = new Int16Array(n * n * n), keys = [], keyIdx = new Map();
+    let iy = 0;
+    const idxOf = (ix, iy2, iz) => (iz * n + iy2) * n + ix;
+    const step = () => {
+      if (cancelled()) return resolve(null);
+      const t0 = performance.now();
+      while (iy < n && performance.now() - t0 < 12) {
+        const y = y0 + iy * dy;
+        for (let iz = 0; iz < n; iz++)
+          for (let ix = 0; ix < n; ix++) {
+            const [L, C, H] = spaceWorldToLCH(x0 + ix * dx, y, z0 + iz * dz);
+            const k = getColorGroup(Math.max(0, Math.min(1, L)), C, H, gs);
+            let g = keyIdx.get(k);
+            if (g === undefined) { g = keys.length; keys.push(k); keyIdx.set(k, g); }
+            labels[idxOf(ix, iy, iz)] = g;
+          }
+        iy++;
       }
-  const hex = {}, mean = {}, seed = {};
-  acc.forEach((e, k) => {
-    const L = e.L / e.n, a = e.a / e.n, b = e.b / e.n, C = Math.hypot(a, b), H = ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360;
-    mean[k] = [L, C, H];
-    hex[k] = spaceHexFor(null, L, C, H);
-    e.cL = L; e.ca = a; e.cb = b; e.best = Infinity;
+      if (iy < n) return setTimeout(step, 0);
+      // each group's in-gamut voxels and mean colour
+      const members = keys.map(() => []), sum = keys.map(() => [0, 0, 0]);
+      for (let iz = 0; iz < n; iz++)
+        for (let yy = 0; yy < n; yy++)
+          for (let ix = 0; ix < n; ix++) {
+            const x = x0 + ix * dx, y = y0 + yy * dy, z = z0 + iz * dz;
+            if (!spaceInGamutStrict(x, y, z)) continue;
+            const g = labels[idxOf(ix, yy, iz)];
+            members[g].push(ix, yy, iz);
+            sum[g][0] += x; sum[g][1] += y; sum[g][2] += z;
+          }
+      const labelAt = (x, y, z) => {
+        const ix = Math.round((x - x0) / dx), yy = Math.round((y - y0) / dy), iz = Math.round((z - z0) / dz);
+        if (ix < 0 || yy < 0 || iz < 0 || ix >= n || yy >= n || iz >= n) return -1;
+        return labels[idxOf(ix, yy, iz)];
+      };
+      const seeds = [];
+      keys.forEach((k, g) => {
+        const m = members[g], cnt = m.length / 3;
+        if (!cnt) return;
+        const cx = sum[g][0] / cnt, cy = sum[g][1] / cnt, cz = sum[g][2] / cnt;
+        const [mL, mC, mH] = spaceWorldToLCH(cx, cy, cz);
+        const hex = spaceHexFor(null, mL, mC, mH);
+        let left = [];
+        for (let q = 0; q < cnt; q++) left.push(q);
+        for (let round = 0; round < 6 && left.length > Math.max(4, cnt * 0.02); round++) {
+          // the most central of the voxels not yet seen
+          let ax = 0, ay = 0, az = 0;
+          left.forEach((q) => { ax += m[q * 3]; ay += m[q * 3 + 1]; az += m[q * 3 + 2]; });
+          ax /= left.length; ay /= left.length; az /= left.length;
+          let best = left[0], bd = Infinity;
+          left.forEach((q) => { const d = (m[q * 3] - ax) ** 2 + (m[q * 3 + 1] - ay) ** 2 + (m[q * 3 + 2] - az) ** 2; if (d < bd) { bd = d; best = q; } });
+          const sx = x0 + m[best * 3] * dx, sy = y0 + m[best * 3 + 1] * dy, sz = z0 + m[best * 3 + 2] * dz;
+          const [L, C, H] = spaceWorldToLCH(sx, sy, sz);
+          seeds.push({ L, C, H, hex, label: k, kind: "anchor", pick: [L, C, H], g });
+          // what it sees: voxels joined to it by a straight line through the group
+          left = left.filter((q) => {
+            const tx = x0 + m[q * 3] * dx, ty = y0 + m[q * 3 + 1] * dy, tz = z0 + m[q * 3 + 2] * dz;
+            for (let t = 1; t < 10; t++) { const f = t / 10; if (labelAt(sx + (tx - sx) * f, sy + (ty - sy) * f, sz + (tz - sz) * f) !== g) return true; }
+            return false;
+          });
+        }
+      });
+      resolve({ id: ++spaceRegionId, region: { id: spaceRegionId, nx: n, ny: n, nz: n, x0, y0, z0, dx, dy, dz, labels }, seeds, groups: keys.length });
+    };
+    step();
   });
-  // each group's bin grows from its most central member (the sample nearest
-  // its mean, so it lies inside the group even when the group is a crescent)
-  cells.forEach((c) => {
-    const e = acc.get(c.k), r = (c.H * Math.PI) / 180, a = c.C * Math.cos(r), b = c.C * Math.sin(r);
-    const d = (c.L - e.cL) ** 2 + (a - e.ca) ** 2 + (b - e.cb) ** 2;
-    if (d < e.best) { e.best = d; seed[c.k] = [c.L, c.C, c.H]; }
-  });
-  return { cells, hex, mean, seed, n: acc.size };
-};
 const SPACE_BIN_KEY = "csam-bin-source";
 const SpaceBinSource = ({ value, onChange, options, capped, compact }) =>
   React.createElement(
@@ -4956,6 +5093,15 @@ const ViewSpaceInner = ({
   const cbRef = useRef({});
   cbRef.current = { onCursor, handlePointClick };
   const [ready, setReady] = useState(false);
+  // colour groups as bins: built in the background when chosen
+  const [groupRegion, setGroupRegion] = useState(null);
+  useEffect(() => {
+    if (binSource !== "groups") { setGroupRegion(null); return undefined; }
+    let dead = false;
+    setGroupRegion(null);
+    spaceBuildGroupRegion(groupSettings, () => dead).then((r) => { if (!dead && r) setGroupRegion(r); });
+    return () => { dead = true; };
+  }, [binSource, groupSettings, familySeeds]);
   const [status, setStatus] = useState({ phase: "loading" });
   const [hover, setHover] = useState(null);
   const [narrow, setNarrow] = useState(false);
@@ -5161,14 +5307,13 @@ const ViewSpaceInner = ({
       const pal = (binPalettes || []).find((x) => `palette:${x.id}` === binSource);
       (pal ? pal.colors : []).forEach((c) => push(c.L, c.C, c.H, c.hex, c.label || "", "anchor", [c.L, c.C, isFinite(c.H) ? c.H : 0]));
     } else if (binSource === "groups") {
-      // Colour groups: one bin per group, grown from the group's most central
-      // colour and painted in its average colour (the solid is sampled on a
-      // grid and every sample named by its group to find both).
-      const g = spaceGroupGrid(groupSettings);
-      Object.keys(g.seed).forEach((k) => { const p = g.seed[k]; push(p[0], p[1], p[2], g.hex[k], k, "anchor", p); });
+      // Colour groups: bins with the groups' own shapes (spaceBuildGroupRegion)
+      // (seeds are not merged by colour: a group may need several)
+      if (groupRegion) return { list: groupRegion.seeds.map((p) => ({ ...p, hex: spaceHexFor(p.hex, p.L, p.C, p.H) })), capped: 0, regions: { ...groupRegion.region, seedGroup: groupRegion.seeds.map((p) => p.g) } };
+      return { list: [], capped: 0 };
     }
     return { list: out, capped };
-  }, [binSource, anchors, markers, binPalettes, binSource === "groups" ? groupSettings : null, binSource === "groups" ? familySeeds : null]);
+  }, [binSource, anchors, markers, binPalettes, groupRegion]);
   const markersShown = useMemo(
     () => (binSource === "pins" ? markers.filter((m) => m.kind !== "pin") : binSource === "commercial" ? markers.filter((m) => m.kind !== "brand") : markers),
     [binSource, markers],
@@ -5218,7 +5363,7 @@ const ViewSpaceInner = ({
   // While another tab is showing, the view stays mounted (no rebuild, no new
   // WebGL context on return) but takes no updates; they apply when shown.
   const eng = active ? engineRef.current : null;
-  useEffect(() => { ready && eng && eng.setAnchors(seeds.list); }, [ready, seeds, active]);
+  useEffect(() => { ready && eng && eng.setAnchors(seeds.list, seeds.regions || null); }, [ready, seeds, active]);
   useEffect(() => { ready && eng && eng.setMarkers(markersShown); }, [ready, markersShown, active]);
   useEffect(() => { ready && eng && eng.setTether(tether); }, [ready, tether, active]);
   useEffect(() => { ready && eng && eng.setCursor(scrubL, scrubC, ((scrubH % 360) + 360) % 360); }, [ready, scrubL, scrubC, scrubH, active]);
