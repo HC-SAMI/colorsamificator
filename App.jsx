@@ -6629,6 +6629,8 @@ const FILTER_FIELDS = [
   { id: "english", label: "All words English", type: "boolean", get: (it) => nameLexOf(lexNameOfItem(it)).english },
   { id: "woodWord", label: "Names a wood species", type: "boolean", get: (it) => nameLexOf(lexNameOfItem(it)).wood },
   { id: "negativeWord", label: "Has a negative word", type: "boolean", get: (it) => nameLexOf(lexNameOfItem(it)).negative },
+  // a list-wide rule, not a per-colour test: see applyGlobalFilters
+  { id: "dedupe", label: "Repeated names", type: "dedupe", get: () => "" },
 ];
 // Operators that need no value typed beside them
 const FILTER_NO_VALUE_OPS = new Set(["one_word", "several_words"]);
@@ -6710,6 +6712,8 @@ const FILTER_OPS = {
     { id: "is_true", label: "is yes" },
     { id: "is_false", label: "is no" },
   ],
+  // value = brand keys in priority order, "|"-separated
+  dedupe: [{ id: "keep_first", label: "keep one, by brand priority" }],
   // value = brand, value2 = ΔE limit
   xref: [
     { id: "has", label: "has one within \u0394E" },
@@ -6740,6 +6744,7 @@ const evalFilterRow = (item, row, ctx) => {
     return row.op === "is_not" ? mine !== ctx.nounKey : mine === ctx.nounKey;
   }
 
+  if (field.type === "dedupe") return true;   // applied to the whole list afterwards
   if (field.type === "xref") {
     const brand = String(row.value || "");
     if (!brand) return true;
@@ -6793,7 +6798,7 @@ const evalFilterRow = (item, row, ctx) => {
 // union — an item survives if any single row matches it). The conjunction is
 // one choice for the whole group rather than per row, so the result never
 // depends on an invisible precedence rule between them.
-const applyGlobalFilters = (items, rows, ctx, mode, scope) => {
+const applyGlobalFiltersCore = (items, rows, ctx, mode, scope) => {
   // A row may be scoped to one surface (the DB list) rather than everywhere.
   const active = (rows || []).filter(
     (r) => !r.scope || !scope || r.scope === scope,
@@ -6818,6 +6823,78 @@ const applyGlobalFilters = (items, rows, ctx, mode, scope) => {
   return { items: out, culprit };
 };
 
+// "Repeated names": after every other row has run, colours that share a name
+// (ignoring case, accents and punctuation) are cut down to one, the copy from
+// the brand earliest in the priority list; brands not listed come after the
+// listed ones, and ties keep whichever comes first.
+const dedupeNameKey = (n) =>
+  String(n || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .replace(/['\u2019]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+const dedupeByBrand = (items, value) => {
+  const order = String(value || "").split("|").filter(Boolean).map((b) => b.toLowerCase());
+  const rank = new Map(order.map((b, i) => [b, i]));
+  const rankOf = (it) => { const r = rank.get(String(it.brand || "").toLowerCase()); return r === undefined ? order.length : r; };
+  const best = new Map();
+  items.forEach((it, i) => {
+    const k = dedupeNameKey(it.displayName || it.name);
+    if (!k) return;
+    const r = rankOf(it), b = best.get(k);
+    if (!b || r < b.r) best.set(k, { r, i });
+  });
+  return items.filter((it, i) => {
+    const k = dedupeNameKey(it.displayName || it.name);
+    return !k || best.get(k).i === i;
+  });
+};
+const applyGlobalFilters = (items, rows, ctx, mode, scope) => {
+  const isDedupe = (r) => r && !r.group && r.field === "dedupe" && (!r.scope || !scope || r.scope === scope);
+  const dd = (rows || []).filter(isDedupe);
+  if (!dd.length) return applyGlobalFiltersCore(items, rows, ctx, mode, scope);
+  const res = applyGlobalFiltersCore(items, (rows || []).filter((r) => !isDedupe(r)), ctx, mode, scope);
+  return { items: dedupeByBrand(res.items, dd[dd.length - 1].value), culprit: res.culprit };
+};
+// The priority list under a "Repeated names" row: brands in order, each
+// movable up or down, plus a picker for the rest.
+const BrandPriorityEditor = ({ value, onChange }) => {
+  const list = String(value || "").split("|").filter(Boolean);
+  const label = (b) => (typeof getBrandDisplayName === "function" ? getBrandDisplayName(b) : b);
+  const all = Object.keys(XREF_DATA.current || {}).sort((a, b) => label(a).localeCompare(label(b)));
+  const set = (next) => onChange(next.join("|"));
+  const move = (i, d) => { const n = list.slice(); const j = i + d; if (j < 0 || j >= n.length) return; [n[i], n[j]] = [n[j], n[i]]; set(n); };
+  const btn = "p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-neutral-200 disabled:opacity-30";
+  return React.createElement(
+    "div",
+    { className: "w-full pl-12 flex flex-col gap-1", "data-brand-priority": "" },
+    React.createElement("div", { className: "text-[9px] text-slate-400" },
+      list.length ? "Keeps the copy from the brand highest on this list; brands not listed come last." : "Pick brands in priority order. With none picked, the first copy listed is kept."),
+    list.length > 0 && React.createElement(
+      "ol",
+      { className: "flex flex-col gap-0.5" },
+      list.map((b, i) =>
+        React.createElement(
+          "li",
+          { key: b, className: "flex items-center gap-1 text-[10px] text-slate-600 dark:text-neutral-300" },
+          React.createElement("span", { className: "w-4 text-right font-mono text-slate-400" }, `${i + 1}.`),
+          React.createElement("span", { className: "flex-1 truncate font-bold" }, label(b)),
+          React.createElement("button", { onClick: () => move(i, -1), disabled: i === 0, title: "Higher priority", "aria-label": `Move ${label(b)} up`, className: btn }, React.createElement(Icon, { name: "chevron-up", className: "w-3 h-3" })),
+          React.createElement("button", { onClick: () => move(i, 1), disabled: i === list.length - 1, title: "Lower priority", "aria-label": `Move ${label(b)} down`, className: btn }, React.createElement(Icon, { name: "chevron-down", className: "w-3 h-3" })),
+          React.createElement("button", { onClick: () => set(list.filter((x) => x !== b)), title: "Remove from the list", "aria-label": `Remove ${label(b)}`, className: "p-0.5 text-slate-400 hover:text-red-500" }, React.createElement(Icon, { name: "x", className: "w-3 h-3" })),
+        ),
+      ),
+    ),
+    React.createElement(
+      "select",
+      {
+        value: "",
+        "aria-label": "Add a brand to the priority list",
+        onChange: (e) => e.target.value && set([...list, e.target.value]),
+        className: "self-start bg-transparent border border-slate-200 dark:border-neutral-700 rounded-md px-1.5 py-1 text-[10px] text-slate-600 dark:text-neutral-300 focus:outline-none max-w-[200px]",
+      },
+      React.createElement("option", { value: "" }, list.length ? "Add next brand\u2026" : "Add top brand\u2026"),
+      all.filter((b) => !list.includes(b)).map((b) => React.createElement("option", { key: b, value: b }, label(b))),
+    ),
+  );
+};
 const cursorValueFor = (fieldId, ctx) => {
   if (!ctx) return "cursor";
   const key = ctx.nounKey;
@@ -6839,6 +6916,10 @@ const describeFilterRow = (row, ctx) => {
   const op = (FILTER_OPS[field.type] || []).find((o) => o.id === row.op);
   const opLabel = op ? op.label : "";
   if (field.type === "boolean" || FILTER_NO_VALUE_OPS.has(row.op)) return `${field.label} ${opLabel}${tag}`;
+  if (field.type === "dedupe") {
+    const order = String(row.value || "").split("|").filter(Boolean).map((b) => (typeof getBrandDisplayName === "function" ? getBrandDisplayName(b) : b));
+    return `One per name${order.length ? ` (${order.join(" \u203a ")})` : ""}${tag}`;
+  }
   if (field.type === "xref") {
     const b = row.value ? (typeof getBrandDisplayName === "function" ? getBrandDisplayName(row.value) : row.value) : "any brand";
     return `Equivalent in ${b}: ${opLabel} ${row.value2 || 2}${tag}`;
@@ -7001,7 +7082,7 @@ const FilterRows = ({ rows, setRows, mode, setMode, optionsFor, ctx, depth = 0 }
               },
               cursorValueFor(row.field, ctx),
             )
-          : field.type !== "boolean" && !FILTER_NO_VALUE_OPS.has(row.op) &&
+          : field.type !== "boolean" && field.type !== "dedupe" && !FILTER_NO_VALUE_OPS.has(row.op) &&
           (options
             ? React.createElement(
                 "select",
@@ -7052,6 +7133,8 @@ const FilterRows = ({ rows, setRows, mode, setMode, optionsFor, ctx, depth = 0 }
           },
           React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
         ),
+        field.type === "dedupe" &&
+          React.createElement(BrandPriorityEditor, { value: row.value, onChange: (v) => update(row.id, { value: v }) }),
       );
     }),
     React.createElement(
@@ -7099,8 +7182,8 @@ const FilterBuilder = ({
   return React.createElement(
     "div",
     { className: "flex flex-col gap-2 min-w-[260px]" },
-    presets &&
-      presets.length > 0 &&
+    React.createElement(FilterPresetBar, { presets, rows, setRows, mode, setMode }),
+    false &&
       React.createElement(
         "div",
         { className: "flex flex-wrap gap-1 pb-2 border-b border-slate-200 dark:border-neutral-800" },
@@ -11558,6 +11641,118 @@ const nameLexOf = (name) => {
 };
 const lexNameOfItem = (it) => it.displayName || it.name || "";
 
+// ── Your own filter presets ───────────────────────────────────────────────
+// A preset is a named copy of a filter list (rows, groups and the And/Or).
+// Kept in this browser and written to anchors.csv as FILTER_PRESET rows, so a
+// sync carries them to the repo and every device loads them at launch.
+const FILTER_PRESET_KEY = "csam-filter-presets";
+const filterPresetStore = (() => {
+  let list = [];
+  try { const v = JSON.parse(localStorage.getItem(FILTER_PRESET_KEY) || "[]"); if (Array.isArray(v)) list = v; } catch (e) {}
+  const subs = new Set();
+  const commit = (next) => {
+    list = next;
+    try { localStorage.setItem(FILTER_PRESET_KEY, JSON.stringify(list)); } catch (e) {}
+    subs.forEach((f) => f());
+  };
+  return {
+    get: () => list,
+    save: (name, rows, mode) => {
+      const nm = String(name || "").trim();
+      if (!nm) return;
+      const clean = JSON.parse(JSON.stringify(rows || []));
+      const at = list.findIndex((p) => p.name.toLowerCase() === nm.toLowerCase());
+      const p = { id: at >= 0 ? list[at].id : `fp-${Date.now().toString(36)}`, name: nm, mode: mode === "or" ? "or" : "and", rows: clean };
+      commit(at >= 0 ? list.map((x, i) => (i === at ? p : x)) : [...list, p]);
+    },
+    remove: (id) => commit(list.filter((p) => p.id !== id)),
+    // presets read from a CSV join (or replace by id) the ones already here
+    merge: (items) => {
+      let next = list.slice();
+      (items || []).forEach((p) => {
+        if (!p || !p.name || !Array.isArray(p.rows)) return;
+        const at = next.findIndex((x) => x.id === p.id || x.name.toLowerCase() === String(p.name).toLowerCase());
+        if (at >= 0) next[at] = { ...next[at], ...p, id: next[at].id }; else next.push(p);
+      });
+      commit(next);
+    },
+    subscribe: (f) => { subs.add(f); return () => subs.delete(f); },
+  };
+})();
+const useFilterPresets = () => {
+  const [, force] = useState(0);
+  useEffect(() => filterPresetStore.subscribe(() => force((x) => x + 1)), []);
+  return filterPresetStore.get();
+};
+// Fresh row ids on every apply, so a preset can be applied twice without clashes.
+const clonePresetRows = (rows) =>
+  (rows || []).map((r) =>
+    r && r.group
+      ? { ...r, id: `g${++FILTER_ROW_SEQ}`, rows: clonePresetRows(r.rows) }
+      : { ...r, id: `f${++FILTER_ROW_SEQ}` },
+  );
+const describePreset = (p) => (p.rows || []).map((r) => describeFilterRow(r, null)).join(p.mode === "or" ? " or " : " and ");
+
+const FilterPresetBar = ({ presets, rows, setRows, mode, setMode }) => {
+  const mine = useFilterPresets();
+  const [naming, setNaming] = useState(false);
+  const [name, setName] = useState("");
+  const [confirmDel, setConfirmDel] = useState(null);
+  const chip = "px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border";
+  const save = () => {
+    if (!name.trim()) return;
+    filterPresetStore.save(name, rows, mode);
+    setNaming(false); setName("");
+  };
+  const exists = name.trim() && mine.some((p) => p.name.toLowerCase() === name.trim().toLowerCase());
+  return React.createElement(
+    "div",
+    { className: "flex flex-wrap items-center gap-1 pb-2 border-b border-slate-200 dark:border-neutral-800" },
+    React.createElement("span", { className: "w-full text-[9px] font-bold uppercase tracking-widest text-slate-400 pb-1" }, "Presets"),
+    (presets || []).map((p) =>
+      React.createElement("button", { key: p.id, onClick: p.apply, title: p.hint || "", className: `${chip} border-slate-200 dark:border-neutral-700 text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800` }, p.label),
+    ),
+    mine.length > 0 && React.createElement("span", { className: "w-full text-[9px] font-bold uppercase tracking-widest text-slate-400 pt-2 pb-1" }, "My presets"),
+    mine.map((p) =>
+      React.createElement(
+        "span",
+        { key: p.id, "data-filter-preset": p.name, className: `${chip} inline-flex items-center gap-1 border-sky-200 dark:border-sky-500/30 bg-sky-50 dark:bg-sky-500/10 text-sky-700 dark:text-sky-300` },
+        React.createElement("button", {
+          onClick: () => { setRows(clonePresetRows(p.rows)); if (setMode) setMode(p.mode || "and"); },
+          title: `Replace the filters with: ${describePreset(p)}`,
+          className: "uppercase tracking-wider font-bold hover:underline",
+        }, p.name),
+        React.createElement("button", {
+          onClick: () => (confirmDel === p.id ? (filterPresetStore.remove(p.id), setConfirmDel(null)) : setConfirmDel(p.id)),
+          onBlur: () => setConfirmDel(null),
+          title: confirmDel === p.id ? "Click again to delete this preset" : "Delete preset",
+          "aria-label": `Delete preset ${p.name}`,
+          className: confirmDel === p.id ? "text-red-600 normal-case" : "opacity-60 hover:opacity-100 hover:text-red-500",
+        }, confirmDel === p.id ? "delete?" : React.createElement(Icon, { name: "x", className: "w-3 h-3" })),
+      ),
+    ),
+    React.createElement("div", { className: "w-full flex items-center gap-1 pt-2" },
+      naming
+        ? [
+            React.createElement("input", {
+              key: "n", autoFocus: true, value: name, placeholder: "Preset name",
+              onChange: (e) => setName(e.target.value),
+              onKeyDown: (e) => { if (e.key === "Enter") save(); if (e.key === "Escape") { e.stopPropagation(); setNaming(false); } },
+              className: "flex-1 min-w-0 bg-transparent border border-slate-200 dark:border-neutral-700 rounded-md px-2 py-1 text-[11px] text-slate-700 dark:text-neutral-200 focus:outline-none focus:border-sky-400",
+            }),
+            React.createElement("button", { key: "s", onClick: save, disabled: !name.trim(), className: `${chip} border-sky-600 bg-sky-600 text-white disabled:opacity-40` }, exists ? "Replace" : "Save"),
+            React.createElement("button", { key: "c", onClick: () => setNaming(false), className: `${chip} border-transparent text-slate-400 hover:text-slate-600` }, "Cancel"),
+          ]
+        : React.createElement("button", {
+            onClick: () => { setNaming(true); setName(""); },
+            disabled: !rows.length,
+            title: rows.length ? "Keep these filters as a preset of your own" : "Add some filters first",
+            className: `${chip} inline-flex items-center gap-1 border-dashed border-slate-300 dark:border-neutral-600 text-slate-500 dark:text-neutral-400 hover:bg-slate-50 dark:hover:bg-neutral-800 disabled:opacity-40`,
+          }, React.createElement(Icon, { name: "bookmark-plus", className: "w-3 h-3" }), "Save as preset"),
+    ),
+  );
+};
+
 const ViewportSwatches = ({
   items,
   layout,
@@ -14815,6 +15010,13 @@ const processCSVData = (
           });
         }
       } catch (e2) {}
+      return;
+    }
+    if (targetType === "FILTER_PRESET") {
+      try {
+        const v = JSON.parse(row.Note || "{}");
+        filterPresetStore.merge([{ id: row.ID || `fp-${String(row.Noun || "").toLowerCase()}`, name: String(row.Noun || "").trim(), mode: v.mode === "or" ? "or" : "and", rows: Array.isArray(v.rows) ? v.rows : [] }]);
+      } catch (e) {}
       return;
     }
     if (targetType === "TAG") {
@@ -18311,6 +18513,8 @@ const App = () => {
       }
       // tags created in the tag manager, so ones not yet on any colour survive
       (tagLibrary || []).forEach((t) => anchorsCsv.push({ Type: "TAG", Noun: t }));
+      // your filter presets (rows and And/Or as JSON in Note)
+      filterPresetStore.get().forEach((p) => anchorsCsv.push({ Type: "FILTER_PRESET", ID: p.id, Noun: p.name, Note: JSON.stringify({ mode: p.mode, rows: p.rows }) }));
       const palettesCsv = [];
       (savedPalettes || []).forEach((p) => {
         palettesCsv.push({
