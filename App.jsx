@@ -4636,13 +4636,21 @@ const spaceGroupGrid = (gs) => {
         const e = acc.get(k) || { n: 0, L: 0, a: 0, b: 0 };
         e.n++; e.L += L; e.a += a; e.b += b; acc.set(k, e);
       }
-  const hex = {}, mean = {};
+  const hex = {}, mean = {}, seed = {};
   acc.forEach((e, k) => {
     const L = e.L / e.n, a = e.a / e.n, b = e.b / e.n, C = Math.hypot(a, b), H = ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360;
     mean[k] = [L, C, H];
     hex[k] = spaceHexFor(null, L, C, H);
+    e.cL = L; e.ca = a; e.cb = b; e.best = Infinity;
   });
-  return { cells, hex, mean, n: acc.size };
+  // each group's bin grows from its most central member (the sample nearest
+  // its mean, so it lies inside the group even when the group is a crescent)
+  cells.forEach((c) => {
+    const e = acc.get(c.k), r = (c.H * Math.PI) / 180, a = c.C * Math.cos(r), b = c.C * Math.sin(r);
+    const d = (c.L - e.cL) ** 2 + (a - e.ca) ** 2 + (b - e.cb) ** 2;
+    if (d < e.best) { e.best = d; seed[c.k] = [c.L, c.C, c.H]; }
+  });
+  return { cells, hex, mean, seed, n: acc.size };
 };
 const SPACE_BIN_KEY = "csam-bin-source";
 const SpaceBinSource = ({ value, onChange, options, capped, compact }) =>
@@ -5153,11 +5161,11 @@ const ViewSpaceInner = ({
       const pal = (binPalettes || []).find((x) => `palette:${x.id}` === binSource);
       (pal ? pal.colors : []).forEach((c) => push(c.L, c.C, c.H, c.hex, c.label || "", "anchor", [c.L, c.C, isFinite(c.H) ? c.H : 0]));
     } else if (binSource === "groups") {
-      // Colour groups: the screen's colour solid sampled on a grid, each
-      // sample named by its colour group, every cell of a group painted in the
-      // group's average colour, so the bins read as the groups' regions.
+      // Colour groups: one bin per group, grown from the group's most central
+      // colour and painted in its average colour (the solid is sampled on a
+      // grid and every sample named by its group to find both).
       const g = spaceGroupGrid(groupSettings);
-      g.cells.forEach((c) => push(c.L, c.C, c.H, g.hex[c.k], c.k, "anchor", [g.mean[c.k][0], g.mean[c.k][1], g.mean[c.k][2]]));
+      Object.keys(g.seed).forEach((k) => { const p = g.seed[k]; push(p[0], p[1], p[2], g.hex[k], k, "anchor", p); });
     }
     return { list: out, capped };
   }, [binSource, anchors, markers, binPalettes, binSource === "groups" ? groupSettings : null, binSource === "groups" ? familySeeds : null]);
@@ -6369,7 +6377,7 @@ const anchorNameOf = (an, names) =>
   String((names && names[an.nameKey]) || (names && names[an.id]) || an.sc.nameOverride || "").trim();
 // CSV headers in any case or spacing ("NOUN", "noun", "Oklch L") map onto the
 // names the importer reads, so a file exported elsewhere still loads its names.
-const CSV_CANONICAL_KEYS = "Adjective Anchor AnchorId Anchor_ID Brand BrandName Brand_Name CIE_A CIE_B CIE_L DoorProfile Door_Profile ERP_Code HEX ID Illuminant Image LAB_L Lab_A Lab_B Lab_L Material Measurement_Date Measurement_Device Measurement_Method Name Note Noun NounOverride Noun_Override OKLCH_C OKLCH_H OKLCH_L Observer Original_Index Parent ParentId ParentPinId Parent_ID Parent_Pin_ID PinId Pin_ID Profile RGB_B RGB_G RGB_R Sheen Spectral TactileTexture Tactile_Texture Tags Type URL VisualPattern VisualTexture Visual_Pattern Visual_Texture Texture_Albedo Texture_Normal Texture_Roughness Texture_Gloss Texture_Height Texture_AO Texture_Width_cm Texture_Normal_DX".split(" ");
+const CSV_CANONICAL_KEYS = "Adjective Anchor AnchorId Anchor_ID Brand BrandName Brand_Name CIE_A CIE_B CIE_L DoorProfile Door_Profile ERP_Code HEX ID Illuminant Image LAB_L Lab_A Lab_B Lab_L Material Measurement_Date Measurement_Device Measurement_Method Name Note Noun NounOverride Noun_Override OKLCH_C OKLCH_H OKLCH_L Observer Original_Index Parent ParentId ParentPinId Parent_ID Parent_Pin_ID PinId Pin_ID Profile RGB_B RGB_G RGB_R Sheen Spectral TactileTexture Tactile_Texture Tags Type URL VisualPattern VisualTexture Visual_Pattern Visual_Texture Texture_Albedo Texture_Normal Texture_Roughness Texture_Gloss Texture_Height Texture_AO Texture_Reflection Texture_Width_cm Texture_Normal_DX".split(" ");
 const CSV_KEY_LOOKUP = (() => {
   const m = {};
   CSV_CANONICAL_KEYS.forEach((k) => { const n = k.toLowerCase().replace(/[\s_-]+/g, ""); if (!m[n]) m[n] = k; });
@@ -10186,7 +10194,7 @@ const textureStore = (() => {
 })();
 
 // Texture_* columns of a data or pin row → { albedo, normal, … } or null
-const TEXTURE_COLUMNS = ["Albedo", "Normal", "Roughness", "Gloss", "Height", "AO"];
+const TEXTURE_COLUMNS = ["Albedo", "Normal", "Roughness", "Gloss", "Height", "AO", "Reflection"];
 const parseTextureColumns = (row) => {
   if (!row) return null;
   const pick = (k) => String(row[`Texture_${k}`] || row[`Texture${k}`] || "").trim();
@@ -10252,7 +10260,7 @@ const useMaterialMaps = (mat) => {
   const t = mat && mat.textures;
   if (t && (t.albedo || t.normal || t.roughness || t.gloss || t.height)) {
     const maps = {};
-    ["albedo", "normal", "roughness", "gloss", "height", "ao"].forEach((k) => { if (t[k]) maps[k] = t[k]; });
+    ["albedo", "normal", "roughness", "gloss", "height", "ao", "reflection"].forEach((k) => { if (t[k]) maps[k] = t[k]; });
     return { source: "data", maps, widthCm: t.widthCm || 60, normalDX: !!t.normalDX, files: {} };
   }
   return null;
@@ -10272,18 +10280,24 @@ const TEX_WORDS = {
   gloss: "gloss glossiness gls glossy",
   height: "height heightmap displacement disp displace bump depth",
   ao: "ao ambientocclusion occlusion",
-  skip: "metalness metallic metal specular spec reflection refl reflect opacity alpha mask transparency preview thumbnail thumb sphere cube render renders swatch sss translucency emissive emission cavity idmap fuzz sheen ior",
+  reflection: "reflection reflections refl reflect specular spec speclevel reflectivity",
+  skip: "metalness metallic metal opacity alpha mask transparency preview thumbnail thumb sphere cube render renders swatch sss translucency emissive emission cavity idmap fuzz sheen ior",
 };
 const TEX_WORD_KIND = (() => { const m = {}; Object.entries(TEX_WORDS).forEach(([k, s]) => s.split(" ").forEach((w) => { m[w] = k; })); return m; })();
+// words beside a channel that say which flavour it is, not which product
+const TEX_MODIFIERS = new Set("dx directx gl ogl opengl plane flat lin linear srgb raw 16bit 8bit bit map maps".split(" "));
 const TEX_RES_RE = /^(\d{1,2})k$|^(512|1024|2048|4096|8192|16384)(px)?$/;
 // "Tafisa_IconiqProdigy-M2064Q_NormalGL_4K" → ["tafisa","iconiq","prodigy","m2064q","normal","gl","4k"] (+ joined pairs)
 const texTokens = (s) =>
   String(s || "")
     .replace(/\.[a-z0-9]{2,4}$/i, "")
+    .normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .toLowerCase()
     .split(/[^a-z0-9]+/)
-    .filter(Boolean);
+    .filter(Boolean)
+    // a channel word with a bit depth stuck on ("NORMALS8", "DISPLACEMENT16")
+    .map((t) => { const m = t.match(/^([a-z]{3,})(8|16|32)$/); return m && TEX_WORD_KIND[m[1]] ? m[1] : t; });
 const texKindFromTokens = (toks) => {
   // the last channel word wins (names end in the channel); pairs like
   // "base color", "ambient occlusion", "normal gl" count as one word
@@ -10376,15 +10390,17 @@ const texGroupSets = (files) => {
     const dir = segs.join("/");
     if (/\.(txt|json)$/i.test(name)) { setOf(dir).notes.push(f); return; }
     const toks = texTokens(name), hintToks = hints.flatMap(texTokens);
-    const stem = toks.filter((t) => !TEX_WORD_KIND[t] && !TEX_RES_RE.test(t) && !(TEX_WORD_KIND[t + "x"])).join(" ");
+    const stem = toks.filter((t) => !TEX_WORD_KIND[t] && !TEX_RES_RE.test(t) && !/^\d+$/.test(t) && !TEX_MODIFIERS.has(t)).join(" ");
     const s = setOf(dir);
     s.images.push({ ...f, name, toks, hintToks, stem });
   });
   // a folder of loose files from several products: split by name stem
   const out = [];
   sets.forEach((s) => {
-    const stems = new Set(s.images.map((i) => i.stem));
-    if (stems.size > 1 && s.images.length > 6) {
+    // split only when several products' full sets share one folder (each
+    // with its own colour or normal map), not for a pack's previews
+    const mainStems = new Set(s.images.filter((i) => { const k = texKindFromTokens(i.toks).kind; return k === "albedo" || k === "normal"; }).map((i) => i.stem));
+    if (mainStems.size > 1 && s.images.length > 6) {
       const byStem = new Map();
       s.images.forEach((i) => { const k = i.stem; if (!byStem.has(k)) byStem.set(k, { id: `${s.id}|${k}`, images: [], notes: s.notes, tokens: new Set() }); byStem.get(k).images.push(i); });
       byStem.forEach((x) => out.push(x));
@@ -10405,7 +10421,7 @@ const texReadSet = async (set) => {
   // nearest to 2K first (16K maps would not fit), then the larger file
   const pick = (list) => [...list].sort((a, b) => Math.abs(Math.log2((a.res || 2048) / 2048)) - Math.abs(Math.log2((b.res || 2048) / 2048)) || b.blob.size - a.blob.size);
   const chosen = {};
-  for (const k of Object.keys(cand)) chosen[k] = pick(cand[k])[0];
+  for (const k of Object.keys(cand)) chosen[k] = (k === "normal" ? pick(cand[k]).sort((a, b) => (a.dx ? 1 : 0) - (b.dx ? 1 : 0)) : pick(cand[k]))[0];
   // check what each looks like; fix names the content contradicts
   const final = {};
   const consider = async (c) => {
@@ -10419,10 +10435,10 @@ const texReadSet = async (set) => {
     if (!k) return;
     if (!final[k] || (c.named && !final[k].named)) final[k] = { ...c, kind: k };
   };
-  for (const k of ["normal", "albedo", "roughness", "gloss", "height", "ao", "?"]) await consider(chosen[k]);
+  for (const k of ["normal", "albedo", "roughness", "gloss", "height", "ao", "reflection", "?"]) await consider(chosen[k]);
   // a second albedo candidate that was really the normal map, etc.
   if (cand["?"]) for (const c of pick(cand["?"]).slice(1, 4)) await consider(c);
-  if (final.roughness && final.gloss) delete final.gloss;
+  if (final.roughness && final.gloss) delete final.gloss; // the same thing inverted
   const maps = {}, files = {};
   for (const [k, c] of Object.entries(final)) { maps[k] = await shrinkTextureBlob(c.blob, 2048, k); files[k] = c.path; }
   let note = "", size = null;
@@ -10471,23 +10487,30 @@ const texBuildCatalogue = (colorData) => {
   });
   return items;
 };
+const texDigits = (t) => (String(t).match(/\d{3,}/g) || []);
 const texMatch = (tokens, catalogue) => {
   const has = (t) => tokens.has(t);
+  // the number inside a product code: one decor's lines differ by letters
+  // (Tafisa's T583 HPL and L583K are the same First Class)
+  const packDigits = new Set([...tokens].filter((t) => /\d/.test(t) && !TEX_RES_RE.test(t)).flatMap(texDigits));
   let best = null, second = null;
   for (const c of catalogue) {
     let sc = 0;
     const codeHits = c.codes.filter(has).length;
-    sc += codeHits * 10;
+    const digitHits = codeHits ? 0 : c.codes.filter((k) => texDigits(k).some((d) => packDigits.has(d))).length;
     const wordHits = c.words.filter(has).length;
-    sc += wordHits * 2;
-    if (c.words.length && wordHits === c.words.length) sc += 2;
-    if ([...c.brandToks].some(has)) sc += 3;
-    if (!sc) continue;
-    const e = { c, sc, codeHits, wordHits };
+    const brandHit = [...c.brandToks].some(has);
+    sc += codeHits * 10 + digitHits * 6 + wordHits * 2 + (c.words.length && wordHits === c.words.length ? 2 : 0) + (brandHit ? 3 : 0);
+    if (!codeHits && !digitHits && !wordHits) continue;
+    const e = { c, sc, codeHits, digitHits, wordHits, brandHit };
     if (!best || sc > best.sc) { second = best; best = e; } else if (!second || sc > second.sc) second = e;
   }
   if (!best) return null;
-  const sure = best.codeHits > 0 || (best.wordHits >= 2 && best.wordHits === best.c.words.length);
+  const sure =
+    best.codeHits > 0 ||
+    (best.digitHits > 0 && best.wordHits >= 1) ||
+    (best.wordHits >= 2 && best.wordHits === best.c.words.length) ||
+    (best.wordHits >= 2 && best.brandHit && best.wordHits >= best.c.words.length - 1);
   if (!sure || (second && second.sc === best.sc)) return { ...best, ambiguous: true, second };
   return best;
 };
@@ -10535,6 +10558,7 @@ const importTextureLibrary = async (items, colorData, onProgress) => {
   const sets = texGroupSets(files);
   const catalogue = texBuildCatalogue(colorData);
   const report = { matched: [], unmatched: [], ambiguous: [] };
+  const done = new Map(); // two sets for one colour in this run add up
   for (let i = 0; i < sets.length; i++) {
     onProgress && onProgress(`Texture ${i + 1} of ${sets.length}…`);
     const r = await texReadSet(sets[i]);
@@ -10542,8 +10566,13 @@ const importTextureLibrary = async (items, colorData, onProgress) => {
     const m = texMatch(r.tokens, catalogue);
     if (!m || m.ambiguous) { (m ? report.ambiguous : report.unmatched).push({ label: r.label, reason: m ? `could be ${m.c.item.name} or ${m.second ? m.second.c.item.name : "another"}` : "no colour with that name or code", pack: r }); continue; }
     const prev = (await textureStore.get(m.c.key)) || {};
-    await textureStore.put(m.c.key, { maps: r.maps, files: r.files, widthCm: r.widthCm || prev.widthCm || 60, normalDX: r.normalDX, updated: Date.now(), name: m.c.item.name, brand: m.c.brand, index: m.c.index, source: r.label });
-    report.matched.push({ label: r.label, name: m.c.item.name, brand: m.c.brand, kinds: Object.keys(r.maps), widthCm: r.widthCm });
+    const before = done.get(m.c.key);
+    const maps = before ? { ...r.maps, ...before.maps } : r.maps, files = before ? { ...r.files, ...before.files } : r.files;
+    const rec = { maps, files, widthCm: (before && before.widthCm) || r.widthCm || prev.widthCm || 60, normalDX: before && before.maps.normal ? before.normalDX : r.normalDX, updated: Date.now(), name: m.c.item.name, brand: m.c.brand, index: m.c.index, source: r.label };
+    await textureStore.put(m.c.key, rec);
+    done.set(m.c.key, rec);
+    if (before) { const row = report.matched.find((x) => x.key === m.c.key); if (row) row.kinds = Object.keys(maps); continue; }
+    report.matched.push({ key: m.c.key, label: r.label.split("|")[0], name: m.c.item.name, brand: m.c.brand, kinds: Object.keys(r.maps), widthCm: r.widthCm });
   }
   return report;
 };
@@ -10709,6 +10738,30 @@ const m3AverageLinear = (img) => {
     const n = d.length / 4;
     return [r / n, g / n, b / n];
   } catch (e) { return null; } // a cross-origin image without CORS: no average
+};
+// the mean of an image's first channel, as stored (for data maps)
+const m3AverageRaw = (img) => {
+  try {
+    const cv = document.createElement("canvas"); cv.width = 32; cv.height = 32;
+    const ctx = cv.getContext("2d"); ctx.drawImage(img, 0, 0, 32, 32);
+    const d = ctx.getImageData(0, 0, 32, 32).data;
+    let r = 0;
+    for (let i = 0; i < d.length; i += 4) r += d[i];
+    return r / (d.length / 4) / 255;
+  } catch (e) { return null; }
+};
+// crevice shading from a displacement map: darker where it sits below its surroundings
+const m3CavityFromHeight = (img, N) => {
+  const cv = document.createElement("canvas"); cv.width = N; cv.height = N;
+  const ctx = cv.getContext("2d"); ctx.drawImage(img, 0, 0, N, N);
+  const id = ctx.getImageData(0, 0, N, N), d = id.data, h = new Float32Array(N * N);
+  for (let i = 0; i < N * N; i++) h[i] = d[i * 4] / 255;
+  const r = 6, lo = new Float32Array(N * N);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { let s = 0, n = 0; for (let k = -r; k <= r; k += 2) { s += h[y * N + ((x + k + N) % N)] + h[((y + k + N) % N) * N + x]; n += 2; } lo[y * N + x] = s / n; }
+  let mx = 1e-6; for (let i = 0; i < N * N; i++) mx = Math.max(mx, lo[i] - h[i]);
+  for (let i = 0; i < N * N; i++) { const v = 255 * (1 - 0.45 * Math.max(0, (lo[i] - h[i]) / mx)); d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v; d[i * 4 + 3] = 255; }
+  ctx.putImageData(id, 0, 0);
+  return cv;
 };
 const m3InvertCanvas = (img) => {
   const cv = document.createElement("canvas"); cv.width = img.naturalWidth || img.width; cv.height = img.naturalHeight || img.height;
@@ -10900,7 +10953,7 @@ const MaterialViewer3D = ({ mat, maps, L, C, H, mode, light, matchColour = true,
         const t = tex(imgs.normal, false); setRepeat(t, "tile"); material.normalMap = t;
         material.normalScale.set(1, maps && maps.normalDX ? -1 : 1); info.maps.push("normal");
       } else if (imgs.height) {
-        const t = tex(imgs.height, false); setRepeat(t, "tile"); material.bumpMap = t; material.bumpScale = 0.015; info.maps.push("height");
+        const t = tex(imgs.height, false); setRepeat(t, "tile"); material.bumpMap = t; material.bumpScale = 0.015; info.maps.push("height (as relief)");
       } else {
         const rel = m3ReliefOf(mat);
         let h = null, N = 512;
@@ -10916,6 +10969,30 @@ const MaterialViewer3D = ({ mat, maps, L, C, H, mode, light, matchColour = true,
         material.roughnessMap = t; material.roughness = 1; info.maps.push(imgs.roughness ? "roughness" : "gloss");
       }
       if (imgs.ao) { const t = tex(imgs.ao, false); setRepeat(t, "tile"); material.aoMap = t; material.aoMapIntensity = 1; info.maps.push("ao"); }
+      else if (imgs.height) {
+        // no AO map (Lightbeans packs have none): the crevices from the displacement map
+        const t = tex(m3CavityFromHeight(imgs.height, 512), false); setRepeat(t, "tile"); material.aoMap = t; material.aoMapIntensity = 1;
+        if (imgs.normal) info.maps.push("height (as crevice shading)");
+      }
+      // reflection (specular level) map: how strongly each spot reflects, around the finish's own level
+      if (imgs.reflection && (material.map || material.normalMap)) {
+        const t = tex(imgs.reflection, false); setRepeat(t, "tile");
+        const avg = m3AverageRaw(imgs.reflection) || 0.5;
+        material.userData.reflTex = t; material.userData.reflScale = 1 / Math.max(0.05, avg);
+        material.onBeforeCompile = (sh) => {
+          sh.uniforms.reflMap = { value: material.userData.reflTex };
+          sh.uniforms.reflScale = { value: material.userData.reflScale };
+          sh.fragmentShader = "uniform sampler2D reflMap;\nuniform float reflScale;\n" + sh.fragmentShader.replace(
+            "#include <lights_physical_fragment>",
+            THREE.ShaderChunk.lights_physical_fragment.replace("pow2( reflectivity )", "pow2( clamp( reflectivity * reflScale * texture2D( reflMap, vUv ).r, 0.0, 1.0 ) )"),
+          );
+        };
+        material.customProgramCacheKey = () => "csam-refl";
+        info.maps.push("reflection");
+      } else {
+        material.onBeforeCompile = () => {};
+        material.customProgramCacheKey = () => "";
+      }
       material.needsUpdate = true;
       onInfo && onInfo(info);
     };
@@ -11054,8 +11131,8 @@ const TextureMapsDialog = ({ mat, maps, onClose, colorData }) => {
   };
   const update = async (patch) => { const prev = await textureStore.get(mat.key); if (prev) await textureStore.put(mat.key, { ...prev, ...patch }); };
   const removeKind = async (k) => { const prev = await textureStore.get(mat.key); if (!prev) return; const m2 = { ...prev.maps }; delete m2[k]; const f2 = { ...(prev.files || {}) }; delete f2[k]; if (Object.keys(m2).length) await textureStore.put(mat.key, { ...prev, maps: m2, files: f2 }); else await textureStore.del(mat.key); };
-  const kindsShown = ["albedo", "normal", "roughness", "gloss", "height", "ao"];
-  const label = { albedo: "Albedo (colour)", normal: "Normal", roughness: "Roughness", gloss: "Gloss", height: "Height", ao: "Ambient occlusion" };
+  const kindsShown = ["albedo", "normal", "roughness", "gloss", "height", "ao", "reflection"];
+  const label = { albedo: "Albedo (colour)", normal: "Normal", roughness: "Roughness", gloss: "Gloss", height: "Height", ao: "Ambient occlusion", reflection: "Reflection" };
   return React.createElement(
     "div",
     { className: "fixed inset-0 z-[120] bg-black/50 flex items-center justify-center p-4", onClick: onClose },
@@ -17927,6 +18004,7 @@ const App = () => {
           Texture_Gloss: "",
           Texture_Height: "",
           Texture_AO: "",
+          Texture_Reflection: "",
           Texture_Width_cm: "",
           Texture_Normal_DX: "",
         };
