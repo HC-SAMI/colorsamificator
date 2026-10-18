@@ -2530,7 +2530,15 @@ function createSpaceEngine(opts) {
     }
     return best;
   };
-  const famAtLCH = (L, C, H) => { const r = (H * Math.PI) / 180; return famAtLab(L, C * Math.cos(r), C * Math.sin(r)); };
+  // a surface colour, lifted to the screen chroma the survey names it by
+  // (surfaceToScreenChroma in the app), before the lookup
+  let famK = 1;
+  const famLift = (C) => {
+    if (!(C > 0) || famK <= 1) return C;
+    const g = (0.171 * Math.log(famK)) / Math.log(1.9);
+    return Math.pow(C * famK * Math.pow(0.1, g), 1 / (1 + g));
+  };
+  const famAtLCH = (L, C, H) => { const r = (H * Math.PI) / 180, c = famLift(C); return famAtLab(L, c * Math.cos(r), c * Math.sin(r)); };
   const buildGroupLines3D = () => {
     const g = S.groups;
     if (!g) { groupLines.visible = false; requestRender(); return; }
@@ -4363,6 +4371,7 @@ function createSpaceEngine(opts) {
       const ws = new Float64Array(famT);
       list.forEach((p, i) => { ws[famF[i]] += p.w > 0 ? p.w : 1; });
       famLogW = Array.from(ws, (w) => Math.log(Math.max(w, 1e-9)));
+      famK = gs && isFinite(+gs.surfaceChroma) ? Math.max(1, Math.min(3, +gs.surfaceChroma)) : 1.9;
       if (!gs) { S.groups = null; buildGroupLines3D(); scheduleSections(); return; }
       const num = (x, d) => (isFinite(+x) ? +x : d);
       const centres = (gs.hues || [])
@@ -9435,6 +9444,29 @@ const semanticClaim = (tw, s) => {
   return 0;
 };
 
+// Screen colours vs surfaces. The xkcd survey named colours on screens,
+// where it takes far more chroma for a colour to be called "vivid" (or even
+// to stop being "grey") than on a painted or laminated surface. Fitted on the
+// 42 names both the survey and the ISCC-NBS dictionary (which names
+// surfaces) use: a screen colour of chroma C reads like a surface of chroma
+// C·(C/0.1)^0.171 / 1.9 (1.9× at C 0.1, 2.2× at 0.04, 1.6× at 0.25). The
+// matching is done in the survey's (screen) terms: a surface colour, and the
+// ISCC-NBS names and your examples (surfaces too), are first lifted to the
+// screen chroma that reads the same; names are shown as surfaces.
+// settings.surfaceChroma: the factor at C 0.1 (1 = take screen names as they are).
+const SEMANTIC_SURFACE_K = 1.9, SEMANTIC_SURFACE_G = 0.171;
+const surfaceChromaOf = (s) => {
+  const k = s && isFinite(+s.surfaceChroma) ? +s.surfaceChroma : SEMANTIC_SURFACE_K;
+  return Math.max(1, Math.min(3, k));
+};
+const surfaceExponent = (k) => (SEMANTIC_SURFACE_G * Math.log(k)) / Math.log(SEMANTIC_SURFACE_K);
+const screenToSurfaceChroma = (C, k) => (!(C > 0) || k <= 1 ? C : (C * Math.pow(C / 0.1, surfaceExponent(k))) / k);
+const surfaceToScreenChroma = (C, k) => {
+  if (!(C > 0) || k <= 1) return C;
+  const g = surfaceExponent(k);
+  return Math.pow(C * k * Math.pow(0.1, g), 1 / (1 + g));
+};
+
 // The index for the current words: which names each word claims, as flat
 // arrays for the nearest-name search.
 let colorFamilyIndex = null;
@@ -9442,6 +9474,7 @@ const buildColorFamilyIndex = (settings) => {
   const s = settings || defaultGroupSettings;
   if (familyModeOf(s) !== "words") return { mode: "angles", n: 0, pts: [], terms: [] };
   const words = colorWordsOf(s).filter((t) => String(t.name || "").trim());
+  const k = surfaceChromaOf(s);
   const tws = words.map((t) => semanticWords(t.name));
   const pts = [];
   SEMANTIC_SAMPLES.forEach((smp) => {
@@ -9450,20 +9483,30 @@ const buildColorFamilyIndex = (settings) => {
       const sc = semanticClaim(tws[i], smp);
       if (sc > bs || (sc === bs && sc > 0 && tws[i].length > tws[best].length)) { bs = sc; best = i; }
     }
-    if (best >= 0) pts.push({ ...smp, ti: best, claim: bs });
+    if (best < 0) return;
+    // sa/sb: where it is matched (screen terms); a/b: the surface it names
+    const C = Math.hypot(smp.a, smp.b);
+    if (smp.src === 0) {
+      const f = C > 0 ? screenToSurfaceChroma(C, k) / C : 1;
+      pts.push({ ...smp, sa: smp.a, sb: smp.b, a: smp.a * f, b: smp.b * f, ti: best, claim: bs });
+    } else {
+      const f = C > 0 ? surfaceToScreenChroma(C, k) / C : 1;
+      pts.push({ ...smp, sa: smp.a * f, sb: smp.b * f, ti: best, claim: bs });
+    }
   });
   words.forEach((t, i) =>
     (Array.isArray(t.examples) ? t.examples : []).forEach((e) => {
-      const r = ((e.H || 0) * Math.PI) / 180;
-      pts.push({ name: "your example", L: e.L, a: e.C * Math.cos(r), b: e.C * Math.sin(r), cat: null, src: 2, ti: i, claim: 200 });
+      const r = ((e.H || 0) * Math.PI) / 180, sc = surfaceToScreenChroma(e.C || 0, k);
+      pts.push({ name: "your example", L: e.L, a: e.C * Math.cos(r), b: e.C * Math.sin(r), sa: sc * Math.cos(r), sb: sc * Math.sin(r), cat: null, src: 2, ti: i, claim: 200 });
     }),
   );
   const n = pts.length, PL = new Float64Array(n), PA = new Float64Array(n), PB = new Float64Array(n), PT = new Int32Array(n), PW = new Float64Array(n);
   const count = new Array(words.length).fill(0), cats = words.map(() => ({})), wsum = new Array(words.length).fill(0);
   pts.forEach((p, i) => {
     p.w = semanticWeightOf(p.claim);
-    PL[i] = p.L; PA[i] = p.a; PB[i] = p.b; PT[i] = p.ti; PW[i] = Math.log(p.w); count[p.ti]++; wsum[p.ti] += p.w;
+    PL[i] = p.L; PA[i] = p.sa; PB[i] = p.sb; PT[i] = p.ti; PW[i] = Math.log(p.w); count[p.ti]++; wsum[p.ti] += p.w;
     p.C = Math.hypot(p.a, p.b); p.H = ((Math.atan2(p.b, p.a) * 180) / Math.PI + 360) % 360;
+    p.sC = Math.hypot(p.sa, p.sb); p.sH = ((Math.atan2(p.sb, p.sa) * 180) / Math.PI + 360) % 360;
     p.hueId = words[p.ti].id;
     const f = p.cat && SEMANTIC_FAMILY_NAME[p.cat];
     if (f) cats[p.ti][f] = (cats[p.ti][f] || 0) + (p.claim >= 100 ? 2 : 1);
@@ -9473,7 +9516,7 @@ const buildColorFamilyIndex = (settings) => {
     Object.entries(cats[i]).forEach(([k, v]) => { if (v > fv) { fv = v; fam = k; } });
     return { id: t.id, name: String(t.name).trim(), n: count[i], family: fam || "Other", order: i };
   });
-  return { mode: "words", n, PL, PA, PB, PT, PW, logW: wsum.map((w) => Math.log(Math.max(w, 1e-9))), pts, terms, cache: new Map() };
+  return { mode: "words", k, n, PL, PA, PB, PT, PW, logW: wsum.map((w) => Math.log(Math.max(w, 1e-9))), pts, terms, cache: new Map() };
 };
 // The word (term index) for an OkLab colour. Each word is a smooth cloud
 // around its names (a Gaussian of width SEMANTIC_H round each), and every
@@ -9492,6 +9535,11 @@ const semanticTermAt = (idx, L, a, b) => {
   const key = `${Math.round(L * 4000)},${Math.round(a * 4000)},${Math.round(b * 4000)}`;
   const hit = idx.cache.get(key);
   if (hit !== undefined) return hit;
+  // a surface colour, lifted to the screen chroma that reads the same
+  if (idx.k > 1) {
+    const Cs = Math.hypot(a, b);
+    if (Cs > 0) { const f = surfaceToScreenChroma(Cs, idx.k) / Cs; a *= f; b *= f; }
+  }
   const K = SEMANTIC_TOP, top = idx.top || (idx.top = new Float64Array(T * K)), k2 = 1 / (2 * SEMANTIC_H * SEMANTIC_H);
   top.fill(-Infinity);
   for (let i = 0; i < idx.n; i++) {
@@ -9727,6 +9775,37 @@ const HueFamilyRule = ({ settings, setSettings, cursor, onCursor }) => {
       React.createElement(
         "div",
         null,
+        head("Screen names to surfaces"),
+        React.createElement(
+          "div",
+          { className: `${card} flex flex-col gap-2` },
+          React.createElement(
+            "div",
+            { className: "flex items-center gap-3" },
+            React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-neutral-300 w-44 shrink-0" }, "Chroma compensation"),
+            React.createElement("input", {
+              type: "range", min: 1, max: 3, step: 0.05, value: surfaceChromaOf(settings), "aria-label": "Screen to surface chroma factor",
+              onChange: (e) => setSettings({ ...settings, surfaceChroma: parseFloat(e.target.value) }),
+              className: "flex-1 accent-sky-500 cursor-pointer",
+            }),
+            React.createElement("span", { className: "w-12 text-right text-[11px] font-mono text-slate-700 dark:text-neutral-200" }, `${surfaceChromaOf(settings).toFixed(2)}×`),
+            React.createElement(
+              "button",
+              { type: "button", onClick: () => setSettings({ ...settings, surfaceChroma: SEMANTIC_SURFACE_K }), className: "text-[10px] text-sky-600 dark:text-sky-400 hover:underline", title: "Back to the fitted value" },
+              "Fitted (1.9×)",
+            ),
+          ),
+          React.createElement(
+            "p",
+            { className: "text-[10px] leading-snug text-slate-500 dark:text-neutral-400" },
+            "The survey named colours on screens, where a colour needs much more chroma to be called vivid, or even to stop being grey, than a painted or laminated surface does. Its names are moved to the surface chroma they describe: 1.9× less at chroma 0.1 (more for near-greys, less for vivid colours), as fitted on the names it shares with the ISCC-NBS dictionary of surface colours. 1× takes the screen names as they are.",
+          ),
+        ),
+      ),
+    mode === "words" && idx &&
+      React.createElement(
+        "div",
+        null,
         head(`Your words (${words.length}), in the order groups are listed`),
         React.createElement(
           "div",
@@ -9830,6 +9909,180 @@ const HueFamilyRule = ({ settings, setSettings, cursor, onCursor }) => {
         head("What each word captures of the colour solid"),
         React.createElement("div", { className: card }, React.createElement(SemanticSolidMap, { idx, cov, onCursor })),
       ),
+  );
+};
+
+// ─── Lighting simulator ──────────────────────────────────────────────────────
+// How a colour with measured reflectance (R400–R700) is expected to look under
+// other lights: standard illuminants, and bulbs by colour temperature (CIE's
+// LED-B series of phosphor-white LEDs, or the ideal reference for that
+// temperature: a blackbody below 5000 K, CIE daylight from 5000 K up). The
+// reflectance is lit by each light's spectrum, seen through the colour-matching
+// functions, then shown with the eye adapted to that light (fully, as at
+// home, or not at all) on this daylight (D65) screen.
+const LIGHT_SPDS = {
+  "P2700": [11.95, 14.62, 17.66, 21.09, 24.92, 29.15, 33.78, 38.82, 44.25, 50.07, 56.25, 62.79, 69.66, 76.85, 84.31, 92.04, 100.00, 108.16, 116.50, 124.98, 133.57, 142.26, 151.00, 159.77, 168.54, 177.29, 185.99, 194.62, 203.16, 211.58, 219.87], // CCT 2700 K
+  "P3000": [17.49, 20.71, 24.26, 28.12, 32.30, 36.78, 41.54, 46.58, 51.85, 57.35, 63.05, 68.93, 74.95, 81.10, 87.34, 93.65, 100.00, 106.37, 112.74, 119.08, 125.37, 131.60, 137.73, 143.76, 149.67, 155.44, 161.06, 166.52, 171.81, 176.92, 181.85], // CCT 3000 K
+  "P4000": [41.13, 45.27, 49.46, 53.66, 57.85, 62.00, 66.10, 70.11, 74.02, 77.81, 81.46, 84.97, 88.32, 91.51, 94.52, 97.35, 100.00, 102.47, 104.75, 106.86, 108.78, 110.52, 112.09, 113.48, 114.71, 115.78, 116.69, 117.46, 118.08, 118.56, 118.91], // CCT 4000 K
+  "D5000": [49.31, 56.51, 60.03, 57.82, 74.82, 87.25, 90.61, 91.37, 95.11, 91.96, 95.72, 96.61, 97.13, 102.10, 100.75, 102.32, 100.00, 97.73, 98.92, 93.50, 97.69, 99.27, 99.04, 95.72, 98.86, 95.67, 98.19, 103.00, 99.13, 87.38, 91.60], // CCT 5002 K
+  "D6500": [82.75, 91.49, 93.43, 86.68, 104.86, 117.01, 117.81, 114.86, 115.92, 108.81, 109.35, 107.80, 104.79, 107.69, 104.41, 104.05, 100.00, 96.33, 95.79, 88.69, 90.01, 89.60, 87.70, 83.29, 83.70, 80.03, 80.21, 82.28, 78.28, 69.72, 71.61], // CCT 6504 K
+  "LED-B1": [0.28, 1.05, 3.72, 10.82, 29.23, 55.45, 43.92, 30.71, 26.00, 29.94, 38.02, 47.08, 56.08, 65.43, 75.61, 87.00, 100.00, 113.84, 127.48, 139.00, 146.17, 147.36, 142.16, 131.83, 117.92, 101.83, 85.38, 69.92, 56.08, 44.27, 34.36], // CCT 2733 K
+  "LED-B2": [0.14, 0.75, 3.40, 11.63, 32.04, 71.84, 54.01, 35.58, 27.21, 31.22, 40.54, 50.61, 59.46, 68.44, 78.16, 88.78, 100.00, 110.75, 120.34, 128.10, 132.72, 132.52, 127.35, 117.96, 105.51, 91.29, 76.60, 62.93, 50.48, 39.80, 30.95], // CCT 2998 K
+  "LED-B3": [0.33, 1.66, 7.96, 28.12, 80.31, 125.13, 65.65, 39.92, 34.28, 44.89, 59.28, 69.76, 76.33, 82.03, 88.26, 94.56, 100.00, 104.24, 107.29, 109.42, 109.42, 106.10, 99.20, 89.39, 77.65, 65.32, 53.32, 42.57, 33.29, 25.73, 19.56], // CCT 4102 K
+  "LED-B4": [0.18, 1.28, 7.98, 30.69, 81.43, 157.80, 106.39, 52.50, 29.78, 25.52, 35.14, 54.45, 73.75, 87.09, 94.64, 98.36, 100.00, 99.63, 97.32, 93.54, 87.94, 80.63, 72.11, 63.22, 54.26, 45.74, 37.82, 30.76, 24.67, 19.67, 15.41], // CCT 5109 K
+  "LED-B5": [0.43, 2.17, 10.37, 36.89, 100.31, 200.87, 145.71, 75.03, 44.78, 40.31, 50.31, 67.58, 83.11, 93.04, 98.20, 100.00, 100.00, 97.95, 94.10, 88.88, 82.11, 73.98, 65.03, 55.90, 47.02, 38.82, 31.55, 25.22, 20.00, 15.78, 12.42], // CCT 6598 K
+};
+const LIGHT_STANDARD = [
+  { id: "D65", label: "D65", sub: "Daylight · 6504 K · the reference", spd: () => SPECTRAL_TABLES.illuminants.D65 },
+  { id: "D50", label: "D50", sub: "Horizon daylight · 5003 K · print viewing", spd: () => SPECTRAL_TABLES.illuminants.D50 },
+  { id: "A", label: "A", sub: "Incandescent · 2856 K", spd: () => SPECTRAL_TABLES.illuminants.A },
+  { id: "F2", label: "F2", sub: "Cool white fluorescent · 4230 K", spd: () => SPECTRAL_TABLES.illuminants.F2 },
+  { id: "F11", label: "F11", sub: "Tri-band fluorescent · 4000 K", spd: () => SPECTRAL_TABLES.illuminants.F11 },
+];
+const LIGHT_LED = { 2700: ["LED-B1", 2733], 3000: ["LED-B2", 2998], 4000: ["LED-B3", 4102], 5000: ["LED-B4", 5109], 6500: ["LED-B5", 6598] };
+const lightBulbs = (kind) =>
+  [2700, 3000, 4000, 5000, 6500].map((T) =>
+    kind === "led"
+      ? { id: `led${T}`, label: `${T} K`, sub: `LED (CIE ${LIGHT_LED[T][0]}, ${LIGHT_LED[T][1]} K)`, spd: () => LIGHT_SPDS[LIGHT_LED[T][0]] }
+      : { id: `ref${T}`, label: `${T} K`, sub: T < 5000 ? "Incandescent / halogen (blackbody)" : "Daylight (CIE D series)", spd: () => LIGHT_SPDS[T < 5000 ? `P${T}` : `D${T}`] },
+  );
+// reflectance × light → XYZ, the light's own white at Y = 1
+const lightXYZ = (refl, spd, observer) => {
+  const cmf = observer === 10 ? SPECTRAL_TABLES.cmf10 : SPECTRAL_TABLES.cmf2;
+  let X = 0, Y = 0, Z = 0, N = 0;
+  for (let i = 0; i < 31; i++) {
+    const r = refl ? Math.max(0, +refl[i] || 0) : 1, e = spd[i];
+    X += r * e * cmf.x[i]; Y += r * e * cmf.y[i]; Z += r * e * cmf.z[i]; N += e * cmf.y[i];
+  }
+  return [X / N, Y / N, Z / N];
+};
+const LIGHT_BRADFORD = [[0.8951, 0.2664, -0.1614], [-0.7502, 1.7135, 0.0367], [0.0389, -0.0685, 1.0296]];
+const LIGHT_BRADFORD_INV = [[0.9869929054667123, -0.14705425642099013, 0.15996265166373122], [0.43230526972339456, 0.5183602715367776, 0.0492912282128556], [-0.008528664575177328, 0.04004282165408487, 0.9684866957875501]];
+const lightMul = (M, v) => [M[0][0] * v[0] + M[0][1] * v[1] + M[0][2] * v[2], M[1][0] * v[0] + M[1][1] * v[1] + M[1][2] * v[2], M[2][0] * v[0] + M[2][1] * v[1] + M[2][2] * v[2]];
+// Bradford adaptation from white ws to wd, to degree D (1 full, 0 none)
+const lightAdapt = (xyz, ws, wd, D) => {
+  const c = lightMul(LIGHT_BRADFORD, xyz), s = lightMul(LIGHT_BRADFORD, ws), d = lightMul(LIGHT_BRADFORD, wd);
+  return lightMul(LIGHT_BRADFORD_INV, c.map((v, i) => v * (D * (d[i] / s[i]) + 1 - D)));
+};
+const LIGHT_VIEWS = [
+  { id: "adapted", label: "Eye adapted", D: 1, hint: "Your eyes fully adjusted to the light: what is left is the colour's own shift." },
+  { id: "home", label: "At home", D: 0.85, hint: "Partly adjusted, as in a room at home (CIECAM02, about 100 lux): warm light still reads warm." },
+  { id: "camera", label: "No adaptation", D: 0, hint: "As a camera set to daylight would record it: the full cast of the light." },
+];
+const lightLab = (xyz, wp) => xyzToLab(xyz, wp);
+const lightDE = (lab1, lab2) => { try { return new Color("lab", lab1).deltaE(new Color("lab", lab2), "2000"); } catch (e) { return NaN; } };
+const LightingSimulator = ({ slots, observer }) => {
+  const [view, setView] = useState(() => { try { return localStorage.getItem("csam-light-view") || "home"; } catch (e) { return "home"; } });
+  const [kind, setKind] = useState(() => { try { return localStorage.getItem("csam-light-kind") || "led"; } catch (e) { return "led"; } });
+  const pick = (k, v, set) => { set(v); try { localStorage.setItem(k, v); } catch (e) {} };
+  const live = slots.filter((s) => Array.isArray(s.spectral) && s.spectral.length === 31);
+  const obs = observer === 10 ? 10 : 2;
+  const D = (LIGHT_VIEWS.find((v) => v.id === view) || LIGHT_VIEWS[1]).D;
+  const rows = useMemo(() => {
+    const d65 = SPECTRAL_TABLES.illuminants.D65;
+    const wD65 = lightXYZ(null, d65, 2), wD65o = lightXYZ(null, d65, obs);
+    const ref = live.map((s) => lightLab(lightXYZ(s.spectral, d65, obs), wD65o));
+    const make = (li) => {
+      const spd = li.spd();
+      const w2 = lightXYZ(null, spd, 2), wo = lightXYZ(null, spd, obs);
+      // the light itself, as this screen shows it with the eye adapted as chosen
+      const lw = lightAdapt(w2, w2, wD65, D);
+      const cells = live.map((s, i) => {
+        const shown = lightAdapt(lightXYZ(s.spectral, spd, 2), w2, wD65, D);
+        let hex = "#808080";
+        try { const o = new Color("xyz-d65", shown).to("oklch").coords; hex = lchDisplayHex(o[0], o[1] || 0, isNaN(o[2]) ? 0 : o[2]); } catch (e) {}
+        // colour inconstancy: fully adapted, against the same colour in daylight
+        const full = lightLab(lightAdapt(lightXYZ(s.spectral, spd, obs), wo, wD65o, 1), wD65o);
+        return { hex, shift: lightDE(full, ref[i]), lab: lightLab(lightXYZ(s.spectral, spd, obs), wo) };
+      });
+      let lightHex = "#ffffff";
+      try { const o = new Color("xyz-d65", lw.map((v) => v * 0.92)).to("oklch").coords; lightHex = lchDisplayHex(o[0], o[1] || 0, isNaN(o[2]) ? 0 : o[2]); } catch (e) {}
+      return { ...li, cells, lightHex, mi: cells.length === 2 ? lightDE(cells[0].lab, cells[1].lab) : null };
+    };
+    return { standard: LIGHT_STANDARD.map(make), bulbs: lightBulbs(kind).map(make) };
+  }, [live.map((s) => s.spectral.join(",")).join("|"), obs, D, kind]);
+  const seg = (opts, val, onPick, label) =>
+    React.createElement(
+      "div",
+      { className: "flex rounded-md overflow-hidden border border-slate-200 dark:border-neutral-700", role: "radiogroup", "aria-label": label },
+      opts.map((o) =>
+        React.createElement(
+          "button",
+          {
+            key: o.id, type: "button", role: "radio", "aria-checked": val === o.id, title: o.hint || "", onClick: () => onPick(o.id),
+            className: `flex-1 px-1.5 py-1 text-[9px] font-bold uppercase tracking-wider ${val === o.id ? "bg-slate-900 text-white dark:bg-white dark:text-neutral-900" : "bg-white dark:bg-neutral-900 text-slate-500 dark:text-neutral-400 hover:bg-slate-50 dark:hover:bg-neutral-800"}`,
+          },
+          o.label,
+        ),
+      ),
+    );
+  const deTone = (v) => (v >= 2 ? "text-rose-600 dark:text-rose-400" : v >= 1 ? "text-amber-600 dark:text-amber-400" : "text-slate-500 dark:text-neutral-400");
+  const row = (r) =>
+    React.createElement(
+      "div",
+      { key: r.id, className: "flex items-center gap-2 py-1 border-b last:border-b-0 border-slate-100 dark:border-neutral-800" },
+      React.createElement("span", { className: "w-3 h-6 rounded-sm border border-black/10 shrink-0", style: { backgroundColor: r.lightHex }, title: "The light itself" }),
+      React.createElement(
+        "div",
+        { className: "flex-1 min-w-0 leading-tight" },
+        React.createElement("div", { className: "text-[10px] font-bold text-slate-700 dark:text-neutral-200" }, r.label),
+        React.createElement("div", { className: "text-[9px] text-slate-400 truncate", title: r.sub }, r.sub),
+      ),
+      r.cells.map((c, i) =>
+        React.createElement(
+          "div",
+          { key: i, className: "w-14 shrink-0 flex flex-col items-center" },
+          React.createElement("span", { className: "w-14 h-7 rounded border border-black/10", style: { backgroundColor: c.hex }, title: `${live[i].label} under ${r.label}: ${c.hex}` }),
+          React.createElement("span", { className: `text-[9px] font-mono ${r.id === "D65" ? "text-slate-300 dark:text-neutral-600" : deTone(c.shift)}`, title: "How far it shifts from daylight once the eye adapts (ΔE 2000)" }, r.id === "D65" ? "ref" : `Δ${c.shift.toFixed(1)}`),
+        ),
+      ),
+      r.mi !== null &&
+        React.createElement(
+          "span",
+          {
+            className: `w-10 shrink-0 text-right text-[10px] font-mono font-bold ${r.id === "D65" ? "text-slate-700 dark:text-neutral-200" : deTone(Math.abs(r.mi - rows.standard[0].mi))}`,
+            title: `${live[0].label} vs ${live[1].label} under this light: ΔE 2000 ${r.mi.toFixed(2)}${r.id === "D65" ? " (in daylight)" : `, ${r.mi >= rows.standard[0].mi ? "+" : "−"}${Math.abs(r.mi - rows.standard[0].mi).toFixed(2)} from daylight (coloured when the light changes the pair's difference: metamerism)`}`,
+          },
+          r.mi.toFixed(2),
+        ),
+    );
+  const head = (t) =>
+    React.createElement(
+      "div",
+      { className: "flex items-center gap-2 pt-2 pb-0.5" },
+      React.createElement("span", { className: "flex-1 text-[9px] font-bold uppercase tracking-wider text-slate-400" }, t),
+      live.map((s, i) => React.createElement("span", { key: i, className: "w-14 text-center text-[9px] font-black text-slate-500 truncate", title: s.title || s.label }, s.label)),
+      live.length === 2 && React.createElement("span", { className: "w-10 text-right text-[9px] font-black text-slate-500", title: "A vs B (ΔE 2000)" }, "A↔B"),
+    );
+  const missing = slots.filter((s) => s.present && !(Array.isArray(s.spectral) && s.spectral.length === 31));
+  return React.createElement(
+    "div",
+    { className: "bg-amber-50/60 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800/30 rounded p-2 flex flex-col gap-1.5", "data-lighting-sim": true },
+    React.createElement(
+      "div",
+      { className: "text-[9px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400 flex items-center gap-1" },
+      React.createElement(Icon, { name: "lamp", className: "w-3 h-3" }),
+      "Lighting simulator",
+    ),
+    seg(LIGHT_VIEWS, view, (v) => pick("csam-light-view", v, setView), "How the eye adapts"),
+    React.createElement("span", { className: "text-[9px] text-slate-500 dark:text-neutral-400 leading-snug" }, (LIGHT_VIEWS.find((v) => v.id === view) || {}).hint),
+    head("Standard illuminants"),
+    rows.standard.map(row),
+    React.createElement(
+      "div",
+      { className: "flex items-center gap-2 pt-2" },
+      React.createElement("span", { className: "text-[9px] font-bold uppercase tracking-wider text-slate-400 shrink-0" }, "Bulbs"),
+      seg([{ id: "led", label: "LED", hint: "CIE LED-B series: blue-pumped phosphor white LEDs, the common household bulb" }, { id: "ref", label: "Incandescent / daylight", hint: "The ideal source at each temperature: blackbody (incandescent, halogen) below 5000 K, CIE daylight above" }], kind, (v) => pick("csam-light-kind", v, setKind), "Bulb type"),
+    ),
+    head("By colour temperature"),
+    rows.bulbs.map(row),
+    React.createElement(
+      "div",
+      { className: "text-[9px] text-amber-700/80 dark:text-amber-500/80 leading-snug pt-1" },
+      "Δ under a swatch: how far that colour shifts from its daylight look once the eye adapts (ΔE 2000; above 1 is noticeable side by side, above 2 at a glance).",
+      live.length === 2 ? " A↔B: the difference between the two under each light, coloured when it moves by 1 or more from daylight's (they are a metameric pair)." : "",
+      missing.length ? ` ${missing.map((s) => s.label).join(" and ")} has no spectral data, so it can't be simulated.` : "",
+    ),
   );
 };
 
@@ -13094,6 +13347,8 @@ const processCSVData = (
         newGroupSettings.neutralC = parseFloat(row.OKLCH_C);
       if (prop === "familyMode" && row.Note)
         newGroupSettings.familyMode = String(row.Note).trim().toLowerCase() === "angles" ? "angles" : "words";
+      if (prop === "surfaceChroma" && row.OKLCH_C && isFinite(parseFloat(row.OKLCH_C)))
+        newGroupSettings.surfaceChroma = parseFloat(row.OKLCH_C);
       if (prop === "vividC" && row.OKLCH_C)
         newGroupSettings.vividC = parseFloat(row.OKLCH_C);
       return;
@@ -16472,6 +16727,11 @@ const App = () => {
           Type: "SETTING",
           Noun: "neutralC",
           OKLCH_C: groupSettings.neutralC,
+        });
+        anchorsCsv.push({
+          Type: "SETTING",
+          Noun: "surfaceChroma",
+          OKLCH_C: surfaceChromaOf(groupSettings),
         });
         anchorsCsv.push({
           Type: "SETTING",
@@ -20646,7 +20906,7 @@ const AppUI = ({
   const spaceSeenRef = useRef(false);
   // The labelled survey colours, for Explore's group lines.
   const familySeeds = useMemo(
-    () => (colorFamilyIndex ? colorFamilyIndex.pts.map((p) => ({ L: p.L, C: p.C, H: p.H, hueId: p.hueId, w: p.w })) : []),
+    () => (colorFamilyIndex ? colorFamilyIndex.pts.map((p) => ({ L: p.L, C: p.sC, H: p.sH, hueId: p.hueId, w: p.w })) : []),
     [colorFamilyIndex],
   );
   // Palettes the Explore bins can be built around: the working one and the saved ones.
@@ -22354,7 +22614,7 @@ const AppUI = ({
                                 nameOverride:
                                   crosshair?.activeSavedColor?.nameOverride,
                                 type: crosshair?.activeSavedColor?.type,
-                                spectral: crosshair?.activeSavedColor?.spectral,
+                                spectral: crosshair?.activeSavedColor?.spectral || (crosshair?.activeCommercial ? colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex]?.spectral : null) || crosshair?.temporarySpectral || undefined,
                                 image: loadedImage,
                                 brand: loadedBrand,
                                 originalIndex: loadedIndex,
@@ -22511,7 +22771,7 @@ const AppUI = ({
                                 nameOverride:
                                   crosshair?.activeSavedColor?.nameOverride,
                                 type: crosshair?.activeSavedColor?.type,
-                                spectral: crosshair?.activeSavedColor?.spectral,
+                                spectral: crosshair?.activeSavedColor?.spectral || (crosshair?.activeCommercial ? colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex]?.spectral : null) || crosshair?.temporarySpectral || undefined,
                                 image: loadedImage,
                                 brand: loadedBrand,
                                 originalIndex: loadedIndex,
@@ -22590,121 +22850,6 @@ const AppUI = ({
                         ),
                       ),
                     ),
-                    compSlotA.spectral &&
-                      compSlotB.spectral &&
-                      React.createElement(
-                        "div",
-                        {
-                          className:
-                            "bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800/30 rounded p-2",
-                        },
-                        React.createElement(
-                          "div",
-                          {
-                            className:
-                              "text-[9px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400 mb-1 flex items-center gap-1",
-                          },
-                          React.createElement(Icon, {
-                            name: "activity",
-                            className: "w-3 h-3",
-                          }),
-                          " ",
-                          "Metamerism Index (MI)",
-                        ),
-                        React.createElement(
-                          "div",
-                          { className: "grid grid-cols-3 gap-2 mt-1.5" },
-                          React.createElement(
-                            "div",
-                            { className: "text-center" },
-                            React.createElement(
-                              "div",
-                              {
-                                className:
-                                  "text-[8px] uppercase text-amber-600/70 dark:text-amber-500/70",
-                              },
-                              "Illuminant A",
-                            ),
-                            React.createElement(
-                              "div",
-                              {
-                                className:
-                                  "text-sm font-mono font-bold text-amber-800 dark:text-amber-300",
-                              },
-                              calculateDeltaEFromSpectral(
-                                compSlotA.spectral,
-                                compSlotB.spectral,
-                                observer,
-                                "A",
-                              ).toFixed(2),
-                            ),
-                          ),
-                          React.createElement(
-                            "div",
-                            {
-                              className:
-                                "text-center border-l border-amber-200 dark:border-amber-800/30",
-                            },
-                            React.createElement(
-                              "div",
-                              {
-                                className:
-                                  "text-[8px] uppercase text-amber-600/70 dark:text-amber-500/70",
-                              },
-                              "Illuminant F2",
-                            ),
-                            React.createElement(
-                              "div",
-                              {
-                                className:
-                                  "text-sm font-mono font-bold text-amber-800 dark:text-amber-300",
-                              },
-                              calculateDeltaEFromSpectral(
-                                compSlotA.spectral,
-                                compSlotB.spectral,
-                                observer,
-                                "F2",
-                              ).toFixed(2),
-                            ),
-                          ),
-                          React.createElement(
-                            "div",
-                            {
-                              className:
-                                "text-center border-l border-amber-200 dark:border-amber-800/30",
-                            },
-                            React.createElement(
-                              "div",
-                              {
-                                className:
-                                  "text-[8px] uppercase text-amber-600/70 dark:text-amber-500/70",
-                              },
-                              "Illuminant F11",
-                            ),
-                            React.createElement(
-                              "div",
-                              {
-                                className:
-                                  "text-sm font-mono font-bold text-amber-800 dark:text-amber-300",
-                              },
-                              calculateDeltaEFromSpectral(
-                                compSlotA.spectral,
-                                compSlotB.spectral,
-                                observer,
-                                "F11",
-                              ).toFixed(2),
-                            ),
-                          ),
-                        ),
-                        React.createElement(
-                          "div",
-                          {
-                            className:
-                              "text-[8px] text-amber-600/80 dark:text-amber-500/80 mt-1.5 text-center italic",
-                          },
-                          "MI > 1.0 indicates a definite mismatch under the test illuminant.",
-                        ),
-                      ),
                     React.createElement(
                       "button",
                       {
@@ -22719,6 +22864,14 @@ const AppUI = ({
                       " Fullscreen Compare",
                     ),
                   ),
+                (compSlotA?.spectral || compSlotB?.spectral) &&
+                  React.createElement(LightingSimulator, {
+                    observer,
+                    slots: [
+                      { label: "A", title: compSlotA?.nameOverride || compSlotA?.erpCode || "A", spectral: compSlotA?.spectral, present: !!compSlotA },
+                      { label: "B", title: compSlotB?.nameOverride || compSlotB?.erpCode || "B", spectral: compSlotB?.spectral, present: !!compSlotB },
+                    ],
+                  }),
               ),
             ),
             React.createElement(
