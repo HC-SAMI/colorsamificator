@@ -6599,6 +6599,7 @@ const FILTER_FIELDS = [
   { id: "visualTexture", label: "Visual pattern", type: "select", get: (it) => it.visualTexture || "" },
   { id: "tactileTexture", label: "Tactile texture", type: "select", get: (it) => it.tactileTexture || "" },
   { id: "tag", label: "Tag", type: "select", multi: true, get: (it) => (it.tags || []).join(", ") },
+  { id: "notes", label: "Notes", type: "text", get: (it) => it.notes || "" },
   { id: "noun", label: "Anchor", type: "text", get: (it, ctx) => (ctx ? nounNameOf(it, ctx) : "") },
   { id: "L", label: "Lightness", type: "number", get: (it) => it.L },
   { id: "C", label: "Chroma", type: "number", get: (it) => it.C },
@@ -14754,6 +14755,11 @@ function getBrandDisplayName(key) {
     basicColors: "Basic Colours",
     xkcdSurvey: "xkcd Survey",
     meodai: "Color Names (meodai)",
+    dunnEdwards: "Dunn-Edwards",
+    hallmanLindsay: "Hallman Lindsay",
+    vistaPaint: "Vista Paint",
+    dutchBoy: "Dutch Boy",
+    mpc: "MPC",
     ridgway: "Ridgway (1912)",
     pantoneCmykCoated: "Pantone CMYK Coated",
     pantoneCmykUncoated: "Pantone CMYK Uncoated",
@@ -14772,6 +14778,7 @@ const BRAND_CANON = new Map();   // lower-case key → the one spelling used
   "pantoneColorBridgeUncoated", "pantoneExtendedGamutCoated", "pantoneCmykCoated", "pantoneCmykUncoated",
   "isccNbs", "isccnbsCentroids", "fs595c", "fs595b", "ralDesignSystem", "ralClassic", "ncsStandard", "leCorbusier", "wadaSanzo",
   "osxCrayons", "japaneseTraditional", "chineseTraditional", "colorThesaurus", "windowsColors", "basicColors", "xkcdSurvey",
+  "dunnEdwards", "hallmanLindsay", "vistaPaint", "dutchBoy",
 ].forEach((k) => BRAND_CANON.set(k.toLowerCase(), k));
 const canonBrandKey = (key) => {
   if (!key) return key;
