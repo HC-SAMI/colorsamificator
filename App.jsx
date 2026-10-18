@@ -736,7 +736,7 @@ const ColorConverter = ({
   const cmykStr = `[${Math.round(c_ * 100)}%, ${Math.round(m_ * 100)}%, ${Math.round(y_ * 100)}%, ${Math.round(k_ * 100)}%]`;
 
   const spectral =
-    crosshair.activeSavedColor?.spectral || crosshair.temporarySpectral;
+    crosshair.activeSpectral || (crosshair.activeSpectral === undefined ? crosshair.activeSavedColor?.spectral || crosshair.temporarySpectral : null);
   let varXYZ = null;
   let varLab = null;
   let varLch = null;
@@ -4622,6 +4622,28 @@ const SpacePresets = ({ value, onChange, compact }) =>
 // a palette. Cells come from a Voronoi split of colour space, so any set of
 // colours can define them; very large sets are capped to keep it responsive.
 const SPACE_SEED_CAP = 8000;
+// The colour solid sampled every 0.03 in OkLab (inside this screen's gamut),
+// each sample with its colour group; and each group's mean colour.
+const spaceGroupGrid = (gs) => {
+  const cells = [], acc = new Map();
+  for (let L = 0.015; L < 1; L += 0.03)
+    for (let a = -0.33; a <= 0.33; a += 0.03)
+      for (let b = -0.33; b <= 0.33; b += 0.03) {
+        const C = Math.hypot(a, b), H = C < 1e-6 ? 0 : ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360;
+        if (!fastInGamutSrgb(L, C, H)) continue;
+        const k = getColorGroup(L, C, H, gs);
+        cells.push({ L, C, H, k });
+        const e = acc.get(k) || { n: 0, L: 0, a: 0, b: 0 };
+        e.n++; e.L += L; e.a += a; e.b += b; acc.set(k, e);
+      }
+  const hex = {}, mean = {};
+  acc.forEach((e, k) => {
+    const L = e.L / e.n, a = e.a / e.n, b = e.b / e.n, C = Math.hypot(a, b), H = ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360;
+    mean[k] = [L, C, H];
+    hex[k] = spaceHexFor(null, L, C, H);
+  });
+  return { cells, hex, mean, n: acc.size };
+};
 const SPACE_BIN_KEY = "csam-bin-source";
 const SpaceBinSource = ({ value, onChange, options, capped, compact }) =>
   React.createElement(
@@ -4636,7 +4658,7 @@ const SpaceBinSource = ({ value, onChange, options, capped, compact }) =>
           value !== "anchors" ? "border-sky-300 text-sky-700 dark:text-sky-300 dark:border-sky-500/40" : "border-slate-200 dark:border-neutral-800 text-slate-600 dark:text-neutral-300"
         }`,
       },
-      options.map((o) => React.createElement("option", { key: o.id, value: o.id, disabled: !o.n && o.id !== value }, `${o.label} (${o.n.toLocaleString()})`)),
+      options.map((o) => React.createElement("option", { key: o.id, value: o.id, disabled: !o.n && o.id !== value }, o.n < 0 ? o.label : `${o.label} (${o.n.toLocaleString()})`)),
     ),
     capped > 0 && React.createElement("span", { className: "text-[9px] text-amber-600 dark:text-amber-400 whitespace-nowrap", title: `Bins are built around the first ${SPACE_SEED_CAP.toLocaleString()}; narrow Visibility or the filters to use the rest` }, `first ${SPACE_SEED_CAP.toLocaleString()}`),
   );
@@ -5130,9 +5152,15 @@ const ViewSpaceInner = ({
     else if (binSource.startsWith("palette:")) {
       const pal = (binPalettes || []).find((x) => `palette:${x.id}` === binSource);
       (pal ? pal.colors : []).forEach((c) => push(c.L, c.C, c.H, c.hex, c.label || "", "anchor", [c.L, c.C, isFinite(c.H) ? c.H : 0]));
+    } else if (binSource === "groups") {
+      // Colour groups: the screen's colour solid sampled on a grid, each
+      // sample named by its colour group, every cell of a group painted in the
+      // group's average colour, so the bins read as the groups' regions.
+      const g = spaceGroupGrid(groupSettings);
+      g.cells.forEach((c) => push(c.L, c.C, c.H, g.hex[c.k], c.k, "anchor", [g.mean[c.k][0], g.mean[c.k][1], g.mean[c.k][2]]));
     }
     return { list: out, capped };
-  }, [binSource, anchors, markers, binPalettes]);
+  }, [binSource, anchors, markers, binPalettes, binSource === "groups" ? groupSettings : null, binSource === "groups" ? familySeeds : null]);
   const markersShown = useMemo(
     () => (binSource === "pins" ? markers.filter((m) => m.kind !== "pin") : binSource === "commercial" ? markers.filter((m) => m.kind !== "brand") : markers),
     [binSource, markers],
@@ -5143,6 +5171,7 @@ const ViewSpaceInner = ({
       { id: "anchors", label: "Anchors", n: anchors.length },
       { id: "pins", label: "Pins", n: nPins },
       { id: "commercial", label: "Commercial", n: nBrand },
+      { id: "groups", label: "Colour groups", n: -1 },
       ...(binPalettes || []).map((p) => ({ id: `palette:${p.id}`, label: p.name, n: (p.colors || []).length })),
     ];
   }, [anchors, markers, binPalettes]);
@@ -6340,7 +6369,7 @@ const anchorNameOf = (an, names) =>
   String((names && names[an.nameKey]) || (names && names[an.id]) || an.sc.nameOverride || "").trim();
 // CSV headers in any case or spacing ("NOUN", "noun", "Oklch L") map onto the
 // names the importer reads, so a file exported elsewhere still loads its names.
-const CSV_CANONICAL_KEYS = "Adjective Anchor AnchorId Anchor_ID Brand BrandName Brand_Name CIE_A CIE_B CIE_L DoorProfile Door_Profile ERP_Code HEX ID Illuminant Image LAB_L Lab_A Lab_B Lab_L Material Measurement_Date Measurement_Device Measurement_Method Name Note Noun NounOverride Noun_Override OKLCH_C OKLCH_H OKLCH_L Observer Original_Index Parent ParentId ParentPinId Parent_ID Parent_Pin_ID PinId Pin_ID Profile RGB_B RGB_G RGB_R Sheen Spectral TactileTexture Tactile_Texture Tags Type URL VisualPattern VisualTexture Visual_Pattern Visual_Texture".split(" ");
+const CSV_CANONICAL_KEYS = "Adjective Anchor AnchorId Anchor_ID Brand BrandName Brand_Name CIE_A CIE_B CIE_L DoorProfile Door_Profile ERP_Code HEX ID Illuminant Image LAB_L Lab_A Lab_B Lab_L Material Measurement_Date Measurement_Device Measurement_Method Name Note Noun NounOverride Noun_Override OKLCH_C OKLCH_H OKLCH_L Observer Original_Index Parent ParentId ParentPinId Parent_ID Parent_Pin_ID PinId Pin_ID Profile RGB_B RGB_G RGB_R Sheen Spectral TactileTexture Tactile_Texture Tags Type URL VisualPattern VisualTexture Visual_Pattern Visual_Texture Texture_Albedo Texture_Normal Texture_Roughness Texture_Gloss Texture_Height Texture_AO Texture_Width_cm Texture_Normal_DX".split(" ");
 const CSV_KEY_LOOKUP = (() => {
   const m = {};
   CSV_CANONICAL_KEYS.forEach((k) => { const n = k.toLowerCase().replace(/[\s_-]+/g, ""); if (!m[n]) m[n] = k; });
@@ -10086,6 +10115,720 @@ const LightingSimulator = ({ slots, observer }) => {
   );
 };
 
+// ─── 3D material view (PBR) ──────────────────────────────────────────────────
+// The main swatch can show the colour as a physical sample: a tilting panel,
+// a flat panel under a light that follows the pointer, or a sphere. It is
+// lit and shaded with the material's maps when there are any:
+//   • maps you import (a downloaded texture pack — zip or images — dropped
+//     on the Maps dialog), kept in this browser (IndexedDB) for that colour;
+//   • maps named in the data, as Texture_* columns (URLs, e.g. files hosted
+//     next to the app): Texture_Albedo, Texture_Normal, Texture_Roughness,
+//     Texture_Gloss, Texture_Height, Texture_AO, Texture_Width_cm,
+//     Texture_Normal_DX (yes for DirectX-style normal maps);
+//   • otherwise the colour's photo (if any) and its specs: Sheen sets the
+//     roughness (and a clear coat for high gloss), Tactile texture a relief
+//     (stipple, linear grain, or the photo's own grain for embossed-in-register).
+// The albedo is tinted so its average matches the measured colour (switchable).
+
+// ── view state (shared by the card and the full-screen preview) ──
+const swatch3dStore = (() => {
+  let st = { on: false, mode: "tilt", light: "D6500" };
+  try { st = { ...st, ...(JSON.parse(localStorage.getItem("csam-swatch3d") || "{}") || {}) }; } catch (e) {}
+  const subs = new Set();
+  return {
+    get: () => st,
+    set: (patch) => {
+      st = { ...st, ...patch };
+      try { localStorage.setItem("csam-swatch3d", JSON.stringify(st)); } catch (e) {}
+      subs.forEach((fn) => { try { fn(); } catch (e) {} });
+    },
+    subscribe: (fn) => (subs.add(fn), () => subs.delete(fn)),
+  };
+})();
+const useSwatch3d = () => {
+  const [, force] = useState(0);
+  useEffect(() => swatch3dStore.subscribe(() => force((n) => n + 1)), []);
+  return [swatch3dStore.get(), swatch3dStore.set];
+};
+
+// ── imported maps, per colour, in IndexedDB ──
+const textureStore = (() => {
+  let dbp = null;
+  const subs = new Set();
+  const open = () => {
+    if (dbp) return dbp;
+    dbp = new Promise((res, rej) => {
+      try {
+        const rq = indexedDB.open("csam-textures", 1);
+        rq.onupgradeneeded = () => rq.result.createObjectStore("maps");
+        rq.onsuccess = () => res(rq.result);
+        rq.onerror = () => rej(rq.error);
+      } catch (e) { rej(e); }
+    });
+    return dbp;
+  };
+  const tx = async (mode, fn) => {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const t = db.transaction("maps", mode), s = t.objectStore("maps");
+      const r = fn(s);
+      t.oncomplete = () => res(r && "result" in r ? r.result : undefined);
+      t.onerror = () => rej(t.error);
+    });
+  };
+  return {
+    get: (key) => tx("readonly", (s) => s.get(key)).catch(() => undefined),
+    put: (key, rec) => tx("readwrite", (s) => s.put(rec, key)).then(() => subs.forEach((fn) => fn(key))),
+    del: (key) => tx("readwrite", (s) => s.delete(key)).then(() => subs.forEach((fn) => fn(key))),
+    keys: () => tx("readonly", (s) => s.getAllKeys()).catch(() => []),
+    subscribe: (fn) => (subs.add(fn), () => subs.delete(fn)),
+  };
+})();
+
+// Texture_* columns of a data or pin row → { albedo, normal, … } or null
+const TEXTURE_COLUMNS = ["Albedo", "Normal", "Roughness", "Gloss", "Height", "AO"];
+const parseTextureColumns = (row) => {
+  if (!row) return null;
+  const pick = (k) => String(row[`Texture_${k}`] || row[`Texture${k}`] || "").trim();
+  const t = {};
+  TEXTURE_COLUMNS.forEach((k) => { const v = pick(k); if (v) t[k.toLowerCase()] = v; });
+  if (!Object.keys(t).length) return null;
+  const w = parseFloat(pick("Width_cm") || pick("WidthCm") || pick("Width"));
+  if (w > 0) t.widthCm = w;
+  if (/^(y|yes|true|1|dx|directx)$/i.test(pick("Normal_DX") || pick("NormalDX"))) t.normalDX = true;
+  return t;
+};
+const textureColumnsOf = (t) => {
+  const out = {};
+  if (!t) return out;
+  TEXTURE_COLUMNS.forEach((k) => { if (t[k.toLowerCase()] && !String(t[k.toLowerCase()]).startsWith("blob:")) out[`Texture_${k}`] = t[k.toLowerCase()]; });
+  if (Object.keys(out).length) {
+    if (t.widthCm) out.Texture_Width_cm = t.widthCm;
+    if (t.normalDX) out.Texture_Normal_DX = "yes";
+  }
+  return out;
+};
+
+// The material at the cursor: what it is and how to find its maps.
+const swatchMaterialOf = (crosshair, colorData, savedColors) => {
+  if (crosshair?.activeCommercial) {
+    const { brand, originalIndex } = crosshair.activeCommercial;
+    const m = colorData?.[brand]?.[originalIndex];
+    if (m) return { key: `db:${brand}:${(m.erpCode || m.name || originalIndex).toString().toLowerCase()}`, name: m.name, brand, image: m.image || null, sheen: m.sheen, tactileTexture: m.tactileTexture, visualTexture: m.visualTexture, material: m.material, textures: m.textures || null };
+  }
+  const sc = crosshair?.activeSavedColor;
+  if (sc && sc.type === "pin") {
+    const p = savedColors?.[sc.id] || sc;
+    const img = p.image || (typeof p.notes === "string" && /^https?:/.test(p.notes) && isImageRef(p.notes) ? p.notes : null);
+    // a pin of a commercial colour shares that product's maps
+    const m = p.brand && p.originalIndex !== undefined ? colorData?.[p.brand]?.[p.originalIndex] : null;
+    const key = m && !p.textures ? `db:${p.brand}:${(m.erpCode || m.name || p.originalIndex).toString().toLowerCase()}` : `pin:${p.id}`;
+    return { key, name: p.nameOverride || (m && m.name) || "", image: img || (m && m.image) || null, sheen: p.sheen || (m && m.sheen), tactileTexture: p.tactileTexture || (m && m.tactileTexture), visualTexture: p.visualTexture || (m && m.visualTexture), material: p.material || (m && m.material), textures: p.textures || (m && m.textures) || null };
+  }
+  return { key: null, name: "", image: null, sheen: "", tactileTexture: "", visualTexture: "", material: "", textures: null };
+};
+
+// Maps for a material: imported ones first, else the data's.
+const useMaterialMaps = (mat) => {
+  const [rec, setRec] = useState(null);
+  const key = mat && mat.key;
+  useEffect(() => {
+    let live = true, urls = [];
+    const load = () =>
+      (key ? textureStore.get(key) : Promise.resolve(undefined)).then((r) => {
+        urls.forEach((u) => URL.revokeObjectURL(u)); urls = [];
+        if (!live) return;
+        if (r && r.maps && Object.keys(r.maps).length) {
+          const maps = {};
+          Object.entries(r.maps).forEach(([k, blob]) => { const u = URL.createObjectURL(blob); urls.push(u); maps[k] = u; });
+          setRec({ source: "imported", maps, widthCm: r.widthCm || 60, normalDX: !!r.normalDX, files: r.files || {} });
+        } else setRec(null);
+      });
+    load();
+    const un = textureStore.subscribe((k) => { if (k === key) load(); });
+    return () => { live = false; un(); urls.forEach((u) => URL.revokeObjectURL(u)); };
+  }, [key]);
+  if (rec) return rec;
+  const t = mat && mat.textures;
+  if (t && (t.albedo || t.normal || t.roughness || t.gloss || t.height)) {
+    const maps = {};
+    ["albedo", "normal", "roughness", "gloss", "height", "ao"].forEach((k) => { if (t[k]) maps[k] = t[k]; });
+    return { source: "data", maps, widthCm: t.widthCm || 60, normalDX: !!t.normalDX, files: {} };
+  }
+  return null;
+};
+
+// Which map a file in a texture pack is, by its name.
+const textureKindOf = (name) => {
+  const n = String(name).toLowerCase().replace(/\.[a-z0-9]+$/, "");
+  const has = (re) => re.test(n);
+  if (has(/(^|[^a-z])(normal|nrm|nor|norm|nrml)([^a-z]|$)|normal(gl|dx)|_n$/)) return "normal";
+  if (has(/(^|[^a-z])(rough|roughness|rgh)([^a-z]|$)/)) return "roughness";
+  if (has(/(^|[^a-z])(gloss|glossiness|gls)([^a-z]|$)/)) return "gloss";
+  if (has(/(^|[^a-z])(height|disp|displacement|bump|depth)([^a-z]|$)/)) return "height";
+  if (has(/(^|[^a-z])(ao|ambientocclusion|occlusion|ambient_occlusion)([^a-z]|$)/)) return "ao";
+  if (has(/(^|[^a-z])(metal|metallic|metalness|spec|specular|refl|reflection|opacity|alpha|mask|preview|thumb|sphere|render)([^a-z]|$)/)) return null;
+  if (has(/(^|[^a-z])(albedo|basecolor|base_color|basecolour|diffuse|diff|color|colour|col)([^a-z]|$)/)) return "albedo";
+  return "albedo?";
+};
+// The resolution a file name claims (1k, 2K, 4096…), to prefer ~2K.
+const textureResOf = (name) => {
+  const m = String(name).toLowerCase().match(/(^|[^a-z0-9])(\d{1,2})k([^a-z0-9]|$)/) || String(name).match(/(^|[^0-9])(512|1024|2048|4096|8192|16384)([^0-9]|$)/);
+  if (!m) return 0;
+  const v = parseInt(m[2], 10);
+  return v < 100 ? v * 1024 : v;
+};
+// A texture pack (zip or image files) → { maps: {kind: Blob}, files: {kind: name}, normalDX }
+const readTexturePack = async (fileList) => {
+  const entries = [];
+  for (const f of fileList) {
+    if (/\.zip$/i.test(f.name) && typeof JSZip !== "undefined") {
+      const zip = await JSZip.loadAsync(f);
+      const jobs = [];
+      zip.forEach((path, ze) => {
+        if (ze.dir || !/\.(jpe?g|png|webp|tiff?|bmp)$/i.test(path) || /__macosx/i.test(path)) return;
+        jobs.push(ze.async("blob").then((b) => entries.push({ name: path.split("/").pop(), path, blob: b })));
+      });
+      await Promise.all(jobs);
+    } else if (/^image\//.test(f.type) || /\.(jpe?g|png|webp)$/i.test(f.name)) entries.push({ name: f.name, path: f.name, blob: f });
+  }
+  const best = {};
+  entries.forEach((e) => {
+    let k = textureKindOf(e.name);
+    if (!k) return;
+    const guess = k === "albedo?";
+    if (guess) k = "albedo";
+    const res = textureResOf(e.path) || 2048, score = (guess ? 100 : 0) + Math.abs(Math.log2(res / 2048)) * 10;
+    if (!best[k] || score < best[k].score) best[k] = { ...e, score };
+  });
+  if (best.roughness && best.gloss) delete best.gloss;
+  const maps = {}, files = {};
+  for (const [k, e] of Object.entries(best)) {
+    maps[k] = await shrinkTextureBlob(e.blob, k === "albedo" ? 2048 : 2048);
+    files[k] = e.path;
+  }
+  const normalDX = !!(best.normal && /(dx|directx)/i.test(best.normal.path));
+  return { maps, files, normalDX };
+};
+// Keep maps at most `max` px (a 16K map would not fit in memory or on the GPU).
+const shrinkTextureBlob = async (blob, max) => {
+  try {
+    const bmp = await createImageBitmap(blob);
+    const s = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    if (s >= 1 && blob.size < 12e6) { bmp.close && bmp.close(); return blob; }
+    const w = Math.max(1, Math.round(bmp.width * s)), h = Math.max(1, Math.round(bmp.height * s));
+    const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+    cv.getContext("2d").drawImage(bmp, 0, 0, w, h);
+    bmp.close && bmp.close();
+    return await new Promise((res) => cv.toBlob((b) => res(b || blob), "image/png"));
+  } catch (e) { return blob; }
+};
+
+// ── procedural relief (tileable) when there is no normal map ──
+const m3Hash = (x, y, s) => { let h = (x * 374761393 + y * 668265263 + s * 1442695041) | 0; h = (h ^ (h >>> 13)) * 1274126177; return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+// periodic value noise of `cells` cells across a tile
+const m3Noise = (u, v, cells, seed) => {
+  const x = u * cells, y = v * cells, x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+  const w = (a) => ((a % cells) + cells) % cells, sm = (t) => t * t * (3 - 2 * t);
+  const a = m3Hash(w(x0), w(y0), seed), b = m3Hash(w(x0 + 1), w(y0), seed), c = m3Hash(w(x0), w(y0 + 1), seed), d = m3Hash(w(x0 + 1), w(y0 + 1), seed);
+  const sx = sm(fx), sy = sm(fy);
+  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+};
+const m3Height = (kind, N) => {
+  const h = new Float32Array(N * N);
+  for (let y = 0; y < N; y++)
+    for (let x = 0; x < N; x++) {
+      const u = x / N, v = y / N;
+      let z = 0;
+      if (kind === "stipple") z = m3Noise(u, v, 96, 1) * 0.6 + m3Noise(u, v, 192, 2) * 0.4;
+      else if (kind === "grain") z = m3Noise(u, v * 0.06 + m3Noise(u, v, 8, 9) * 0.02, 160, 3) * 0.7 + m3Noise(u, v * 0.2, 320, 4) * 0.3; // fine streaks along v
+      else if (kind === "wood") z = (Math.sin((u * 48 + m3Noise(u, v * 0.25, 5, 5) * 5) * Math.PI) * 0.5 + 0.5) * 0.45 + m3Noise(u, v * 0.03, 220, 6) * 0.55; // long pores along the grain
+      else z = m3Noise(u, v, 64, 7) * 0.5 + m3Noise(u, v, 256, 8) * 0.5; // a faint orange-peel for "smooth"
+      h[y * N + x] = z;
+    }
+  return h;
+};
+// a photo's own grain as height (luminance, its broad shading taken out)
+const m3HeightFromImage = (img, N) => {
+  const cv = document.createElement("canvas"); cv.width = N; cv.height = N;
+  const ctx = cv.getContext("2d"); ctx.drawImage(img, 0, 0, N, N);
+  const d = ctx.getImageData(0, 0, N, N).data, l = new Float32Array(N * N);
+  for (let i = 0; i < N * N; i++) l[i] = (0.2126 * d[i * 4] + 0.7152 * d[i * 4 + 1] + 0.0722 * d[i * 4 + 2]) / 255;
+  const blur = (src, r) => { const out = new Float32Array(N * N); for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { let s = 0, n = 0; for (let k = -r; k <= r; k += 2) { const xx = (x + k + N) % N, yy = (y + k + N) % N; s += src[y * N + xx] + src[yy * N + x]; n += 2; } out[y * N + x] = s / n; } return out; };
+  const lo = blur(l, 12);
+  for (let i = 0; i < N * N; i++) l[i] = l[i] - lo[i];
+  return l;
+};
+const m3NormalCanvas = (h, N, strength, flipY) => {
+  const cv = document.createElement("canvas"); cv.width = N; cv.height = N;
+  const ctx = cv.getContext("2d"), img = ctx.createImageData(N, N);
+  for (let y = 0; y < N; y++)
+    for (let x = 0; x < N; x++) {
+      const hx = h[y * N + ((x + 1) % N)] - h[y * N + ((x - 1 + N) % N)];
+      const hy = h[((y + 1) % N) * N + x] - h[((y - 1 + N) % N) * N + x];
+      let nx = -hx * strength, ny = (flipY ? hy : -hy) * strength, nz = 1;
+      const len = Math.hypot(nx, ny, nz); nx /= len; ny /= len; nz /= len;
+      const o = (y * N + x) * 4;
+      img.data[o] = (nx * 0.5 + 0.5) * 255; img.data[o + 1] = (ny * 0.5 + 0.5) * 255; img.data[o + 2] = (nz * 0.5 + 0.5) * 255; img.data[o + 3] = 255;
+    }
+  ctx.putImageData(img, 0, 0);
+  return cv;
+};
+// Sheen → roughness (and a clear coat for high gloss)
+const m3FinishOf = (mat) => {
+  const s = String((mat && mat.sheen) || "").toUpperCase(), m = String((mat && mat.material) || "").toLowerCase();
+  if (s.startsWith("HG")) return { roughness: 0.12, clearcoat: 1, clearcoatRoughness: 0.03, label: "High gloss" };
+  if (s.startsWith("ST")) return { roughness: 0.42, clearcoat: 0, label: "Satin" };
+  if (s.startsWith("MT")) return { roughness: 0.68, clearcoat: 0, label: "Matte" };
+  if (s.startsWith("SM")) return { roughness: 0.9, clearcoat: 0, label: "Super matte" };
+  if (m.includes("oak") || m.includes("maple")) return { roughness: 0.6, clearcoat: 0, label: "Natural wood" };
+  if (m.includes("lacquer")) return { roughness: 0.35, clearcoat: 0.4, clearcoatRoughness: 0.15, label: "Lacquer" };
+  return { roughness: 0.55, clearcoat: 0, label: "Default finish" };
+};
+const m3ReliefOf = (mat) => {
+  const t = String((mat && mat.tactileTexture) || "").toUpperCase();
+  if (t.startsWith("T2")) return { kind: "stipple", strength: 3.2, label: "stipple" };
+  if (t.startsWith("T3")) return { kind: "grain", strength: 2.6, label: "linear grain" };
+  if (t.startsWith("T4")) return { kind: "photo", strength: 2.2, label: "embossed in register" };
+  return { kind: "smooth", strength: 0.35, label: "smooth" };
+};
+
+// Light colour, as the eye sees it partly adapted at home (as the lighting simulator does)
+const M3_LIGHTS = [
+  { id: "D6500", label: "Daylight 6500 K" },
+  { id: "D5000", label: "5000 K" },
+  { id: "P4000", label: "4000 K" },
+  { id: "P3000", label: "3000 K" },
+  { id: "P2700", label: "2700 K" },
+];
+const m3LightRgb = (id) => {
+  try {
+    const spd = (typeof LIGHT_SPDS !== "undefined" && LIGHT_SPDS[id]) || null;
+    if (!spd) return [1, 1, 1];
+    const wD65 = lightXYZ(null, SPECTRAL_TABLES.illuminants.D65, 2), w = lightXYZ(null, spd, 2);
+    // a room lit only by this light, seen from a daylight screen: eyes adapt
+    // most of the way (CIECAM02 at home light levels, dim surround: D ≈ 0.75)
+    const xyz = lightAdapt(w, w, wD65, 0.75);
+    const r = 3.2404542 * xyz[0] - 1.5371385 * xyz[1] - 0.4985314 * xyz[2];
+    const g = -0.969266 * xyz[0] + 1.8760108 * xyz[1] + 0.041556 * xyz[2];
+    const b = 0.0556434 * xyz[0] - 0.2040259 * xyz[1] + 1.0572252 * xyz[2];
+    const mx = Math.max(r, g, b);
+    return [Math.max(0, r / mx), Math.max(0, g / mx), Math.max(0, b / mx)];
+  } catch (e) { return [1, 1, 1]; }
+};
+// The backdrop behind the sample: a wall lit by the same light
+const m3Backdrop = (light, dark) => {
+  const [r, g, b] = m3LightRgb(light || "D6500");
+  const f = (hex) => {
+    const n = parseInt(hex.slice(1), 16), c = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    const lin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    const enc = (v) => Math.round(255 * Math.max(0, Math.min(1, v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055)));
+    return `rgb(${enc(lin(c[0]) * r)}, ${enc(lin(c[1]) * g)}, ${enc(lin(c[2]) * b)})`;
+  };
+  return dark
+    ? `radial-gradient(ellipse at 50% 25%, ${f("#3a3836")} 0%, ${f("#161514")} 100%)`
+    : `radial-gradient(ellipse at 50% 25%, ${f("#f6f4f1")} 0%, ${f("#d6d3cf")} 100%)`;
+};
+const m3LoadImage = (url) =>
+  new Promise((res, rej) => {
+    const img = new Image();
+    if (!/^(blob|data):/.test(url)) img.crossOrigin = "anonymous";
+    img.onload = () => res(img);
+    img.onerror = () => rej(new Error(`Could not load ${url}`));
+    img.src = url;
+  });
+// average linear colour of an image (for matching the albedo to the measurement)
+const m3AverageLinear = (img) => {
+  try {
+    const cv = document.createElement("canvas"); cv.width = 32; cv.height = 32;
+    const ctx = cv.getContext("2d"); ctx.drawImage(img, 0, 0, 32, 32);
+    const d = ctx.getImageData(0, 0, 32, 32).data, f = (c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+    let r = 0, g = 0, b = 0;
+    for (let i = 0; i < d.length; i += 4) { r += f(d[i]); g += f(d[i + 1]); b += f(d[i + 2]); }
+    const n = d.length / 4;
+    return [r / n, g / n, b / n];
+  } catch (e) { return null; } // a cross-origin image without CORS: no average
+};
+const m3InvertCanvas = (img) => {
+  const cv = document.createElement("canvas"); cv.width = img.naturalWidth || img.width; cv.height = img.naturalHeight || img.height;
+  const ctx = cv.getContext("2d"); ctx.drawImage(img, 0, 0);
+  const id = ctx.getImageData(0, 0, cv.width, cv.height);
+  for (let i = 0; i < id.data.length; i += 4) { id.data[i] = 255 - id.data[i]; id.data[i + 1] = 255 - id.data[i + 1]; id.data[i + 2] = 255 - id.data[i + 2]; }
+  ctx.putImageData(id, 0, 0);
+  return cv;
+};
+
+// ── the viewer ──
+const M3_PANEL_CM = 60; // the virtual sample: a 60 × 60 cm panel (a 24" sample)
+const MaterialViewer3D = ({ mat, maps, L, C, H, mode, light, matchColour = true, className = "", onInfo }) => {
+  const hostRef = useRef(null);
+  const ctxRef = useRef(null);
+  const pendRef = useRef({}); // the latest mode/material appliers, run once the scene is up
+  const [err, setErr] = useState(null);
+  // scene, once
+  useEffect(() => {
+    let dead = false, raf = 0, ro = null;
+    loadSpaceThree().then((THREE) => {
+      if (dead || !hostRef.current) return;
+      const host = hostRef.current;
+      let renderer;
+      try { renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); } catch (e) { setErr("3D needs WebGL, which this browser has turned off."); return; }
+      renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+      renderer.outputEncoding = THREE.sRGBEncoding;
+      renderer.toneMapping = THREE.NoToneMapping;
+      renderer.setClearColor(0x000000, 0);
+      host.appendChild(renderer.domElement);
+      renderer.domElement.style.cssText = "width:100%;height:100%;display:block;touch-action:none;cursor:grab";
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(30, 2, 0.01, 50);
+      camera.position.set(0, 0, 2.4);
+      // a soft studio to reflect: bright above, a softbox overhead, darker below
+      const env = new THREE.Scene();
+      const eg = new THREE.SphereGeometry(10, 32, 16), ec = [];
+      for (let i = 0; i < eg.attributes.position.count; i++) { const y = eg.attributes.position.getY(i) / 10, v = 0.18 + 0.55 * Math.max(0, y) + 0.12 * (1 + y); ec.push(v, v, v); }
+      eg.setAttribute("color", new THREE.Float32BufferAttribute(ec, 3));
+      env.add(new THREE.Mesh(eg, new THREE.MeshBasicMaterial({ side: THREE.BackSide, vertexColors: true })));
+      const box = new THREE.Mesh(new THREE.PlaneGeometry(6, 3), new THREE.MeshBasicMaterial({ color: new THREE.Color(3, 3, 3), side: THREE.DoubleSide }));
+      box.position.set(0, 7, 3); box.lookAt(0, 0, 0); env.add(box);
+      // the studio takes the light's colour too (it is most of what a glossy
+      // or a pale surface shows), so it is rebuilt when the light changes
+      const envBase = ec.slice(), envMat = env.children[0].material, boxMat = box.material;
+      let envRT = null;
+      const setEnvTint = (r, g, b) => {
+        const col = eg.attributes.color;
+        for (let i = 0; i < col.count; i++) col.setXYZ(i, envBase[i * 3] * r, envBase[i * 3 + 1] * g, envBase[i * 3 + 2] * b);
+        col.needsUpdate = true; envMat.needsUpdate = true;
+        boxMat.color.setRGB(3 * r, 3 * g, 3 * b);
+        const pm = new THREE.PMREMGenerator(renderer);
+        const rt = pm.fromScene(env, 0.03);
+        pm.dispose();
+        if (envRT) envRT.dispose();
+        envRT = rt; scene.environment = rt.texture;
+      };
+      setEnvTint(1, 1, 1);
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x777777, 0.18);
+      scene.add(hemi);
+      const key = new THREE.DirectionalLight(0xffffff, 0.75);
+      key.position.set(-0.6, 1.0, 1.4);
+      scene.add(key);
+      const spot = new THREE.PointLight(0xffffff, 1.6, 4, 2);
+      spot.position.set(0, 0.3, 0.9);
+      scene.add(spot);
+      const material = new THREE.MeshPhysicalMaterial({ color: 0x888888, roughness: 0.55, metalness: 0, envMapIntensity: 0.55 });
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 0.03, 1, 1, 1), material);
+      const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.48, 128, 64), material);
+      [panel, sphere].forEach((m) => m.geometry.setAttribute("uv2", m.geometry.attributes.uv));
+      scene.add(panel); scene.add(sphere);
+      const S = { THREE, renderer, scene, camera, material, panel, sphere, key, spot, hemi, setEnvTint, mode: "tilt", rotX: -0.25, rotY: 0.35, vx: 0, vy: 0, drag: null, lastInput: 0, pointer: [0, 0.4], textures: [], dirty: true };
+      ctxRef.current = S;
+      const resize = () => {
+        const w = host.clientWidth || 1, h = host.clientHeight || 1;
+        renderer.setSize(w, h, false); camera.aspect = w / h;
+        // keep the panel or sphere in view whatever the shape of the frame
+        const fit = host.clientHeight < 260 ? 1.5 : 1.25, d = (fit / 2) / Math.tan((camera.fov * Math.PI) / 360) / Math.min(1, camera.aspect);
+        camera.position.z = d; camera.updateProjectionMatrix(); S.dirty = true;
+      };
+      ro = new ResizeObserver(resize); ro.observe(host); resize();
+      const el = renderer.domElement;
+      const local = (e) => { const r = el.getBoundingClientRect(); return [((e.clientX - r.left) / r.width) * 2 - 1, -(((e.clientY - r.top) / r.height) * 2 - 1)]; };
+      el.addEventListener("pointerdown", (e) => { el.setPointerCapture(e.pointerId); S.drag = { x: e.clientX, y: e.clientY }; S.lastInput = performance.now(); el.style.cursor = "grabbing"; e.stopPropagation(); });
+      el.addEventListener("pointermove", (e) => {
+        S.pointer = local(e); S.lastInput = performance.now();
+        if (S.drag) {
+          const dx = (e.clientX - S.drag.x) / 120, dy = (e.clientY - S.drag.y) / 120;
+          S.drag = { x: e.clientX, y: e.clientY };
+          S.vy = dx; S.vx = dy; S.rotY += dx; S.rotX += dy;
+        }
+        S.dirty = true;
+      });
+      const up = (e) => { S.drag = null; el.style.cursor = "grab"; try { el.releasePointerCapture(e.pointerId); } catch (x) {} };
+      el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
+      el.addEventListener("click", (e) => e.stopPropagation());
+      const tick = (t) => {
+        raf = requestAnimationFrame(tick);
+        if (document.hidden) return;
+        const idle = !S.drag && t - S.lastInput > 2500, ph = t / 1000;
+        if (S.mode === "tilt") {
+          if (!S.drag) { S.rotX += S.vx * 0.85; S.rotY += S.vy * 0.85; S.vx *= 0.85; S.vy *= 0.85; }
+          if (idle) { S.rotY += (Math.sin(ph * 0.5) * 0.45 - S.rotY) * 0.02; S.rotX += (-0.2 + Math.sin(ph * 0.37) * 0.15 - S.rotX) * 0.02; }
+          S.rotX = Math.max(-0.75, Math.min(0.75, S.rotX)); S.rotY = Math.max(-0.85, Math.min(0.85, S.rotY));
+          panel.rotation.set(S.rotX, S.rotY, 0);
+          key.position.set(-0.6, 1.0, 1.4); spot.position.set(0.35, 0.55, 1.1);
+          key.intensity = 0.62; spot.intensity = 0.45;
+        } else if (S.mode === "light") {
+          panel.rotation.set(0, 0, 0);
+          let [px, py] = S.pointer;
+          if (idle) { px = Math.cos(ph * 0.6) * 0.75; py = Math.sin(ph * 0.9) * 0.55; }
+          spot.position.set(px * 0.9, py * 0.9, 0.6); key.position.set(px, py, 1.2);
+          key.intensity = 0.1; spot.intensity = 1.05;
+        } else {
+          if (!S.drag) { S.rotY += S.vy * 0.9 + (idle ? 0.004 : 0); S.rotX += S.vx * 0.9; S.vy *= 0.9; S.vx *= 0.9; }
+          S.rotX = Math.max(-1.2, Math.min(1.2, S.rotX));
+          sphere.rotation.set(S.rotX * 0.6, S.rotY, 0);
+          key.position.set(-0.6, 1.0, 1.4); spot.position.set(0.6, 0.6, 1.2);
+          key.intensity = 0.62; spot.intensity = 0.45;
+        }
+        panel.visible = S.mode !== "sphere"; sphere.visible = S.mode === "sphere";
+        renderer.render(scene, camera);
+      };
+      raf = requestAnimationFrame(tick);
+      S.dispose = () => { cancelAnimationFrame(raf); ro && ro.disconnect(); S.textures.forEach((t) => t.dispose()); material.dispose(); panel.geometry.dispose(); sphere.geometry.dispose(); renderer.dispose(); try { renderer.forceContextLoss(); } catch (e) {} el.remove(); };
+      setErr(null);
+      S.ready = true;
+      pendRef.current.mode && pendRef.current.mode();
+      pendRef.current.mat && pendRef.current.mat();
+    }).catch(() => setErr("Could not load the 3D library (three.js)."));
+    return () => { dead = true; const S = ctxRef.current; if (S && S.dispose) S.dispose(); ctxRef.current = null; };
+  }, []);
+  // mode and light
+  useEffect(() => {
+    const apply = () => {
+      const S2 = ctxRef.current;
+      if (!S2 || !S2.ready) return;
+      S2.mode = mode || "tilt";
+      const [r, g, b] = m3LightRgb(light || "D6500");
+      S2.key.color.setRGB(r, g, b); S2.spot.color.setRGB(r, g, b); S2.hemi.color.setRGB(r, g, b);
+      if (S2.lightId !== light) { S2.lightId = light; S2.setEnvTint(r, g, b); }
+    };
+    pendRef.current.mode = apply;
+    apply();
+  }, [mode, light]);
+  // material and maps
+  const sig = JSON.stringify([mat && mat.key, mat && mat.image, mat && mat.sheen, mat && mat.tactileTexture, mat && mat.material, maps && maps.maps, maps && maps.widthCm, maps && maps.normalDX, L.toFixed(4), C.toFixed(4), H.toFixed(2), matchColour]);
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      const S = ctxRef.current;
+      if (!S || !S.ready) return;
+      const { THREE, material } = S;
+      S.textures.forEach((t) => t.dispose()); S.textures = [];
+      ["map", "normalMap", "roughnessMap", "aoMap", "bumpMap"].forEach((k) => { material[k] = null; });
+      const fin = m3FinishOf(mat);
+      material.roughness = fin.roughness; material.clearcoat = fin.clearcoat || 0; material.clearcoatRoughness = fin.clearcoatRoughness || 0.05;
+      // the measured colour, linear
+      let target = [0.5, 0.5, 0.5];
+      try { const c = new Color("oklch", [L, C, H]).to("srgb-linear").coords; target = c.map((v) => Math.max(0, Math.min(1, v || 0))); } catch (e) {}
+      const tex = (src, srgb, wrap) => {
+        const t = src instanceof HTMLCanvasElement ? new THREE.CanvasTexture(src) : new THREE.Texture(src);
+        t.needsUpdate = true; t.encoding = srgb ? THREE.sRGBEncoding : THREE.LinearEncoding;
+        t.wrapS = t.wrapT = wrap || THREE.RepeatWrapping; t.anisotropy = S.renderer.capabilities.getMaxAnisotropy();
+        S.textures.push(t); return t;
+      };
+      const info = { finish: fin.label, maps: [], relief: null, source: maps ? maps.source : mat && mat.image ? "photo" : "colour" };
+      const m = (maps && maps.maps) || {};
+      const imgs = {};
+      for (const k of Object.keys(m)) { try { imgs[k] = await m3LoadImage(m[k]); } catch (e) { info.error = `Couldn't load the ${k} map (blocked or missing).`; } }
+      let photo = null;
+      if (!imgs.albedo && mat && mat.image) { try { photo = await m3LoadImage(mat.image); } catch (e) { photo = null; } }
+      if (cancelled) return;
+      // repeat: how many tiles across the 60 cm panel (and round the sphere)
+      const tiles = maps ? M3_PANEL_CM / Math.max(5, maps.widthCm || 60) : 1;
+      const setRepeat = (t, kind) => {
+        if (kind === "photo") { t.wrapS = t.wrapT = THREE.MirroredRepeatWrapping; t.repeat.set(1, 1); return; }
+        t.repeat.set(tiles, tiles);
+      };
+      if (imgs.albedo || photo) {
+        const src = imgs.albedo || photo, t = tex(src, true);
+        setRepeat(t, imgs.albedo ? "tile" : "photo");
+        material.map = t; info.maps.push(imgs.albedo ? "albedo" : "photo");
+        const avg = matchColour ? m3AverageLinear(src) : null;
+        if (avg && avg.every((v) => v > 1e-4)) material.color.setRGB(Math.min(4, target[0] / avg[0]), Math.min(4, target[1] / avg[1]), Math.min(4, target[2] / avg[2]));
+        else material.color.setRGB(1, 1, 1);
+      } else material.color.setRGB(target[0], target[1], target[2]);
+      if (imgs.normal) {
+        const t = tex(imgs.normal, false); setRepeat(t, "tile"); material.normalMap = t;
+        material.normalScale.set(1, maps && maps.normalDX ? -1 : 1); info.maps.push("normal");
+      } else if (imgs.height) {
+        const t = tex(imgs.height, false); setRepeat(t, "tile"); material.bumpMap = t; material.bumpScale = 0.015; info.maps.push("height");
+      } else {
+        const rel = m3ReliefOf(mat);
+        let h = null, N = 512;
+        if (rel.kind === "photo" && (imgs.albedo || photo)) h = m3HeightFromImage(imgs.albedo || photo, N);
+        else h = m3Height(rel.kind === "photo" ? "wood" : rel.kind, N);
+        const t = tex(m3NormalCanvas(h, N, rel.strength, false), false);
+        if (rel.kind === "photo" && !imgs.albedo && photo) setRepeat(t, "photo"); else t.repeat.set(rel.kind === "photo" ? tiles : 3, rel.kind === "photo" ? tiles : 3);
+        material.normalMap = t; material.normalScale.set(1, 1);
+        info.relief = rel.label;
+      }
+      if (imgs.roughness || imgs.gloss) {
+        const t = tex(imgs.roughness || m3InvertCanvas(imgs.gloss), false); setRepeat(t, "tile");
+        material.roughnessMap = t; material.roughness = 1; info.maps.push(imgs.roughness ? "roughness" : "gloss");
+      }
+      if (imgs.ao) { const t = tex(imgs.ao, false); setRepeat(t, "tile"); material.aoMap = t; material.aoMapIntensity = 1; info.maps.push("ao"); }
+      material.needsUpdate = true;
+      onInfo && onInfo(info);
+    };
+    pendRef.current.mat = run;
+    run();
+    return () => { cancelled = true; };
+  }, [sig]);
+  return React.createElement(
+    "div",
+    { className: /\b(absolute|fixed)\b/.test(className) ? className : `relative ${className}`, onClick: (e) => e.stopPropagation() },
+    React.createElement("div", { ref: hostRef, className: "absolute inset-0" }),
+    err && React.createElement("div", { className: "absolute inset-0 flex items-center justify-center p-4 text-center text-[11px] text-slate-500" }, err),
+  );
+};
+
+// 2D | 3D switch
+const Swatch3DToggle = ({ on, onChange, ink }) =>
+  React.createElement(
+    "div",
+    { className: "flex rounded-full overflow-hidden border pointer-events-auto text-[9px] font-black tracking-wider", style: { borderColor: ink, color: ink }, role: "radiogroup", "aria-label": "Swatch view" },
+    [["2D", false], ["3D", true]].map(([t, v]) =>
+      React.createElement(
+        "button",
+        {
+          key: t, type: "button", role: "radio", "aria-checked": on === v, onClick: (e) => { e.stopPropagation(); onChange(v); },
+          className: "px-2 py-0.5 transition-colors", title: v ? "Show a 3D sample (tilt, moving light, sphere)" : "Flat colour",
+          style: on === v ? { backgroundColor: ink, color: ink === "#010D00" ? "#F2E8DF" : "#010D00" } : {},
+        },
+        t,
+      ),
+    ),
+  );
+// Tilt | Light | Sphere, light colour, and Maps
+const M3_MODES = [
+  { id: "tilt", label: "Tilt", icon: "rotate-3d", hint: "A sample you can tilt (drag)" },
+  { id: "light", label: "Light", icon: "lamp", hint: "A light that follows your pointer across the sample" },
+  { id: "sphere", label: "Sphere", icon: "globe", hint: "The material on a sphere (drag to turn)" },
+];
+const Swatch3DControls = ({ st, set, onMaps, info, compact }) =>
+  React.createElement(
+    "div",
+    { className: "flex items-center gap-1 pointer-events-auto", onClick: (e) => e.stopPropagation() },
+    React.createElement(
+      "div",
+      { className: "flex rounded-full overflow-hidden bg-neutral-800 shadow", role: "radiogroup", "aria-label": "3D view" },
+      M3_MODES.map((m) =>
+        React.createElement(
+          "button",
+          { key: m.id, type: "button", role: "radio", "aria-checked": st.mode === m.id, title: m.hint, onClick: () => set({ mode: m.id }), className: `flex items-center gap-1 px-2 py-1 text-[9px] font-bold uppercase tracking-wider ${st.mode === m.id ? "bg-white text-neutral-900" : "text-neutral-200 hover:bg-neutral-700"}` },
+          React.createElement(Icon, { name: m.icon, className: "w-3 h-3" }),
+          compact ? null : m.label,
+        ),
+      ),
+    ),
+    React.createElement(
+      "select",
+      { value: st.light, onChange: (e) => set({ light: e.target.value }), "aria-label": "Light colour", title: "Light colour (as seen at home, eyes partly adapted)", className: "bg-neutral-800 shadow text-white text-[9px] font-bold rounded-full px-1.5 py-1 outline-none border-0 cursor-pointer" },
+      M3_LIGHTS.map((l) => React.createElement("option", { key: l.id, value: l.id, style: { color: "#000" } }, compact ? l.label.replace("Daylight ", "") : l.label)),
+    ),
+    onMaps &&
+      React.createElement(
+        "button",
+        { type: "button", onClick: onMaps, title: info ? `Maps: ${info.maps.length ? info.maps.join(", ") : "none"}${info.relief ? ` · relief from specs (${info.relief})` : ""} · ${info.finish}. Click to import or change.` : "Texture maps", className: "flex items-center gap-1 px-2 py-1 rounded-full bg-neutral-800 shadow text-white text-[9px] font-bold uppercase tracking-wider hover:bg-neutral-700" },
+        React.createElement(Icon, { name: "layers", className: "w-3 h-3" }),
+        compact ? null : "Maps",
+        info && info.source === "imported" ? React.createElement("span", { className: "w-1.5 h-1.5 rounded-full bg-emerald-400" }) : info && info.source === "data" ? React.createElement("span", { className: "w-1.5 h-1.5 rounded-full bg-sky-400" }) : null,
+      ),
+  );
+
+// The Maps dialog: import a texture pack for the colour at the cursor.
+const TextureMapsDialog = ({ mat, maps, onClose }) => {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [over, setOver] = useState(false);
+  const inputRef = useRef(null);
+  const imported = maps && maps.source === "imported";
+  const save = async (files) => {
+    if (!mat.key) { setMsg("Move the cursor onto a pin or a commercial colour first: maps are kept per colour."); return; }
+    setBusy(true); setMsg("Reading…");
+    try {
+      const pack = await readTexturePack([...files]);
+      const kinds = Object.keys(pack.maps);
+      if (!kinds.length) { setMsg("No texture maps found (expected images named like …_Color, …_Normal, …_Roughness)."); setBusy(false); return; }
+      const prev = (await textureStore.get(mat.key)) || {};
+      await textureStore.put(mat.key, { maps: { ...(prev.maps || {}), ...pack.maps }, files: { ...(prev.files || {}), ...pack.files }, widthCm: prev.widthCm || 60, normalDX: pack.maps.normal ? pack.normalDX : !!prev.normalDX, updated: Date.now(), name: mat.name || "" });
+      setMsg(`Imported ${kinds.join(", ")}.`);
+    } catch (e) { setMsg(`Couldn't read that: ${e.message || e}`); }
+    setBusy(false);
+  };
+  const update = async (patch) => { const prev = await textureStore.get(mat.key); if (prev) await textureStore.put(mat.key, { ...prev, ...patch }); };
+  const removeKind = async (k) => { const prev = await textureStore.get(mat.key); if (!prev) return; const m2 = { ...prev.maps }; delete m2[k]; const f2 = { ...(prev.files || {}) }; delete f2[k]; if (Object.keys(m2).length) await textureStore.put(mat.key, { ...prev, maps: m2, files: f2 }); else await textureStore.del(mat.key); };
+  const kindsShown = ["albedo", "normal", "roughness", "gloss", "height", "ao"];
+  const label = { albedo: "Albedo (colour)", normal: "Normal", roughness: "Roughness", gloss: "Gloss", height: "Height", ao: "Ambient occlusion" };
+  return React.createElement(
+    "div",
+    { className: "fixed inset-0 z-[120] bg-black/50 flex items-center justify-center p-4", onClick: onClose },
+    React.createElement(
+      "div",
+      { className: "bg-white dark:bg-neutral-900 rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-5 flex flex-col gap-3", onClick: (e) => e.stopPropagation(), role: "dialog", "aria-label": "Texture maps" },
+      React.createElement(
+        "div",
+        { className: "flex items-center gap-2" },
+        React.createElement(Icon, { name: "layers", className: "w-4 h-4 text-slate-500" }),
+        React.createElement("div", { className: "flex-1 text-[12px] font-black uppercase tracking-widest text-slate-800 dark:text-neutral-100" }, `Texture maps${mat.name ? ` · ${mat.name}` : ""}`),
+        React.createElement("button", { type: "button", onClick: onClose, className: "p-1 rounded hover:bg-slate-100 dark:hover:bg-neutral-800", "aria-label": "Close" }, React.createElement(Icon, { name: "x", className: "w-4 h-4" })),
+      ),
+      !mat.key && React.createElement("p", { className: "text-[11px] text-amber-700 dark:text-amber-400" }, "The cursor isn't on a pin or a commercial colour, so there is nothing to attach maps to. The 3D view still shows this colour with a default finish."),
+      mat.key &&
+        React.createElement(
+          "div",
+          {
+            className: `rounded-lg border-2 border-dashed p-5 text-center cursor-pointer transition-colors ${over ? "border-sky-500 bg-sky-50 dark:bg-sky-500/10" : "border-slate-300 dark:border-neutral-700 hover:border-slate-400"}`,
+            onClick: () => inputRef.current && inputRef.current.click(),
+            onDragOver: (e) => { e.preventDefault(); setOver(true); },
+            onDragLeave: () => setOver(false),
+            onDrop: (e) => { e.preventDefault(); setOver(false); if (e.dataTransfer.files.length) save(e.dataTransfer.files); },
+          },
+          React.createElement(Icon, { name: busy ? "loader" : "upload", className: `w-5 h-5 mx-auto mb-1 text-slate-400 ${busy ? "animate-spin" : ""}` }),
+          React.createElement("div", { className: "text-[11px] font-bold text-slate-700 dark:text-neutral-200" }, "Drop a texture pack (zip) or map images"),
+          React.createElement("div", { className: "text-[10px] text-slate-500 dark:text-neutral-400 mt-0.5" }, "Maps are told apart by their names (Color/Albedo/Diffuse, Normal, Roughness or Gloss, Height/Displacement, AO). Big maps are shrunk to 2048 px."),
+          React.createElement("input", { ref: inputRef, type: "file", multiple: true, accept: ".zip,image/*", className: "hidden", onChange: (e) => { if (e.target.files.length) save(e.target.files); e.target.value = ""; } }),
+        ),
+      msg && React.createElement("p", { className: "text-[11px] text-slate-600 dark:text-neutral-300" }, msg),
+      maps &&
+        React.createElement(
+          "div",
+          { className: "flex flex-col gap-1.5" },
+          React.createElement("div", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-400" }, imported ? "Imported maps (kept in this browser)" : "Maps from the data (Texture_* columns)"),
+          React.createElement(
+            "div",
+            { className: "grid grid-cols-3 gap-2" },
+            kindsShown.filter((k) => maps.maps[k]).map((k) =>
+              React.createElement(
+                "div",
+                { key: k, className: "flex flex-col gap-1" },
+                React.createElement("div", { className: "aspect-square rounded border border-slate-200 dark:border-neutral-700 bg-cover bg-center", style: { backgroundImage: `url(${maps.maps[k]})` }, title: (maps.files && maps.files[k]) || maps.maps[k] }),
+                React.createElement(
+                  "div",
+                  { className: "flex items-center justify-between text-[9px] text-slate-500" },
+                  React.createElement("span", { className: "font-bold" }, label[k]),
+                  imported && React.createElement("button", { type: "button", onClick: () => removeKind(k), className: "text-rose-500 hover:underline" }, "remove"),
+                ),
+              ),
+            ),
+          ),
+          imported &&
+            React.createElement(
+              "div",
+              { className: "flex flex-wrap items-center gap-3 pt-1 text-[11px] text-slate-600 dark:text-neutral-300" },
+              React.createElement(
+                "label",
+                { className: "flex items-center gap-1.5" },
+                "Tile width",
+                React.createElement("input", { type: "number", min: 5, max: 400, step: 1, defaultValue: maps.widthCm, onBlur: (e) => { const v = parseFloat(e.target.value); if (v > 0) update({ widthCm: v }); }, className: "w-16 bg-slate-50 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 rounded px-1 py-0.5 text-[11px] font-mono" }),
+                "cm",
+              ),
+              React.createElement(
+                "label",
+                { className: "flex items-center gap-1.5 cursor-pointer", title: "DirectX-style normal maps have green pointing down; flip it if the relief looks inside out" },
+                React.createElement("input", { type: "checkbox", checked: !!maps.normalDX, onChange: (e) => update({ normalDX: e.target.checked }), className: "accent-sky-500" }),
+                "Normal map is DirectX-style",
+              ),
+              React.createElement("button", { type: "button", onClick: () => textureStore.del(mat.key), className: "ml-auto text-[10px] text-rose-600 hover:underline" }, "Remove all"),
+            ),
+        ),
+      React.createElement(
+        "div",
+        { className: "text-[10px] leading-snug text-slate-500 dark:text-neutral-400 border-t border-slate-100 dark:border-neutral-800 pt-2" },
+        "Imported maps stay in this browser only. To share them with every copy of the app, host the images next to it and list them in the colour's row: Texture_Albedo, Texture_Normal, Texture_Roughness (or Texture_Gloss), Texture_Height, Texture_AO, Texture_Width_cm and Texture_Normal_DX. Without maps, the 3D view uses the colour's photo and its sheen and tactile texture. The albedo is tinted so its average matches the measured colour.",
+      ),
+    ),
+  );
+};
+
 const ViewportSwatches = ({
   items,
   layout,
@@ -13572,6 +14315,7 @@ const processCSVData = (
           colorObj.erpCode = url;
         }
         if (image) colorObj.image = image;
+        { const tx = parseTextureColumns(row); if (tx) colorObj.textures = tx; }
         if (notesText) colorObj.notes = notesText;
         if (row.Illuminant) colorObj.illuminant = String(row.Illuminant).trim();
         if (row.Observer)
@@ -13701,6 +14445,7 @@ const processCSVData = (
         a,
         b,
         spectral,
+        ...(parseTextureColumns(row) ? { textures: parseTextureColumns(row) } : {}),
       };
       if (row.Illuminant)
         newSavedColors[pinId].illuminant = String(row.Illuminant).trim();
@@ -16048,7 +16793,32 @@ const App = () => {
         }
       }
     }
+    let activeSpectral = null, activeSpectralMeta = null;
+    {
+      const okSpec = (sp) => Array.isArray(sp) && sp.length === 31 && sp.some((v) => +v > 0);
+      const atCursor = (o) => {
+        if (!o || !isFinite(o.L) || !isFinite(o.C)) return false;
+        const dH = Math.abs((((o.H || 0) - scrubH) % 360 + 540) % 360 - 180);
+        return Math.abs(o.L - scrubL) <= 1e-4 && Math.abs(o.C - scrubC) <= 1e-4 && (o.C < 1e-4 || dH <= 0.01);
+      };
+      const cands = [];
+      const pinHere = [exactSavedColor, activeSavedColor].find((o) => o && o.type === "pin" && atCursor(o));
+      if (pinHere) {
+        cands.push(pinHere);
+        if (pinHere.brand && pinHere.originalIndex !== undefined) cands.push(colorData?.[pinHere.brand]?.[pinHere.originalIndex]);
+        const tk = pinTwinKey(pinHere);
+        Object.values(savedColors || {}).forEach((sc) => { if (sc && sc !== pinHere && sc.type === "pin" && pinTwinKey(sc) === tk) cands.push(sc); });
+      }
+      if (validatedCommercial) cands.push(colorData?.[validatedCommercial.brand]?.[validatedCommercial.originalIndex]);
+      const hit = cands.find((c) => c && okSpec(c.spectral));
+      if (hit) {
+        activeSpectral = hit.spectral;
+        activeSpectralMeta = { illuminant: hit.illuminant, observer: hit.observer, measurementMethod: hit.measurementMethod, measurementDate: hit.measurementDate, measurementDevice: hit.measurementDevice };
+      } else if (okSpec(temporarySpectral)) { activeSpectral = temporarySpectral; activeSpectralMeta = {}; }
+    }
     return {
+      activeSpectral,
+      activeSpectralMeta,
       rawL: scrubL,
       rawC: scrubC,
       rawH: scrubH,
@@ -16399,7 +17169,7 @@ const App = () => {
             .clone()
             .toGamut({ space: "srgb" })
             .toString({ format: "hex" }),
-          spectral: crosshair.temporarySpectral,
+          spectral: crosshair.activeSpectral || crosshair.temporarySpectral,
           brand: pinBrand,
           originalIndex: pinOriginalIndex,
           image: pinImage,
@@ -16709,6 +17479,7 @@ const App = () => {
             Visual_Pattern: sc.visualTexture || "",
             Tactile_Texture: sc.tactileTexture || "",
             Material: sc.material || "",
+            ...textureColumnsOf(sc.textures),
             Spectral: sc.spectral ? JSON.stringify(sc.spectral) : "",
             Illuminant: sc.illuminant || "",
             Observer: sc.observer || "",
@@ -16833,6 +17604,14 @@ const App = () => {
           Measurement_Method: "",
           Measurement_Date: "",
           Measurement_Device: "",
+          Texture_Albedo: "",
+          Texture_Normal: "",
+          Texture_Roughness: "",
+          Texture_Gloss: "",
+          Texture_Height: "",
+          Texture_AO: "",
+          Texture_Width_cm: "",
+          Texture_Normal_DX: "",
         };
         if (SPECTRAL_TABLES) {
           SPECTRAL_TABLES.wavelengths.forEach((w) => {
@@ -17229,8 +18008,7 @@ const App = () => {
   const isLight = scrubL > 0.65;
   const activeColorObj = new Color("oklch", [scrubL, scrubC, scrubH]);
   let labCoords;
-  const spectral =
-    crosshair?.activeSavedColor?.spectral || crosshair?.temporarySpectral;
+  const spectral = crosshair?.activeSpectral || null;
   if (spectral) {
     const varXYZ = calculateXYZFromSpectral(spectral, observer, illuminant);
     const wp = getWhitePoint(observer, illuminant, true);
@@ -20951,6 +21729,15 @@ const AppUI = ({
   // leaving the view you navigated to squeezed into what was left.
   const [mobilePanelsOpen, setMobilePanelsOpen] = useState(false);
   const [headerExpanded, setHeaderExpanded] = useState(false);
+  // the main swatch as a 3D sample
+  const [sw3d, setSw3d] = useSwatch3d();
+  const swMat = swatchMaterialOf(crosshair, colorData, savedColors);
+  const swMaps = useMaterialMaps(swMat);
+  const [swInfo, setSwInfo] = useState(null);
+  const [showMapsDlg, setShowMapsDlg] = useState(false);
+  const swDarkTheme = typeof document !== "undefined" && document.documentElement.classList.contains("dark");
+  const swBackdrop = m3Backdrop(sw3d.light, swDarkTheme);
+  const swInk = sw3d.on ? (swDarkTheme ? "#F2E8DF" : "#010D00") : isLight ? "#010D00" : "#F2E8DF";
   const [showFilterBuilder, setShowFilterBuilder] = useState(false);
   // Resolved once here so the anchor filter rows and the presets all
   // agree with the labels shown beside the toggles.
@@ -21693,9 +22480,20 @@ const AppUI = ({
                 {
                   className:
                     "h-44 w-full relative rounded-2xl shadow-inner border border-black/5 dark:border-white/5 overflow-hidden transition-colors duration-300",
-                  style: { backgroundColor: DisplayGamut.css(scrubL, scrubC, scrubH, crosshairHex) },
+                  style: sw3d.on ? { background: swBackdrop } : { backgroundColor: DisplayGamut.css(scrubL, scrubC, scrubH, crosshairHex) },
                 },
-                crosshair?.activeCommercial &&
+                sw3d.on &&
+                  React.createElement(MaterialViewer3D, {
+                    mat: swMat, maps: swMaps, L: scrubL, C: scrubC, H: scrubH, mode: sw3d.mode, light: sw3d.light,
+                    onInfo: setSwInfo, className: "absolute inset-0 z-[5]",
+                  }),
+                sw3d.on &&
+                  React.createElement(
+                    "div",
+                    { className: "absolute bottom-2 left-0 right-0 flex justify-center z-30 pointer-events-none" },
+                    React.createElement(Swatch3DControls, { st: sw3d, set: setSw3d, onMaps: () => setShowMapsDlg(true), info: swInfo, compact: true }),
+                  ),
+                !sw3d.on && crosshair?.activeCommercial &&
                   (() => {
                     const m = colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
                     return m?.image && React.createElement("div", {
@@ -21707,7 +22505,7 @@ const AppUI = ({
                       },
                     });
                   })(),
-                isOutOfGamut &&
+                !sw3d.on && isOutOfGamut &&
                   React.createElement("div", {
                     className: "absolute inset-0 pointer-events-none",
                     style: {
@@ -21719,16 +22517,24 @@ const AppUI = ({
                   "div",
                   {
                     className: "absolute top-4 left-5 z-10 pointer-events-none",
-                    style: { color: isLight ? "#010D00" : "#F2E8DF" },
+                    style: { color: swInk },
                   },
                   React.createElement(
                     "div",
-                    {
-                      className:
-                        "text-xl font-black tracking-tight drop-shadow-md font-mono",
-                    },
-                    crosshair?.activeErpCode || "",
+                    { className: "flex items-center gap-2" },
+                    React.createElement(Swatch3DToggle, { on: !!sw3d.on, onChange: (v) => setSw3d({ on: v }), ink: swInk }),
+                    React.createElement(
+                      "div",
+                      {
+                        className: sw3d.on
+                          ? "text-xs font-black tracking-tight font-mono"
+                          : "text-xl font-black tracking-tight drop-shadow-md font-mono",
+                      },
+                      crosshair?.activeErpCode || "",
+                    ),
                   ),
+                  sw3d.on && (activeName || swMat.name) &&
+                    React.createElement("div", { className: "mt-0.5 text-[10px] font-bold uppercase tracking-widest opacity-80 truncate max-w-[220px]" }, activeName || swMat.name),
                   isOutOfGamut &&
                     React.createElement(
                       "div",
@@ -21769,7 +22575,7 @@ const AppUI = ({
                   "div",
                   {
                     className: "absolute top-3.5 right-4 flex gap-1 z-30",
-                    style: { color: isLight ? "#010D00" : "#F2E8DF" },
+                    style: { color: swInk },
                   },
                   React.createElement(
                     "button",
@@ -21824,12 +22630,12 @@ const AppUI = ({
                       }),
                     ),
                 ),
-                React.createElement(
+                !sw3d.on && React.createElement(
                   "div",
                   {
                     className:
                       "absolute inset-0 flex flex-col items-center justify-center p-6 mt-1 z-20 pointer-events-none",
-                    style: { color: isLight ? "#010D00" : "#F2E8DF" },
+                    style: { color: swInk },
                   },
                   React.createElement(
                     "div",
@@ -21889,12 +22695,12 @@ const AppUI = ({
                       (crosshair.snapDist * 100).toFixed(2),
                     ),
                 ),
-                React.createElement(
+                !sw3d.on && React.createElement(
                   "div",
                   {
                     className:
                       "absolute bottom-4 left-5 pointer-events-none z-10",
-                    style: { color: isLight ? "#010D00" : "#F2E8DF" },
+                    style: { color: swInk },
                   },
                   React.createElement(
                     "div",
@@ -21913,12 +22719,12 @@ const AppUI = ({
                     labValues,
                   ),
                 ),
-                React.createElement(
+                !sw3d.on && React.createElement(
                   "div",
                   {
                     className:
                       "absolute bottom-4 right-5 pointer-events-none z-10",
-                    style: { color: isLight ? "#010D00" : "#F2E8DF" },
+                    style: { color: swInk },
                   },
                   React.createElement(
                     "div",
@@ -22104,7 +22910,7 @@ const AppUI = ({
                 onSelectColor: handlePointClick,
               }),
             ),
-            crosshair?.activeSavedColor?.spectral &&
+            crosshair?.activeSpectral &&
               React.createElement(
                 CollapsiblePanel,
                 {
@@ -22113,17 +22919,14 @@ const AppUI = ({
                   defaultOpen: false,
                 },
                 React.createElement(SpectralGraph, {
-                  spectralData: crosshair.activeSavedColor.spectral,
+                  spectralData: crosshair.activeSpectral,
                   theme,
                   meta: {
-                    illuminant:
-                      crosshair.activeSavedColor.illuminant || illuminant,
-                    observer: crosshair.activeSavedColor.observer || observer,
-                    measurementMethod:
-                      crosshair.activeSavedColor.measurementMethod,
-                    measurementDate: crosshair.activeSavedColor.measurementDate,
-                    measurementDevice:
-                      crosshair.activeSavedColor.measurementDevice,
+                    illuminant: (crosshair.activeSpectralMeta || {}).illuminant || illuminant,
+                    observer: (crosshair.activeSpectralMeta || {}).observer || observer,
+                    measurementMethod: (crosshair.activeSpectralMeta || {}).measurementMethod,
+                    measurementDate: (crosshair.activeSpectralMeta || {}).measurementDate,
+                    measurementDevice: (crosshair.activeSpectralMeta || {}).measurementDevice,
                   },
                 }),
               ),
@@ -22153,6 +22956,7 @@ const AppUI = ({
                   H: scrubH,
                   activeSavedColor: crosshair.activeSavedColor,
                   temporarySpectral: crosshair.temporarySpectral,
+                  activeSpectral: crosshair.activeSpectral || null,
                 },
                 onEdit: handleUpdate,
                 observer,
@@ -22614,7 +23418,7 @@ const AppUI = ({
                                 nameOverride:
                                   crosshair?.activeSavedColor?.nameOverride,
                                 type: crosshair?.activeSavedColor?.type,
-                                spectral: crosshair?.activeSavedColor?.spectral || (crosshair?.activeCommercial ? colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex]?.spectral : null) || crosshair?.temporarySpectral || undefined,
+                                spectral: crosshair?.activeSpectral || undefined,
                                 image: loadedImage,
                                 brand: loadedBrand,
                                 originalIndex: loadedIndex,
@@ -22771,7 +23575,7 @@ const AppUI = ({
                                 nameOverride:
                                   crosshair?.activeSavedColor?.nameOverride,
                                 type: crosshair?.activeSavedColor?.type,
-                                spectral: crosshair?.activeSavedColor?.spectral || (crosshair?.activeCommercial ? colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex]?.spectral : null) || crosshair?.temporarySpectral || undefined,
+                                spectral: crosshair?.activeSpectral || undefined,
                                 image: loadedImage,
                                 brand: loadedBrand,
                                 originalIndex: loadedIndex,
@@ -23940,6 +24744,7 @@ const AppUI = ({
           }),
         ),
       ),
+    showMapsDlg && React.createElement(TextureMapsDialog, { mat: swMat, maps: swMaps, onClose: () => setShowMapsDlg(false) }),
     showFullscreenPreview &&
       !showCompareFullscreen &&
       (() => {
@@ -23956,9 +24761,20 @@ const AppUI = ({
           {
             className:
               "fixed inset-0 z-[100] flex flex-col items-center justify-end p-20 animate-in fade-in duration-300 cursor-pointer overflow-hidden",
-            style: { backgroundColor: DisplayGamut.css(scrubL, scrubC, scrubH, crosshairHex) },
+            style: sw3d.on ? { background: swBackdrop } : { backgroundColor: DisplayGamut.css(scrubL, scrubC, scrubH, crosshairHex) },
             onClick: () => setShowFullscreenPreview(false),
           },
+          sw3d.on &&
+            React.createElement(MaterialViewer3D, {
+              mat: swMat, maps: swMaps, L: scrubL, C: scrubC, H: scrubH, mode: sw3d.mode, light: sw3d.light,
+              onInfo: setSwInfo, className: "absolute inset-0 z-[5]",
+            }),
+          sw3d.on &&
+            React.createElement(
+              "div",
+              { className: "absolute top-8 left-8 z-[110]", onClick: (e) => e.stopPropagation() },
+              React.createElement(Swatch3DControls, { st: sw3d, set: setSw3d, onMaps: () => setShowMapsDlg(true), info: swInfo }),
+            ),
           previewImage &&
             showFullscreenImageOverlay &&
             React.createElement("div", {
