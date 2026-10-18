@@ -5931,6 +5931,7 @@ const BrandMenu = ({ brands, brandLabel, onAddBrand, onAddColor, onDeleteBrand }
 // table's own column keys.
 const ANCHOR_SORT_FIELDS = [
   { field: "deltae", label: "\u0394E" },
+  { field: "mi", label: "Metamerism" },
   { field: "name", label: "Name" },
   { field: "lightness", label: "Lightness" },
   { field: "chroma", label: "Chroma" },
@@ -6453,6 +6454,8 @@ const FILTER_FIELDS = [
   { id: "C", label: "Chroma", type: "number", get: (it) => it.C },
   { id: "H", label: "Hue", type: "number", get: (it) => it.H },
   { id: "deltaE", label: "\u0394E to cursor", type: "number", get: (it) => it._d },
+  // largest ΔE 2000 to the selected colour under any light (both need spectra)
+  { id: "mi", label: "Metamerism index", type: "number", get: (it) => { const v = metamerismIndexOf(it); return v === null ? NaN : v; } },
   { id: "xref", label: "Equivalent in brand", type: "xref", get: () => "" },
   {
     id: "spectral",
@@ -8138,6 +8141,7 @@ const VIEW_FIELD_DEFS = {
   code: { label: "Code / link" },
   brand: { label: "Brand" },
   deltaE: { label: "ΔE to cursor" },
+  mi: { label: "Metamerism index" },
   L: { label: "Lightness (L)" },
   C: { label: "Chroma (C)" },
   H: { label: "Hue (H)" },
@@ -8161,15 +8165,15 @@ const itemHexOf = (it) => {
 const SPEC_FIELD_IDS = ["material", "sheen", "visualTexture", "tactileTexture", "doorProfile"];
 const COLOUR_FIELD_IDS = ["L", "C", "H", "hex", "colorGroup"];
 const VIEW_FIELD_SETS = {
-  "pins:gallery": { avail: ["name", "deltaE", "code", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "code", ...SPEC_FIELD_IDS, "tags", "notes"] },
+  "pins:gallery": { avail: ["name", "deltaE", "mi", "code", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "code", ...SPEC_FIELD_IDS, "tags", "notes"] },
   "pins:table": { avail: ["code", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["code", "L", "C", "H", ...SPEC_FIELD_IDS, "tags", "notes"] },
-  "pins:matrix": { avail: ["name", "deltaE", "code", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "notes"] },
-  "db:gallery": { avail: ["name", "deltaE", "code", "brand", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "deltaE", "code", "brand", "notes"] },
+  "pins:matrix": { avail: ["name", "deltaE", "mi", "code", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "notes"] },
+  "db:gallery": { avail: ["name", "deltaE", "mi", "code", "brand", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "deltaE", "code", "brand", "notes"] },
   "db:table": {
     avail: ["brand", "sheen", "doorProfile", "visualTexture", "tactileTexture", "material", "code", "deltaE", "L", "C", "H", "tags", "notes"],
     on: ["brand", "sheen", "doorProfile", "visualTexture", "tactileTexture", "material", "code", "deltaE", "L", "C", "H", "notes"],
   },
-  "db:matrix": { avail: ["name", "deltaE", "code", "brand", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "notes"] },
+  "db:matrix": { avail: ["name", "deltaE", "mi", "code", "brand", ...COLOUR_FIELD_IDS, ...SPEC_FIELD_IDS, "tags", "notes"], on: ["name", "notes"] },
   "anchors:gallery": { avail: ["name", ...COLOUR_FIELD_IDS], on: ["name"] },
   "anchors:matrix": { avail: ["name", ...COLOUR_FIELD_IDS], on: ["name"] },
   "anchors:table": { avail: ["L", "C", "H", "nearest", "cursorDE"], on: ["L", "C", "H", "nearest", "cursorDE"] },
@@ -8256,6 +8260,7 @@ const SwatchMetaLines = ({ item, fv, ids, zoom = 1 }) => {
       );
     else if (id === "brand" && item.brand) out.push(line(id, getBrandDisplayName(item.brand), "font-bold uppercase tracking-widest text-slate-400"));
     else if (id === "deltaE" && typeof item._d === "number") out.push(line(id, `ΔE ${item._d.toFixed(2)}`, "font-bold text-emerald-600 dark:text-emerald-400"));
+    else if (id === "mi") { const r = metamerismOf(item); if (r) out.push(line(id, `MI ${r.mi.toFixed(2)}`, r.mi >= 2 ? "font-bold text-rose-600 dark:text-rose-400" : r.mi >= 1 ? "font-bold text-amber-600 dark:text-amber-400" : "font-bold text-slate-500")); }
     else if (id === lch[0])
       out.push(
         line(
@@ -8422,6 +8427,7 @@ const SORT_GETTERS = {
   nn: (it) => (typeof it.nnDE === "number" ? it.nnDE : null),
   tag: (it) => ((it.tags || []).join(", ").toLowerCase() || null),
   erpCode: (it) => String(it.erpCode || "").toLowerCase() || null,
+  mi: (it) => metamerismIndexOf(it),
 };
 const isEmptySortVal = (v) => v === null || v === undefined || v === "" || (typeof v === "number" && !isFinite(v));
 const cmpSortVal = (a, b) => {
@@ -10122,6 +10128,80 @@ const LightingSimulator = ({ slots, observer }) => {
     ),
   );
 };
+
+// ── Metamerism index (sorting and filtering) ──
+// For a colour with measured reflectance, against the selected colour (the
+// cursor's, when it has a spectrum too): the largest ΔE 2000 between the two
+// under any of the simulator's lights — the five standard illuminants, the
+// five LED bulbs and the incandescent 2700/3000/4000 K. A colour that looks
+// close in daylight but drifts apart under a warm LED scores high.
+const MI_LIGHTS = (() => {
+  const list = [];
+  const add = (label, spd) => { if (spd) list.push({ label, spd }); };
+  LIGHT_STANDARD.forEach((l) => add(l.id, l.spd()));
+  lightBulbs("led").forEach((l) => add(`${l.label} LED`, l.spd()));
+  [2700, 3000, 4000].forEach((T) => add(`${T} K incandescent`, LIGHT_SPDS[`P${T}`]));
+  return list.map((l) => ({ ...l, white: lightXYZ(null, l.spd, 2) }));
+})();
+// CIE ΔE 2000 (fast: called for every colour × light)
+const miDE2000 = (l1, l2) => {
+  const [L1, a1, b1] = l1, [L2, a2, b2] = l2, rad = Math.PI / 180;
+  const C1 = Math.hypot(a1, b1), C2 = Math.hypot(a2, b2), Cm = (C1 + C2) / 2;
+  const G = 0.5 * (1 - Math.sqrt(Math.pow(Cm, 7) / (Math.pow(Cm, 7) + 6103515625)));
+  const ap1 = a1 * (1 + G), ap2 = a2 * (1 + G);
+  const Cp1 = Math.hypot(ap1, b1), Cp2 = Math.hypot(ap2, b2);
+  const hp = (b, a) => { if (!a && !b) return 0; const h = Math.atan2(b, a) / rad; return h < 0 ? h + 360 : h; };
+  const hp1 = hp(b1, ap1), hp2 = hp(b2, ap2);
+  const dL = L2 - L1, dC = Cp2 - Cp1;
+  let dh = 0;
+  if (Cp1 * Cp2) { dh = hp2 - hp1; if (dh > 180) dh -= 360; else if (dh < -180) dh += 360; }
+  const dH = 2 * Math.sqrt(Cp1 * Cp2) * Math.sin((dh / 2) * rad);
+  const Lm = (L1 + L2) / 2, Cpm = (Cp1 + Cp2) / 2;
+  let hm = hp1 + hp2;
+  if (Cp1 * Cp2) { if (Math.abs(hp1 - hp2) > 180) hm += hm < 360 ? 360 : -360; hm /= 2; }
+  const T = 1 - 0.17 * Math.cos((hm - 30) * rad) + 0.24 * Math.cos(2 * hm * rad) + 0.32 * Math.cos((3 * hm + 6) * rad) - 0.2 * Math.cos((4 * hm - 63) * rad);
+  const dTh = 30 * Math.exp(-Math.pow((hm - 275) / 25, 2));
+  const RC = 2 * Math.sqrt(Math.pow(Cpm, 7) / (Math.pow(Cpm, 7) + 6103515625));
+  const SL = 1 + (0.015 * Math.pow(Lm - 50, 2)) / Math.sqrt(20 + Math.pow(Lm - 50, 2)), SC = 1 + 0.045 * Cpm, SH = 1 + 0.015 * Cpm * T;
+  const RT = -Math.sin(2 * dTh * rad) * RC;
+  return Math.sqrt(Math.pow(dL / SL, 2) + Math.pow(dC / SC, 2) + Math.pow(dH / SH, 2) + RT * (dC / SC) * (dH / SH));
+};
+const miLabs = (sp) => MI_LIGHTS.map((l) => xyzToLab(lightXYZ(sp, l.spd, 2), l.white));
+// the selected colour's spectrum (App sets it each render), and where items' spectra live
+const metamerismState = { ref: null, refLabs: null, gen: 0, colorData: null, savedColors: null, cache: new WeakMap() };
+const metamerismSetRef = (sp, colorData, savedColors) => {
+  metamerismState.colorData = colorData; metamerismState.savedColors = savedColors;
+  const ok = Array.isArray(sp) && sp.length === 31;
+  if ((ok ? sp : null) === metamerismState.ref) return;
+  metamerismState.ref = ok ? sp : null;
+  metamerismState.refLabs = ok ? miLabs(sp) : null;
+  metamerismState.gen++;
+};
+const metamerismSpectrumOf = (it) => {
+  if (!it) return null;
+  const ok = (s) => Array.isArray(s) && s.length === 31 && s.some((v) => +v > 0);
+  if (ok(it.spectral)) return it.spectral;
+  const cd = metamerismState.colorData, sv = metamerismState.savedColors;
+  if (it.brand && it.originalIndex !== undefined && it.originalIndex !== null) { const m = cd && cd[it.brand] && cd[it.brand][it.originalIndex]; if (m && ok(m.spectral)) return m.spectral; }
+  if (it.id && sv && sv[it.id] && ok(sv[it.id].spectral)) return sv[it.id].spectral;
+  return null;
+};
+// { mi, light } or null (no spectrum here or at the cursor)
+const metamerismOf = (it) => {
+  const S = metamerismState;
+  if (!S.refLabs) return null;
+  const sp = metamerismSpectrumOf(it);
+  if (!sp) return null;
+  const hit = S.cache.get(sp);
+  if (hit && hit.gen === S.gen) return hit.r;
+  const labs = miLabs(sp);
+  let mi = -1, light = "";
+  for (let i = 0; i < labs.length; i++) { const d = miDE2000(labs[i], S.refLabs[i]); if (d > mi) { mi = d; light = MI_LIGHTS[i].label; } }
+  const r = { mi, light };
+  S.cache.set(sp, { gen: S.gen, r });
+  return r;
+};
+const metamerismIndexOf = (it) => { const r = metamerismOf(it); return r ? r.mi : null; };
 
 // ─── 3D material view (PBR) ──────────────────────────────────────────────────
 // The main swatch can show the colour as a physical sample: a tilting panel,
@@ -12560,6 +12640,13 @@ const ViewPinsInner = ({
           valA = a._d ?? 999;
           valB = b._d ?? 999;
           break;
+        case "mi": {
+          const ma = metamerismIndexOf(a), mb = metamerismIndexOf(b);
+          if (ma === null || mb === null) { if (ma === mb) return a.H - b.H; return ma === null ? 1 : -1; }
+          valA = ma;
+          valB = mb;
+          break;
+        }
         case "brand":
         case "material":
         case "sheen":
@@ -18408,6 +18495,7 @@ const App = () => {
   const isLight = scrubL > 0.65;
   useTextureAlbedoVersion();
   textureColorData = colorData;
+  metamerismSetRef(crosshair && crosshair.activeSpectral, colorData, savedColors);
   textureRawBase = githubConfig && githubConfig.owner && githubConfig.repo
     ? `https://raw.githubusercontent.com/${githubConfig.owner}/${githubConfig.repo}/${(githubConfig.branch || "").trim() || "HEAD"}/${(() => { const d = String(githubConfig.path || "data").replace(/^\/+|\/+$/g, ""); return d.includes("/") ? d.slice(0, d.lastIndexOf("/") + 1) : ""; })()}`
     : null;
@@ -19062,6 +19150,7 @@ const CustomConfirmModal = ({ message, onConfirm, onCancel }) => {
 
 const DB_SORT_FIELDS = [
   { field: "deltae", label: "\u0394E" },
+  { field: "mi", label: "Metamerism" },
   { field: "name", label: "Name" },
   { field: "brand", label: "Brand" },
   { field: "material", label: "Material" },
@@ -19762,6 +19851,13 @@ const ViewDatabase = ({
           valA = a._d ?? 999;
           valB = b._d ?? 999;
           break;
+        case "mi": {
+          const ma = metamerismIndexOf(a), mb = metamerismIndexOf(b);
+          if (ma === null || mb === null) { if (ma === mb) return a.H - b.H; return ma === null ? 1 : -1; }
+          valA = ma;
+          valB = mb;
+          break;
+        }
         case "name":
           valA = a.displayName.toLowerCase();
           valB = b.displayName.toLowerCase();
