@@ -6066,7 +6066,7 @@ const BrandMenu = ({ brands, brandLabel, onAddBrand, onAddColor, onDeleteBrand }
     open &&
       React.createElement(
         "div",
-        { className: "absolute left-0 top-full mt-1 z-50 w-64 max-h-[60vh] overflow-y-auto custom-scrollbar bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-lg shadow-xl p-1 text-xs" },
+        { className: "absolute left-0 top-full mt-1 z-50 w-64 max-h-[60dvh] overflow-y-auto custom-scrollbar bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-lg shadow-xl p-1 text-xs" },
         React.createElement(
           "button",
           { onClick: () => { setOpen(false); onAddBrand(); }, className: "w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-50 dark:hover:bg-neutral-800 font-bold text-sky-600" },
@@ -11527,7 +11527,7 @@ const TextureMapsDialog = ({ mat, maps, onClose, colorData }) => {
     { className: "fixed inset-0 z-[120] bg-black/50 flex items-center justify-center p-4", onClick: onClose },
     React.createElement(
       "div",
-      { className: "bg-white dark:bg-neutral-900 rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-5 flex flex-col gap-3", onClick: (e) => e.stopPropagation(), role: "dialog", "aria-label": "Texture maps" },
+      { className: "bg-white dark:bg-neutral-900 rounded-xl shadow-2xl w-full max-w-lg max-h-[90dvh] overflow-y-auto p-5 flex flex-col gap-3", onClick: (e) => e.stopPropagation(), role: "dialog", "aria-label": "Texture maps" },
       React.createElement(
         "div",
         { className: "flex items-center gap-2" },
@@ -15970,7 +15970,7 @@ const GitHubSyncModal = ({ config, setConfig, status, onSync, onPull, onClose })
         "div",
         {
           className:
-            "bg-white rounded-[2rem] shadow-2xl w-full max-w-lg flex flex-col overflow-hidden border border-slate-200",
+            "bg-white rounded-[2rem] shadow-2xl w-full max-w-lg max-h-[calc(100dvh-2rem)] flex flex-col overflow-hidden border border-slate-200",
         },
         React.createElement(
           "div",
@@ -15991,7 +15991,7 @@ const GitHubSyncModal = ({ config, setConfig, status, onSync, onPull, onClose })
         ),
         React.createElement(
           "div",
-          { className: "px-6 py-5 flex flex-col gap-4 overflow-y-auto" },
+          { className: "px-6 py-5 flex flex-col gap-4 overflow-y-auto flex-1 min-h-0", "data-sync-body": "" },
           React.createElement(
             "p",
             { className: "text-xs text-slate-500 leading-relaxed" },
@@ -16025,7 +16025,7 @@ const GitHubSyncModal = ({ config, setConfig, status, onSync, onPull, onClose })
             React.createElement(
               "div",
               {
-                className: `text-xs rounded-xl px-3 py-2 font-mono ${
+                className: `order-first text-xs rounded-xl px-3 py-2 font-mono ${
                   status.state === "error"
                     ? "bg-red-50 text-red-700"
                     : status.state === "done"
@@ -16037,7 +16037,7 @@ const GitHubSyncModal = ({ config, setConfig, status, onSync, onPull, onClose })
               status.log && status.log.length
                 ? React.createElement(
                     "div",
-                    { className: "mt-2 flex flex-col gap-0.5 opacity-70" },
+                    { className: "mt-2 flex flex-col gap-0.5 opacity-70 max-h-40 overflow-y-auto custom-scrollbar", "data-sync-log": "" },
                     status.log.map((line, i) =>
                       React.createElement("div", { key: i }, line),
                     ),
@@ -16049,7 +16049,7 @@ const GitHubSyncModal = ({ config, setConfig, status, onSync, onPull, onClose })
           "div",
           {
             className:
-              "px-6 py-4 border-t border-slate-200 flex items-center justify-end gap-2",
+              "px-6 py-4 border-t border-slate-200 flex items-center justify-end gap-2 shrink-0 bg-white",
           },
           React.createElement(
             "button",
@@ -19603,7 +19603,7 @@ const DatabaseManager = ({
       {
         // framer-motion isn't loaded by index.html, so `motion.div` threw here.
         className:
-          "bg-white dark:bg-neutral-900 rounded-[2.5rem] shadow-2xl w-full max-w-6xl h-[85vh] flex flex-col overflow-hidden border border-slate-200 dark:border-neutral-800",
+          "bg-white dark:bg-neutral-900 rounded-[2.5rem] shadow-2xl w-full max-w-6xl h-[85dvh] flex flex-col overflow-hidden border border-slate-200 dark:border-neutral-800",
       },
       React.createElement(
         "div",
@@ -20725,7 +20725,7 @@ const ViewDatabase = ({
           "div",
           {
             className:
-              "relative w-full max-w-5xl bg-[#F2E8DF] dark:bg-neutral-900 border border-[#B4A99E] dark:border-neutral-700 rounded-2xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden",
+              "relative w-full max-w-5xl bg-[#F2E8DF] dark:bg-neutral-900 border border-[#B4A99E] dark:border-neutral-700 rounded-2xl shadow-2xl flex flex-col max-h-[92dvh] overflow-hidden",
             onClick: (e) => e.stopPropagation(),
           },
           React.createElement(
@@ -22054,7 +22054,7 @@ const ViewDatabase = ({
             "div",
             {
               className:
-                "bg-white dark:bg-neutral-900 w-full max-w-lg rounded-2xl shadow-2xl flex flex-col max-h-[90vh] border border-slate-200 dark:border-neutral-800",
+                "bg-white dark:bg-neutral-900 w-full max-w-lg rounded-2xl shadow-2xl flex flex-col max-h-[90dvh] border border-slate-200 dark:border-neutral-800",
             },
             React.createElement(
               "div",
@@ -22488,7 +22488,7 @@ const FileManager = ({ linkedFiles, setLinkedFiles, onClose }) => {
       "div",
       {
         className:
-          "bg-white dark:bg-neutral-900 rounded-xl shadow-2xl w-full max-w-md flex flex-col max-h-[90vh] border border-slate-200 dark:border-neutral-800 overflow-hidden",
+          "bg-white dark:bg-neutral-900 rounded-xl shadow-2xl w-full max-w-md flex flex-col max-h-[90dvh] border border-slate-200 dark:border-neutral-800 overflow-hidden",
       },
       React.createElement(
         "div",
@@ -23347,7 +23347,7 @@ const AppUI = ({
   };
   return React.createElement(
     "div",
-    { className: "flex flex-col md:flex-row h-screen overflow-hidden" },
+    { className: "flex flex-col md:flex-row h-screen overflow-hidden", style: { height: "100dvh" } },
     React.createElement(
       "div",
       {
@@ -23361,7 +23361,7 @@ const AppUI = ({
       "header",
       {
         className:
-          "shrink-0 bg-white dark:bg-neutral-900 border-b border-slate-200 dark:border-neutral-800 z-30 md:border-b-0",
+          `shrink-0 bg-white dark:bg-neutral-900 border-b border-slate-200 dark:border-neutral-800 z-30 md:border-b-0 ${mobilePanelsOpen ? "max-h-[38dvh]" : "max-h-[52dvh]"} overflow-y-auto md:max-h-none md:overflow-visible custom-scrollbar`,
       },
       React.createElement(
         "div",
@@ -23371,7 +23371,7 @@ const AppUI = ({
         },
         React.createElement(
           "div",
-          { className: "flex justify-between items-center" },
+          { className: "flex flex-wrap justify-between items-center gap-y-1" },
           React.createElement(
             "div",
             { className: "flex items-center gap-2" },
@@ -23420,7 +23420,7 @@ const AppUI = ({
         "div",
         {
           className:
-            "flex items-center gap-1 shrink-0 overflow-x-auto no-scrollbar",
+            "flex flex-wrap items-center gap-1 ml-auto md:ml-0",
         },
         React.createElement(
           "button",
@@ -24003,7 +24003,7 @@ const AppUI = ({
         {
           className: `w-full md:w-auto flex-col bg-white dark:bg-neutral-900 z-10 ${
             mobilePanelsOpen ? "flex flex-1 min-h-0" : "hidden"
-          } md:flex md:flex-none md:h-auto overflow-y-visible custom-scrollbar`,
+          } md:flex md:flex-none md:h-auto overflow-y-auto md:overflow-y-visible custom-scrollbar`,
         },
       React.createElement(
             React.Fragment,
@@ -24976,7 +24976,7 @@ const AppUI = ({
               "div",
               {
                 className:
-                  "relative md:absolute md:right-3 md:top-28 bg-white dark:bg-neutral-900 border-t md:border border-slate-200 dark:border-neutral-800 rounded-t-2xl md:rounded-xl shadow-2xl max-h-[80vh] md:max-h-[70vh] flex flex-col md:w-[540px]",
+                  "relative md:absolute md:right-3 md:top-28 bg-white dark:bg-neutral-900 border-t md:border border-slate-200 dark:border-neutral-800 rounded-t-2xl md:rounded-xl shadow-2xl max-h-[80dvh] md:max-h-[70dvh] flex flex-col md:w-[540px]",
               },
               React.createElement("div", {
                 className:
@@ -25031,7 +25031,7 @@ const AppUI = ({
       "div",
       {
         className:
-          "flex-1 flex flex-col md:flex-row overflow-hidden min-h-0 w-full",
+          `${mobilePanelsOpen ? "hidden md:flex" : "flex"} flex-1 flex-col md:flex-row overflow-hidden min-h-0 w-full`,
       },
     React.createElement(
       "main",
@@ -26008,7 +26008,7 @@ const AppUI = ({
           "div",
           {
             className:
-              "bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden border border-slate-200 dark:border-neutral-800",
+              "bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90dvh] flex flex-col overflow-hidden border border-slate-200 dark:border-neutral-800",
           },
           React.createElement(
             "div",
@@ -26411,7 +26411,7 @@ const AppUI = ({
       "nav",
       {
         className:
-          "md:hidden flex shrink-0 border-t border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 order-last",
+          "md:hidden flex shrink-0 border-t border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 order-last z-40 pb-[env(safe-area-inset-bottom)]",
       },
       renderDestinations("bar"),
       React.createElement(
@@ -26447,7 +26447,7 @@ const AppUI = ({
             "div",
             {
               className:
-                "relative mx-auto mt-[16vh] w-[92vw] md:w-[560px] max-h-[62vh] bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-2xl flex flex-col overflow-hidden",
+                "relative mx-auto mt-[16vh] w-[92vw] md:w-[560px] max-h-[62dvh] bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-2xl flex flex-col overflow-hidden",
             },
             React.createElement(
               "div",
@@ -26628,7 +26628,7 @@ const AppUI = ({
             "div",
             {
               className:
-                "bg-white dark:bg-neutral-900 text-slate-800 dark:text-neutral-100 rounded-2xl w-full max-w-5xl h-[90vh] shadow-2xl flex flex-col border border-slate-200 dark:border-neutral-800 overflow-hidden",
+                "bg-white dark:bg-neutral-900 text-slate-800 dark:text-neutral-100 rounded-2xl w-full max-w-5xl h-[90dvh] shadow-2xl flex flex-col border border-slate-200 dark:border-neutral-800 overflow-hidden",
             },
             // Header
             React.createElement(
