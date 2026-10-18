@@ -5720,7 +5720,14 @@ const AnchorRow = React.memo(({ r, isHere, checked, confirming, autoFocus, deCur
     React.createElement(
       "td",
       { className: "px-1 py-1" },
-      React.createElement(AnchorNameInput, { value: r.name, autoFocus, onCommit: (v) => act.rename(r, v) }),
+      r.locked
+        ? React.createElement("div", { className: "flex items-center gap-1.5 px-1.5 py-1", title: PIN_LOCK_HINT, "data-locked-anchor": r.name },
+            React.createElement(Icon, { name: "lock", className: "w-3 h-3 text-sky-500 shrink-0" }),
+            React.createElement("span", { className: "text-[11px] font-bold uppercase tracking-wide text-slate-800 dark:text-neutral-100 truncate" }, r.name || "Unnamed"),
+            React.createElement("span", { className: "text-[9px] font-mono text-sky-600 dark:text-sky-400 shrink-0" }, `${r.pins} pin${r.pins === 1 ? "" : "s"}`))
+        : React.createElement("div", { className: "flex items-center gap-1" },
+            React.createElement("div", { className: "flex-1 min-w-0" }, React.createElement(AnchorNameInput, { value: r.name, autoFocus, onCommit: (v) => act.rename(r, v) })),
+            r.pins > 0 && React.createElement("span", { className: "text-[9px] font-mono text-slate-400 shrink-0 pr-1", title: "Catalog pins named by this anchor" }, `${r.pins} pin${r.pins === 1 ? "" : "s"}`)),
     ),
     React.createElement(
       "td",
@@ -5729,17 +5736,23 @@ const AnchorRow = React.memo(({ r, isHere, checked, confirming, autoFocus, deCur
         ? React.createElement("span", { className: "text-[10px] font-mono text-slate-400 pr-1.5", title: "Legacy lightness range; editing L turns it into a point" },
             `${r.range[0].toFixed(2)}–${r.range[1].toFixed(2)}`)
         : null,
-      React.createElement(AnchorNumberInput, { value: r.L, step: 0.001, min: 0, max: 1, digits: 3, label: "Lightness", onCommit: (v) => act.move(r, { L: v }) }),
+      r.locked
+        ? React.createElement("span", { className: "text-[11px] font-mono tabular-nums text-slate-500 pr-1.5", title: PIN_LOCK_HINT }, Number(r.L).toFixed(3))
+        : React.createElement(AnchorNumberInput, { value: r.L, step: 0.001, min: 0, max: 1, digits: 3, label: "Lightness", onCommit: (v) => act.move(r, { L: v }) }),
     ),
     React.createElement(
       "td",
       { className: "px-1 py-1 text-right" },
-      React.createElement(AnchorNumberInput, { value: r.C, step: 0.001, min: 0, max: 0.4, digits: 3, label: "Chroma", onCommit: (v) => act.move(r, { C: v }) }),
+      r.locked
+        ? React.createElement("span", { className: "text-[11px] font-mono tabular-nums text-slate-500 pr-1.5", title: PIN_LOCK_HINT }, Number(r.C).toFixed(3))
+        : React.createElement(AnchorNumberInput, { value: r.C, step: 0.001, min: 0, max: 0.4, digits: 3, label: "Chroma", onCommit: (v) => act.move(r, { C: v }) }),
     ),
     React.createElement(
       "td",
       { className: "px-1 py-1 text-right" },
-      React.createElement(AnchorNumberInput, { value: r.H, step: 0.1, min: 0, max: 360, digits: 1, label: "Hue", wide: true, onCommit: (v) => act.move(r, { H: v }) }),
+      r.locked
+        ? React.createElement("span", { className: "text-[11px] font-mono tabular-nums text-slate-500 pr-1.5", title: PIN_LOCK_HINT }, Number(r.H).toFixed(1))
+        : React.createElement(AnchorNumberInput, { value: r.H, step: 0.1, min: 0, max: 360, digits: 1, label: "Hue", wide: true, onCommit: (v) => act.move(r, { H: v }) }),
     ),
     React.createElement(
       "td",
@@ -5777,13 +5790,15 @@ const AnchorRow = React.memo(({ r, isHere, checked, confirming, autoFocus, deCur
         "div",
         { className: "flex items-center justify-end gap-0.5" },
         React.createElement(AnchorIconButton, { icon: "crosshair", title: "Move the cursor here", onClick: () => act.goTo(r) }),
-        React.createElement(AnchorIconButton, { icon: "move", title: "Move this anchor to the cursor", onClick: () => act.moveToCursor(r) }),
+        !r.locked && React.createElement(AnchorIconButton, { icon: "move", title: "Move this anchor to the cursor", onClick: () => act.moveToCursor(r) }),
         React.createElement(AnchorIconButton, { icon: "box", title: "Show in Explore", onClick: () => act.explore(r) }),
-        React.createElement(AnchorIconButton, {
-          icon: "trash-2", danger: true, active: confirming,
-          title: confirming ? "Click again to delete" : "Delete anchor",
-          onClick: () => act.trash(r),
-        }),
+        r.locked
+          ? React.createElement("span", { className: "p-1.5 text-sky-500", title: PIN_LOCK_HINT, "aria-label": "Locked" }, React.createElement(Icon, { name: "lock", className: "w-3.5 h-3.5" }))
+          : React.createElement(AnchorIconButton, {
+              icon: "trash-2", danger: true, active: confirming,
+              title: confirming ? "Click again to delete" : "Delete anchor",
+              onClick: () => act.trash(r),
+            }),
       ),
     ),
   ),
@@ -6099,6 +6114,8 @@ const ViewAnchors = ({
   const setSortBy = (k) => setSort && setSort((p) => ({ ...p, by: ANCHOR_SORT_OUT[k] || k }));
   const setSortAsc = (v) => setSort && setSort((p) => ({ ...p, asc: v }));
   const [selected, setSelected] = useState({});
+  const lockOn = usePinLock();
+  const lockedCount = useMemo(() => { const m = pinAnchorUse(savedColors); let n = 0; m.forEach((v) => { if (v > 0) n++; }); return n; }, [savedColors]);
   const [confirm, setConfirm] = useState(null); // id or "bulk" awaiting a second click
   const [focusId, setFocusId] = useState(null);
   const scrollRef = useRef(null);
@@ -6117,6 +6134,8 @@ const ViewAnchors = ({
         L, C, H, oa: C * Math.cos(h), ob: C * Math.sin(h),
         range: an.maxL - an.minL > 1e-6 ? [an.minL, an.maxL] : null,
         name: anchorNameOf(an, names),
+        pins: anchorPinCount(an.id, savedColors),
+        locked: lockOn && anchorPinCount(an.id, savedColors) > 0,
       };
     });
     list.forEach((r) => (r.hex = spaceHexFor(null, r.L, r.C, r.H)));
@@ -6136,7 +6155,7 @@ const ViewAnchors = ({
       p.nn = best; p.nnDE = bd;
     }
     return list;
-  }, [savedColors, names]);
+  }, [savedColors, names, lockOn]);
 
   const cursor = useMemo(() => {
     const H = ((scrubH % 360) + 360) % 360, h = (H * Math.PI) / 180;
@@ -6181,6 +6200,7 @@ const ViewAnchors = ({
 
   // ── edits ──
   const rename = (r, v) => {
+    if (anchorIsLocked(r.id, savedColors)) { setNotice(`${r.name || "This anchor"} names ${r.pins} catalog pin${r.pins === 1 ? "" : "s"}: locked`); return; }
     setSavedColors((prev) => (prev[r.id] ? { ...prev, [r.id]: { ...prev[r.id], nameOverride: v } } : prev));
     setNames((prev) => {
       const next = { ...prev };
@@ -6189,6 +6209,11 @@ const ViewAnchors = ({
     });
   };
   const move = (r, patch) => {
+    if (anchorIsLocked(r.id, savedColors)) { setNotice(`${r.name || "This anchor"} names ${r.pins} catalog pin${r.pins === 1 ? "" : "s"}: locked`); return false; }
+    {
+      const L = patch.L !== undefined ? patch.L : r.L, C = patch.C !== undefined ? patch.C : r.C, H = patch.H !== undefined ? patch.H : r.H;
+      if (anchorWouldRenamePin(L, C, H, savedColors, r.id)) { setNotice("Not moved: it would land nearer to a catalog pin than the anchor naming it, and rename the pin"); return false; }
+    }
     setSavedColors((prev) => {
       const sc = prev[r.id];
       if (!sc) return prev;
@@ -6200,15 +6225,19 @@ const ViewAnchors = ({
       return { ...prev, [r.id]: next };
     });
   };
-  const remove = (ids) => {
+  const remove = (allIds) => {
+    const ids = allIds.filter((id) => !anchorIsLocked(id, savedColors));
+    const kept = allIds.length - ids.length;
+    if (!ids.length) { setNotice(`Locked: ${kept === 1 ? "this anchor names" : `these ${kept} anchors name`} catalog pins`); setSelected({}); return; }
     const set = new Set(ids);
     const keys = rows.filter((r) => set.has(r.id)).map((r) => r.nameKey);
     setSavedColors((prev) => { const next = { ...prev }; ids.forEach((id) => delete next[id]); return next; });
     setNames((prev) => { const next = { ...prev }; keys.forEach((k) => delete next[k]); return next; });
     setSelected({});
-    setNotice(`Deleted ${ids.length} anchor${ids.length === 1 ? "" : "s"}`);
+    setNotice(`Deleted ${ids.length} anchor${ids.length === 1 ? "" : "s"}${kept ? `; kept ${kept} locked (they name catalog pins)` : ""}`);
   };
   const addAtCursor = () => {
+    if (anchorWouldRenamePin(cursor.L, cursor.C, cursor.H, savedColors)) { setNotice("Not added: an anchor here would rename a catalog pin (Lock pin names is on)"); return; }
     const id = `custom-noun-${Date.now().toString(36)}`, h = (cursor.H * Math.PI) / 180;
     setSavedColors((prev) => ({
       ...prev,
@@ -6228,7 +6257,7 @@ const ViewAnchors = ({
     select: (id, v) => setSelected((p) => ({ ...p, [id]: v })),
     goTo, rename, move,
     find: (q) => setQuery(q),
-    moveToCursor: (r) => { move(r, { L: cursor.L, C: cursor.C, H: cursor.H }); setNotice(`Moved ${r.name || "anchor"} to the cursor`); },
+    moveToCursor: (r) => { if (move(r, { L: cursor.L, C: cursor.C, H: cursor.H }) !== false) setNotice(`Moved ${r.name || "anchor"} to the cursor`); },
     explore: (r) => { goTo(r); setActiveTab("3d"); },
     trash: (r) => (confirm === r.id ? (remove([r.id]), setConfirm(null)) : setConfirm(r.id)),
   };
@@ -6281,6 +6310,19 @@ const ViewAnchors = ({
         { className: "flex items-baseline gap-2" },
         React.createElement("span", { className: "text-[11px] font-black uppercase tracking-widest text-slate-800 dark:text-neutral-100" }, "Anchors"),
         React.createElement("span", { className: "text-[10px] font-mono text-slate-400" }, shown.length !== rows.length ? `${shown.length} of ${rows.length}` : `${rows.length}`),
+        React.createElement(
+          "button",
+          {
+            onClick: () => pinLockStore.set(!lockOn),
+            "aria-pressed": lockOn,
+            title: lockOn
+              ? `${lockedCount} anchor${lockedCount === 1 ? "" : "s"} name pins in the Catalog and can't be renamed, moved or deleted; new anchors can't take those pins over. Click to unlock.`
+              : "Anchors that name Catalog pins can be edited freely. Click to lock them.",
+            className: `flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full border ${lockOn ? "border-sky-300 dark:border-sky-500/40 bg-sky-50 dark:bg-sky-500/15 text-sky-700 dark:text-sky-300" : "border-slate-200 dark:border-neutral-700 text-slate-400 hover:text-slate-600"}`,
+          },
+          React.createElement(Icon, { name: lockOn ? "lock" : "lock-open", className: "w-3 h-3" }),
+          lockOn ? `Pin names locked (${lockedCount})` : "Lock pin names",
+        ),
         unnamed > 0 && React.createElement("span", { className: "text-[10px] font-mono text-slate-400" }, `· ${unnamed} unnamed`),
         closePairs > 0 &&
           React.createElement(
@@ -6600,6 +6642,7 @@ const FILTER_FIELDS = [
   { id: "tactileTexture", label: "Tactile texture", type: "select", get: (it) => it.tactileTexture || "" },
   { id: "tag", label: "Tag", type: "select", multi: true, get: (it) => (it.tags || []).join(", ") },
   { id: "notes", label: "Notes", type: "text", get: (it) => it.notes || "" },
+  { id: "pinNamed", label: "Names catalog pins", type: "boolean", get: (it, ctx) => !!(ctx && ctx.savedColors && anchorPinCount(it.id, ctx.savedColors) > 0) },
   { id: "noun", label: "Anchor", type: "text", get: (it, ctx) => (ctx ? nounNameOf(it, ctx) : "") },
   { id: "L", label: "Lightness", type: "number", get: (it) => it.L },
   { id: "C", label: "Chroma", type: "number", get: (it) => it.C },
@@ -11753,6 +11796,65 @@ const FilterPresetBar = ({ presets, rows, setRows, mode, setMode }) => {
     ),
   );
 };
+
+// ── Lock anchors that name catalog pins ───────────────────────────────────
+// A pin with no name of its own takes the name of the nearest anchor. While
+// the lock is on, an anchor that names at least one pin can't be renamed,
+// moved or deleted, and no new or moved anchor may land nearer to such a pin
+// than the anchor naming it (that would rename the pin too).
+const PIN_LOCK_KEY = "csam-lock-pin-anchors";
+const pinLockStore = (() => {
+  let on = true;
+  try { const v = localStorage.getItem(PIN_LOCK_KEY); if (v !== null) on = v === "1"; } catch (e) {}
+  const subs = new Set();
+  return {
+    get: () => on,
+    set: (v) => { on = !!v; try { localStorage.setItem(PIN_LOCK_KEY, on ? "1" : "0"); } catch (e) {} subs.forEach((f) => f()); },
+    subscribe: (f) => { subs.add(f); return () => subs.delete(f); },
+  };
+})();
+const usePinLock = () => {
+  const [, force] = useState(0);
+  useEffect(() => pinLockStore.subscribe(() => force((x) => x + 1)), []);
+  return pinLockStore.get();
+};
+// anchor id → how many pins take their name from it (and where those pins are)
+const PIN_USE_CACHE = new WeakMap();
+const pinAnchorUse = (savedColors) => {
+  if (!savedColors) return new Map();
+  let m = PIN_USE_CACHE.get(savedColors);
+  if (m) return m;
+  m = new Map();
+  m.pins = [];
+  Object.values(savedColors).forEach((sc) => {
+    if (!sc || sc.type !== "pin") return;
+    let cur = sc;
+    for (let depth = 0; cur && depth < 20; depth++) {
+      if (cleanName(cur.nameOverride)) return;           // has its own name
+      const parent = cur.parentPinId && savedColors[cur.parentPinId];
+      if (!parent) break;
+      cur = parent;
+    }
+    const L = Number(cur.L), C = Number(cur.C), H = Number(cur.H) || 0;
+    const an = findNearestAnchor(L, C, H, savedColors);
+    if (!an) return;
+    m.set(an.id, (m.get(an.id) || 0) + 1);
+    const h = (H * Math.PI) / 180;
+    m.pins.push({ anchor: an.id, L, a: C * Math.sin(h), b: C * Math.cos(h), dist: an.dist });
+  });
+  PIN_USE_CACHE.set(savedColors, m);
+  return m;
+};
+const anchorPinCount = (id, savedColors) => pinAnchorUse(savedColors).get(id) || 0;
+const anchorIsLocked = (id, savedColors) => pinLockStore.get() && anchorPinCount(id, savedColors) > 0;
+// Would an anchor at L/C/H (other than `selfId`) take a pin away from its anchor?
+const anchorWouldRenamePin = (L, C, H, savedColors, selfId) => {
+  if (!pinLockStore.get()) return false;
+  const h = ((Number(H) || 0) * Math.PI) / 180, a = C * Math.sin(h), b = C * Math.cos(h);
+  return pinAnchorUse(savedColors).pins.some((p) =>
+    p.anchor !== selfId && Math.sqrt((L - p.L) ** 2 + (a - p.a) ** 2 + (b - p.b) ** 2) < p.dist - 1e-9);
+};
+const PIN_LOCK_HINT = "Names a pin in the Catalog: locked so the pin keeps its name (turn off Lock pin names to edit)";
 
 const ViewportSwatches = ({
   items,
@@ -18054,6 +18156,8 @@ const App = () => {
   // Card button: add an anchor at the cursor, or remove the one it sits on.
   const toggleAnchorHere = () => {
     const an = findNearestAnchor(scrubL, scrubC, scrubH, savedColors);
+    if (an && an.dist < 0.0005 && anchorIsLocked(an.id, savedColors)) { alert("This anchor names a pin in the Catalog, so it's locked. Turn off Lock pin names in the Anchors tab to remove it."); return; }
+    if (!(an && an.dist < 0.0005) && anchorWouldRenamePin(scrubL, scrubC, scrubH, savedColors)) { alert("An anchor here would rename a pin in the Catalog. Turn off Lock pin names in the Anchors tab to add it."); return; }
     if (an && an.dist < 0.0005) {
       setSavedColors((prev) => {
         const next = { ...prev };
@@ -18164,6 +18268,7 @@ const App = () => {
       updateSavedColor("nameOverride", val);
     } else if (crosshair?.nearestAnchorId) {
       const id = crosshair.nearestAnchorId;
+      if (anchorIsLocked(id, savedColors)) return;
       setNames({ ...names, [id]: val });
       if (
         savedColors[id] &&
@@ -20795,7 +20900,7 @@ const ViewDatabase = ({
                 message: `Make ${list.length} anchor${list.length === 1 ? "" : "s"} from the ${sel ? "selected" : "filtered"} colours? Each takes the colour's name and position; names already used by an anchor are skipped.`,
                 onConfirm: () => {
                   const r = onMakeAnchors(list);
-                  setAnchorNote(`${r.added} anchor${r.added === 1 ? "" : "s"} added${r.skipped ? `, ${r.skipped} skipped (name already an anchor)` : ""}`);
+                  setAnchorNote(`${r.added} anchor${r.added === 1 ? "" : "s"} added${r.skipped - (r.pinGuard || 0) ? `, ${r.skipped - (r.pinGuard || 0)} skipped (name already an anchor)` : ""}${r.pinGuard ? `, ${r.pinGuard} skipped (would rename a catalog pin)` : ""}`);
                   setTimeout(() => setAnchorNote(""), 6000);
                 },
               }),
@@ -23668,6 +23773,8 @@ const AppUI = ({
                       type: "text",
                       value: activeName,
                       onChange: (e) => onNameChange(e.target.value),
+                      readOnly: crosshair?.activeSavedColor?.type !== "pin" && !!crosshair?.nearestAnchorId && anchorIsLocked(crosshair.nearestAnchorId, savedColors),
+                      title: crosshair?.activeSavedColor?.type !== "pin" && !!crosshair?.nearestAnchorId && anchorIsLocked(crosshair.nearestAnchorId, savedColors) ? PIN_LOCK_HINT : undefined,
                       placeholder: "Unnamed",
                       className: nounInputClass,
                     }),
@@ -25084,11 +25191,12 @@ const AppUI = ({
                   const nameOf = (sc) => String((names && names[sc.id]) || sc.nameOverride || "").trim().toLowerCase();
                   const have = new Set(Object.values(savedColors || {}).filter((sc) => sc && (sc.type === "nounColumn" || sc.type === "anchor")).map(nameOf).filter(Boolean));
                   const add = {}, addNames = {};
-                  let skipped = 0;
+                  let skipped = 0, pinGuard = 0;
                   const stamp = Date.now().toString(36);
                   items.forEach((it, i) => {
                     const name = String(it.displayName || it.name || "").trim();
                     if (!name || have.has(name.toLowerCase()) || !isFinite(it.L) || !isFinite(it.C)) { skipped++; return; }
+                    if (anchorWouldRenamePin(it.L, it.C, Number(it.H) || 0, savedColors)) { skipped++; pinGuard++; return; }
                     have.add(name.toLowerCase());
                     const id = `custom-noun-${stamp}${i.toString(36)}`, H = Number(it.H) || 0, h = (H * Math.PI) / 180;
                     add[id] = { id, type: "nounColumn", nameOverride: name, C: it.C, H, minL: it.L, maxL: it.L, a: it.C * Math.sin(h), b: it.C * Math.cos(h), notes: "" };
@@ -25099,7 +25207,7 @@ const AppUI = ({
                     setSavedColors((prev) => ({ ...prev, ...add }));
                     setNames((prev) => ({ ...prev, ...addNames }));
                   }
-                  return { added, skipped };
+                  return { added, skipped, pinGuard };
                 },
               })
             ),
