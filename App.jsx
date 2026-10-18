@@ -10276,10 +10276,15 @@ const LightingSimulator = ({ slots, observer }) => {
 
 // ── Metamerism index (sorting and filtering) ──
 // For a colour with measured reflectance, against the selected colour (the
-// cursor's, when it has a spectrum too): the largest ΔE 2000 between the two
-// under any of the simulator's lights — the five standard illuminants, the
-// five LED bulbs and the incandescent 2700/3000/4000 K. A colour that looks
-// close in daylight but drifts apart under a warm LED scores high.
+// cursor's, when it has a spectrum too): how much their difference changes
+// away from daylight — CIE's metamerism index with additive correction. The
+// pair's difference in D65 (ΔL*, Δa*, Δb*) is taken out of the colour's Lab
+// under each other light, and what remains is the ΔE 2000 to the selected
+// colour there; the index is the largest of these over the simulator's lights
+// (D50, A, F2, F11, the five LED bulbs, incandescent 2700/3000/4000 K). Two
+// colours that differ in daylight by the same amount under every light score
+// 0, however far apart they are; a pair that matches in daylight but drifts
+// apart under a warm LED scores high. ΔE to the cursor covers plain difference.
 const MI_LIGHTS = (() => {
   const list = [];
   const add = (label, spd) => { if (spd) list.push({ label, spd }); };
@@ -10311,6 +10316,8 @@ const miDE2000 = (l1, l2) => {
   const RT = -Math.sin(2 * dTh * rad) * RC;
   return Math.sqrt(Math.pow(dL / SL, 2) + Math.pow(dC / SC, 2) + Math.pow(dH / SH, 2) + RT * (dC / SC) * (dH / SH));
 };
+// the reference light: daylight D65
+const MI_REF = Math.max(0, MI_LIGHTS.findIndex((l) => l.label === "D65"));
 const miLabs = (sp) => MI_LIGHTS.map((l) => xyzToLab(lightXYZ(sp, l.spd, 2), l.white));
 // the selected colour's spectrum (App sets it each render), and where items' spectra live
 const metamerismState = { ref: null, refLabs: null, gen: 0, colorData: null, savedColors: null, cache: new WeakMap() };
@@ -10340,8 +10347,13 @@ const metamerismOf = (it) => {
   const hit = S.cache.get(sp);
   if (hit && hit.gen === S.gen) return hit.r;
   const labs = miLabs(sp);
-  let mi = -1, light = "";
-  for (let i = 0; i < labs.length; i++) { const d = miDE2000(labs[i], S.refLabs[i]); if (d > mi) { mi = d; light = MI_LIGHTS[i].label; } }
+  let mi = 0, light = "";
+  const r0 = MI_REF, dL = labs[r0][0] - S.refLabs[r0][0], da = labs[r0][1] - S.refLabs[r0][1], db = labs[r0][2] - S.refLabs[r0][2];
+  for (let i = 0; i < labs.length; i++) {
+    if (i === r0) continue;
+    const d = miDE2000([labs[i][0] - dL, labs[i][1] - da, labs[i][2] - db], S.refLabs[i]);
+    if (d > mi) { mi = d; light = MI_LIGHTS[i].label; }
+  }
   const r = { mi, light };
   S.cache.set(sp, { gen: S.gen, r });
   return r;
