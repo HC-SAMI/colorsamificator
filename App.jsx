@@ -10157,8 +10157,16 @@ const LIGHT_VIEWS = [
   { id: "home", label: "At home", D: 0.85, hint: "Partly adjusted, as in a room at home (CIECAM02, about 100 lux): warm light still reads warm." },
   { id: "camera", label: "No adaptation", D: 0, hint: "As a camera set to daylight would record it: the full cast of the light." },
 ];
-const lightLab = (xyz, wp) => xyzToLab(xyz, wp);
-const lightDE = (lab1, lab2) => { try { return new Color("lab", lab1).deltaE(new Color("lab", lab2), "2000"); } catch (e) { return NaN; } };
+// ΔE OK (×100, the app's usual scale) between two OkLab colours
+const lightDE = (o1, o2) => Math.hypot(o1[0] - o2[0], o1[1] - o2[1], o1[2] - o2[2]) * 100;
+// XYZ seen under a light, with the eye adapted to it, → OkLab (D65)
+const lightXyzToOklab = (xyz) => {
+  const l = Math.cbrt(Math.max(0, 0.8189330101 * xyz[0] + 0.3618667424 * xyz[1] - 0.1288597137 * xyz[2]));
+  const m = Math.cbrt(Math.max(0, 0.0329845436 * xyz[0] + 0.9293118715 * xyz[1] + 0.0361456387 * xyz[2]));
+  const s = Math.cbrt(Math.max(0, 0.0482003018 * xyz[0] + 0.2643662691 * xyz[1] + 0.633851707 * xyz[2]));
+  return [0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s, 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s, 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s];
+};
+const lightOklab = (sp, spd, white, wD65, obs = 2) => lightXyzToOklab(lightAdapt(lightXYZ(sp, spd, obs), white, wD65, 1));
 const LightingSimulator = ({ slots, observer }) => {
   const [view, setView] = useState(() => { try { return localStorage.getItem("csam-light-view") || "home"; } catch (e) { return "home"; } });
   const [kind, setKind] = useState(() => { try { return localStorage.getItem("csam-light-kind") || "led"; } catch (e) { return "led"; } });
@@ -10169,7 +10177,7 @@ const LightingSimulator = ({ slots, observer }) => {
   const rows = useMemo(() => {
     const d65 = SPECTRAL_TABLES.illuminants.D65;
     const wD65 = lightXYZ(null, d65, 2), wD65o = lightXYZ(null, d65, obs);
-    const ref = live.map((s) => lightLab(lightXYZ(s.spectral, d65, obs), wD65o));
+    const ref = live.map((s) => lightOklab(s.spectral, d65, wD65o, wD65o, obs));
     const make = (li) => {
       const spd = li.spd();
       const w2 = lightXYZ(null, spd, 2), wo = lightXYZ(null, spd, obs);
@@ -10180,8 +10188,8 @@ const LightingSimulator = ({ slots, observer }) => {
         let hex = "#808080";
         try { const o = new Color("xyz-d65", shown).to("oklch").coords; hex = lchDisplayHex(o[0], o[1] || 0, isNaN(o[2]) ? 0 : o[2]); } catch (e) {}
         // colour inconstancy: fully adapted, against the same colour in daylight
-        const full = lightLab(lightAdapt(lightXYZ(s.spectral, spd, obs), wo, wD65o, 1), wD65o);
-        return { hex, shift: lightDE(full, ref[i]), lab: lightLab(lightXYZ(s.spectral, spd, obs), wo) };
+        const full = lightOklab(s.spectral, spd, wo, wD65o, obs);
+        return { hex, shift: lightDE(full, ref[i]), lab: full };
       });
       let lightHex = "#ffffff";
       try { const o = new Color("xyz-d65", lw.map((v) => v * 0.92)).to("oklch").coords; lightHex = lchDisplayHex(o[0], o[1] || 0, isNaN(o[2]) ? 0 : o[2]); } catch (e) {}
@@ -10221,7 +10229,7 @@ const LightingSimulator = ({ slots, observer }) => {
           "div",
           { key: i, className: "w-14 shrink-0 flex flex-col items-center" },
           React.createElement("span", { className: "w-14 h-7 rounded border border-black/10", style: { backgroundColor: c.hex }, title: `${live[i].label} under ${r.label}: ${c.hex}` }),
-          React.createElement("span", { className: `text-[9px] font-mono ${r.id === "D65" ? "text-slate-300 dark:text-neutral-600" : deTone(c.shift)}`, title: "How far it shifts from daylight once the eye adapts (ΔE 2000)" }, r.id === "D65" ? "ref" : `Δ${c.shift.toFixed(1)}`),
+          React.createElement("span", { className: `text-[9px] font-mono ${r.id === "D65" ? "text-slate-300 dark:text-neutral-600" : deTone(c.shift)}`, title: "How far it shifts from daylight once the eye adapts (ΔE OK)" }, r.id === "D65" ? "ref" : `Δ${c.shift.toFixed(1)}`),
         ),
       ),
       r.mi !== null &&
@@ -10229,7 +10237,7 @@ const LightingSimulator = ({ slots, observer }) => {
           "span",
           {
             className: `w-10 shrink-0 text-right text-[10px] font-mono font-bold ${r.id === "D65" ? "text-slate-700 dark:text-neutral-200" : deTone(Math.abs(r.mi - rows.standard[0].mi))}`,
-            title: `${live[0].label} vs ${live[1].label} under this light: ΔE 2000 ${r.mi.toFixed(2)}${r.id === "D65" ? " (in daylight)" : `, ${r.mi >= rows.standard[0].mi ? "+" : "−"}${Math.abs(r.mi - rows.standard[0].mi).toFixed(2)} from daylight (coloured when the light changes the pair's difference: metamerism)`}`,
+            title: `${live[0].label} vs ${live[1].label} under this light: ΔE OK ${r.mi.toFixed(2)}${r.id === "D65" ? " (in daylight)" : `, ${r.mi >= rows.standard[0].mi ? "+" : "−"}${Math.abs(r.mi - rows.standard[0].mi).toFixed(2)} from daylight (coloured when the light changes the pair's difference: metamerism)`}`,
           },
           r.mi.toFixed(2),
         ),
@@ -10240,7 +10248,7 @@ const LightingSimulator = ({ slots, observer }) => {
       { className: "flex items-center gap-2 pt-2 pb-0.5" },
       React.createElement("span", { className: "flex-1 text-[9px] font-bold uppercase tracking-wider text-slate-400" }, t),
       live.map((s, i) => React.createElement("span", { key: i, className: "w-14 text-center text-[9px] font-black text-slate-500 truncate", title: s.title || s.label }, s.label)),
-      live.length === 2 && React.createElement("span", { className: "w-10 text-right text-[9px] font-black text-slate-500", title: "A vs B (ΔE 2000)" }, "A↔B"),
+      live.length === 2 && React.createElement("span", { className: "w-10 text-right text-[9px] font-black text-slate-500", title: "A vs B (ΔE OK)" }, "A↔B"),
     );
   const missing = slots.filter((s) => s.present && !(Array.isArray(s.spectral) && s.spectral.length === 31));
   return React.createElement(
@@ -10267,7 +10275,7 @@ const LightingSimulator = ({ slots, observer }) => {
     React.createElement(
       "div",
       { className: "text-[9px] text-amber-700/80 dark:text-amber-500/80 leading-snug pt-1" },
-      "Δ under a swatch: how far that colour shifts from its daylight look once the eye adapts (ΔE 2000; above 1 is noticeable side by side, above 2 at a glance).",
+      "Δ under a swatch: how far that colour shifts from its daylight look once the eye adapts (ΔE OK, ×100 as elsewhere in the app; above 1 is noticeable side by side, above 2 at a glance).",
       live.length === 2 ? " A↔B: the difference between the two under each light, coloured when it moves by 1 or more from daylight's (they are a metameric pair)." : "",
       missing.length ? ` ${missing.map((s) => s.label).join(" and ")} has no spectral data, so it can't be simulated.` : "",
     ),
@@ -10277,14 +10285,13 @@ const LightingSimulator = ({ slots, observer }) => {
 // ── Metamerism index (sorting and filtering) ──
 // For a colour with measured reflectance, against the selected colour (the
 // cursor's, when it has a spectrum too): how much their difference changes
-// away from daylight — CIE's metamerism index with additive correction. The
-// pair's difference in D65 (ΔL*, Δa*, Δb*) is taken out of the colour's Lab
-// under each other light, and what remains is the ΔE 2000 to the selected
-// colour there; the index is the largest of these over the simulator's lights
-// (D50, A, F2, F11, the five LED bulbs, incandescent 2700/3000/4000 K). Two
-// colours that differ in daylight by the same amount under every light score
-// 0, however far apart they are; a pair that matches in daylight but drifts
-// apart under a warm LED scores high. ΔE to the cursor covers plain difference.
+// with the light. Their ΔE OK is taken under each of the simulator's lights
+// (D65, D50, A, F2, F11, the five LED bulbs, incandescent 2700/3000/4000 K),
+// with the eye adapted to each; the index is the largest of those minus the
+// smallest. Two colours as far apart under every light score 0; a pair whose
+// difference grows under one light and shrinks under another scores the
+// spread (2.31 under one light, 2.99 under another: 0.68). Their plain
+// distance is ΔE to the cursor.
 const MI_LIGHTS = (() => {
   const list = [];
   const add = (label, spd) => { if (spd) list.push({ label, spd }); };
@@ -10293,32 +10300,10 @@ const MI_LIGHTS = (() => {
   [2700, 3000, 4000].forEach((T) => add(`${T} K incandescent`, LIGHT_SPDS[`P${T}`]));
   return list.map((l) => ({ ...l, white: lightXYZ(null, l.spd, 2) }));
 })();
-// CIE ΔE 2000 (fast: called for every colour × light)
-const miDE2000 = (l1, l2) => {
-  const [L1, a1, b1] = l1, [L2, a2, b2] = l2, rad = Math.PI / 180;
-  const C1 = Math.hypot(a1, b1), C2 = Math.hypot(a2, b2), Cm = (C1 + C2) / 2;
-  const G = 0.5 * (1 - Math.sqrt(Math.pow(Cm, 7) / (Math.pow(Cm, 7) + 6103515625)));
-  const ap1 = a1 * (1 + G), ap2 = a2 * (1 + G);
-  const Cp1 = Math.hypot(ap1, b1), Cp2 = Math.hypot(ap2, b2);
-  const hp = (b, a) => { if (!a && !b) return 0; const h = Math.atan2(b, a) / rad; return h < 0 ? h + 360 : h; };
-  const hp1 = hp(b1, ap1), hp2 = hp(b2, ap2);
-  const dL = L2 - L1, dC = Cp2 - Cp1;
-  let dh = 0;
-  if (Cp1 * Cp2) { dh = hp2 - hp1; if (dh > 180) dh -= 360; else if (dh < -180) dh += 360; }
-  const dH = 2 * Math.sqrt(Cp1 * Cp2) * Math.sin((dh / 2) * rad);
-  const Lm = (L1 + L2) / 2, Cpm = (Cp1 + Cp2) / 2;
-  let hm = hp1 + hp2;
-  if (Cp1 * Cp2) { if (Math.abs(hp1 - hp2) > 180) hm += hm < 360 ? 360 : -360; hm /= 2; }
-  const T = 1 - 0.17 * Math.cos((hm - 30) * rad) + 0.24 * Math.cos(2 * hm * rad) + 0.32 * Math.cos((3 * hm + 6) * rad) - 0.2 * Math.cos((4 * hm - 63) * rad);
-  const dTh = 30 * Math.exp(-Math.pow((hm - 275) / 25, 2));
-  const RC = 2 * Math.sqrt(Math.pow(Cpm, 7) / (Math.pow(Cpm, 7) + 6103515625));
-  const SL = 1 + (0.015 * Math.pow(Lm - 50, 2)) / Math.sqrt(20 + Math.pow(Lm - 50, 2)), SC = 1 + 0.045 * Cpm, SH = 1 + 0.015 * Cpm * T;
-  const RT = -Math.sin(2 * dTh * rad) * RC;
-  return Math.sqrt(Math.pow(dL / SL, 2) + Math.pow(dC / SC, 2) + Math.pow(dH / SH, 2) + RT * (dC / SC) * (dH / SH));
-};
 // the reference light: daylight D65
 const MI_REF = Math.max(0, MI_LIGHTS.findIndex((l) => l.label === "D65"));
-const miLabs = (sp) => MI_LIGHTS.map((l) => xyzToLab(lightXYZ(sp, l.spd, 2), l.white));
+const MI_WD65 = lightXYZ(null, SPECTRAL_TABLES.illuminants.D65, 2);
+const miLabs = (sp) => MI_LIGHTS.map((l) => lightOklab(sp, l.spd, l.white, MI_WD65, 2));
 // the selected colour's spectrum (App sets it each render), and where items' spectra live
 const metamerismState = { ref: null, refLabs: null, gen: 0, colorData: null, savedColors: null, cache: new WeakMap() };
 const metamerismSetRef = (sp, colorData, savedColors) => {
@@ -10347,14 +10332,15 @@ const metamerismOf = (it) => {
   const hit = S.cache.get(sp);
   if (hit && hit.gen === S.gen) return hit.r;
   const labs = miLabs(sp);
-  let mi = 0, light = "";
-  const r0 = MI_REF, dL = labs[r0][0] - S.refLabs[r0][0], da = labs[r0][1] - S.refLabs[r0][1], db = labs[r0][2] - S.refLabs[r0][2];
+  // the pair's ΔE OK under every light (daylight included); the index is how
+  // far apart the largest and the smallest are
+  let hi = -Infinity, lo = Infinity, hiL = "", loL = "";
   for (let i = 0; i < labs.length; i++) {
-    if (i === r0) continue;
-    const d = miDE2000([labs[i][0] - dL, labs[i][1] - da, labs[i][2] - db], S.refLabs[i]);
-    if (d > mi) { mi = d; light = MI_LIGHTS[i].label; }
+    const d = lightDE(labs[i], S.refLabs[i]);
+    if (d > hi) { hi = d; hiL = MI_LIGHTS[i].label; }
+    if (d < lo) { lo = d; loL = MI_LIGHTS[i].label; }
   }
-  const r = { mi, light };
+  const r = { mi: hi - lo, light: `${hiL} ${hi.toFixed(2)} vs ${loL} ${lo.toFixed(2)}`, daylight: lightDE(labs[MI_REF], S.refLabs[MI_REF]) };
   S.cache.set(sp, { gen: S.gen, r });
   return r;
 };
