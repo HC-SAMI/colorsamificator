@@ -10214,7 +10214,7 @@ const swatchMaterialOf = (crosshair, colorData, savedColors) => {
   if (crosshair?.activeCommercial) {
     const { brand, originalIndex } = crosshair.activeCommercial;
     const m = colorData?.[brand]?.[originalIndex];
-    if (m) return { key: `db:${brand}:${(m.erpCode || m.name || originalIndex).toString().toLowerCase()}`, name: m.name, brand, image: m.image || null, sheen: m.sheen, tactileTexture: m.tactileTexture, visualTexture: m.visualTexture, material: m.material, textures: m.textures || null };
+    if (m) return { key: materialKeyFor(brand, m, originalIndex), name: m.name, brand, image: m.image || null, sheen: m.sheen, tactileTexture: m.tactileTexture, visualTexture: m.visualTexture, material: m.material, textures: m.textures || null };
   }
   const sc = crosshair?.activeSavedColor;
   if (sc && sc.type === "pin") {
@@ -10222,7 +10222,7 @@ const swatchMaterialOf = (crosshair, colorData, savedColors) => {
     const img = p.image || (typeof p.notes === "string" && /^https?:/.test(p.notes) && isImageRef(p.notes) ? p.notes : null);
     // a pin of a commercial colour shares that product's maps
     const m = p.brand && p.originalIndex !== undefined ? colorData?.[p.brand]?.[p.originalIndex] : null;
-    const key = m && !p.textures ? `db:${p.brand}:${(m.erpCode || m.name || p.originalIndex).toString().toLowerCase()}` : `pin:${p.id}`;
+    const key = m && !p.textures ? materialKeyFor(p.brand, m, p.originalIndex) : `pin:${p.id}`;
     return { key, name: p.nameOverride || (m && m.name) || "", image: img || (m && m.image) || null, sheen: p.sheen || (m && m.sheen), tactileTexture: p.tactileTexture || (m && m.tactileTexture), visualTexture: p.visualTexture || (m && m.visualTexture), material: p.material || (m && m.material), textures: p.textures || (m && m.textures) || null };
   }
   return { key: null, name: "", image: null, sheen: "", tactileTexture: "", visualTexture: "", material: "", textures: null };
@@ -10258,70 +10258,323 @@ const useMaterialMaps = (mat) => {
   return null;
 };
 
-// Which map a file in a texture pack is, by its name.
-const textureKindOf = (name) => {
-  const n = String(name).toLowerCase().replace(/\.[a-z0-9]+$/, "");
-  const has = (re) => re.test(n);
-  if (has(/(^|[^a-z])(normal|nrm|nor|norm|nrml)([^a-z]|$)|normal(gl|dx)|_n$/)) return "normal";
-  if (has(/(^|[^a-z])(rough|roughness|rgh)([^a-z]|$)/)) return "roughness";
-  if (has(/(^|[^a-z])(gloss|glossiness|gls)([^a-z]|$)/)) return "gloss";
-  if (has(/(^|[^a-z])(height|disp|displacement|bump|depth)([^a-z]|$)/)) return "height";
-  if (has(/(^|[^a-z])(ao|ambientocclusion|occlusion|ambient_occlusion)([^a-z]|$)/)) return "ao";
-  if (has(/(^|[^a-z])(metal|metallic|metalness|spec|specular|refl|reflection|opacity|alpha|mask|preview|thumb|sphere|render)([^a-z]|$)/)) return null;
-  if (has(/(^|[^a-z])(albedo|basecolor|base_color|basecolour|diffuse|diff|color|colour|col)([^a-z]|$)/)) return "albedo";
-  return "albedo?";
+// ── reading downloaded texture packs ──
+// A file's channel comes from the words in its name and folders (Color /
+// BaseColor / Albedo / Diffuse, Normal / NRM, Roughness, Gloss, Height /
+// Displacement / Bump, AO), checked against what the image looks like: a
+// normal map is mostly lilac-blue (≈ 128,128,255), an albedo is in colour,
+// the rest are grey. A name the content contradicts loses (a normal map
+// named only by its product is still a normal map).
+const TEX_WORDS = {
+  albedo: "albedo alb basecolor basecolour base_color color colour col diffuse diff dif rgb",
+  normal: "normal normals nrm nor norm nml nrml normalgl normalopengl normaldx normaldirectx opengl",
+  roughness: "roughness rough rgh roughnes",
+  gloss: "gloss glossiness gls glossy",
+  height: "height heightmap displacement disp displace bump depth",
+  ao: "ao ambientocclusion occlusion",
+  skip: "metalness metallic metal specular spec reflection refl reflect opacity alpha mask transparency preview thumbnail thumb sphere cube render renders swatch sss translucency emissive emission cavity idmap fuzz sheen ior",
 };
-// The resolution a file name claims (1k, 2K, 4096…), to prefer ~2K.
-const textureResOf = (name) => {
-  const m = String(name).toLowerCase().match(/(^|[^a-z0-9])(\d{1,2})k([^a-z0-9]|$)/) || String(name).match(/(^|[^0-9])(512|1024|2048|4096|8192|16384)([^0-9]|$)/);
-  if (!m) return 0;
-  const v = parseInt(m[2], 10);
-  return v < 100 ? v * 1024 : v;
-};
-// A texture pack (zip or image files) → { maps: {kind: Blob}, files: {kind: name}, normalDX }
-const readTexturePack = async (fileList) => {
-  const entries = [];
-  for (const f of fileList) {
-    if (/\.zip$/i.test(f.name) && typeof JSZip !== "undefined") {
-      const zip = await JSZip.loadAsync(f);
-      const jobs = [];
-      zip.forEach((path, ze) => {
-        if (ze.dir || !/\.(jpe?g|png|webp|tiff?|bmp)$/i.test(path) || /__macosx/i.test(path)) return;
-        jobs.push(ze.async("blob").then((b) => entries.push({ name: path.split("/").pop(), path, blob: b })));
-      });
-      await Promise.all(jobs);
-    } else if (/^image\//.test(f.type) || /\.(jpe?g|png|webp)$/i.test(f.name)) entries.push({ name: f.name, path: f.name, blob: f });
+const TEX_WORD_KIND = (() => { const m = {}; Object.entries(TEX_WORDS).forEach(([k, s]) => s.split(" ").forEach((w) => { m[w] = k; })); return m; })();
+const TEX_RES_RE = /^(\d{1,2})k$|^(512|1024|2048|4096|8192|16384)(px)?$/;
+// "Tafisa_IconiqProdigy-M2064Q_NormalGL_4K" → ["tafisa","iconiq","prodigy","m2064q","normal","gl","4k"] (+ joined pairs)
+const texTokens = (s) =>
+  String(s || "")
+    .replace(/\.[a-z0-9]{2,4}$/i, "")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+const texKindFromTokens = (toks) => {
+  // the last channel word wins (names end in the channel); pairs like
+  // "base color", "ambient occlusion", "normal gl" count as one word
+  let kind = null, dx = false;
+  for (let i = 0; i < toks.length; i++) {
+    const t0 = toks[i], t = TEX_WORD_KIND[t0] ? t0 : t0.replace(/(maps?|tex|texture)$/, "") || t0, pair = i + 1 < toks.length ? t + toks[i + 1] : "";
+    if (t === "dx" || t === "directx") dx = true;
+    const k = TEX_WORD_KIND[pair] || TEX_WORD_KIND[t];
+    if (k) kind = k;
   }
-  const best = {};
-  entries.forEach((e) => {
-    let k = textureKindOf(e.name);
-    if (!k) return;
-    const guess = k === "albedo?";
-    if (guess) k = "albedo";
-    const res = textureResOf(e.path) || 2048, score = (guess ? 100 : 0) + Math.abs(Math.log2(res / 2048)) * 10;
-    if (!best[k] || score < best[k].score) best[k] = { ...e, score };
+  return { kind, dx };
+};
+const texResOf = (toks) => {
+  for (const t of toks) { const m = t.match(TEX_RES_RE); if (m) return m[1] ? parseInt(m[1], 10) * 1024 : parseInt(m[2], 10); }
+  return 0;
+};
+// what an image looks like: normal-map blue, grey, or colour
+const texLooksOf = async (blob) => {
+  try {
+    const bmp = await createImageBitmap(blob, { resizeWidth: 48, resizeHeight: 48, resizeQuality: "low" });
+    const cv = document.createElement("canvas"); cv.width = 48; cv.height = 48;
+    const ctx = cv.getContext("2d"); ctx.drawImage(bmp, 0, 0, 48, 48); bmp.close && bmp.close();
+    const d = ctx.getImageData(0, 0, 48, 48).data;
+    let r = 0, g = 0, b = 0, chroma = 0;
+    for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; chroma += Math.max(d[i], d[i + 1], d[i + 2]) - Math.min(d[i], d[i + 1], d[i + 2]); }
+    const n = d.length / 4; r /= n * 255; g /= n * 255; b /= n * 255; chroma /= n * 255;
+    if (b > 0.7 && Math.abs(r - 0.5) < 0.16 && Math.abs(g - 0.5) < 0.16 && b > r + 0.15 && b > g + 0.15) return "normal";
+    if (chroma < 0.035) return "grey";
+    return "colour";
+  } catch (e) { return "unknown"; }
+};
+// physical size from a Lightbeans "Product metadata.txt" (or any note with "120 x 240 cm")
+const texSizeFromText = (txt) => {
+  const s = String(txt || "").replace(/,/g, ".");
+  const unitCm = (u, v) => { u = (u || "").toLowerCase(); if (u === "mm") return v / 10; if (u === "m") return v * 100; if (u === "in" || u === "inch" || u === "inches" || u === '"' || u === "″") return v * 2.54; if (u === "ft" || u === "'") return v * 30.48; if (u === "cm") return v; return v > 400 ? v / 10 : v; };
+  let m = s.match(/(\d+(?:\.\d+)?)\s*(mm|cm|m|in|inch|inches|"|″|ft)?\s*[x×*]\s*(\d+(?:\.\d+)?)\s*(mm|cm|m|in|inch|inches|"|″|ft)?/i);
+  if (m) { const u = m[2] || m[4]; return { widthCm: unitCm(u, parseFloat(m[1])), heightCm: unitCm(u, parseFloat(m[3])) }; }
+  const w = s.match(/width[^0-9]{0,20}(\d+(?:\.\d+)?)\s*(mm|cm|m|in|inch|inches|"|ft)?/i);
+  if (w) return { widthCm: unitCm(w[2], parseFloat(w[1])) };
+  return null;
+};
+// Every file in what was given: folders (with their paths), zips (and zips
+// inside folders or zips), loose images and text notes.
+const texCollect = async (items, onProgress) => {
+  const out = [];
+  const addZip = async (blob, prefix) => {
+    if (typeof JSZip === "undefined") return;
+    const zip = await JSZip.loadAsync(blob);
+    const jobs = [];
+    zip.forEach((p, ze) => {
+      if (ze.dir || /(^|\/)(__macosx|\.)/i.test(p)) return;
+      if (/\.zip$/i.test(p)) jobs.push(ze.async("blob").then((b) => addZip(b, `${prefix}/${p.replace(/\.zip$/i, "")}`)));
+      else if (/\.(jpe?g|png|webp|tiff?|bmp|txt|json)$/i.test(p)) jobs.push(ze.async("blob").then((b) => out.push({ path: `${prefix}/${p}`, blob: b })));
+    });
+    await Promise.all(jobs);
+  };
+  for (const it of items) {
+    const path = it.path || it.webkitRelativePath || it.name;
+    onProgress && onProgress(`Reading ${path.split("/").pop()}…`);
+    if (/\.zip$/i.test(path)) await addZip(it.file || it, path.replace(/\.zip$/i, ""));
+    else if (/\.(jpe?g|png|webp|tiff?|bmp|txt|json)$/i.test(path)) out.push({ path, blob: it.file || it });
+  }
+  return out;
+};
+// Files dropped as folders: walk them (drag and drop gives entries, not files)
+const texFromDataTransfer = async (dt) => {
+  const files = [];
+  const walk = (entry, prefix) =>
+    new Promise((res) => {
+      if (entry.isFile) entry.file((f) => { files.push({ file: f, path: prefix + f.name }); res(); }, () => res());
+      else if (entry.isDirectory) {
+        const rd = entry.createReader(), all = [];
+        const more = () => rd.readEntries(async (ents) => { if (!ents.length) { for (const e of all) await walk(e, prefix + entry.name + "/"); res(); } else { all.push(...ents); more(); } }, () => res());
+        more();
+      } else res();
+    });
+  const entries = [...(dt.items || [])].map((i) => (i.webkitGetAsEntry ? i.webkitGetAsEntry() : null)).filter(Boolean);
+  if (entries.length) { for (const e of entries) await walk(e, ""); return files; }
+  return [...(dt.files || [])].map((f) => ({ file: f, path: f.name }));
+};
+// Files → texture sets (one per downloaded product)
+const texGroupSets = (files) => {
+  const sets = new Map();
+  const setOf = (id) => { if (!sets.has(id)) sets.set(id, { id, images: [], notes: [], tokens: new Set() }); return sets.get(id); };
+  const isStructural = (seg) => { const t = texTokens(seg); return t.length > 0 && t.every((x) => TEX_WORD_KIND[x] || TEX_RES_RE.test(x) || /^(maps?|textures?|pbr|jpe?g|png|tiff?|\d+)$/.test(x)); };
+  files.forEach((f) => {
+    const segs = f.path.split("/").filter(Boolean), name = segs.pop();
+    const hints = [];
+    while (segs.length && isStructural(segs[segs.length - 1])) hints.unshift(segs.pop()); // "…/Product/4K/Normal/x.jpg"
+    const dir = segs.join("/");
+    if (/\.(txt|json)$/i.test(name)) { setOf(dir).notes.push(f); return; }
+    const toks = texTokens(name), hintToks = hints.flatMap(texTokens);
+    const stem = toks.filter((t) => !TEX_WORD_KIND[t] && !TEX_RES_RE.test(t) && !(TEX_WORD_KIND[t + "x"])).join(" ");
+    const s = setOf(dir);
+    s.images.push({ ...f, name, toks, hintToks, stem });
   });
-  if (best.roughness && best.gloss) delete best.gloss;
-  const maps = {}, files = {};
-  for (const [k, e] of Object.entries(best)) {
-    maps[k] = await shrinkTextureBlob(e.blob, k === "albedo" ? 2048 : 2048);
-    files[k] = e.path;
-  }
-  const normalDX = !!(best.normal && /(dx|directx)/i.test(best.normal.path));
-  return { maps, files, normalDX };
+  // a folder of loose files from several products: split by name stem
+  const out = [];
+  sets.forEach((s) => {
+    const stems = new Set(s.images.map((i) => i.stem));
+    if (stems.size > 1 && s.images.length > 6) {
+      const byStem = new Map();
+      s.images.forEach((i) => { const k = i.stem; if (!byStem.has(k)) byStem.set(k, { id: `${s.id}|${k}`, images: [], notes: s.notes, tokens: new Set() }); byStem.get(k).images.push(i); });
+      byStem.forEach((x) => out.push(x));
+    } else out.push(s);
+  });
+  return out.filter((s) => s.images.length);
 };
-// Keep maps at most `max` px (a 16K map would not fit in memory or on the GPU).
-const shrinkTextureBlob = async (blob, max) => {
+// One set → { maps: {kind: Blob}, files, normalDX, widthCm, tokens, note }
+const texReadSet = async (set) => {
+  const cand = {};
+  for (const im of set.images) {
+    let { kind, dx } = texKindFromTokens(im.toks);
+    if (!kind) ({ kind, dx } = texKindFromTokens(im.hintToks));
+    if (kind === "skip") continue;
+    const res = texResOf(im.toks) || texResOf(im.hintToks);
+    (cand[kind || "?"] = cand[kind || "?"] || []).push({ ...im, kind, dx, res, named: !!kind });
+  }
+  // nearest to 2K first (16K maps would not fit), then the larger file
+  const pick = (list) => [...list].sort((a, b) => Math.abs(Math.log2((a.res || 2048) / 2048)) - Math.abs(Math.log2((b.res || 2048) / 2048)) || b.blob.size - a.blob.size);
+  const chosen = {};
+  for (const k of Object.keys(cand)) chosen[k] = pick(cand[k])[0];
+  // check what each looks like; fix names the content contradicts
+  const final = {};
+  const consider = async (c) => {
+    if (!c) return;
+    const looks = await texLooksOf(c.blob);
+    let k = c.kind;
+    if (looks === "normal") k = "normal";
+    else if (k === "normal" && looks === "colour") k = "albedo";
+    else if (!k) k = looks === "colour" ? "albedo" : null; // an unnamed grey map is ambiguous: left out
+    if (k === "albedo" && looks === "grey" && c.kind !== "albedo") k = null;
+    if (!k) return;
+    if (!final[k] || (c.named && !final[k].named)) final[k] = { ...c, kind: k };
+  };
+  for (const k of ["normal", "albedo", "roughness", "gloss", "height", "ao", "?"]) await consider(chosen[k]);
+  // a second albedo candidate that was really the normal map, etc.
+  if (cand["?"]) for (const c of pick(cand["?"]).slice(1, 4)) await consider(c);
+  if (final.roughness && final.gloss) delete final.gloss;
+  const maps = {}, files = {};
+  for (const [k, c] of Object.entries(final)) { maps[k] = await shrinkTextureBlob(c.blob, 2048, k); files[k] = c.path; }
+  let note = "", size = null;
+  for (const n of set.notes) { try { const t = await n.blob.text(); note += "\n" + t; size = size || texSizeFromText(t); } catch (e) {} }
+  const tokens = new Set([...set.id.split(/[|/]/).flatMap(texTokens), ...set.images.flatMap((i) => i.toks.filter((t) => !TEX_WORD_KIND[t] && !TEX_RES_RE.test(t))), ...texTokens(note.slice(0, 2000))]);
+  return { maps, files, normalDX: !!(final.normal && final.normal.dx), widthCm: size && size.widthCm > 1 ? Math.round(size.widthCm * 10) / 10 : null, tokens, label: set.id.split("/").pop() || set.id };
+};
+// Kept for a single pack dropped on one colour
+const readTexturePack = async (fileList) => {
+  const files = await texCollect([...fileList].map((f) => ({ file: f.file || f, path: f.path || f.webkitRelativePath || f.name })));
+  const sets = texGroupSets(files);
+  if (!sets.length) return { maps: {}, files: {}, normalDX: false };
+  // merge (one product's maps, wherever they sat)
+  const all = { id: sets[0].id, images: sets.flatMap((s) => s.images), notes: sets.flatMap((s) => s.notes) };
+  return texReadSet(all);
+};
+// Keep maps at most `max` px, as JPEG (a 16K map would not fit in memory or on
+// the GPU, and the repo stays small).
+const shrinkTextureBlob = async (blob, max, kind) => {
   try {
     const bmp = await createImageBitmap(blob);
     const s = Math.min(1, max / Math.max(bmp.width, bmp.height));
-    if (s >= 1 && blob.size < 12e6) { bmp.close && bmp.close(); return blob; }
     const w = Math.max(1, Math.round(bmp.width * s)), h = Math.max(1, Math.round(bmp.height * s));
     const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
     cv.getContext("2d").drawImage(bmp, 0, 0, w, h);
     bmp.close && bmp.close();
-    return await new Promise((res) => cv.toBlob((b) => res(b || blob), "image/png"));
+    return await new Promise((res) => cv.toBlob((b) => res(b || blob), "image/jpeg", kind === "normal" ? 0.95 : 0.9));
   } catch (e) { return blob; }
+};
+
+// ── which colour a texture set belongs to ──
+// Product codes (letters and digits, like M2064Q or PM780) decide; else the
+// name's words and the brand.
+const TEX_STOP = new Set("the and for with of de la le les du des en et un une texture textures free download pbr seamless tileable map maps lightbeans product metadata txt high resolution tfl hpl lpl mdf laminate panel panels".split(" "));
+const texIsCode = (t) => /\d/.test(t) && /[a-z]/.test(t) && t.length >= 3 && !TEX_RES_RE.test(t);
+const texBuildCatalogue = (colorData) => {
+  const items = [];
+  Object.keys(colorData || {}).forEach((brand) => {
+    const brandToks = new Set(texTokens(typeof getBrandDisplayName === "function" ? getBrandDisplayName(brand) : brand).concat(texTokens(brand)));
+    (colorData[brand] || []).forEach((m, i) => {
+      // an ERP code that is a web address counts by its last part ("…/carte-blanche-0")
+      const erp = String(m.erpCode || m.url || ""), erpPart = /^https?:/i.test(erp) ? erp.replace(/[?#].*$/, "").replace(/\/+$/, "").split("/").pop() : erp;
+      const toks = [...new Set([...texTokens(m.name), ...texTokens(erpPart)])].filter((t) => !TEX_STOP.has(t) && !brandToks.has(t));
+      items.push({ brand, index: i, item: m, key: materialKeyFor(brand, m, i), codes: toks.filter(texIsCode), words: toks.filter((t) => !texIsCode(t) && t.length >= 3 && !/^\d+$/.test(t)), brandToks });
+    });
+  });
+  return items;
+};
+const texMatch = (tokens, catalogue) => {
+  const has = (t) => tokens.has(t);
+  let best = null, second = null;
+  for (const c of catalogue) {
+    let sc = 0;
+    const codeHits = c.codes.filter(has).length;
+    sc += codeHits * 10;
+    const wordHits = c.words.filter(has).length;
+    sc += wordHits * 2;
+    if (c.words.length && wordHits === c.words.length) sc += 2;
+    if ([...c.brandToks].some(has)) sc += 3;
+    if (!sc) continue;
+    const e = { c, sc, codeHits, wordHits };
+    if (!best || sc > best.sc) { second = best; best = e; } else if (!second || sc > second.sc) second = e;
+  }
+  if (!best) return null;
+  const sure = best.codeHits > 0 || (best.wordHits >= 2 && best.wordHits === best.c.words.length);
+  if (!sure || (second && second.sc === best.sc)) return { ...best, ambiguous: true, second };
+  return best;
+};
+// the key a commercial colour's maps are kept under (here, in the repo and in the data)
+// by name: one decor's finishes often share a web address, but not their maps
+const materialKeyFor = (brand, m, i) => `db:${brand}:${String((m && (m.name || m.commercialName || m.erpCode || m.url)) || i).toLowerCase()}`;
+
+// Albedo maps kept in this browser, by colour, for the 2D views (lists, the
+// swatch) to show instead of the web photo until they come from the repo.
+const textureAlbedoIndex = (() => {
+  const urls = new Map();
+  const subs = new Set();
+  let ready = false;
+  const refresh = async (key) => {
+    const keys = key ? [key] : await textureStore.keys();
+    for (const k of keys) {
+      const r = await textureStore.get(k);
+      if (urls.has(k)) { URL.revokeObjectURL(urls.get(k)); urls.delete(k); }
+      if (r && r.maps && r.maps.albedo) urls.set(k, URL.createObjectURL(r.maps.albedo));
+    }
+    ready = true;
+    subs.forEach((fn) => { try { fn(); } catch (e) {} });
+  };
+  if (typeof indexedDB !== "undefined") { refresh(); textureStore.subscribe((k) => refresh(k)); }
+  return { get: (k) => urls.get(k), subscribe: (fn) => (subs.add(fn), () => subs.delete(fn)), ready: () => ready };
+})();
+const useTextureAlbedoVersion = () => {
+  const [v, setV] = useState(0);
+  useEffect(() => textureAlbedoIndex.subscribe(() => setV((n) => n + 1)), []);
+  return v;
+};
+// The image to show for a commercial colour: its albedo map when there is one
+let textureColorData = null; // the loaded commercial colours (App keeps this current)
+const displayImageOf = (item, brand, index) => {
+  if (!item) return null;
+  const b = brand || item.brand, i = index !== undefined ? index : item.originalIndex;
+  if (!b || i === undefined || i === null) return (item.textures && item.textures.albedo) || null;
+  const m = (textureColorData && textureColorData[b] && textureColorData[b][i]) || item;
+  return textureAlbedoIndex.get(materialKeyFor(b, m, i)) || (m.textures && m.textures.albedo) || null;
+};
+
+// The whole library: a folder or zip of downloads → maps on the right colours
+const importTextureLibrary = async (items, colorData, onProgress) => {
+  const files = await texCollect(items, onProgress);
+  const sets = texGroupSets(files);
+  const catalogue = texBuildCatalogue(colorData);
+  const report = { matched: [], unmatched: [], ambiguous: [] };
+  for (let i = 0; i < sets.length; i++) {
+    onProgress && onProgress(`Texture ${i + 1} of ${sets.length}…`);
+    const r = await texReadSet(sets[i]);
+    if (!Object.keys(r.maps).length) { report.unmatched.push({ label: r.label, reason: "no maps recognised" }); continue; }
+    const m = texMatch(r.tokens, catalogue);
+    if (!m || m.ambiguous) { (m ? report.ambiguous : report.unmatched).push({ label: r.label, reason: m ? `could be ${m.c.item.name} or ${m.second ? m.second.c.item.name : "another"}` : "no colour with that name or code", pack: r }); continue; }
+    const prev = (await textureStore.get(m.c.key)) || {};
+    await textureStore.put(m.c.key, { maps: r.maps, files: r.files, widthCm: r.widthCm || prev.widthCm || 60, normalDX: r.normalDX, updated: Date.now(), name: m.c.item.name, brand: m.c.brand, index: m.c.index, source: r.label });
+    report.matched.push({ label: r.label, name: m.c.item.name, brand: m.c.brand, kinds: Object.keys(r.maps), widthCm: r.widthCm });
+  }
+  return report;
+};
+
+// For a sync: every colour's maps as repo files, and the Texture_* values that point at them
+const textureRepoFiles = async (texDir) => {
+  const keys = await textureStore.keys();
+  const files = {}, byKey = new Map(), used = new Set();
+  const slug = (s) => String(s || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "x";
+  for (const key of keys) {
+    const r = await textureStore.get(key);
+    if (!r || !r.maps) continue;
+    const parts = String(key).split(":"), rest = parts.slice(2).join(":");
+    // folders by product name ("textures/tafisa/pm115-carte-blanche-lummia-tfl/")
+    const itemPart = r.name || (/^https?:/.test(rest) ? rest.replace(/[?#].*$/, "").replace(/\/+$/, "").split("/").pop() : rest);
+    let folder = parts[0] === "db" ? `${slug(parts[1])}/${slug(itemPart)}` : `pins/${slug(r.name || parts.slice(1).join(":"))}`;
+    let f = folder, n = 2;
+    while (used.has(f)) f = `${folder}-${n++}`;
+    used.add(f);
+    const t = {};
+    for (const [kind, blob] of Object.entries(r.maps)) {
+      const ext = /png/.test(blob.type) ? "png" : "jpg";
+      const rel = `textures/${f}/${kind}.${ext}`;
+      files[`${texDir}${rel}`] = new Uint8Array(await blob.arrayBuffer());
+      t[kind] = rel;
+    }
+    if (r.widthCm) t.widthCm = r.widthCm;
+    if (r.normalDX) t.normalDX = true;
+    byKey.set(key, t);
+  }
+  return { files, byKey };
 };
 
 // ── procedural relief (tileable) when there is no normal map ──
@@ -10429,13 +10682,21 @@ const m3Backdrop = (light, dark) => {
     ? `radial-gradient(ellipse at 50% 25%, ${f("#3a3836")} 0%, ${f("#161514")} 100%)`
     : `radial-gradient(ellipse at 50% 25%, ${f("#f6f4f1")} 0%, ${f("#d6d3cf")} 100%)`;
 };
-const m3LoadImage = (url) =>
+// Where repo files can be read straight after a sync, before the site
+// redeploys (raw.githubusercontent.com; App sets it from the GitHub settings)
+let textureRawBase = null;
+const m3LoadImageOnce = (url) =>
   new Promise((res, rej) => {
     const img = new Image();
     if (!/^(blob|data):/.test(url)) img.crossOrigin = "anonymous";
     img.onload = () => res(img);
     img.onerror = () => rej(new Error(`Could not load ${url}`));
     img.src = url;
+  });
+const m3LoadImage = (url) =>
+  m3LoadImageOnce(url).catch((e) => {
+    if (textureRawBase && !/^([a-z]+:|\/)/i.test(url)) return m3LoadImageOnce(textureRawBase + url);
+    throw e;
   });
 // average linear colour of an image (for matching the albedo to the measurement)
 const m3AverageLinear = (img) => {
@@ -10725,7 +10986,54 @@ const Swatch3DControls = ({ st, set, onMaps, info, compact }) =>
   );
 
 // The Maps dialog: import a texture pack for the colour at the cursor.
-const TextureMapsDialog = ({ mat, maps, onClose }) => {
+const TextureLibraryImport = ({ colorData }) => {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [rep, setRep] = useState(null);
+  const [over, setOver] = useState(false);
+  const dirRef = useRef(null), zipRef = useRef(null);
+  useEffect(() => { if (dirRef.current) { dirRef.current.setAttribute("webkitdirectory", ""); dirRef.current.setAttribute("directory", ""); } }, []);
+  const run = async (items) => {
+    if (!items.length) return;
+    setBusy(true); setRep(null); setMsg("Reading…");
+    try {
+      const r = await importTextureLibrary(items, colorData, setMsg);
+      setRep(r);
+      setMsg(`${r.matched.length} texture${r.matched.length === 1 ? "" : "s"} matched to colours${r.unmatched.length + r.ambiguous.length ? `, ${r.unmatched.length + r.ambiguous.length} left out` : ""}. They are kept in this browser and go to the repo's textures folder at the next sync.`);
+    } catch (e) { setMsg(`Couldn't read that: ${e.message || e}`); }
+    setBusy(false);
+  };
+  const btn = "px-3 py-1.5 rounded border border-slate-300 dark:border-neutral-700 text-[10px] font-bold uppercase tracking-wider text-slate-700 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-neutral-800 flex items-center gap-1.5";
+  return React.createElement(
+    "div",
+    {
+      className: `rounded-lg border-2 border-dashed p-4 flex flex-col gap-2 ${over ? "border-sky-500 bg-sky-50 dark:bg-sky-500/10" : "border-slate-300 dark:border-neutral-700"}`,
+      onDragOver: (e) => { e.preventDefault(); setOver(true); },
+      onDragLeave: () => setOver(false),
+      onDrop: async (e) => { e.preventDefault(); setOver(false); run(await texFromDataTransfer(e.dataTransfer)); },
+    },
+    React.createElement("div", { className: "text-[11px] font-black uppercase tracking-widest text-slate-700 dark:text-neutral-200" }, "Texture library"),
+    React.createElement("div", { className: "text-[10px] text-slate-500 dark:text-neutral-400 leading-snug" }, "Point to the folder (or a zip) with all your downloaded texture packs. Each pack is matched to its colour by product code and name, its maps sorted into colour, normal, roughness, height and AO by their names and look, and its real size read from the pack's metadata."),
+    React.createElement(
+      "div",
+      { className: "flex flex-wrap gap-2" },
+      React.createElement("button", { type: "button", disabled: busy, onClick: () => dirRef.current && dirRef.current.click(), className: btn }, React.createElement(Icon, { name: "folder-open", className: "w-3.5 h-3.5" }), "Choose folder"),
+      React.createElement("button", { type: "button", disabled: busy, onClick: () => zipRef.current && zipRef.current.click(), className: btn }, React.createElement(Icon, { name: "file-archive", className: "w-3.5 h-3.5" }), "Choose zip files"),
+      React.createElement("span", { className: "self-center text-[10px] text-slate-400" }, "or drop them here"),
+      React.createElement("input", { ref: dirRef, type: "file", multiple: true, className: "hidden", onChange: (e) => { run([...e.target.files].map((f) => ({ file: f, path: f.webkitRelativePath || f.name }))); e.target.value = ""; } }),
+      React.createElement("input", { ref: zipRef, type: "file", multiple: true, accept: ".zip,image/*", className: "hidden", onChange: (e) => { run([...e.target.files].map((f) => ({ file: f, path: f.name }))); e.target.value = ""; } }),
+    ),
+    (busy || msg) && React.createElement("div", { className: "text-[11px] text-slate-600 dark:text-neutral-300 flex items-center gap-1.5" }, busy && React.createElement(Icon, { name: "loader", className: "w-3.5 h-3.5 animate-spin" }), msg),
+    rep &&
+      React.createElement(
+        "div",
+        { className: "max-h-48 overflow-y-auto text-[10px] leading-snug flex flex-col gap-0.5" },
+        rep.matched.map((m, i) => React.createElement("div", { key: `m${i}`, className: "text-slate-600 dark:text-neutral-300" }, "✓ ", React.createElement("b", null, m.name), ` (${typeof getBrandDisplayName === "function" ? getBrandDisplayName(m.brand) : m.brand}) ← ${m.label} · ${m.kinds.join(", ")}${m.widthCm ? ` · ${m.widthCm} cm wide` : ""}`)),
+        [...rep.ambiguous, ...rep.unmatched].map((m, i) => React.createElement("div", { key: `u${i}`, className: "text-amber-700 dark:text-amber-400" }, "– ", React.createElement("b", null, m.label), `: ${m.reason}`)),
+      ),
+  );
+};
+const TextureMapsDialog = ({ mat, maps, onClose, colorData }) => {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [over, setOver] = useState(false);
@@ -10761,6 +11069,8 @@ const TextureMapsDialog = ({ mat, maps, onClose }) => {
         React.createElement("div", { className: "flex-1 text-[12px] font-black uppercase tracking-widest text-slate-800 dark:text-neutral-100" }, `Texture maps${mat.name ? ` · ${mat.name}` : ""}`),
         React.createElement("button", { type: "button", onClick: onClose, className: "p-1 rounded hover:bg-slate-100 dark:hover:bg-neutral-800", "aria-label": "Close" }, React.createElement(Icon, { name: "x", className: "w-4 h-4" })),
       ),
+      React.createElement(TextureLibraryImport, { colorData }),
+      React.createElement("div", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-400 pt-1" }, mat.key ? `Just this colour${mat.name ? ` (${mat.name})` : ""}` : "Just this colour"),
       !mat.key && React.createElement("p", { className: "text-[11px] text-amber-700 dark:text-amber-400" }, "The cursor isn't on a pin or a commercial colour, so there is nothing to attach maps to. The 3D view still shows this colour with a default finish."),
       mat.key &&
         React.createElement(
@@ -10823,7 +11133,7 @@ const TextureMapsDialog = ({ mat, maps, onClose }) => {
       React.createElement(
         "div",
         { className: "text-[10px] leading-snug text-slate-500 dark:text-neutral-400 border-t border-slate-100 dark:border-neutral-800 pt-2" },
-        "Imported maps stay in this browser only. To share them with every copy of the app, host the images next to it and list them in the colour's row: Texture_Albedo, Texture_Normal, Texture_Roughness (or Texture_Gloss), Texture_Height, Texture_AO, Texture_Width_cm and Texture_Normal_DX. Without maps, the 3D view uses the colour's photo and its sheen and tactile texture. The albedo is tinted so its average matches the measured colour.",
+        "Imported maps are kept in this browser, and the next sync to GitHub puts them in the repo's textures folder and lists them in the colours' data (Texture_* columns), so every copy of the app loads them at launch. A colour's albedo map replaces its web photo. Without maps, the 3D view uses the photo and the colour's sheen and tactile texture. The albedo is tinted so its average matches the measured colour.",
       ),
     ),
   );
@@ -11119,11 +11429,11 @@ ${item.erpCode}`,
                           item,
                           size: baseMatrixSize * swatchZoom,
                         }),
-                        (item.image || item.note?.startsWith("http")) &&
+                        (displayImageOf(item) || item.image || item.note?.startsWith("http")) &&
                           React.createElement("div", {
                             className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                             style: {
-                              backgroundImage: `url(${item.image || item.note})`,
+                              backgroundImage: `url(${displayImageOf(item) || item.image || item.note})`,
                               opacity: SWATCH_PHOTO_OPACITY,
                               WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                               maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
@@ -11181,7 +11491,7 @@ ${item.erpCode}`,
                             className:
                               "absolute inset-0 flex items-center justify-center gap-2 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity z-20 backdrop-blur-sm rounded",
                           },
-                          (item.image || item.note?.startsWith("http")) &&
+                          (displayImageOf(item) || item.image || item.note?.startsWith("http")) &&
                             React.createElement(
                               "button",
                               {
@@ -11415,11 +11725,11 @@ ${item.erpCode}`,
                       },
                     },
                     React.createElement(SwatchTreatment, { item, size: 32 }),
-                    (item.image || item.note?.startsWith("http")) &&
+                    (displayImageOf(item) || item.image || item.note?.startsWith("http")) &&
                       React.createElement("div", {
                         className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                         style: {
-                          backgroundImage: `url(${item.image || item.note})`,
+                          backgroundImage: `url(${displayImageOf(item) || item.image || item.note})`,
                           opacity: SWATCH_PHOTO_OPACITY,
                           WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                           maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
@@ -11441,7 +11751,7 @@ ${item.erpCode}`,
                         className:
                           "absolute inset-0 flex items-center justify-center gap-2 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity z-20 backdrop-blur-sm rounded",
                       },
-                      (item.image || item.note?.startsWith("http")) &&
+                      (displayImageOf(item) || item.image || item.note?.startsWith("http")) &&
                         React.createElement(
                           "button",
                           {
@@ -11676,11 +11986,11 @@ ${item.erpCode}`,
                     React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
                   ),
               ),
-            (item.image || item.note?.startsWith("http")) &&
+            (displayImageOf(item) || item.image || item.note?.startsWith("http")) &&
               React.createElement("div", {
                 className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                 style: {
-                  backgroundImage: `url(${item.image || item.note})`,
+                  backgroundImage: `url(${displayImageOf(item) || item.image || item.note})`,
                   opacity: SWATCH_PHOTO_OPACITY,
                   WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                   maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
@@ -11731,7 +12041,7 @@ ${item.erpCode}`,
                 className:
                   "absolute inset-0 flex items-center justify-center gap-2 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity z-20 backdrop-blur-sm pointer-events-none",
               },
-              (item.image || item.note?.startsWith("http")) &&
+              (displayImageOf(item) || item.image || item.note?.startsWith("http")) &&
                 React.createElement(
                   "button",
                   {
@@ -14617,6 +14927,13 @@ const toBase64Utf8 = (text) => {
   return btoa(binary);
 };
 
+// bytes (a texture image) → base64
+const bytesToBase64 = (bytes) => {
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  return btoa(binary);
+};
 const fromBase64Utf8 = (b64) => {
   const binary = atob(String(b64 || "").replace(/\s/g, ""));
   const bytes = new Uint8Array(binary.length);
@@ -14680,7 +14997,7 @@ const ghJson = async (cfg, path, options, what) => {
 const gitBlobSha = async (text) => {
   if (!(window.crypto && window.crypto.subtle)) return null;
   try {
-    const body = new TextEncoder().encode(text);
+    const body = typeof text === "string" ? new TextEncoder().encode(text) : text;
     const header = new TextEncoder().encode(`blob ${body.length}\0`);
     const full = new Uint8Array(header.length + body.length);
     full.set(header, 0);
@@ -14756,7 +15073,7 @@ const ghCommitFiles = async (cfg, branch, files, message, onProgress) => {
       {
         method: "POST",
         body: JSON.stringify({
-          content: toBase64Utf8(files[path]),
+          content: typeof files[path] === "string" ? toBase64Utf8(files[path]) : bytesToBase64(files[path]),
           encoding: "base64",
         }),
       },
@@ -14927,7 +15244,7 @@ const GitHubSyncModal = ({ config, setConfig, status, onSync, onPull, onClose })
           React.createElement(
             "p",
             { className: "text-xs text-slate-500 leading-relaxed" },
-            "Writes every CSV in the export straight into the repo's data folder. Needs a fine-grained personal access token with Contents: read and write on this repository.",
+            "Writes every CSV in the export straight into the repo's data folder, and the texture maps you imported into a textures folder beside it (the colours' data points at them, so the app loads them at launch). Needs a fine-grained personal access token with Contents: read and write on this repository.",
           ),
           field("Owner", "owner", "HC-SAMI"),
           field("Repository", "repo", "colorsamificator"),
@@ -17341,7 +17658,7 @@ const App = () => {
   };
   // Builds every CSV that lives in the repo's data/ folder, keyed by filename.
   // Shared by the ZIP download and the GitHub sync so the two can't drift.
-  const buildExportFiles = () => {
+  const buildExportFiles = (texByKey) => {
       const files = {};
       const anchorsCsv = [];
       const pinsCsv = [];
@@ -17479,7 +17796,7 @@ const App = () => {
             Visual_Pattern: sc.visualTexture || "",
             Tactile_Texture: sc.tactileTexture || "",
             Material: sc.material || "",
-            ...textureColumnsOf(sc.textures),
+            ...textureColumnsOf((texByKey && texByKey.get(`pin:${sc.id}`)) || sc.textures),
             Spectral: sc.spectral ? JSON.stringify(sc.spectral) : "",
             Illuminant: sc.illuminant || "",
             Observer: sc.observer || "",
@@ -17677,6 +17994,7 @@ const App = () => {
             ERP_Code: color.url || "",
             Note: customNote || "",
             Image: color.image && isImageRef(color.image) ? color.image : "",
+            ...textureColumnsOf((texByKey && texByKey.get(materialKeyFor(brand, color, listIdx))) || color.textures),
             Tags: (color.tags || dictTags[customId] || []).join(","),
             Sheen: color.sheen || "",
             Profile: color.doorProfile || "",
@@ -17825,8 +18143,12 @@ const App = () => {
       }
       const branch = (cfg.branch || "").trim() || info.defaultBranch;
       const dir = String(cfg.path || "data").replace(/^\/+|\/+$/g, "");
-      const built = buildExportFiles();
-      const files = {};
+      // texture maps go next to the data folder (the site's root): textures/
+      setSyncStatus({ state: "running", message: "Gathering texture maps...", log: [] });
+      const siteRoot = dir.includes("/") ? dir.slice(0, dir.lastIndexOf("/") + 1) : "";
+      const tex = await textureRepoFiles(siteRoot);
+      const built = buildExportFiles(tex.byKey);
+      const files = { ...tex.files };
       Object.keys(built).forEach((name) => {
         files[dir ? `${dir}/${name}` : name] = built[name];
       });
@@ -18006,6 +18328,11 @@ const App = () => {
     );
   };
   const isLight = scrubL > 0.65;
+  useTextureAlbedoVersion();
+  textureColorData = colorData;
+  textureRawBase = githubConfig && githubConfig.owner && githubConfig.repo
+    ? `https://raw.githubusercontent.com/${githubConfig.owner}/${githubConfig.repo}/${(githubConfig.branch || "").trim() || "HEAD"}/${(() => { const d = String(githubConfig.path || "data").replace(/^\/+|\/+$/g, ""); return d.includes("/") ? d.slice(0, d.lastIndexOf("/") + 1) : ""; })()}`
+    : null;
   const activeColorObj = new Color("oklch", [scrubL, scrubC, scrubH]);
   let labCoords;
   const spectral = crosshair?.activeSpectral || null;
@@ -20002,11 +20329,11 @@ const ViewDatabase = ({
                   item,
                   size: baseListSize * swatchZoom,
                 }),
-                (item.image || item.note?.startsWith("http")) &&
+                (displayImageOf(item) || item.image || item.note?.startsWith("http")) &&
                   React.createElement("div", {
                     className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                     style: {
-                      backgroundImage: `url(${item.image || item.note})`,
+                      backgroundImage: `url(${displayImageOf(item) || item.image || item.note})`,
                       opacity: SWATCH_PHOTO_OPACITY,
                       WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                       maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
@@ -20032,7 +20359,7 @@ const ViewDatabase = ({
                       className: "w-2.5 h-2.5",
                     }),
                   ),
-                (item.image || item.note?.startsWith("http")) &&
+                (displayImageOf(item) || item.image || item.note?.startsWith("http")) &&
                   React.createElement(
                     "button",
                     {
@@ -20292,17 +20619,17 @@ const ViewDatabase = ({
                         },
                       },
                       React.createElement(SwatchTreatment, { item, size: 32 }),
-                      (item.image || item.note?.startsWith("http")) &&
+                      (displayImageOf(item) || item.image || item.note?.startsWith("http")) &&
                         React.createElement("div", {
                           className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                           style: {
-                            backgroundImage: `url(${item.image || item.note})`,
+                            backgroundImage: `url(${displayImageOf(item) || item.image || item.note})`,
                             opacity: SWATCH_PHOTO_OPACITY,
                             WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                             maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                           },
                         }),
-                      (item.image || item.note?.startsWith("http")) &&
+                      (displayImageOf(item) || item.image || item.note?.startsWith("http")) &&
                         React.createElement(
                           "button",
                           {
@@ -20537,11 +20864,11 @@ const ViewDatabase = ({
                   },
                 },
                 React.createElement(SwatchTreatment, { item, size: 96 }),
-                (item.image || item.note?.startsWith("http")) &&
+                (displayImageOf(item) || item.image || item.note?.startsWith("http")) &&
                   React.createElement("div", {
                     className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                     style: {
-                      backgroundImage: `url(${item.image || item.note})`,
+                      backgroundImage: `url(${displayImageOf(item) || item.image || item.note})`,
                       opacity: SWATCH_PHOTO_OPACITY,
                       WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                       maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
@@ -20592,7 +20919,7 @@ const ViewDatabase = ({
                     className:
                       "absolute inset-0 flex items-center justify-center gap-2 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity z-20 backdrop-blur-sm pointer-events-none",
                   },
-                  (item.image || item.note?.startsWith("http")) &&
+                  (displayImageOf(item) || item.image || item.note?.startsWith("http")) &&
                     React.createElement(
                       "button",
                       {
@@ -22496,10 +22823,11 @@ const AppUI = ({
                 !sw3d.on && crosshair?.activeCommercial &&
                   (() => {
                     const m = colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
-                    return m?.image && React.createElement("div", {
+                    const img = displayImageOf(m, crosshair.activeCommercial.brand, crosshair.activeCommercial.originalIndex) || m?.image;
+                    return img && React.createElement("div", {
                       className: "absolute inset-0 bg-cover bg-center rounded-[inherit] pointer-events-none",
                       style: {
-                        backgroundImage: `url(${m.image})`,
+                        backgroundImage: `url(${img})`,
                         WebkitMaskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                         maskImage: "linear-gradient(to bottom, black 0%, transparent 66%)",
                       },
@@ -24744,14 +25072,14 @@ const AppUI = ({
           }),
         ),
       ),
-    showMapsDlg && React.createElement(TextureMapsDialog, { mat: swMat, maps: swMaps, onClose: () => setShowMapsDlg(false) }),
+    showMapsDlg && React.createElement(TextureMapsDialog, { mat: swMat, maps: swMaps, colorData, onClose: () => setShowMapsDlg(false) }),
     showFullscreenPreview &&
       !showCompareFullscreen &&
       (() => {
         let previewImage = null;
         if (crosshair?.activeCommercial) {
           const m = colorData?.[crosshair.activeCommercial.brand]?.[crosshair.activeCommercial.originalIndex];
-          previewImage = m?.image || null;
+          previewImage = displayImageOf(m, crosshair.activeCommercial.brand, crosshair.activeCommercial.originalIndex) || m?.image || null;
         } else if (crosshair?.activeSavedColor?.type === "pin") {
           const pinObj = savedColors[crosshair.activeSavedColor.id];
           previewImage = pinObj?.image || (pinObj?.notes?.startsWith("http") ? pinObj.notes : null);
