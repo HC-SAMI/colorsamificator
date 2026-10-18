@@ -8404,7 +8404,11 @@ const SwatchMetaLines = ({ item, fv, ids, zoom = 1 }) => {
           : line(id, item.erpCode, "font-mono text-slate-500 dark:text-neutral-400"),
       );
     else if (id === "brand" && item.brand) out.push(line(id, getBrandDisplayName(item.brand), "font-bold uppercase tracking-widest text-slate-400"));
-    else if (id === "deltaE" && typeof item._d === "number") out.push(line(id, `ΔE ${item._d.toFixed(2)}`, "font-bold text-emerald-600 dark:text-emerald-400"));
+    else if (id === "deltaE" && typeof item._d === "number") {
+      out.push(line(id, `ΔE ${item._d.toFixed(2)}`, "font-bold text-emerald-600 dark:text-emerald-400"));
+      const r = (metamerismState.sortDb || metamerismState.sortPins) && !fv.on("mi") ? metamerismOf(item) : null;
+      if (r) out.push(line("mi-auto", `MI ${r.mi.toFixed(2)}`, r.mi >= 2 ? "font-bold text-rose-600 dark:text-rose-400" : r.mi >= 1 ? "font-bold text-amber-600 dark:text-amber-400" : "font-bold text-sky-600 dark:text-sky-400"));
+    }
     else if (id === "mi") { const r = metamerismOf(item); if (r) out.push(line(id, `MI ${r.mi.toFixed(2)}`, r.mi >= 2 ? "font-bold text-rose-600 dark:text-rose-400" : r.mi >= 1 ? "font-bold text-amber-600 dark:text-amber-400" : "font-bold text-slate-500")); }
     else if (id === lch[0])
       out.push(
@@ -10345,6 +10349,16 @@ const metamerismOf = (it) => {
   return r;
 };
 const metamerismIndexOf = (it) => { const r = metamerismOf(it); return r ? r.mi : null; };
+// the index under a ΔE value, while a list is sorted by it
+const miBadge = (item, centred) => {
+  const r = metamerismOf(item);
+  if (!r) return null;
+  return React.createElement(
+    "div",
+    { className: `text-[9px] font-mono font-bold leading-tight ${centred ? "text-center" : ""} ${r.mi >= 2 ? "text-rose-600 dark:text-rose-400" : r.mi >= 1 ? "text-amber-600 dark:text-amber-400" : "text-sky-600 dark:text-sky-400"}`, title: `Metamerism index ${r.mi.toFixed(2)}: ΔE ${r.light}` },
+    `MI ${r.mi.toFixed(2)}`,
+  );
+};
 
 // ─── 3D material view (PBR) ──────────────────────────────────────────────────
 // The main swatch can show the colour as a physical sample: a tilting panel,
@@ -12133,6 +12147,7 @@ ${item.erpCode}`,
                       "p-2 text-right font-mono text-emerald-600 font-bold",
                   },
                   item._d !== void 0 ? item._d.toFixed(2) : "-",
+                  metamerismState.sortPins && miBadge(item),
                 ),
                 React.createElement(
                   "td",
@@ -18639,6 +18654,7 @@ const App = () => {
   useTextureAlbedoVersion();
   textureColorData = colorData;
   metamerismSetRef(crosshair && crosshair.activeSpectral, colorData, savedColors);
+  metamerismState.sortDb = globalSortBy === "mi" || sortStore.get("db").some((l) => l.field === "mi");
   textureRawBase = githubConfig && githubConfig.owner && githubConfig.repo
     ? `https://raw.githubusercontent.com/${githubConfig.owner}/${githubConfig.repo}/${(githubConfig.branch || "").trim() || "HEAD"}/${(() => { const d = String(githubConfig.path || "data").replace(/^\/+|\/+$/g, ""); return d.includes("/") ? d.slice(0, d.lastIndexOf("/") + 1) : ""; })()}`
     : null;
@@ -21086,6 +21102,7 @@ const ViewDatabase = ({
                         "p-2 text-right text-emerald-600 font-bold font-mono",
                     },
                     item._d !== void 0 ? item._d.toFixed(2) : "\u2014",
+                    metamerismState.sortDb && miBadge(item),
                   ),
                   React.createElement(
                     "td",
@@ -21332,6 +21349,7 @@ const ViewDatabase = ({
                     " ",
                     item._d.toFixed(2),
                   ),
+                metamerismState.sortDb && miBadge(item, true),
                 fv.on("code") &&
                 React.createElement(
                   "span",
@@ -22358,6 +22376,7 @@ const AppUI = ({
   const [pinsLayout, setPinsLayout] = useState(tabsSaved.pinsLayout || "table");
   const [anchorsLayout, setAnchorsLayout] = useState(tabsSaved.anchorsLayout || "table");
   const [pinsSort, setPinsSort] = useState(tabsSaved.pinsSort || { by: "deltae", asc: true });
+  metamerismState.sortPins = pinsSort.by === "mi" || sortStore.get("pins").some((l) => l.field === "mi");
   const [anchorsSort, setAnchorsSort] = useState(tabsSaved.anchorsSort || { by: "name", asc: true });
   useEffect(() => {
     try { localStorage.setItem(TABS_KEY, JSON.stringify({ pinsLayout, anchorsLayout, pinsSort, anchorsSort, pinsZoom, anchorsZoom })); } catch (e) {}
