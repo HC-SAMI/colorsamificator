@@ -642,7 +642,7 @@ const lchGamutHex = (L, C, H) => {
   if (!hit) {
     const c = new Color("oklch", [L, C, H]);
     const inGamut = c.inGamut(DisplayGamut.space);
-    hit = { inGamut, hex: inGamut ? c.clone().toGamut({ space: "srgb" }).toString({ format: "hex" }) : null };
+    hit = { inGamut, hex: inGamut ? c.clone().toGamut({ space: "srgb" }).to("srgb").toString({ format: "hex" }) : null };
     if (LCH_GAMUT_HEX.size > 50000) LCH_GAMUT_HEX.clear();
     LCH_GAMUT_HEX.set(k, hit);
   }
@@ -682,7 +682,7 @@ const lchDisplayHex = (L, C, H) => {
   let hex = LCH_DISPLAY_HEX.get(k);
   if (hex === undefined) {
     try {
-      hex = new Color("oklch", [L, C, H]).toGamut({ space: "srgb" }).toString({ format: "hex" });
+      hex = new Color("oklch", [L, C, H]).toGamut({ space: "srgb" }).to("srgb").toString({ format: "hex" });
     } catch (e) {
       hex = "#cccccc";
     }
@@ -717,7 +717,7 @@ const ColorConverter = ({
   ]);
   const hex = c
     .clone()
-    .toGamut({ space: "srgb" })
+    .toGamut({ space: "srgb" }).to("srgb")
     .toString({ format: "hex" })
     .toUpperCase();
   const fmt = (v, d = 3) => (isNaN(v) ? "0.000" : Number(v).toFixed(d));
@@ -7645,7 +7645,7 @@ const CrossReference = ({ colorData, onSelectColor }) => {
             (() => {
               try {
                 return new Color("oklch", [c.L, c.C, c.H])
-                  .toGamut({ space: "srgb" })
+                  .toGamut({ space: "srgb" }).to("srgb")
                   .toString({ format: "hex" });
               } catch (e) {
                 return "#cccccc";
@@ -8016,7 +8016,7 @@ const groupMeanColour = (g) => {
   const L = g.sumL / g.n, a = g.sumA / g.n, b = g.sumB / g.n;
   const C = Math.sqrt(a * a + b * b), H = ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360;
   try {
-    const hex = typeof lchDisplayHex === "function" ? lchDisplayHex(L, C, H) : new Color("oklch", [L, C, H]).toGamut({ space: "srgb" }).toString({ format: "hex" });
+    const hex = typeof lchDisplayHex === "function" ? lchDisplayHex(L, C, H) : new Color("oklch", [L, C, H]).toGamut({ space: "srgb" }).to("srgb").toString({ format: "hex" });
     return DisplayGamut.css(L, C, H, hex) || hex;
   } catch (e) {
     return null;
@@ -8457,7 +8457,7 @@ const VIEW_FIELD_DEFS = {
 // A colour's sRGB hex, whatever form its display colour is stored in.
 const itemHexOf = (it) => {
   if (it && /^#[0-9a-f]{6}$/i.test(String(it.hex || ""))) return String(it.hex).toUpperCase();
-  try { return new Color("oklch", [it.L, it.C, it.H]).to("srgb").toGamut({ space: "srgb" }).toString({ format: "hex", collapse: false }).toUpperCase(); } catch (e) { return ""; }
+  try { return new Color("oklch", [it.L, it.C, it.H]).to("srgb").toGamut({ space: "srgb" }).to("srgb").toString({ format: "hex", collapse: false }).toUpperCase(); } catch (e) { return ""; }
 };
 const SPEC_FIELD_IDS = ["material", "sheen", "visualTexture", "tactileTexture", "doorProfile"];
 const COLOUR_FIELD_IDS = ["L", "C", "H", "hex", "colorGroup"];
@@ -13061,7 +13061,7 @@ const ViewPinsInner = ({
         anchorId: "",
         color: new Color("oklch", [L, C, H])
           .clone()
-          .toGamut({ space: "srgb" })
+          .toGamut({ space: "srgb" }).to("srgb")
           .toString({ format: "hex" }),
         nameOverride: editForm.noun || "",
         notes: editForm.notes || "",
@@ -13944,6 +13944,29 @@ const ViewPinsInner = ({
   );
 };
 const ViewPins = withStableCallbacks(ViewPinsInner);
+// One entry per id in each group list (and one colour word per name).
+const cleanGroupSettings = (gs) => {
+  if (!gs || typeof gs !== "object") return gs;
+  let out = gs;
+  const uniq = (list, byName) => {
+    if (!Array.isArray(list)) return list;
+    const ids = new Set(), names = new Set(), res = [];
+    list.forEach((x) => {
+      if (!x) return;
+      const id = x.id != null ? String(x.id) : null, nm = byName ? String(x.name || "").trim().toLowerCase() : null;
+      if ((id && ids.has(id)) || (nm && names.has(nm))) return;
+      if (id) ids.add(id);
+      if (nm) names.add(nm);
+      res.push(x);
+    });
+    return res.length === list.length ? list : res;
+  };
+  [["terms", true], ["hues", false], ["neutrals", false], ["overrides", false]].forEach(([k, byName]) => {
+    const v = uniq(gs[k], byName);
+    if (v !== gs[k]) { if (out === gs) out = { ...gs }; out[k] = v; }
+  });
+  return out;
+};
 const ViewGroups = ({ settings, setSettings, cursor, onCursor }) => {
   // your words: nothing to split by hand, so only the words themselves
   if (familyModeOf(settings) === "words")
@@ -14128,7 +14151,7 @@ const ViewGroups = ({ settings, setSettings, cursor, onCursor }) => {
                   0,
                   0,
                 ])
-                  .toGamut({ space: "srgb" })
+                  .toGamut({ space: "srgb" }).to("srgb")
                   .toString({ format: "hex" }),
               },
             }),
@@ -14240,7 +14263,7 @@ const ViewGroups = ({ settings, setSettings, cursor, onCursor }) => {
                   settings.vividC + 0.05,
                   hueCenterOf(hue, settings.hues),
                 ])
-                  .toGamut({ space: "srgb" })
+                  .toGamut({ space: "srgb" }).to("srgb")
                   .toString({ format: "hex" }),
               },
             }),
@@ -15092,6 +15115,7 @@ const processCSVData = (
   let groupSettingRows = false;
   const newTagLibrary = [];
   let hasOverrides = false;
+  let hasTerms = false;
   parsedData.forEach((rawRow) => {
     const row = normalizeCsvRow(rawRow);
     const targetType = String(row.Type || "")
@@ -15160,7 +15184,7 @@ const processCSVData = (
     if (targetType === "COLOR_TERM") {
       if (!newGroupSettings)
         newGroupSettings = { lightL: 0.5, neutralC: 0.02, vividC: 0.1, neutrals: [], hues: [], overrides: [] };
-      if (!Array.isArray(newGroupSettings.terms)) newGroupSettings.terms = [];
+      if (!hasTerms || !Array.isArray(newGroupSettings.terms)) { newGroupSettings.terms = []; hasTerms = true; }
       let examples = [];
       try { const v = row.Note ? JSON.parse(row.Note) : []; if (Array.isArray(v)) examples = v.filter((e) => e && isFinite(e.L) && isFinite(e.C) && isFinite(e.H)); } catch (e) {}
       if (String(row.Noun || "").trim())
@@ -15327,7 +15351,7 @@ const processCSVData = (
     if (pL !== null && (!row.HEX || row.HEX === "")) {
       hex = new Color("oklch", [pL, pC, typeof pH === "number" ? pH : 0])
         .clone()
-        .toGamut({ space: "srgb" })
+        .toGamut({ space: "srgb" }).to("srgb")
         .toString({ format: "hex" });
     }
     if (
@@ -15501,7 +15525,7 @@ const processCSVData = (
           row.HEX ||
           new Color("oklch", [pL, pC, pH])
             .clone()
-            .toGamut({ space: "srgb" })
+            .toGamut({ space: "srgb" }).to("srgb")
             .toString({ format: "hex" }),
         a,
         b,
@@ -16443,7 +16467,7 @@ const App = () => {
       const c = new Color("oklch", [item.L, item.C, item.H]);
       const hex = c
         .clone()
-        .toGamut({ space: "srgb" })
+        .toGamut({ space: "srgb" }).to("srgb")
         .toString({ format: "hex" })
         .toUpperCase();
       let cleanErp = extractCleanColorCode(item);
@@ -16531,8 +16555,12 @@ const App = () => {
     [savedColors, names, colorData],
   );
 
-  const [groupSettings, setGroupSettings] = useState(
-    initialState?.groupSettings || defaultGroupSettings,
+  const [groupSettings, setGroupSettingsRaw] = useState(() =>
+    cleanGroupSettings(initialState?.groupSettings || defaultGroupSettings),
+  );
+  const setGroupSettings = useCallback(
+    (v) => setGroupSettingsRaw((p) => cleanGroupSettings(typeof v === "function" ? v(p) : v)),
+    [],
   );
   const [palette, setPalette] = useState(initialState?.palette || []);
   // the hue-family lookup every colour-group call uses
@@ -18238,7 +18266,7 @@ const App = () => {
           notes: "",
           color: new Color("oklch", [scrubL, scrubC, scrubH])
             .clone()
-            .toGamut({ space: "srgb" })
+            .toGamut({ space: "srgb" }).to("srgb")
             .toString({ format: "hex" }),
           spectral: crosshair.activeSpectral || crosshair.temporarySpectral,
           brand: pinBrand,
@@ -18513,7 +18541,7 @@ const App = () => {
               (sc.L !== undefined && sc.C !== undefined && sc.H !== undefined
                 ? new Color("oklch", [sc.L, sc.C, sc.H])
                     .clone()
-                    .toGamut({ space: "srgb" })
+                    .toGamut({ space: "srgb" }).to("srgb")
                     .toString({ format: "hex" })
                 : ""),
             ERP_Code: sc.erpCode || "",
@@ -18744,7 +18772,7 @@ const App = () => {
             Type: "DB",
             Adjective: brand,
             Noun: customName || "",
-            HEX: color.hex || "",
+            HEX: (() => { const h = String(color.hex || "").trim().replace(/^#/, ""); return /^[0-9a-f]{3}$/i.test(h) ? "#" + h.split("").map((x) => x + x).join("").toLowerCase() : /^[0-9a-f]{6}$/i.test(h) ? "#" + h.toLowerCase() : String(color.hex || ""); })(),
             OKLCH_L: color.L !== void 0 ? color.L : "",
             OKLCH_C: color.C !== void 0 ? color.C : "",
             OKLCH_H: color.H !== void 0 ? color.H : "",
@@ -19124,7 +19152,7 @@ const App = () => {
   const isOutOfGamut = !activeColorObj.inGamut(DisplayGamut.space, { epsilon: 0.001 });
   const crosshairHex = activeColorObj
     .clone()
-    .toGamut({ space: "srgb" })
+    .toGamut({ space: "srgb" }).to("srgb")
     .toString({ format: "hex" })
     .toUpperCase();
   // The card's name: a pin by its own rules (override, tethered parent,
@@ -22904,7 +22932,7 @@ const AppUI = ({
   const compactHex = useMemo(() => {
     try {
       return new Color("oklch", [scrubL, scrubC, scrubH])
-        .toGamut({ space: "srgb" })
+        .toGamut({ space: "srgb" }).to("srgb")
         .toString({ format: "hex" });
     } catch (e) {
       return "#cccccc";
@@ -24440,7 +24468,7 @@ const AppUI = ({
                                   compSlotA.H,
                                 ])
                                   .clone()
-                                  .toGamut({ space: "srgb" })
+                                  .toGamut({ space: "srgb" }).to("srgb")
                                   .toString({ format: "hex" }),
                               },
                             },
@@ -24597,7 +24625,7 @@ const AppUI = ({
                                   compSlotB.H,
                                 ])
                                   .clone()
-                                  .toGamut({ space: "srgb" })
+                                  .toGamut({ space: "srgb" }).to("srgb")
                                   .toString({ format: "hex" }),
                               },
                             },
@@ -25326,12 +25354,12 @@ const AppUI = ({
         const cA = new Color("oklch", [compSlotA.L, compSlotA.C, compSlotA.H]);
         const hA = cA
           .clone()
-          .toGamut({ space: "srgb" })
+          .toGamut({ space: "srgb" }).to("srgb")
           .toString({ format: "hex" });
         const cB = new Color("oklch", [compSlotB.L, compSlotB.C, compSlotB.H]);
         const hB = cB
           .clone()
-          .toGamut({ space: "srgb" })
+          .toGamut({ space: "srgb" }).to("srgb")
           .toString({ format: "hex" });
         const nA = getInheritedPinNames(compSlotA, savedColors, names).displayName;
         const nB = getInheritedPinNames(compSlotB, savedColors, names).displayName;
