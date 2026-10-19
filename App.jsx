@@ -23389,7 +23389,7 @@ const AppUI = ({
       "header",
       {
         className:
-          `shrink-0 bg-white dark:bg-neutral-900 border-b border-slate-200 dark:border-neutral-800 z-30 md:border-b-0 ${mobilePanelsOpen ? "max-h-[38dvh]" : "max-h-[52dvh]"} overflow-y-auto md:max-h-none md:overflow-visible custom-scrollbar`,
+          `shrink-0 bg-white dark:bg-neutral-900 border-b border-slate-200 dark:border-neutral-800 relative ${searchQuery ? "z-[98]" : "z-30"} md:border-b-0 ${mobilePanelsOpen ? "max-h-[38dvh]" : "max-h-[52dvh]"} overflow-y-auto md:max-h-none md:overflow-visible custom-scrollbar`,
       },
       React.createElement(
         "div",
@@ -26475,7 +26475,14 @@ const AppUI = ({
             "div",
             {
               className:
-                "relative mx-auto mt-[16vh] w-[92vw] md:w-[560px] max-h-[62dvh] bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-2xl flex flex-col overflow-hidden",
+                "relative mx-auto w-[92vw] md:w-[560px] max-h-[62dvh] bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-2xl flex flex-col overflow-hidden",
+              style: (() => {
+                // phone: just under the header (which now sits above this sheet)
+                if (typeof window === "undefined" || window.innerWidth >= 768) return { marginTop: "16vh" };
+                const hd = document.querySelector("header");
+                const top = Math.round((hd ? hd.getBoundingClientRect().bottom : 120) + 8);
+                return { marginTop: top + "px", maxHeight: `calc(100dvh - ${top + 72}px)` };
+              })(),
             },
             React.createElement(
               "div",
