@@ -11856,6 +11856,231 @@ const anchorWouldRenamePin = (L, C, H, savedColors, selfId) => {
 };
 const PIN_LOCK_HINT = "Names a pin in the Catalog: locked so the pin keeps its name (turn off Lock pin names to edit)";
 
+// ── Cross-reference, with filters on both sides ───────────────────────────
+// From: a brand narrowed by its own filter rows (e.g. Tafisa, name contains
+// "Karisma"). To: another brand narrowed the same way (Uniboard, name contains
+// "Omnia"). Every From colour gets its nearest To colour; "Both ways" adds the
+// reverse direction, so a cursor sitting on either line finds its partner.
+// Results sort by ΔE to the cursor (either colour of the pair), by the match's
+// ΔE, or by name. A set-up can be saved as a named pair; pairs travel with
+// anchors.csv like filter presets.
+const XREF_KEY = "csam-xref";
+const XREF_DEFAULT = { from: "", to: "", srcRows: [], srcMode: "and", dstRows: [], dstMode: "and", maxDE: 2, mode: "matched", sameSpec: false, both: false, sort: "cursor", asc: true };
+const xrefStore = (() => {
+  let st = { ...XREF_DEFAULT, pairs: [] };
+  try { const v = JSON.parse(localStorage.getItem(XREF_KEY) || "null"); if (v && typeof v === "object") st = { ...st, ...v }; } catch (e) {}
+  const subs = new Set();
+  const commit = (next) => { st = next; try { localStorage.setItem(XREF_KEY, JSON.stringify(st)); } catch (e) {} subs.forEach((f) => f()); };
+  return {
+    get: () => st,
+    set: (patch) => commit({ ...st, ...(typeof patch === "function" ? patch(st) : patch) }),
+    savePair: (name) => {
+      const nm = String(name || "").trim(); if (!nm) return;
+      const cfg = {}; Object.keys(XREF_DEFAULT).forEach((k) => (cfg[k] = st[k]));
+      const at = st.pairs.findIndex((p) => p.name.toLowerCase() === nm.toLowerCase());
+      const p = { id: at >= 0 ? st.pairs[at].id : `xp-${Date.now().toString(36)}`, name: nm, cfg: JSON.parse(JSON.stringify(cfg)) };
+      commit({ ...st, pairs: at >= 0 ? st.pairs.map((x, i) => (i === at ? p : x)) : [...st.pairs, p] });
+    },
+    removePair: (id) => commit({ ...st, pairs: st.pairs.filter((p) => p.id !== id) }),
+    loadPair: (id) => { const p = st.pairs.find((x) => x.id === id); if (p) commit({ ...st, ...JSON.parse(JSON.stringify(p.cfg)), activePair: p.id }); },
+    mergePairs: (items) => {
+      const pairs = st.pairs.slice();
+      (items || []).forEach((p) => {
+        if (!p || !p.name || !p.cfg) return;
+        const at = pairs.findIndex((x) => x.id === p.id || x.name.toLowerCase() === String(p.name).toLowerCase());
+        if (at >= 0) pairs[at] = { ...pairs[at], ...p, id: pairs[at].id }; else pairs.push(p);
+      });
+      commit({ ...st, pairs });
+    },
+    subscribe: (f) => { subs.add(f); return () => subs.delete(f); },
+  };
+})();
+const useXrefState = () => {
+  const [, force] = useState(0);
+  useEffect(() => xrefStore.subscribe(() => force((x) => x + 1)), []);
+  return xrefStore.get();
+};
+const xrefItemsOf = (colorData, brand, cur) =>
+  ((colorData && colorData[brand]) || []).map((c, i) => {
+    if (!isFinite(c.L) || !isFinite(c.C)) return null;
+    const H = Number(c.H) || 0, rad = (H * Math.PI) / 180;
+    const it = { ...c, H, brand, originalIndex: i, displayName: c.name || "", a: c.C * Math.sin(rad), b: c.C * Math.cos(rad) };
+    it._d = cur ? crossRefDeltaE(it, cur) : undefined;
+    return it;
+  }).filter(Boolean);
+// nearest destination for every source (grid search when the lists are big)
+const xrefMatch = (src, dst, sameSpec, maxDE) => {
+  if (!src.length || !dst.length) return src.map((s) => ({ source: s, match: null, dE: Infinity }));
+  if (src.length * dst.length <= 3e6) {
+    return src.map((s) => {
+      let best = null, bd = Infinity;
+      for (const d of dst) {
+        if (sameSpec && !crossRefSameSpec(s, d)) continue;
+        const e = crossRefDeltaE(s, d);
+        if (e < bd) { bd = e; best = d; }
+      }
+      return { source: s, match: best, dE: best ? bd : Infinity };
+    });
+  }
+  const CELL = 0.03, grid = new Map(), key = (L, a, b) => `${Math.floor(L / CELL)},${Math.floor(a / CELL)},${Math.floor(b / CELL)}`;
+  dst.forEach((d) => { const k = key(d.L, d.a, d.b); let c = grid.get(k); if (!c) grid.set(k, (c = [])); c.push(d); });
+  const reach = Math.ceil(Math.max(maxDE * 2, 6) / 100 / CELL);
+  return src.map((s) => {
+    let best = null, bd = Infinity;
+    const cL = Math.floor(s.L / CELL), ca = Math.floor(s.a / CELL), cb = Math.floor(s.b / CELL);
+    for (let x = -reach; x <= reach; x++) for (let y = -reach; y <= reach; y++) for (let z = -reach; z <= reach; z++) {
+      const c = grid.get(`${cL + x},${ca + y},${cb + z}`); if (!c) continue;
+      for (const d of c) { if (sameSpec && !crossRefSameSpec(s, d)) continue; const e = crossRefDeltaE(s, d); if (e < bd) { bd = e; best = d; } }
+    }
+    return { source: s, match: best, dE: best ? bd : Infinity };
+  });
+};
+const XrefSide = ({ label, brand, setBrand, brands, rows, setRows, mode, setMode, ctx, items, count }) => {
+  const [open, setOpen] = useState(rows.length > 0);
+  const optionsFor = useCallback((fieldId) => {
+    const f = FILTER_FIELDS.find((x) => x.id === fieldId); if (!f) return [];
+    const seen = new Set();
+    items.forEach((it) => String(f.get(it, ctx) || "").split(",").map((x) => x.trim()).filter(Boolean).forEach((x) => seen.add(x)));
+    return [...seen].sort().slice(0, 200);
+  }, [items, ctx]);
+  return React.createElement(
+    "div",
+    { className: "flex flex-col gap-1.5 p-2 rounded-lg border border-slate-200 dark:border-neutral-700", "data-xref-side": label },
+    React.createElement("div", { className: "flex items-center gap-2" },
+      React.createElement("span", { className: "text-[9px] font-bold uppercase tracking-widest text-slate-400 w-8" }, label),
+      React.createElement("select", {
+        value: brand, onChange: (e) => setBrand(e.target.value), "aria-label": `${label} brand`,
+        className: "flex-1 min-w-0 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-2 py-1 text-[11px]",
+      }, brands.map((b) => React.createElement("option", { key: b, value: b }, typeof getBrandDisplayName === "function" ? getBrandDisplayName(b) : b))),
+      React.createElement("button", {
+        onClick: () => setOpen(!open), "aria-expanded": open,
+        className: `shrink-0 flex items-center gap-1 px-1.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider ${rows.length ? "text-sky-600 dark:text-sky-400" : "text-slate-400"} hover:bg-slate-100 dark:hover:bg-neutral-800`,
+        title: "Narrow this side with filters (name contains Karisma, material, sheen…)",
+      }, React.createElement(Icon, { name: "filter", className: "w-3 h-3" }), rows.length ? `${rows.length}` : "Filter"),
+    ),
+    React.createElement("div", { className: "text-[9px] text-slate-400 pl-10" }, `${count} colour${count === 1 ? "" : "s"}${rows.length ? " after filters" : ""}`),
+    open && React.createElement("div", { className: "pl-1" },
+      React.createElement(FilterRows, { rows, setRows, mode, setMode, optionsFor, ctx, depth: 0 })),
+  );
+};
+const CrossReference2 = ({ colorData, onSelectColor, cursor, ctx }) => {
+  const st = useXrefState();
+  const set = xrefStore.set;
+  const brands = useMemo(() => Object.keys(colorData || {}).sort((a, b) => String(getBrandDisplayName(a)).localeCompare(String(getBrandDisplayName(b)))), [colorData]);
+  useEffect(() => {
+    if (!brands.length) return;
+    if (!st.from || !brands.includes(st.from)) set({ from: brands[0] });
+    if (!st.to || !brands.includes(st.to)) set({ to: brands.find((b) => b !== (st.from || brands[0])) || brands[0] });
+  }, [brands, st.from, st.to]);
+  const cur = useMemo(() => {
+    if (!cursor) return null;
+    const [L, C, H] = cursor, rad = ((Number(H) || 0) * Math.PI) / 180;
+    return { L, a: C * Math.sin(rad), b: C * Math.cos(rad) };
+  }, [cursor && cursor[0], cursor && cursor[1], cursor && cursor[2]]);
+  const allA = useMemo(() => xrefItemsOf(colorData, st.from, cur), [colorData, st.from, cur]);
+  const allB = useMemo(() => xrefItemsOf(colorData, st.to, cur), [colorData, st.to, cur]);
+  const filt = (list, rows, mode) => (rows && rows.length ? applyGlobalFilters(list, rows, ctx, mode).items : list);
+  const A = useMemo(() => filt(allA, st.srcRows, st.srcMode), [allA, st.srcRows, st.srcMode, ctx]);
+  const B = useMemo(() => filt(allB, st.dstRows, st.dstMode), [allB, st.dstRows, st.dstMode, ctx]);
+  const pairs = useMemo(() => {
+    if (!st.from || !st.to || st.from === st.to) return [];
+    const keep = (r) => (st.mode === "matched" ? r.dE <= st.maxDE : r.dE > st.maxDE);
+    let out = xrefMatch(A, B, st.sameSpec, st.maxDE).filter(keep).map((r) => ({ ...r, dir: "ab" }));
+    if (st.both) {
+      const seen = new Map(out.map((r, i) => [r.match ? `${r.source.originalIndex}|${r.match.originalIndex}` : "", i]));
+      xrefMatch(B, A, st.sameSpec, st.maxDE).filter(keep).forEach((r) => {
+        const k = r.match ? `${r.match.originalIndex}|${r.source.originalIndex}` : "";
+        if (k && seen.has(k)) { out[seen.get(k)].mutual = true; return; }   // the same pair both ways
+        out.push({ ...r, dir: "ba" });
+      });
+    }
+    const curOf = (r) => Math.min(isFinite(r.source._d) ? r.source._d : Infinity, r.match && isFinite(r.match._d) ? r.match._d : Infinity);
+    const key = { cursor: curOf, source: (r) => r.source._d, match: (r) => r.dE, name: (r) => String(r.source.name || "").toLowerCase() }[st.sort] || curOf;
+    const sgn = st.asc ? 1 : -1;
+    return out.map((r) => [key(r), r]).sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0) * sgn).map((x) => x[1]);
+  }, [A, B, st.from, st.to, st.mode, st.maxDE, st.sameSpec, st.both, st.sort, st.asc]);
+
+  const [naming, setNaming] = useState(false);
+  const [pairName, setPairName] = useState("");
+  const [confirmDel, setConfirmDel] = useState(null);
+  const label = (b) => (typeof getBrandDisplayName === "function" ? getBrandDisplayName(b) : b);
+  const hexOf = (c) => c.hex || lchDisplayHex(c.L, c.C, c.H);
+  const pick = (c) => c && onSelectColor && onSelectColor([c.L, c.C, c.H], c.spectral || null, { brand: c.brand, originalIndex: c.originalIndex });
+  const chip = "px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider border";
+  const swap = () => set((s) => ({ from: s.to, to: s.from, srcRows: s.dstRows, dstRows: s.srcRows, srcMode: s.dstMode, dstMode: s.srcMode, activePair: null }));
+  const tgl = (on) => `px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider transition-colors ${on ? "bg-slate-800 text-white dark:bg-neutral-100 dark:text-neutral-900" : "text-slate-500 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-800"}`;
+  const CAP = 300;
+
+  return React.createElement(
+    "div",
+    { className: "flex flex-col gap-2", "data-xref": "" },
+    // saved pairs
+    React.createElement("div", { className: "flex flex-wrap items-center gap-1" },
+      st.pairs.map((p) => React.createElement("span", { key: p.id, "data-xref-pair": p.name,
+        className: `${chip} inline-flex items-center gap-1 ${st.activePair === p.id ? "border-sky-500 bg-sky-500 text-white" : "border-sky-200 dark:border-sky-500/30 bg-sky-50 dark:bg-sky-500/10 text-sky-700 dark:text-sky-300"}` },
+        React.createElement("button", { onClick: () => xrefStore.loadPair(p.id), className: "uppercase font-bold tracking-wider", title: `Load: ${label(p.cfg.from)} → ${label(p.cfg.to)}` }, p.name),
+        React.createElement("button", { onClick: () => (confirmDel === p.id ? (xrefStore.removePair(p.id), setConfirmDel(null)) : setConfirmDel(p.id)), onBlur: () => setConfirmDel(null),
+          "aria-label": `Delete pair ${p.name}`, className: confirmDel === p.id ? "normal-case" : "opacity-60 hover:opacity-100" },
+          confirmDel === p.id ? "delete?" : React.createElement(Icon, { name: "x", className: "w-2.5 h-2.5" })))),
+      naming
+        ? React.createElement("span", { className: "inline-flex items-center gap-1" },
+            React.createElement("input", { autoFocus: true, value: pairName, placeholder: "Pair name", onChange: (e) => setPairName(e.target.value),
+              onKeyDown: (e) => { if (e.key === "Enter" && pairName.trim()) { xrefStore.savePair(pairName); setNaming(false); } if (e.key === "Escape") { e.stopPropagation(); setNaming(false); } },
+              className: "w-28 bg-transparent border border-slate-200 dark:border-neutral-700 rounded px-1.5 py-0.5 text-[10px]" }),
+            React.createElement("button", { onClick: () => { if (pairName.trim()) { xrefStore.savePair(pairName); setNaming(false); } }, className: `${chip} border-sky-600 bg-sky-600 text-white` }, "Save"))
+        : React.createElement("button", { onClick: () => { setNaming(true); setPairName(""); }, className: `${chip} border-dashed border-slate-300 dark:border-neutral-600 text-slate-500`, title: "Keep this set-up (brands, filters, options) as a named pair" }, "+ Save pair"),
+    ),
+    React.createElement(XrefSide, { label: "From", brand: st.from, setBrand: (v) => set({ from: v, activePair: null }), brands, rows: st.srcRows || [], setRows: (v) => set((s) => ({ srcRows: typeof v === "function" ? v(s.srcRows || []) : v, activePair: null })),
+      mode: st.srcMode, setMode: (m) => set({ srcMode: m }), ctx, items: allA, count: A.length }),
+    React.createElement("div", { className: "flex justify-center -my-1" },
+      React.createElement("button", { onClick: swap, title: "Swap From and To (brands and their filters)", "aria-label": "Swap sides", className: "p-1 rounded-full border border-slate-200 dark:border-neutral-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-neutral-800 bg-white dark:bg-neutral-900" },
+        React.createElement(Icon, { name: "arrow-up-down", className: "w-3.5 h-3.5" }))),
+    React.createElement(XrefSide, { label: "To", brand: st.to, setBrand: (v) => set({ to: v, activePair: null }), brands, rows: st.dstRows || [], setRows: (v) => set((s) => ({ dstRows: typeof v === "function" ? v(s.dstRows || []) : v, activePair: null })),
+      mode: st.dstMode, setMode: (m) => set({ dstMode: m }), ctx, items: allB, count: B.length }),
+    React.createElement("div", { className: "flex items-center gap-2" },
+      React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-400" }, "ΔE ≤"),
+      React.createElement("input", { type: "range", min: "0.5", max: "10", step: "0.5", value: st.maxDE, onChange: (e) => set({ maxDE: parseFloat(e.target.value) }), className: "flex-1 accent-sky-500", "aria-label": "Largest ΔE for an equivalent" }),
+      React.createElement("span", { className: "text-[10px] font-mono w-7 text-right" }, Number(st.maxDE).toFixed(1))),
+    React.createElement("div", { className: "flex flex-wrap items-center gap-1" },
+      React.createElement("button", { onClick: () => set({ mode: "matched" }), "aria-pressed": st.mode === "matched", className: tgl(st.mode === "matched") }, "Has equivalent"),
+      React.createElement("button", { onClick: () => set({ mode: "gaps" }), "aria-pressed": st.mode === "gaps", className: tgl(st.mode === "gaps") }, "No equivalent"),
+      React.createElement("label", { className: "ml-auto flex items-center gap-1 text-[10px] text-slate-500 dark:text-neutral-400 cursor-pointer", title: "Also look from To back to From, so either line finds its partner" },
+        React.createElement("input", { type: "checkbox", checked: !!st.both, onChange: (e) => set({ both: e.target.checked }), className: "accent-sky-500" }), "Both ways"),
+      React.createElement("label", { className: "flex items-center gap-1 text-[10px] text-slate-500 dark:text-neutral-400 cursor-pointer", title: "Match material, sheen, profile, visual pattern and tactile texture" },
+        React.createElement("input", { type: "checkbox", checked: !!st.sameSpec, onChange: (e) => set({ sameSpec: e.target.checked }), className: "accent-sky-500" }), "Same spec")),
+    React.createElement("div", { className: "flex items-center gap-1" },
+      React.createElement("span", { className: "text-[9px] font-bold uppercase tracking-widest text-slate-400" }, "Sort"),
+      React.createElement("select", { value: st.sort, onChange: (e) => set({ sort: e.target.value }), "aria-label": "Sort matches by",
+        className: "flex-1 min-w-0 bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded px-1.5 py-1 text-[10px]" },
+        React.createElement("option", { value: "cursor" }, "ΔE to cursor (either colour)"),
+        React.createElement("option", { value: "source" }, "ΔE to cursor (From colour)"),
+        React.createElement("option", { value: "match" }, "ΔE between the pair"),
+        React.createElement("option", { value: "name" }, "From name")),
+      React.createElement("button", { onClick: () => set({ asc: !st.asc }), title: st.asc ? "Ascending" : "Descending", "aria-label": st.asc ? "Sort ascending" : "Sort descending",
+        className: "p-1 rounded border border-slate-200 dark:border-neutral-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-neutral-800" },
+        React.createElement(Icon, { name: st.asc ? "arrow-up-narrow-wide" : "arrow-down-wide-narrow", className: "w-3.5 h-3.5" }))),
+    React.createElement("div", { className: "text-[10px] text-slate-400 dark:text-neutral-500", "data-xref-count": "" },
+      st.from === st.to ? "Pick two different brands."
+        : `${pairs.length} ${st.mode === "matched" ? "matches" : "without an equivalent"} within ΔE ${Number(st.maxDE).toFixed(1)}${st.both ? " (both ways)" : ""}${pairs.length > CAP ? `, first ${CAP} shown` : ""}`),
+    React.createElement("div", { className: "flex flex-col gap-1 max-h-[26rem] overflow-y-auto custom-scrollbar" },
+      pairs.slice(0, CAP).map((r, i) => {
+        const s = r.source, m = r.match;
+        return React.createElement("div", { key: `${r.dir}${s.originalIndex}-${m ? m.originalIndex : "x"}`, "data-xref-row": "", className: "flex items-center gap-2 p-1.5 rounded hover:bg-slate-50 dark:hover:bg-neutral-800/50" },
+          React.createElement("button", { onClick: () => pick(s), className: "shrink-0", title: `Go to ${s.name}` }, React.createElement(ColorSwatch, { item: s, hex: hexOf(s), size: 26, label: s.name })),
+          React.createElement("div", { className: "flex-1 min-w-0" },
+            React.createElement("button", { onClick: () => pick(s), className: "block w-full text-left text-[10px] font-bold truncate" },
+              st.both ? React.createElement("span", { className: "text-slate-400 font-normal" }, `${label(s.brand)} · `) : null, s.name),
+            React.createElement("button", { onClick: () => pick(m), disabled: !m, className: "block w-full text-left text-[9px] text-slate-500 dark:text-neutral-400 truncate" },
+              m ? `${r.mutual ? "⇄" : "→"} ${st.both ? label(m.brand) + " · " : ""}${m.name}` : "no candidate nearby")),
+          m && React.createElement("button", { onClick: () => pick(m), className: "shrink-0", title: `Go to ${m.name}` }, React.createElement(ColorSwatch, { item: m, hex: hexOf(m), size: 26, label: m.name })),
+          React.createElement("div", { className: "shrink-0 w-12 text-right" },
+            m && React.createElement("div", { className: `text-[9px] font-mono ${r.dE <= 1 ? "text-emerald-600" : r.dE <= 2 ? "text-amber-600" : "text-slate-400"}`, title: "ΔE between the pair" }, r.dE.toFixed(2)),
+            React.createElement("div", { className: "text-[8px] font-mono text-slate-400", title: "ΔE from the cursor to the nearer of the two" },
+              (() => { const d = Math.min(isFinite(s._d) ? s._d : Infinity, m && isFinite(m._d) ? m._d : Infinity); return isFinite(d) ? `⌖ ${d.toFixed(1)}` : ""; })())));
+      })),
+  );
+};
+
 const ViewportSwatches = ({
   items,
   layout,
@@ -15143,6 +15368,13 @@ const processCSVData = (
           });
         }
       } catch (e2) {}
+      return;
+    }
+    if (targetType === "XREF_PAIR") {
+      try {
+        const cfg = JSON.parse(row.Note || "{}");
+        if (String(row.Noun || "").trim()) xrefStore.mergePairs([{ id: row.ID || `xp-${String(row.Noun).toLowerCase()}`, name: String(row.Noun).trim(), cfg }]);
+      } catch (e) {}
       return;
     }
     if (targetType === "FILTER_PRESET") {
@@ -18655,6 +18887,8 @@ const App = () => {
       (tagLibrary || []).forEach((t) => anchorsCsv.push({ Type: "TAG", Noun: t }));
       // your filter presets (rows and And/Or as JSON in Note)
       filterPresetStore.get().forEach((p) => anchorsCsv.push({ Type: "FILTER_PRESET", ID: p.id, Noun: p.name, Note: JSON.stringify({ mode: p.mode, rows: p.rows }) }));
+      // saved cross-reference pairs (brands, both sides' filters, options)
+      xrefStore.get().pairs.forEach((p) => anchorsCsv.push({ Type: "XREF_PAIR", ID: p.id, Noun: p.name, Note: JSON.stringify(p.cfg) }));
       const palettesCsv = [];
       (savedPalettes || []).forEach((p) => {
         palettesCsv.push({
@@ -24089,9 +24323,11 @@ const AppUI = ({
             React.createElement(
               CollapsiblePanel,
               { title: "Cross-Reference", icon: "shuffle", defaultOpen: false },
-              React.createElement(CrossReference, {
+              React.createElement(CrossReference2, {
                 colorData,
                 onSelectColor: handlePointClick,
+                cursor: [scrubL, scrubC, scrubH],
+                ctx: sameGroupContext,
               }),
             ),
             React.createElement(
