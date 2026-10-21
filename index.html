@@ -43,7 +43,19 @@ tailwind.config = {
 </head>
 <body>
 <div id="root"></div>
-<script type="text/javascript" src="./App.jsx"></script>
+<script>
+// Load App.jsx asking the server whether it changed (a quick ETag check),
+// so a new version shows on the next open instead of up to 10 minutes later
+// from the browser cache. Offline, fall back to the cached copy.
+(function () {
+  var add = function (s) { document.body.appendChild(s); };
+  var s = document.createElement("script");
+  fetch("./App.jsx", { cache: "no-cache" })
+    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
+    .then(function (t) { s.text = t + "\n//# sourceURL=App.jsx"; add(s); })
+    .catch(function () { var f = document.createElement("script"); f.src = "./App.jsx"; add(f); });
+})();
+</script>
 
 </body>
 </html>

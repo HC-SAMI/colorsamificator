@@ -12546,6 +12546,13 @@ const spectroStore = (() => {
         const m = ms.find((x) => x.mode === st.mode) || ms[0];
         const reading = spectroReadingOf(m, r.device || st.device);
         if (!reading) throw "ERROR_INTERNAL";
+        // No real surface reads L* below 1 (even black laminate is ~15-25): the
+        // device saw nothing, usually because it wasn't seated on the sample.
+        const lstar = Array.isArray(reading.lab) ? reading.lab[0] : spectroLabOf(reading)?.[0];
+        if (isFinite(lstar) && lstar < 1) {
+          set({ busy: false, device: r.device || st.device, error: `That reading came back black (L* ${(+lstar).toFixed(1)}), so it was left out. Seat the device flat on the sample, covering the opening, and measure again.` });
+          return null;
+        }
         if (st.avg) {
           set({ busy: false, device: r.device || st.device });
           setScans([...st.scans, reading], true);
