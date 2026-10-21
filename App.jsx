@@ -12406,21 +12406,25 @@ const spectroStore = (() => {
     scanning: false, devices: [], conn: "idle", device: null,
     mode: "M2", busy: false, error: "", readings: [], remembered: null, autoGo: true,
     avg: false, scans: [], session: null,
+    qc: { open: false, ref: null, target: null, tol: 1, follow: true },
   };
   try {
     const v = JSON.parse(localStorage.getItem(SPECTRO_KEY) || "null");
     if (v && typeof v === "object") {
       ["source", "mode", "remembered", "autoGo", "avg"].forEach((k) => { if (v[k] !== undefined) st[k] = v[k]; });
       if (Array.isArray(v.readings)) st.readings = v.readings.filter((r) => r && isFinite(r.L)).slice(0, 40).map(spectroRegister);
+      if (v.qc && typeof v.qc === "object") { st.qc = { ...st.qc, ...v.qc }; ["ref", "target"].forEach((k) => { if (st.qc[k] && !isFinite(st.qc[k].L)) st.qc[k] = null; else if (st.qc[k]) spectroRegister(st.qc[k]); }); }
       if (Array.isArray(v.scans)) { st.scans = v.scans.filter((r) => r && isFinite(r.L)).slice(0, 100).map(spectroRegister); st.session = spectroSessionOf(st.scans); }
     }
   } catch (e) {}
   const subs = new Set();
   const save = () => {
-    try { localStorage.setItem(SPECTRO_KEY, JSON.stringify({ source: st.source, mode: st.mode, remembered: st.remembered, autoGo: st.autoGo, avg: st.avg, readings: st.readings, scans: st.scans })); } catch (e) {}
+    try { localStorage.setItem(SPECTRO_KEY, JSON.stringify({ source: st.source, mode: st.mode, remembered: st.remembered, autoGo: st.autoGo, avg: st.avg, readings: st.readings, scans: st.scans, qc: st.qc })); } catch (e) {}
   };
   const set = (patch) => { st = { ...st, ...patch }; save(); subs.forEach((f) => f()); };
   let compound = null, compoundKey = "";
+  // quality control: the target follows each new reading (or running average)
+  const qcFollow = (r) => { if (st.qc.follow && r) set({ qc: { ...st.qc, target: spectroQcItem(r, "Latest scan") } }); };
   const compoundOf = () => {
     const ses = st.session;
     if (!ses) return null;
@@ -12439,7 +12443,7 @@ const spectroStore = (() => {
   const setScans = (scans, emit) => {
     set({ scans, session: spectroSessionOf(scans) });
     const c = compoundOf();
-    if (emit && c) readingListeners.forEach((f) => { try { f(c); } catch (e) {} });
+    if (emit && c) { qcFollow(c); readingListeners.forEach((f) => { try { f(c); } catch (e) {} }); }
   };
   const pending = new Map();
   let seq = 0, send = null, readingListeners = new Set();
@@ -12546,7 +12550,7 @@ const spectroStore = (() => {
       if (st.busy || st.conn !== "connected") return null;
       set({ busy: true, error: "" });
       try {
-        const r = await call("measure", { modes: [st.mode], same: !!(st.avg && st.scans.length) }, 30000);
+        const r = await call("measure", { modes: [st.mode], same: !!((st.avg && st.scans.length) || (st.qc.open && st.qc.ref)) }, 30000);
         const ms = Array.isArray(r.measurements) ? r.measurements : [];
         const m = ms.find((x) => x.mode === st.mode) || ms[0];
         const reading = spectroReadingOf(m, r.device || st.device);
@@ -12564,6 +12568,7 @@ const spectroStore = (() => {
           return reading;
         }
         set({ busy: false, readings: [reading, ...st.readings].slice(0, 40), device: r.device || st.device });
+        qcFollow(reading);
         readingListeners.forEach((f) => { try { f(reading); } catch (e) {} });
         return reading;
       } catch (e) { set({ busy: false, error: spectroErrorText(e) }); return null; }
@@ -12575,6 +12580,7 @@ const spectroStore = (() => {
     },
     removeReading: (id) => set({ readings: st.readings.filter((r) => r.id !== id) }),
     setAvg: (avg) => set({ avg }),
+    setQc: (patch) => set({ qc: { ...st.qc, ...patch } }),
     compound: compoundOf,
     removeScan: (id) => setScans(st.scans.filter((r) => r.id !== id), true),
     discardScans: () => setScans([], false),
@@ -12734,7 +12740,244 @@ const SpectroAverage = ({ s, onSave, onGo, here }) => {
       React.createElement("button", { type: "button", onClick: () => spectroStore.discardScans(), title: "Throw these scans away", "aria-label": "Discard the scans", className: "h-9 w-9 rounded-md text-slate-400 hover:text-red-500 inline-flex items-center justify-center" }, React.createElement(Icon, { name: "trash-2", className: "w-4 h-4" }))),
   );
 };
-const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectral }) => {
+
+// ── Quality control: a reference against a target ─────────────────────────
+// ΔE00 on CIELAB D50/2° (from the spectra when there are spectra), ΔEok on
+// OKLab ×100 like the rest of the app, and the OkLCH differences one by one:
+// ΔL, ΔC, Δh (degrees) and ΔH (the hue difference as a distance,
+// 2·√(C₁C₂)·sin(Δh/2), so it adds up with ΔL and ΔC). With two spectra it
+// also checks the match under incandescent (A) and shop fluorescent (F11)
+// light, where a metameric pair falls apart.
+const spectroQcItem = (r, from) => (r ? {
+  id: r.id || `qc-${Date.now()}`, from: from || r.from || "", name: r.name || "", brand: r.brand || "",
+  L: r.L, C: r.C, H: isFinite(r.H) ? r.H : 0, hex: r.hex,
+  spectral: spectroHasSp(r) ? r.spectral : null, lab: Array.isArray(r.lab) ? r.lab : null,
+  scans: r.scans || 0, at: r.at || "", mode: r.mode || "",
+} : null);
+const spectroLabUnder = (sp, ill) => {
+  try {
+    const xyz = calculateXYZFromSpectral(sp, 2, ill), w = calculateXYZFromSpectral(SPECTRO_WL.map(() => 1), 2, ill);
+    const f = (t) => (t > 216 / 24389 ? Math.cbrt(t) : (24389 / 27 * t + 16) / 116);
+    const [fx, fy, fz] = [0, 1, 2].map((i) => f(xyz[i] / w[i]));
+    return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+  } catch (e) { return null; }
+};
+const SPECTRO_HUE_WORDS = [[25, "red"], [55, "orange"], [95, "yellow"], [135, "green"], [190, "cyan"], [250, "blue"], [300, "violet"], [345, "pink"]];
+const spectroHueToward = (h, dh) => {
+  if (!isFinite(dh) || Math.abs(dh) < 0.05) return "";
+  const sign = dh > 0 ? 1 : -1;
+  let best = null;
+  SPECTRO_HUE_WORDS.forEach(([a, w]) => { const d = ((((a - h) * sign) % 360) + 360) % 360; if (d > 8 && (!best || d < best.d)) best = { d, w }; });
+  return best ? `toward ${best.w}` : "";
+};
+const spectroQcOf = (ref, tgt) => {
+  if (!ref || !tgt) return null;
+  // both sides worked out the same way: from the spectra when both have one
+  const sp2 = spectroHasSp(ref) && spectroHasSp(tgt);
+  const lr = sp2 ? spectroLabD50(ref.spectral) : spectroLabOf(ref), lt = sp2 ? spectroLabD50(tgt.spectral) : spectroLabOf(tgt);
+  const ok = (r) => [r.L, r.C * Math.cos((r.H * Math.PI) / 180), r.C * Math.sin((r.H * Math.PI) / 180)];
+  const [L1, a1, b1] = ok(ref), [L2, a2, b2] = ok(tgt);
+  const dh = ((((tgt.H - ref.H) % 360) + 540) % 360) - 180;
+  const neutral = Math.min(ref.C, tgt.C) < 0.015;
+  const both = spectroHasSp(ref) && spectroHasSp(tgt);
+  const under = both ? [["A", "Incandescent (A)"], ["F11", "Shop fluorescent (F11)"]].map(([k, label]) => ({ k, label, de: spectroDE00(spectroLabUnder(ref.spectral, k), spectroLabUnder(tgt.spectral, k)) })) : [];
+  return {
+    de00: spectroDE00(lr, lt), deok: 100 * Math.hypot(L2 - L1, a2 - a1, b2 - b1),
+    dL: tgt.L - ref.L, dC: tgt.C - ref.C, dh, dH: 2 * Math.sqrt(Math.max(0, ref.C * tgt.C)) * Math.sin((dh * Math.PI) / 360),
+    neutral, both, under, labRef: lr, labTgt: lt, okRef: [L1, a1, b1], okTgt: [L2, a2, b2],
+  };
+};
+// The ΔE00 = tol outline around the reference, in the OKLab a/b plane at the
+// reference's lightness (found by bisection along 36 directions).
+const spectroTolRing = (ref, tol) => {
+  if (!ref || !(tol > 0)) return [];
+  const a0 = ref.C * Math.cos((ref.H * Math.PI) / 180), b0 = ref.C * Math.sin((ref.H * Math.PI) / 180);
+  const at = (r, t) => { try { return new Color("oklab", [ref.L, a0 + r * Math.cos(t), b0 + r * Math.sin(t)]).to("lab").coords; } catch (e) { return null; } };
+  // the ring's own centre, converted the same way as the points around it
+  const lab0 = at(0, 0);
+  if (!lab0) return [];
+  const pts = [];
+  for (let k = 0; k < 36; k++) {
+    const t = (k / 36) * 2 * Math.PI;
+    let lo = 0, hi = 0.25;
+    for (let i = 0; i < 22; i++) { const mid = (lo + hi) / 2; const d = spectroDE00(lab0, at(mid, t)); if (isFinite(d) && d < tol) lo = mid; else hi = mid; }
+    pts.push([a0 + lo * Math.cos(t), b0 + lo * Math.sin(t)]);
+  }
+  return pts;
+};
+// Top-down chroma × hue view (OKLab a right, b up), centred on the reference,
+// painted with the colours at the reference's lightness.
+const SpectroQcPlot = ({ rf, tgt, tol, scans }) => {
+  const S = 248, P = 14;
+  const ring = useMemo(() => spectroTolRing(rf, tol), [rf && rf.id, rf && rf.L, rf && rf.C, rf && rf.H, tol]);
+  const a0 = rf.C * Math.cos((rf.H * Math.PI) / 180), b0 = rf.C * Math.sin((rf.H * Math.PI) / 180);
+  const ta = tgt ? tgt.C * Math.cos((tgt.H * Math.PI) / 180) : a0, tb = tgt ? tgt.C * Math.sin((tgt.H * Math.PI) / 180) : b0;
+  const ringR = ring.reduce((m, [x, y]) => Math.max(m, Math.hypot(x - a0, y - b0)), 0);
+  const scanPts = (scans || []).map((r) => [r.C * Math.cos((r.H * Math.PI) / 180), r.C * Math.sin((r.H * Math.PI) / 180)]);
+  const far = Math.max(ringR * 1.35, Math.hypot(ta - a0, tb - b0) * 1.25, ...scanPts.map(([x, y]) => Math.hypot(x - a0, y - b0) * 1.15), 0.004);
+  const R = Math.ceil(far * 1000) / 1000;
+  const X = (a) => P + ((a - (a0 - R)) / (2 * R)) * (S - 2 * P), Y = (b) => S - P - ((b - (b0 - R)) / (2 * R)) * (S - 2 * P);
+  const cells = useMemo(() => {
+    const n = 18, out = [];
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      const a = a0 - R + ((i + 0.5) / n) * 2 * R, b = b0 - R + ((j + 0.5) / n) * 2 * R;
+      let hex = "#888";
+      try { hex = new Color("oklab", [rf.L, a, b]).to("srgb").toGamut({ space: "srgb" }).toString({ format: "hex" }); } catch (e) {}
+      out.push({ i, j, hex });
+    }
+    return out;
+  }, [rf.L, a0, b0, R]);
+  const cw = (S - 2 * P) / 18;
+  const ux = Math.cos((rf.H * Math.PI) / 180), uy = Math.sin((rf.H * Math.PI) / 180);
+  const L = 0.42 * (S - 2 * P);
+  const cx = X(a0), cy = Y(b0);
+  return React.createElement(
+    "svg",
+    { viewBox: `0 0 ${S} ${S}`, className: "w-full max-w-[300px] mx-auto block rounded-lg", role: "img", "aria-label": "Top-down view of chroma and hue around the reference", "data-qc-plot": "" },
+    React.createElement("g", { opacity: 0.85 }, cells.map((c) => React.createElement("rect", { key: `${c.i}-${c.j}`, x: P + c.i * cw, y: S - P - (c.j + 1) * cw, width: cw + 0.6, height: cw + 0.6, fill: c.hex }))),
+    React.createElement("rect", { x: P, y: P, width: S - 2 * P, height: S - 2 * P, fill: "none", stroke: "rgba(0,0,0,.15)" }),
+    // chroma axis (out from grey through the reference) and hue direction across it
+    rf.C > 0.004 && React.createElement("line", { x1: cx - ux * L, y1: cy + uy * L, x2: cx + ux * L, y2: cy - uy * L, stroke: "rgba(255,255,255,.75)", strokeWidth: 1, strokeDasharray: "3 3" }),
+    rf.C > 0.004 && React.createElement("line", { x1: cx + uy * L, y1: cy + ux * L, x2: cx - uy * L, y2: cy - ux * L, stroke: "rgba(255,255,255,.75)", strokeWidth: 1, strokeDasharray: "3 3" }),
+    rf.C > 0.004 && React.createElement("text", { x: cx + ux * L, y: cy - uy * L, fontSize: 8, fontWeight: 700, fill: "#fff", stroke: "rgba(0,0,0,.45)", strokeWidth: 2, paintOrder: "stroke", textAnchor: "middle", dominantBaseline: "middle" }, "C+"),
+    rf.C > 0.004 && React.createElement("text", { x: cx - uy * L, y: cy - ux * L, fontSize: 8, fontWeight: 700, fill: "#fff", stroke: "rgba(0,0,0,.45)", strokeWidth: 2, paintOrder: "stroke", textAnchor: "middle", dominantBaseline: "middle" }, "h+"),
+    ring.length > 2 && React.createElement("polygon", { points: ring.map(([a, b]) => `${X(a)},${Y(b)}`).join(" "), fill: "rgba(255,255,255,.18)", stroke: "#fff", strokeWidth: 1.5, "data-qc-ring": "" }),
+    ring.length > 2 && React.createElement("polygon", { points: ring.map(([a, b]) => `${X(a)},${Y(b)}`).join(" "), fill: "none", stroke: "rgba(0,0,0,.35)", strokeWidth: 0.6 }),
+    scanPts.map(([a, b], i) => React.createElement("circle", { key: i, cx: X(a), cy: Y(b), r: 2.2, fill: "rgba(255,255,255,.85)", stroke: "rgba(0,0,0,.5)", strokeWidth: 0.6 })),
+    tgt && React.createElement("line", { x1: cx, y1: cy, x2: X(ta), y2: Y(tb), stroke: "#010D00", strokeWidth: 1.2 }),
+    React.createElement("circle", { cx, cy, r: 6, fill: "none", stroke: "#010D00", strokeWidth: 2 }),
+    React.createElement("circle", { cx, cy, r: 6, fill: "none", stroke: "#fff", strokeWidth: 0.8 }),
+    tgt && React.createElement("circle", { cx: X(ta), cy: Y(tb), r: 5.5, fill: tgt.hex, stroke: "#fff", strokeWidth: 2, "data-qc-target": "" }),
+    tgt && React.createElement("circle", { cx: X(ta), cy: Y(tb), r: 6.5, fill: "none", stroke: "#010D00", strokeWidth: 1 }),
+    React.createElement("text", { x: S - P - 3, y: S - P - 4, fontSize: 7.5, fill: "#fff", stroke: "rgba(0,0,0,.45)", strokeWidth: 2, paintOrder: "stroke", textAnchor: "end" }, `±${R.toFixed(3)} a/b`),
+  );
+};
+// Lightness, which a top-down view can't show: a short strip with both marks.
+const SpectroQcLightness = ({ rf, tgt }) => {
+  const span = Math.max(0.02, Math.abs((tgt ? tgt.L : rf.L) - rf.L) * 1.6);
+  const lo = Math.max(0, rf.L - span), hi = Math.min(1, rf.L + span);
+  const pos = (l) => `${((l - lo) / (hi - lo || 1)) * 100}%`;
+  const hx = (l) => { try { return new Color("oklch", [l, rf.C, rf.H]).to("srgb").toGamut({ space: "srgb" }).toString({ format: "hex" }); } catch (e) { return "#888"; } };
+  return React.createElement("div", { className: "flex flex-col gap-1" },
+    React.createElement("div", { className: "relative h-4 rounded-full ring-1 ring-black/10", style: { background: `linear-gradient(90deg, ${hx(lo)}, ${hx(hi)})` } },
+      React.createElement("span", { className: "absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full border-2 border-black bg-transparent", style: { left: pos(rf.L), boxShadow: "0 0 0 1px #fff" }, title: "Reference" }),
+      tgt && React.createElement("span", { className: "absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-white", style: { left: pos(tgt.L), background: tgt.hex, boxShadow: "0 0 0 1px #010D00" }, title: "Target" })),
+    React.createElement("div", { className: "flex justify-between text-[9px] font-mono text-slate-400" }, React.createElement("span", null, `L ${lo.toFixed(3)} darker`), React.createElement("span", null, `lighter ${hi.toFixed(3)}`)));
+};
+const SpectroQcCurves = ({ rf, tgt }) => {
+  if (!spectroHasSp(rf) && !(tgt && spectroHasSp(tgt))) return null;
+  const W = 260, Hh = 70, max = Math.max(0.05, ...(rf.spectral || []), ...((tgt && tgt.spectral) || [])) * 1.08;
+  const path = (sp) => sp.map((v, i) => `${i ? "L" : "M"}${(i / (sp.length - 1)) * W},${Hh - (v / max) * Hh}`).join(" ");
+  return React.createElement("div", { className: "flex flex-col gap-1" },
+    React.createElement("svg", { viewBox: `0 0 ${W} ${Hh + 2}`, className: "w-full h-16", preserveAspectRatio: "none", "aria-label": "Reflectance of the reference and the target", "data-qc-curves": "" },
+      spectroHasSp(rf) && React.createElement("path", { d: path(rf.spectral), fill: "none", stroke: "currentColor", strokeOpacity: 0.55, strokeWidth: 1.5, strokeDasharray: "4 3", vectorEffect: "non-scaling-stroke" }),
+      tgt && spectroHasSp(tgt) && React.createElement("path", { d: path(tgt.spectral), fill: "none", stroke: tgt.hex, strokeWidth: 2, vectorEffect: "non-scaling-stroke" })),
+    React.createElement("div", { className: "flex justify-between text-[9px] font-mono text-slate-400" }, React.createElement("span", null, "400 nm"), React.createElement("span", null, "- - reference   — target"), React.createElement("span", null, "700 nm")));
+};
+const SpectroQcSlot = ({ label, item, onClear, children }) =>
+  React.createElement("div", { className: "flex flex-col gap-1.5 min-w-0" },
+    React.createElement("span", { className: "text-[10px] uppercase tracking-wider text-slate-500 font-bold" }, label),
+    item
+      ? React.createElement("div", { className: "flex items-center gap-2 min-w-0" },
+          React.createElement("span", { className: "w-8 h-8 rounded-md ring-1 ring-black/10 shrink-0", style: { background: item.hex } }),
+          React.createElement("span", { className: "min-w-0 flex-1" },
+            React.createElement("span", { className: "block text-[12px] font-semibold truncate text-slate-800 dark:text-neutral-100" }, item.name || (item.scans > 1 ? `Average of ${item.scans}` : String(item.hex).toUpperCase())),
+            React.createElement("span", { className: "block text-[10px] text-slate-500 truncate" }, [item.brand && (typeof getBrandDisplayName === "function" ? getBrandDisplayName(item.brand) : item.brand), item.from, item.spectral ? "spectral" : "no spectrum"].filter(Boolean).join(" · "))),
+          onClear && React.createElement("button", { type: "button", onClick: onClear, "aria-label": `Clear the ${label.toLowerCase()}`, className: "text-slate-300 hover:text-red-500" }, React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" })))
+      : React.createElement("span", { className: "text-[11px] text-slate-400 italic" }, "Not set"),
+    children);
+const SpectroQcSource = ({ onPick, latest, cursor, colorData, readings, placeholder }) => {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useOutside(ref, open, () => setOpen(false));
+  const list = useMemo(() => {
+    const out = [];
+    Object.entries(colorData || {}).forEach(([brand, arr]) => (arr || []).forEach((e, i) => { if (e && Array.isArray(e.spectral) && e.spectral.length === 31 && e.spectral.some((v) => +v > 0)) out.push({ brand, i, e }); }));
+    return out;
+  }, [colorData]);
+  const t = q.trim().toLowerCase();
+  const hits = t ? list.filter(({ brand, e }) => `${e.name || ""} ${e.code || e.erpCode || ""} ${brand}`.toLowerCase().includes(t)).slice(0, 8) : [];
+  const pickCm = ({ brand, i, e }) => {
+    const it = fastItemLch({ spectral: e.spectral }) || e;
+    onPick(spectroQcItem({ id: `cm-${brand}-${i}`, name: e.name, brand, L: it.L, C: it.C, H: it.H, hex: it.hex || e.hex, spectral: e.spectral }, e.code || e.erpCode || "Commercial"));
+    setQ(""); setOpen(false);
+  };
+  const chip = "h-7 px-2.5 rounded-full border border-slate-200 dark:border-neutral-700 text-[11px] font-semibold text-slate-700 dark:text-neutral-200 hover:border-slate-400 disabled:opacity-40 whitespace-nowrap";
+  return React.createElement("div", { ref, className: "flex flex-col gap-1.5" },
+    React.createElement("div", { className: "flex flex-wrap gap-1.5" },
+      React.createElement("button", { type: "button", className: chip, disabled: !latest, onClick: () => onPick(spectroQcItem(latest, latest && latest.scans > 1 ? `Average of ${latest.scans}` : "Scan")), "data-qc-latest": "" }, latest && latest.scans > 1 ? "Latest average" : "Latest scan"),
+      React.createElement("button", { type: "button", className: chip, disabled: !cursor, onClick: () => onPick(spectroQcItem(cursor, "Cursor")), title: cursor ? "The colour at the cursor" : "Move the cursor to a colour first" }, "Cursor colour"),
+      readings && readings.length > 0 && React.createElement("select", { className: `${chip} bg-transparent`, value: "", onChange: (e) => { const r = readings.find((x) => x.id === e.target.value); if (r) onPick(spectroQcItem(r, r.scans > 1 ? `Average of ${r.scans}` : "Scan")); }, "aria-label": "Pick a previous reading" },
+        React.createElement("option", { value: "" }, "Previous reading…"),
+        readings.map((r) => React.createElement("option", { key: r.id, value: r.id }, `${String(r.hex).toUpperCase()} · ${new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}${r.scans > 1 ? ` · avg ${r.scans}` : ""}`)))),
+    React.createElement("div", { className: "relative" },
+      React.createElement("input", { value: q, onChange: (e) => { setQ(e.target.value); setOpen(true); }, onFocus: () => setOpen(true), placeholder: placeholder || `Commercial colour with a spectrum (${list.length})`, "aria-label": "Find a commercial colour with a spectrum",
+        className: "w-full h-8 px-2.5 rounded-md border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-[12px] focus:outline-none focus:ring-1 focus:ring-sky-500" }),
+      open && hits.length > 0 && React.createElement("ul", { className: "absolute z-30 left-0 right-0 top-full mt-1 rounded-lg border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-xl max-h-64 overflow-y-auto", role: "listbox" },
+        hits.map((h) => React.createElement("li", { key: `${h.brand}-${h.i}` },
+          React.createElement("button", { type: "button", role: "option", onClick: () => pickCm(h), className: "w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-slate-50 dark:hover:bg-neutral-800" },
+            React.createElement("span", { className: "w-5 h-5 rounded ring-1 ring-black/10 shrink-0", style: { background: h.e.hex } }),
+            React.createElement("span", { className: "min-w-0 flex-1 text-[12px] truncate" }, h.e.name),
+            React.createElement("span", { className: "text-[10px] text-slate-400 truncate max-w-[40%]" }, typeof getBrandDisplayName === "function" ? getBrandDisplayName(h.brand) : h.brand)))))));
+};
+const spectroSigned = (v, d = 3) => (isFinite(v) ? `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(d)}` : "–");
+const SpectroQC = ({ s, cursor, colorData }) => {
+  const qc = s.qc;
+  const latest = s.session ? spectroStore.compound() : s.readings[0] || null;
+  const res = useMemo(() => spectroQcOf(qc.ref, qc.target), [qc.ref, qc.target]);
+  const pass = res && isFinite(res.de00) && res.de00 <= qc.tol;
+  const scansShown = qc.target && s.session && latest && qc.target.id === latest.id ? s.scans : null;
+  const metric = (k, v, word, title) => React.createElement("div", { className: "rounded-lg bg-slate-50 dark:bg-neutral-800/60 px-2.5 py-1.5 min-w-0", title },
+    React.createElement("div", { className: "text-[10px] uppercase tracking-wider text-slate-500 font-bold" }, k),
+    React.createElement("div", { className: "font-mono text-[14px] font-bold text-slate-800 dark:text-neutral-100" }, v),
+    word && React.createElement("div", { className: "text-[10px] text-slate-500 leading-tight" }, word));
+  return React.createElement(
+    "details",
+    { open: !!qc.open, onToggle: (e) => { if (e.currentTarget.open !== !!qc.open) spectroStore.setQc({ open: e.currentTarget.open }); }, className: "rounded-xl border border-slate-200 dark:border-neutral-700", "data-qc": "" },
+    React.createElement("summary", { className: "cursor-pointer select-none px-3 py-2.5 flex items-center gap-2 text-[12px] font-bold text-slate-800 dark:text-neutral-100" },
+      React.createElement(Icon, { name: "check-circle", className: "w-4 h-4" }), "Quality control",
+      res && React.createElement("span", { className: `ml-auto text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full ${pass ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300" : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300"}` }, `${pass ? "Pass" : "Fail"} · ΔE00 ${res.de00.toFixed(2)}`)),
+    React.createElement("div", { className: "flex flex-col gap-3 px-3 pb-3" },
+      React.createElement(SpectroQcSlot, { label: "Reference", item: qc.ref, onClear: qc.ref ? () => spectroStore.setQc({ ref: null }) : null },
+        React.createElement(SpectroQcSource, { onPick: (it) => spectroStore.setQc({ ref: it }), latest, cursor, colorData, readings: s.readings, placeholder: undefined })),
+      React.createElement(SpectroQcSlot, { label: "Target", item: qc.target, onClear: qc.target ? () => spectroStore.setQc({ target: null }) : null },
+        React.createElement("label", { className: "flex items-center gap-2 text-[11px] text-slate-600 dark:text-neutral-300 cursor-pointer select-none" },
+          React.createElement("input", { type: "checkbox", checked: !!qc.follow, onChange: (e) => spectroStore.setQc({ follow: e.target.checked }), className: "rounded border-slate-300 h-3.5 w-3.5", "data-qc-follow": "" }),
+          "Each new scan (or average) becomes the target"),
+        !qc.follow && React.createElement(SpectroQcSource, { onPick: (it) => spectroStore.setQc({ target: it }), latest, cursor, colorData, readings: s.readings })),
+      React.createElement("label", { className: "flex items-center gap-2 text-[11px] text-slate-600 dark:text-neutral-300" },
+        React.createElement("span", { className: "font-semibold" }, "Tolerance ΔE00"),
+        React.createElement("input", { type: "number", min: 0.1, max: 10, step: 0.1, value: qc.tol, onChange: (e) => { const v = parseFloat(e.target.value); if (isFinite(v) && v > 0) spectroStore.setQc({ tol: v }); }, className: "w-16 h-7 px-2 rounded-md border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 font-mono text-[12px]", "aria-label": "Tolerance in ΔE00", "data-qc-tol": "" })),
+      qc.ref && React.createElement(SpectroQcPlot, { rf: qc.ref, tgt: qc.target, tol: qc.tol, scans: scansShown }),
+      qc.ref && React.createElement(SpectroQcLightness, { rf: qc.ref, tgt: qc.target }),
+      res && React.createElement("div", { className: "flex flex-col gap-2", "data-qc-results": "" },
+        React.createElement("div", { className: "grid grid-cols-2 gap-2" },
+          React.createElement("div", { className: `rounded-lg px-2.5 py-2 ${pass ? "bg-emerald-50 dark:bg-emerald-900/20" : "bg-red-50 dark:bg-red-900/20"}`, title: "CIEDE2000 on CIELAB D50/2°" },
+            React.createElement("div", { className: "text-[10px] uppercase tracking-wider text-slate-500 font-bold" }, "ΔE00"),
+            React.createElement("div", { className: `font-mono text-[22px] font-extrabold ${pass ? "text-emerald-800 dark:text-emerald-300" : "text-red-700 dark:text-red-300"}`, "data-qc-de00": "" }, res.de00.toFixed(2)),
+            React.createElement("div", { className: "text-[10px] font-bold uppercase tracking-wider", "data-qc-verdict": "" }, pass ? `Pass · within ${qc.tol}` : `Fail · over ${qc.tol}`)),
+          React.createElement("div", { className: "rounded-lg px-2.5 py-2 bg-slate-50 dark:bg-neutral-800/60", title: "Euclidean distance in OKLab, ×100" },
+            React.createElement("div", { className: "text-[10px] uppercase tracking-wider text-slate-500 font-bold" }, "ΔEok"),
+            React.createElement("div", { className: "font-mono text-[22px] font-extrabold text-slate-800 dark:text-neutral-100", "data-qc-deok": "" }, res.deok.toFixed(2)),
+            React.createElement("div", { className: "text-[10px] text-slate-500" }, "OKLab ×100"))),
+        React.createElement("div", { className: "grid grid-cols-3 gap-2" },
+          metric("ΔL", spectroSigned(res.dL), Math.abs(res.dL) < 0.0005 ? "same lightness" : res.dL > 0 ? "lighter" : "darker", "OkLCH lightness, target minus reference"),
+          metric("ΔC", spectroSigned(res.dC), Math.abs(res.dC) < 0.0005 ? "same chroma" : res.dC > 0 ? "stronger" : "duller", "OkLCH chroma, target minus reference"),
+          metric("ΔH", spectroSigned(res.dH), res.neutral ? "near grey" : `${spectroSigned(res.dh, 1)}° ${spectroHueToward(qc.ref.H, res.dh)}`.trim(), "OkLCH hue difference as a distance, 2·√(C₁C₂)·sin(Δh/2); below it the hue angle difference")),
+        res.under.length > 0 && React.createElement("div", { className: "flex flex-col gap-1 text-[11px]", "data-qc-metamerism": "" },
+          React.createElement("span", { className: "text-[10px] uppercase tracking-wider text-slate-500 font-bold" }, "Under other light (ΔE00)"),
+          res.under.map((u) => React.createElement("div", { key: u.k, className: "flex items-center justify-between gap-2" },
+            React.createElement("span", { className: "text-slate-600 dark:text-neutral-300" }, u.label),
+            React.createElement("span", { className: `font-mono font-bold ${u.de > qc.tol ? "text-red-700 dark:text-red-300" : "text-slate-800 dark:text-neutral-100"}` }, isFinite(u.de) ? u.de.toFixed(2) : "–"))),
+          res.under.some((u) => u.de > qc.tol && u.de > res.de00 * 1.5) && React.createElement("p", { className: "text-[10px] text-amber-800 dark:text-amber-300" }, "The spectra differ: this pair matches in daylight but drifts apart under other light (metamerism).")),
+        !res.both && React.createElement("p", { className: "text-[10px] text-slate-500" }, "One side has no spectrum, so the comparison uses its colour values only.")),
+      React.createElement(SpectroQcCurves, { rf: qc.ref || {}, tgt: qc.target }),
+      !qc.ref && React.createElement("p", { className: "text-[11px] text-slate-500" }, "Set a reference: a new or previous scan, the colour at the cursor, or a commercial colour with a spectrum. Then scan the sample to check it."),
+    ),
+  );
+};
+const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectral, cursor, colorData }) => {
   const s = useSpectro();
   const [tile, setTile] = useState("");
   const [saving, setSaving] = useState(null);
@@ -12820,6 +13063,7 @@ const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectr
     // several scans being averaged (shown even if the device drops off)
     s.session && !(saving && compound && saving.id === compound.id) && React.createElement(SpectroAverage, { s, onSave: startSave, onGo, here: !!(compound && cursorSpectral && compound.spectral === cursorSpectral) }),
     saving && React.createElement(SpectroSaveForm, { key: saving.id, reading: saving, brands, suggestedName, onSave: doSave, onCancel: () => setSaving(null) }),
+    React.createElement(SpectroQC, { s, cursor, colorData }),
     // readings
     s.readings.length > 0 && React.createElement("div", { className: "flex flex-col gap-1" },
       React.createElement("div", { className: "flex items-center justify-between" },
@@ -12835,6 +13079,7 @@ const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectr
                 `${String(r.hex).toUpperCase()}${r.lab ? `  L*${r.lab[0].toFixed(1)} a*${r.lab[1].toFixed(1)} b*${r.lab[2].toFixed(1)}` : ""}`),
               React.createElement("div", { className: "text-[10px] text-slate-400 truncate" },
                 `${new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}${r.mode ? ` · ${r.mode}` : ""}${r.scans > 1 ? ` · avg of ${r.scans}` : ""}${r.demo ? " · demo" : ""}`)),
+            React.createElement("button", { className: `p-1 ${s.qc.ref && s.qc.ref.id === r.id ? "text-emerald-600" : "text-slate-400 hover:text-sky-600"}`, title: "Use as the quality-control reference", "aria-label": "Use as QC reference", "data-reading-ref": "", onClick: () => spectroStore.setQc({ ref: spectroQcItem(r, r.scans > 1 ? `Average of ${r.scans}` : "Scan"), open: true }) }, React.createElement(Icon, { name: "target", className: "w-3.5 h-3.5" })),
             React.createElement("button", { className: "p-1 text-slate-400 hover:text-sky-600", title: "Save as a pin or a commercial colour", "aria-label": "Save reading", "data-reading-save": "", onClick: () => startSave(r) }, React.createElement(Icon, { name: "save", className: "w-3.5 h-3.5" })),
             React.createElement("button", { className: "p-1 text-slate-300 hover:text-red-500", title: "Remove", "aria-label": "Remove reading", onClick: () => spectroStore.removeReading(r.id) }, React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" })));
         }))),
@@ -26239,7 +26484,10 @@ const AppUI = ({
             React.createElement(
               CollapsiblePanel,
               { title: "Spectrophotometer", icon: "bluetooth", defaultOpen: !!spectroStore.get().host || (typeof window !== "undefined" && !!(window.NixBridge || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.nix))), summary: spectroSummary(spectroStore.get()) },
-              React.createElement(SpectroPanel, { onGo: spectroGo, onPin: spectroPin, onSave: spectroSave, brands: Object.keys(colorData || {}), cursorSpectral: crosshair?.temporarySpectral || null }),
+              React.createElement(SpectroPanel, {
+                onGo: spectroGo, onPin: spectroPin, onSave: spectroSave, brands: Object.keys(colorData || {}), cursorSpectral: crosshair?.temporarySpectral || null, colorData,
+                cursor: crosshair ? { id: `cursor-${scrubL.toFixed(4)}-${scrubC.toFixed(4)}-${scrubH.toFixed(2)}`, L: scrubL, C: scrubC, H: scrubH, hex: compactHex, spectral: crosshair.activeSpectral || null, name: activeName || "", brand: crosshair.activeCommercial?.brand || "" } : null,
+              }),
             ),
             React.createElement(
               CollapsiblePanel,
