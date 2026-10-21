@@ -261,10 +261,11 @@ const SliderGroup = ({ label, value, min, max, step, onChange, icon }) =>
       React.createElement("input", {
         type: "number",
         step,
-        value,
+        value: Number.isFinite(+value) ? +(+value).toFixed(step < 0.01 ? 3 : 1) : value,
+        "aria-label": label,
         onChange: (e) => onChange(parseFloat(e.target.value) || 0),
         className:
-          "w-16 text-right text-xs font-mono font-bold bg-transparent border-none focus:ring-0 text-slate-900 dark:text-white",
+          "w-20 text-right text-xs font-mono font-bold bg-transparent border-none focus:ring-0 text-slate-900 dark:text-white",
       }),
     ),
     React.createElement("input", {
@@ -286,17 +287,29 @@ const CollapsiblePanel = ({
   children,
   summary,
   defaultOpen = false,
+  bare = false,
 }) => {
   const [isOpen, setIsOpen] = useState(
     PANEL_OPEN_STATE[title] !== undefined ? PANEL_OPEN_STATE[title] : defaultOpen,
   );
+  const panelRef = useRef(null);
+  useEffect(() => {
+    const open = (e) => {
+      if (e.detail !== title) return;
+      PANEL_OPEN_STATE[title] = true; setIsOpen(true);
+      setTimeout(() => { try { panelRef.current && panelRef.current.scrollIntoView({ block: "start", behavior: "smooth" }); } catch (err) {} }, 80);
+    };
+    window.addEventListener("csam-open-panel", open);
+    return () => window.removeEventListener("csam-open-panel", open);
+  }, [title]);
+  if (bare) return React.createElement("div", { className: "p-4", ref: panelRef }, children);
   const toggle = () => {
     PANEL_OPEN_STATE[title] = !isOpen;
     setIsOpen(!isOpen);
   };
   return React.createElement(
     "div",
-    { className: "border-b border-slate-200 dark:border-neutral-800" },
+    { className: "border-b border-slate-200 dark:border-neutral-800 scroll-mt-14", ref: panelRef, "data-panel": title },
     React.createElement(
       "button",
       {
@@ -5973,7 +5986,7 @@ const TabToolbar = ({ view, layout, visibility, search, zoom, sort, group, field
       className:
         // phones: wrap onto a second row (same order) rather than hide Sort and
         // Filters off the edge; wider screens: one row
-        "px-3 md:px-4 py-2 border-b border-slate-100 dark:border-neutral-800 bg-slate-50/30 dark:bg-neutral-900/30 flex flex-wrap md:flex-nowrap items-center gap-2 2xl:gap-3 md:overflow-x-auto no-scrollbar shrink-0 z-20",
+        "px-3 md:px-4 py-2 border-b border-slate-100 dark:border-neutral-800 bg-slate-50/30 dark:bg-neutral-900/30 flex flex-nowrap items-center gap-2 2xl:gap-3 overflow-x-auto no-scrollbar shrink-0 z-20",
     },
     React.createElement(TbGroup, { label: "View", enabled: view.enabled, why: "Dots, bins and swatches are Explore's views" },
       React.createElement(TbSeg, { options: TB_VIEWS, value: view.value, onChange: view.onChange })),
@@ -6300,7 +6313,7 @@ const ViewAnchors = ({
 
   return React.createElement(
     "div",
-    { className: "w-full h-full flex flex-col min-h-0" },
+    { className: "relative w-full h-full flex flex-col min-h-0" },
     // ── header: cursor + actions ──
     React.createElement(
       "div",
@@ -6374,24 +6387,16 @@ const ViewAnchors = ({
       ),
     ),
     // ── selection bar ──
-    (selectedIds.length > 0 || notice) &&
-      React.createElement(
-        "div",
-        { className: "px-4 py-2 border-b border-slate-100 dark:border-neutral-800 flex items-center gap-3 text-[10px] font-bold uppercase tracking-widest text-slate-500" },
-        selectedIds.length > 0 && React.createElement("span", null, `${selectedIds.length} selected`),
-        selectedIds.length > 0 &&
-          React.createElement(
-            "button",
-            {
-              onClick: () => (confirm === "bulk" ? (remove(selectedIds), setConfirm(null)) : setConfirm("bulk")),
-              className: `px-2.5 py-1 rounded-md transition-colors ${confirm === "bulk" ? "bg-red-500 text-white" : "text-red-600 hover:bg-red-50 dark:hover:bg-red-950"}`,
-            },
-            confirm === "bulk" ? `Click again to delete ${selectedIds.length}` : "Delete selected",
-          ),
-        selectedIds.length > 0 &&
-          React.createElement("button", { onClick: () => setSelected({}), className: "px-2 py-1 rounded-md hover:bg-slate-100 dark:hover:bg-neutral-800" }, "Clear"),
-        notice && React.createElement("span", { className: "ml-auto normal-case tracking-normal font-medium text-slate-500 dark:text-neutral-400" }, notice),
-      ),
+    notice &&
+      React.createElement("div", { className: "px-4 py-2 border-b border-slate-100 dark:border-neutral-800 text-[12px] text-slate-500 dark:text-neutral-400" }, notice),
+    React.createElement(SelectionBar, {
+      count: selectedIds.length,
+      noun: selectedIds.length === 1 ? "anchor selected" : "anchors selected",
+      actions: [
+        { icon: "trash-2", label: "Delete", danger: true, confirm: `Delete ${selectedIds.length}?`, onClick: () => remove(selectedIds), title: "Delete the selected anchors (locked ones are kept)" },
+      ],
+      onClear: () => setSelected({}),
+    }),
     // ── gallery / matrix: the same swatch grid the other tabs use ──
     layout !== "table" && rows.length > 0 &&
       React.createElement(
@@ -11963,7 +11968,7 @@ const XrefSide = ({ label, brand, setBrand, brands, rows, setRows, mode, setMode
       React.createElement(FilterRows, { rows, setRows, mode, setMode, optionsFor, ctx, depth: 0 })),
   );
 };
-const CrossReference2 = ({ colorData, onSelectColor, cursor, ctx }) => {
+const CrossReference2 = ({ colorData, onSelectColor, cursor, ctx, wide }) => {
   const st = useXrefState();
   const set = xrefStore.set;
   const brands = useMemo(() => Object.keys(colorData || {}).sort((a, b) => String(getBrandDisplayName(a)).localeCompare(String(getBrandDisplayName(b)))), [colorData]);
@@ -12062,9 +12067,25 @@ const CrossReference2 = ({ colorData, onSelectColor, cursor, ctx }) => {
     React.createElement("div", { className: "text-[10px] text-slate-400 dark:text-neutral-500", "data-xref-count": "" },
       st.from === st.to ? "Pick two different brands."
         : `${pairs.length} ${st.mode === "matched" ? "matches" : "without an equivalent"} within ΔE ${Number(st.maxDE).toFixed(1)}${st.both ? " (both ways)" : ""}${pairs.length > CAP ? `, first ${CAP} shown` : ""}`),
-    React.createElement("div", { className: "flex flex-col gap-1 max-h-[26rem] overflow-y-auto custom-scrollbar" },
+    React.createElement("div", { className: wide ? "flex flex-col rounded-2xl border border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 divide-y divide-slate-100 dark:divide-neutral-800" : "flex flex-col gap-1 max-h-[26rem] overflow-y-auto custom-scrollbar" },
       pairs.slice(0, CAP).map((r, i) => {
         const s = r.source, m = r.match;
+        if (wide) {
+          const near = Math.min(isFinite(s._d) ? s._d : Infinity, m && isFinite(m._d) ? m._d : Infinity);
+          const side = (it, dir) => React.createElement("button", { onClick: () => pick(it), disabled: !it, className: "flex items-center gap-3 min-w-0 text-left", title: it ? `Go to ${it.name}` : "" },
+            it ? React.createElement(ColorSwatch, { item: it, hex: hexOf(it), size: 44, label: it.name }) : React.createElement("span", { className: "w-11 h-11 rounded-lg border border-dashed border-slate-300 dark:border-neutral-700 shrink-0" }),
+            React.createElement("span", { className: "min-w-0" },
+              React.createElement("span", { className: "block text-sm font-bold text-slate-900 dark:text-neutral-100 truncate" }, it ? it.name : "No equivalent nearby"),
+              it && React.createElement("span", { className: "block text-[11px] text-slate-500 truncate" }, label(it.brand))));
+          return React.createElement("div", { key: `${r.dir}${s.originalIndex}-${m ? m.originalIndex : "x"}`, "data-xref-row": "", className: "grid items-center gap-4 px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-neutral-800/40", style: { gridTemplateColumns: "minmax(0,1fr) auto minmax(0,1fr) 72px" } },
+            side(s),
+            React.createElement("div", { className: "flex items-center gap-2 w-[170px]" },
+              React.createElement("span", { className: "flex-1 h-0.5 rounded bg-slate-200 dark:bg-neutral-700" }),
+              m ? React.createElement(ClosenessChip, { d: r.dE, zoom: 2.1 }) : React.createElement("span", { className: "text-[11px] text-slate-400" }, "—"),
+              React.createElement("span", { className: "flex-1 h-0.5 rounded bg-slate-200 dark:bg-neutral-700" })),
+            side(m),
+            React.createElement("span", { className: "text-right text-xs font-mono text-slate-500", title: "ΔE from the colour in hand to the nearer of the two" }, isFinite(near) ? near.toFixed(2) : ""));
+        }
         return React.createElement("div", { key: `${r.dir}${s.originalIndex}-${m ? m.originalIndex : "x"}`, "data-xref-row": "", className: "flex items-center gap-2 p-1.5 rounded hover:bg-slate-50 dark:hover:bg-neutral-800/50" },
           React.createElement("button", { onClick: () => pick(s), className: "shrink-0", title: `Go to ${s.name}` }, React.createElement(ColorSwatch, { item: s, hex: hexOf(s), size: 26, label: s.name })),
           React.createElement("div", { className: "flex-1 min-w-0" },
@@ -12561,6 +12582,1219 @@ const SpectroPanel = ({ onGo, onPin, cursorSpectral }) => {
   );
 };
 
+// ── The colour in hand: tuner, card extras and tabbed details ─────────────
+// A lightness × chroma field at the current hue (drag the ring), a hue strip,
+// and exact L / C / H fields replace the three sliders. The accordion stack
+// below becomes a handful of tabs; the panels themselves are unchanged.
+
+// Largest in-gamut chroma at a hue, over all lightnesses (cached per 0.5°).
+const LOUPE_MAXC = new Map();
+const loupeMaxChroma = (H) => {
+  const key = DisplayGamut.id + ":" + Math.round(H * 2);
+  let v = LOUPE_MAXC.get(key);
+  if (v !== undefined) return v;
+  v = 0;
+  for (let i = 1; i < 60; i++) {
+    const L = i / 60;
+    let lo = 0, hi = 0.4;
+    for (let k = 0; k < 14; k++) { const m = (lo + hi) / 2; if (DisplayGamut.inGamut(L, m, H)) lo = m; else hi = m; }
+    if (lo > v) v = lo;
+  }
+  LOUPE_MAXC.set(key, v);
+  return v;
+};
+// The chroma the field spans at this hue: a little past the gamut edge, and
+// past the colour itself when that sits outside it.
+const loupeSpan = (H, C) => Math.min(0.4, Math.max(0.06, Math.ceil(Math.max(loupeMaxChroma(H) * 1.12, (C || 0) * 1.08) * 100) / 100));
+
+const LCPicker = ({ L, C, H, onChange, height = 150 }) => {
+  const wrapRef = useRef(null), canvasRef = useRef(null);
+  const [w, setW] = useState(320);
+  const [, gamutTick] = useState(0);
+  useEffect(() => DisplayGamut.subscribe(() => gamutTick((x) => x + 1)), []);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setW(Math.max(120, Math.round(el.clientWidth))));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const hue = isFinite(H) ? H : 0;
+  const span = loupeSpan(hue, C);
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const P3 = DisplayGamut.id === "p3" && DisplayGamut.canvasP3;
+    const cw = Math.max(60, Math.round(w)), ch = Math.max(40, Math.round(height));
+    cv.width = cw; cv.height = ch;
+    let ctx = null;
+    try { ctx = cv.getContext("2d", P3 ? { colorSpace: "display-p3" } : undefined); } catch (e) { ctx = cv.getContext("2d"); }
+    if (!ctx) return;
+    let img;
+    try { img = P3 ? ctx.createImageData(cw, ch, { colorSpace: "display-p3" }) : ctx.createImageData(cw, ch); } catch (e) { img = ctx.createImageData(cw, ch); }
+    const d = img.data;
+    for (let y = 0; y < ch; y++) {
+      const l = 1 - (y + 0.5) / ch;
+      for (let x = 0; x < cw; x++) {
+        const c = ((x + 0.5) / cw) * span, o = (y * cw + x) * 4;
+        if (l < 0.004 || !DisplayGamut.inGamut(l, c, hue, 0.0001)) { d[o + 3] = 0; continue; }
+        const v = DisplayGamut.toGamut(...DisplayGamut.lchLin(l, c, hue));
+        d[o] = Math.round(DisplayGamut.enc(v[0]) * 255); d[o + 1] = Math.round(DisplayGamut.enc(v[1]) * 255); d[o + 2] = Math.round(DisplayGamut.enc(v[2]) * 255); d[o + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }, [hue, span, w, height, DisplayGamut.id]);
+  const drag = useRef(false);
+  const pick = (e) => {
+    const r = wrapRef.current.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), y = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
+    onChange && onChange({ L: +(1 - y).toFixed(4), C: +(x * span).toFixed(4) });
+  };
+  const key = (e) => {
+    const big = e.shiftKey ? 5 : 1;
+    let nL = L, nC = C;
+    if (e.key === "ArrowUp") nL = Math.min(1, L + 0.005 * big);
+    else if (e.key === "ArrowDown") nL = Math.max(0, L - 0.005 * big);
+    else if (e.key === "ArrowRight") nC = Math.min(0.4, C + 0.002 * big);
+    else if (e.key === "ArrowLeft") nC = Math.max(0, C - 0.002 * big);
+    else return;
+    e.preventDefault();
+    onChange && onChange({ L: +nL.toFixed(4), C: +nC.toFixed(4) });
+  };
+  const px = Math.max(0, Math.min(100, ((C || 0) / span) * 100)), py = Math.max(0, Math.min(100, (1 - (L || 0)) * 100));
+  return React.createElement(
+    "div",
+    {
+      ref: wrapRef, role: "slider", tabIndex: 0, "data-lc-picker": "",
+      "aria-label": `Lightness and chroma at hue ${hue.toFixed(0)}°`,
+      "aria-valuetext": `Lightness ${(+L).toFixed(3)}, chroma ${(+C).toFixed(3)}`,
+      onPointerDown: (e) => { drag.current = true; try { e.currentTarget.setPointerCapture(e.pointerId); } catch (x) {} pick(e); },
+      onPointerMove: (e) => { if (drag.current) pick(e); },
+      onPointerUp: () => { drag.current = false; },
+      onPointerCancel: () => { drag.current = false; },
+      onKeyDown: key,
+      className: "relative w-full rounded-xl overflow-hidden cursor-crosshair select-none border border-slate-200 dark:border-neutral-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500",
+      style: {
+        height, touchAction: "none",
+        backgroundImage: "repeating-linear-gradient(135deg, rgba(128,128,128,.10) 0 6px, transparent 6px 12px)",
+      },
+    },
+    React.createElement("canvas", { ref: canvasRef, className: "absolute inset-0 w-full h-full", style: { imageRendering: "auto" }, "aria-hidden": "true" }),
+    React.createElement("span", {
+      className: "absolute w-6 h-6 -ml-3 -mt-3 rounded-full pointer-events-none",
+      style: { left: px + "%", top: py + "%", border: "3px solid #FBF7F2", boxShadow: "0 0 0 1.5px #010D00, 0 2px 6px rgba(0,0,0,.3)" },
+    }),
+    React.createElement("span", { className: "absolute left-2 bottom-1.5 text-[9px] font-mono pointer-events-none", style: { color: "#F2E8DF", textShadow: "0 1px 2px rgba(0,0,0,.6)" } }, "lightness ↑  chroma →"),
+    React.createElement("span", { className: "absolute right-2 bottom-1.5 text-[9px] font-mono pointer-events-none text-slate-500" }, "C " + span.toFixed(2)),
+  );
+};
+
+const HUE_STRIP_BG = (() => {
+  const stops = [];
+  for (let h = 0; h <= 360; h += 20) {
+    const v = DisplayGamut.lchLin(0.72, 0.1, h).map((x) => Math.round(DisplayGamut.enc(x) * 255));
+    stops.push(`rgb(${v[0]},${v[1]},${v[2]}) ${((h / 360) * 100).toFixed(1)}%`);
+  }
+  return `linear-gradient(90deg, ${stops.join(", ")})`;
+})();
+const HueStrip = ({ H, swatch, onChange }) => {
+  const ref = useRef(null), drag = useRef(false);
+  const hue = isFinite(H) ? ((H % 360) + 360) % 360 : 0;
+  const pick = (e) => {
+    const r = ref.current.getBoundingClientRect();
+    onChange && onChange(+(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * 360).toFixed(1));
+  };
+  return React.createElement(
+    "div",
+    {
+      ref, role: "slider", tabIndex: 0, "aria-label": "Hue", "aria-valuemin": 0, "aria-valuemax": 360, "aria-valuenow": +hue.toFixed(1), "data-hue-strip": "",
+      onPointerDown: (e) => { drag.current = true; try { e.currentTarget.setPointerCapture(e.pointerId); } catch (x) {} pick(e); },
+      onPointerMove: (e) => { if (drag.current) pick(e); },
+      onPointerUp: () => { drag.current = false; },
+      onKeyDown: (e) => {
+        const step = e.shiftKey ? 10 : 1;
+        if (e.key === "ArrowRight" || e.key === "ArrowUp") { e.preventDefault(); onChange((hue + step) % 360); }
+        else if (e.key === "ArrowLeft" || e.key === "ArrowDown") { e.preventDefault(); onChange((hue - step + 360) % 360); }
+      },
+      className: "relative h-3.5 mx-2.5 rounded-full cursor-pointer select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500",
+      style: { background: HUE_STRIP_BG, touchAction: "none" },
+    },
+    React.createElement("span", {
+      className: "absolute top-1/2 w-5 h-5 -ml-2.5 -mt-2.5 rounded-full pointer-events-none",
+      style: { left: (hue / 360) * 100 + "%", background: swatch || "#888", border: "3px solid #FBF7F2", boxShadow: "0 0 0 1.5px #010D00" },
+    }),
+  );
+};
+
+// Exact values: type, then Enter or leave the field.
+const LchField = ({ label, value, digits, min, max, wrap, suffix, onCommit }) => {
+  const shown = isFinite(value) ? (+value).toFixed(digits) : "";
+  const [draft, setDraft] = useState(null);
+  const commit = () => {
+    if (draft === null) return;
+    let v = parseFloat(String(draft).replace(",", "."));
+    setDraft(null);
+    if (!isFinite(v)) return;
+    if (wrap) v = ((v % max) + max) % max; else v = Math.max(min, Math.min(max, v));
+    onCommit(v);
+  };
+  return React.createElement(
+    "label",
+    { className: "flex flex-col gap-1 min-w-0" },
+    React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-500" }, label),
+    React.createElement("input", {
+      type: "text", inputMode: "decimal", value: draft !== null ? draft : shown + (suffix || ""),
+      onFocus: (e) => { setDraft(shown); setTimeout(() => { try { e.target.select(); } catch (x) {} }, 0); },
+      onChange: (e) => setDraft(e.target.value),
+      onBlur: commit,
+      onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); e.target.blur(); } if (e.key === "Escape") { setDraft(null); e.target.blur(); } },
+      className: "w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 font-mono text-sm text-slate-800 dark:text-neutral-100 focus:outline-none focus:ring-1 focus:ring-sky-500",
+    }),
+  );
+};
+const LoupeTuner = ({ L, C, H, swatch, onLC, onH, onExact }) =>
+  React.createElement(
+    "section",
+    { className: "flex flex-col gap-3", "aria-label": "Tune the colour", "data-loupe-tuner": "" },
+    React.createElement(
+      "div",
+      { className: "flex items-center justify-between" },
+      React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-widest text-slate-500" }, "Tune"),
+      React.createElement("span", { className: "text-[11px] text-slate-400" }, "Drag, or type exact values"),
+    ),
+    React.createElement(LCPicker, { L, C, H, onChange: onLC }),
+    React.createElement(HueStrip, { H, swatch, onChange: onH }),
+    React.createElement(
+      "div",
+      { className: "grid grid-cols-3 gap-2" },
+      React.createElement(LchField, { label: "Lightness", value: L, digits: 3, min: 0, max: 1, onCommit: (v) => onExact({ L: v }) }),
+      React.createElement(LchField, { label: "Chroma", value: C, digits: 3, min: 0, max: 0.4, onCommit: (v) => onExact({ C: v }) }),
+      React.createElement(LchField, { label: "Hue", value: H, digits: 1, min: 0, max: 360, wrap: true, suffix: "°", onCommit: (v) => onExact({ H: v }) }),
+    ),
+  );
+
+// Labelled actions under the card.
+const LoupeAction = ({ icon, label, on, onClick, title, disabled }) =>
+  React.createElement(
+    "button",
+    {
+      type: "button", onClick, title: title || label, disabled, "aria-pressed": on === undefined ? undefined : !!on,
+      className: `flex-1 min-w-0 h-14 px-1 rounded-xl border text-[11px] font-semibold flex flex-col items-center justify-center gap-1 transition-colors disabled:opacity-40 ${
+        on ? "bg-sky-500 border-sky-500 text-white" : "bg-white dark:bg-neutral-900 border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-200 hover:border-sky-500"
+      }`,
+    },
+    React.createElement(Icon, { name: icon, className: "w-4 h-4 shrink-0" }),
+    React.createElement("span", { className: "truncate" }, label),
+  );
+const LoupeCopy = ({ hex }) => {
+  const [done, setDone] = useState(false);
+  return React.createElement(LoupeAction, {
+    icon: done ? "check" : "copy", label: done ? "Copied" : "Hex",
+    title: `Copy ${String(hex || "").toUpperCase()}`,
+    onClick: () => {
+      const t = String(hex || "").toUpperCase();
+      try { navigator.clipboard && navigator.clipboard.writeText(t); } catch (e) {}
+      setDone(true); setTimeout(() => setDone(false), 1200);
+    },
+  });
+};
+const LoupeChip = ({ icon, children, tone, title, onClick }) =>
+  React.createElement(
+    onClick ? "button" : "span",
+    {
+      type: onClick ? "button" : undefined, title, onClick,
+      className: `inline-flex items-center gap-1 h-6 px-2 rounded-full text-[11px] font-semibold whitespace-nowrap ${
+        tone === "warn" ? "bg-red-50 text-red-700 border border-red-200" : tone === "action" ? "bg-white dark:bg-neutral-900 border border-slate-300 dark:border-neutral-700 text-slate-700 dark:text-neutral-200 hover:border-sky-500" : "bg-slate-100 dark:bg-neutral-800 text-slate-700 dark:text-neutral-200 border border-slate-200 dark:border-neutral-700"
+      }`,
+    },
+    icon && React.createElement(Icon, { name: icon, className: "w-3 h-3" }),
+    children,
+  );
+
+// ── Tabs over the detail panels ─────────────────────────────────────────
+const INSPECTOR_TABS = [
+  { id: "matches", label: "Matches", icon: "palette", titles: ["Commercial Matches", "Cross-Reference"] },
+  { id: "values", label: "Values", icon: "sliders", titles: ["Conversions"] },
+  { id: "spectrum", label: "Spectrum", icon: "activity", titles: ["Spectrophotometer", "Spectral Response"] },
+  { id: "palette", label: "Palette", icon: "aperture", titles: ["Harmonies", "Palette Playground", "Gradient", "Delta E Comparisons"] },
+  { id: "notes", label: "Notes", icon: "sticky-note", titles: ["Tags", "Anchor Notes"] },
+];
+const INSPECTOR_KEY = "csam-inspector-tab";
+const InspectorTabs = ({ children, dots }) => {
+  const [tab, setTab] = useState(() => { try { return localStorage.getItem(INSPECTOR_KEY) || "matches"; } catch (e) { return "matches"; } });
+  const pick = (id) => { setTab(id); try { localStorage.setItem(INSPECTOR_KEY, id); } catch (e) {} };
+  // other parts of the app can open a tab (Measure opens Spectrum)
+  useEffect(() => {
+    const on = (e) => { if (e && e.detail) pick(e.detail); };
+    window.addEventListener("csam-inspector-tab", on);
+    return () => window.removeEventListener("csam-inspector-tab", on);
+  }, []);
+  const kids = React.Children.toArray(children).filter((c) => c && c.props && c.props.title);
+  const known = new Set(INSPECTOR_TABS.flatMap((t) => t.titles));
+  const tabs = INSPECTOR_TABS.map((t) => ({ ...t, kids: kids.filter((k) => t.titles.includes(k.props.title)) }));
+  const rest = kids.filter((k) => !known.has(k.props.title));
+  if (rest.length) tabs.push({ id: "more", label: "More", icon: "more-horizontal", kids: rest });
+  const shown = tabs.filter((t) => t.kids.length);
+  const cur = shown.find((t) => t.id === tab) || shown[0];
+  return React.createElement(
+    "div",
+    { className: "flex flex-col shrink-0", "data-inspector": "" },
+    React.createElement(
+      "div",
+      { role: "tablist", "aria-label": "Details", className: "sticky top-14 md:top-0 z-20 shrink-0 flex gap-0.5 px-2 pt-1 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 overflow-x-auto no-scrollbar" },
+      shown.map((t) =>
+        React.createElement(
+          "button",
+          {
+            key: t.id, type: "button", role: "tab", "aria-selected": cur && cur.id === t.id, onClick: () => pick(t.id), "data-tab": t.id,
+            className: `relative flex-1 min-w-[56px] h-12 px-1 flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold border-b-2 transition-colors ${
+              cur && cur.id === t.id ? "border-sky-500 text-slate-900 dark:text-neutral-100" : "border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-neutral-200"
+            }`,
+          },
+          React.createElement(Icon, { name: t.icon, className: "w-4 h-4" }),
+          t.label,
+          dots && dots[t.id] && React.createElement("span", { className: "absolute top-1.5 right-[calc(50%-16px)] w-1.5 h-1.5 rounded-full bg-sky-500", "aria-label": dots[t.id] }),
+        ),
+      ),
+    ),
+    cur && React.createElement(
+      "div",
+      { role: "tabpanel", "aria-label": cur.label, key: cur.id },
+      cur.kids.length === 1 ? React.cloneElement(cur.kids[0], { bare: true }) : cur.kids.map((k, i) => React.cloneElement(k, { key: k.key || i, defaultOpen: i === 0 ? true : k.props.defaultOpen })),
+    ),
+  );
+};
+
+// ── Selection bar ─────────────────────────────────────────────────────────
+// One floating bar for whatever is selected in a list (Match, Catalog,
+// Anchors): the count, the things you can do with the selection, and Clear.
+const SelTagMenu = ({ tags, onAdd, onRemove, onClose }) => {
+  const [text, setText] = useState("");
+  const ref = useRef(null);
+  useEffect(() => {
+    const away = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+    const esc = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("pointerdown", away, true);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("pointerdown", away, true); document.removeEventListener("keydown", esc); };
+  }, [onClose]);
+  const list = (tags || []).filter((t) => !text || String(t).toLowerCase().includes(text.toLowerCase()));
+  return React.createElement(
+    "div",
+    { ref, role: "dialog", "aria-label": "Tag the selection", className: "absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-72 max-w-[90vw] p-3 rounded-2xl bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 shadow-xl text-slate-800 dark:text-neutral-100 flex flex-col gap-2.5", "data-sel-tags": "" },
+    React.createElement("input", {
+      autoFocus: true, type: "text", value: text, placeholder: "Add a tag…", "aria-label": "Tag to add",
+      onChange: (e) => setText(e.target.value),
+      onKeyDown: (e) => { if (e.key === "Enter" && text.trim()) { onAdd(text.trim()); setText(""); } },
+      className: "h-9 px-3 rounded-lg border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-950 text-sm focus:outline-none focus:ring-1 focus:ring-sky-500",
+    }),
+    list.length > 0 && React.createElement("div", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-500" }, "Add"),
+    list.length > 0 && React.createElement(
+      "div", { className: "flex flex-wrap gap-1.5 max-h-28 overflow-y-auto" },
+      list.map((t) => React.createElement("button", { key: "a" + t, type: "button", onClick: () => onAdd(t), className: "h-7 px-2.5 rounded-full border border-slate-200 dark:border-neutral-700 text-xs font-medium hover:border-sky-500" }, t)),
+    ),
+    (tags || []).length > 0 && React.createElement("div", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-500" }, "Remove"),
+    (tags || []).length > 0 && React.createElement(
+      "div", { className: "flex flex-wrap gap-1.5 max-h-28 overflow-y-auto" },
+      tags.map((t) => React.createElement("button", { key: "r" + t, type: "button", onClick: () => onRemove(t), className: "h-7 px-2.5 rounded-full border border-red-200 text-red-700 text-xs font-medium hover:bg-red-50 inline-flex items-center gap-1" }, React.createElement(Icon, { name: "x", className: "w-3 h-3" }), t)),
+    ),
+  );
+};
+const SelectionBar = ({ count, noun = "selected", actions = [], tags, onClear }) => {
+  const [tagOpen, setTagOpen] = useState(false);
+  const [armed, setArmed] = useState(null);
+  useEffect(() => { if (!armed) return; const t = setTimeout(() => setArmed(null), 3000); return () => clearTimeout(t); }, [armed]);
+  if (!count) return null;
+  const btn = "h-10 px-3 rounded-xl border text-[13px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors disabled:opacity-40";
+  return React.createElement(
+    "div",
+    {
+      role: "toolbar", "aria-label": "Selection", "data-selection-bar": "",
+      className: "absolute bottom-5 left-1/2 -translate-x-1/2 z-50 max-w-[calc(100%-1rem)] flex items-center gap-1.5 pl-4 pr-1.5 py-1.5 rounded-2xl shadow-2xl bg-slate-900 text-white",
+      style: { backgroundColor: "#052212", color: "#F2E8DF" },
+    },
+    React.createElement("span", { className: "text-sm font-bold whitespace-nowrap mr-1.5" }, `${count} ${noun}`),
+    React.createElement(
+      "div",
+      { className: "flex items-center gap-1.5 overflow-x-auto no-scrollbar" },
+      actions.filter(Boolean).map((a) =>
+        React.createElement(
+          "button",
+          {
+            key: a.label, type: "button", disabled: a.disabled, title: a.title || a.label,
+            onClick: () => { if (a.confirm && armed !== a.label) { setArmed(a.label); return; } setArmed(null); a.onClick(); },
+            className: `${btn} hover:opacity-80`,
+            style: a.danger && armed === a.label ? { color: "#fff", background: "#B42318", borderColor: "#B42318" } : { color: "#F2E8DF", background: "transparent", borderColor: "rgba(242,232,223,.28)" },
+          },
+          a.icon && React.createElement(Icon, { name: a.icon, className: "w-4 h-4" }),
+          a.confirm && armed === a.label ? a.confirm : a.label,
+        ),
+      ),
+    ),
+    tags && React.createElement(
+        "div",
+        { className: "relative shrink-0" },
+        React.createElement(
+          "button",
+          { type: "button", onClick: () => setTagOpen((v) => !v), "aria-expanded": tagOpen, className: `${btn} hover:opacity-80`, style: { color: "#F2E8DF", background: "transparent", borderColor: "rgba(242,232,223,.28)" } },
+          React.createElement(Icon, { name: "tag", className: "w-4 h-4" }), "Tag",
+        ),
+        tagOpen && React.createElement(SelTagMenu, { tags: tags.all, onAdd: tags.onAdd, onRemove: tags.onRemove, onClose: () => setTagOpen(false) }),
+      ),
+    React.createElement(
+      "button",
+      { type: "button", onClick: onClear, "aria-label": "Clear the selection", title: "Clear the selection", className: "w-10 h-10 shrink-0 rounded-xl inline-flex items-center justify-center hover:opacity-80", style: { color: "#F2E8DF", background: "transparent" } },
+      React.createElement(Icon, { name: "x", className: "w-4 h-4" }),
+    ),
+  );
+};
+
+// ── Catalog by colour ─────────────────────────────────────────────────────
+// The catalog is colours offered in several finishes. One card per colour,
+// its finishes listed in plain words; a side drawer edits one finish with
+// tap-to-pick choices instead of five dropdowns per row.
+const CAT_GROUP_KEY = "csam-catalog-by-colour";
+const catalogByColourStore = (() => {
+  let on = true;
+  try { on = localStorage.getItem(CAT_GROUP_KEY) !== "0"; } catch (e) {}
+  const subs = new Set();
+  return {
+    get: () => on,
+    set: (v) => { on = !!v; try { localStorage.setItem(CAT_GROUP_KEY, on ? "1" : "0"); } catch (e) {} subs.forEach((f) => f()); },
+    subscribe: (f) => { subs.add(f); return () => subs.delete(f); },
+  };
+})();
+const useCatalogByColour = () => {
+  const [, force] = useState(0);
+  useEffect(() => catalogByColourStore.subscribe(() => force((x) => x + 1)), []);
+  return catalogByColourStore.get();
+};
+// "SM (Super Matte)" → "Super matte"; "Solid Laminate" → "Solid laminate"
+const specWord = (v) => {
+  const s = String(v || "").trim();
+  if (!s || s === "-") return "";
+  const m = /\(([^)]+)\)/.exec(s);
+  const w = (m ? m[1] : s).trim();
+  return (w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).replace(/\b(eir|mdf|hpl|tfl|lpl)\b/gi, (m) => m.toUpperCase());
+};
+const CAT_FIELDS = [
+  { key: "doorProfile", label: "Profile", options: LABEL_OPTIONS.doorProfile },
+  { key: "sheen", label: "Sheen", options: LABEL_OPTIONS.sheen },
+  { key: "visualTexture", label: "Look", options: LABEL_OPTIONS.visualPattern },
+  { key: "tactileTexture", label: "Feel", options: LABEL_OPTIONS.tactileTexture },
+  { key: "material", label: "Material", options: LABEL_OPTIONS.material },
+];
+const specValue = (field, item) => specOption(field.options, item[field.key]) || "";
+const ProfileGlyph = ({ code }) => {
+  const c = String(code || "").split(/[\s(]/)[0].toUpperCase();
+  const frame = c === "CS" ? 3 : c === "SS" ? 1.5 : 0;
+  return React.createElement(
+    "span",
+    { "aria-hidden": "true", className: "relative inline-block shrink-0 rounded-[2px] border border-current opacity-60", style: { width: 11, height: 15 } },
+    frame > 0 && React.createElement("span", { className: "absolute border-current", style: { inset: frame === 3 ? 2.5 : 2, borderWidth: frame === 3 ? 1.4 : 1, borderStyle: "solid" } }),
+    c === "RD" && React.createElement("span", { className: "absolute inset-[2px]", style: { backgroundImage: "repeating-linear-gradient(90deg, currentColor 0 1px, transparent 1px 3px)" } }),
+  );
+};
+const CatChoice = ({ field, value, onPick }) =>
+  React.createElement(
+    "div",
+    { className: "flex flex-col gap-1.5" },
+    React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-500" }, field.label),
+    React.createElement(
+      "div",
+      { role: "radiogroup", "aria-label": field.label, className: "flex flex-wrap gap-1.5" },
+      field.options.filter((o) => o !== "-").map((o) => {
+        const on = value === o;
+        return React.createElement(
+          "button",
+          {
+            key: o, type: "button", role: "radio", "aria-checked": on, title: o,
+            onClick: () => onPick(on ? "" : o),
+            className: `h-8 px-2.5 rounded-lg border text-xs font-semibold transition-colors ${on ? "bg-sky-500 border-sky-500 text-white" : "bg-white dark:bg-neutral-900 border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-200 hover:border-sky-500"}`,
+          },
+          specWord(o),
+        );
+      }),
+    ),
+  );
+const CatalogEditDrawer = ({ item, tags, allTags, onSet, onTags, onClose, onDuplicate, onRemove }) => {
+  const [tagText, setTagText] = useState("");
+  const [armed, setArmed] = useState(false);
+  useEffect(() => { setArmed(false); }, [item && item.id]);
+  if (!item) return null;
+  const words = CAT_FIELDS.map((f) => specWord(item[f.key])).filter(Boolean);
+  return React.createElement(
+    "aside",
+    { "aria-label": "Edit finish", "data-catalog-drawer": "", className: "flex flex-col gap-4 p-4 rounded-2xl bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 shadow-lg" },
+    React.createElement(
+      "div",
+      { className: "sticky -top-4 -mx-4 -mt-4 px-4 pt-4 pb-1 z-10 bg-white dark:bg-neutral-900 flex items-center justify-between rounded-t-2xl" },
+      React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-widest text-slate-500" }, "Editing finish"),
+      React.createElement("button", { type: "button", onClick: onClose, "aria-label": "Close", className: "w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-neutral-800" }, React.createElement(Icon, { name: "x", className: "w-4 h-4" })),
+    ),
+    React.createElement(
+      "div",
+      { className: "flex items-center gap-3" },
+      React.createElement("div", { className: "relative w-14 h-16 rounded-xl overflow-hidden shrink-0 border border-black/10", style: { backgroundColor: DisplayGamut.css(item.L, item.C, item.H, item.color) } }, React.createElement(SwatchTreatment, { item, size: 56 })),
+      React.createElement(
+        "div",
+        { className: "min-w-0" },
+        React.createElement("div", { className: "text-xl font-extrabold tracking-tight text-slate-900 dark:text-neutral-100 truncate" }, item.displayName),
+        React.createElement("div", { className: "text-xs text-slate-500 truncate" }, words.join(" · ") || "No finish set"),
+        React.createElement("div", { className: "text-[11px] font-mono text-slate-500" }, item.erpCode),
+      ),
+    ),
+    CAT_FIELDS.map((f) => React.createElement(CatChoice, { key: f.key, field: f, value: specValue(f, item), onPick: (v) => onSet(item.id, f.key, v) })),
+    React.createElement(
+      "label",
+      { className: "flex flex-col gap-1.5" },
+      React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-500" }, "Notes"),
+      React.createElement("textarea", {
+        rows: 2, value: isImageRef(item.notes) ? "" : item.notes || "", placeholder: item.displayNotes || "Also known as, supplier remarks…",
+        onChange: (e) => onSet(item.id, "notes", e.target.value),
+        className: "rounded-lg border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-950 p-2 text-sm focus:outline-none focus:ring-1 focus:ring-sky-500",
+      }),
+    ),
+    React.createElement(
+      "div",
+      { className: "flex flex-col gap-1.5" },
+      React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-500" }, "Tags"),
+      React.createElement(
+        "div",
+        { className: "flex flex-wrap gap-1.5" },
+        (tags || []).map((t) => React.createElement("button", { key: t, type: "button", title: "Remove this tag", onClick: () => onTags(item.id, (tags || []).filter((x) => x !== t)), className: "h-7 px-2.5 rounded-full bg-slate-100 dark:bg-neutral-800 border border-slate-200 dark:border-neutral-700 text-xs font-semibold inline-flex items-center gap-1" }, t, React.createElement(Icon, { name: "x", className: "w-3 h-3" }))),
+        React.createElement("input", {
+          type: "text", value: tagText, placeholder: "+ Tag", list: "csam-cat-tags", "aria-label": "Add a tag",
+          onChange: (e) => setTagText(e.target.value),
+          onKeyDown: (e) => { if (e.key === "Enter" && tagText.trim()) { const t = tagText.trim(); if (!(tags || []).includes(t)) onTags(item.id, [...(tags || []), t]); setTagText(""); } },
+          className: "h-7 w-28 px-2.5 rounded-full border border-dashed border-slate-300 dark:border-neutral-700 bg-transparent text-xs focus:outline-none focus:ring-1 focus:ring-sky-500",
+        }),
+        React.createElement("datalist", { id: "csam-cat-tags" }, (allTags || []).map((t) => React.createElement("option", { key: t, value: t }))),
+      ),
+    ),
+    React.createElement(
+      "div",
+      { className: "flex gap-2 pt-1" },
+      React.createElement("button", { type: "button", onClick: () => onDuplicate(item.id), className: "flex-1 h-10 rounded-xl border border-slate-200 dark:border-neutral-700 text-sm font-semibold inline-flex items-center justify-center gap-1.5 hover:border-sky-500" }, React.createElement(Icon, { name: "copy", className: "w-4 h-4" }), "Duplicate"),
+      React.createElement("button", {
+        type: "button", onClick: () => { if (!armed) { setArmed(true); return; } onRemove(item.id); },
+        className: `flex-1 h-10 rounded-xl border text-sm font-semibold inline-flex items-center justify-center gap-1.5 ${armed ? "bg-red-600 border-red-600 text-white" : "border-slate-200 dark:border-neutral-700 text-red-700 hover:border-red-500"}`,
+      }, React.createElement(Icon, { name: "trash-2", className: "w-4 h-4" }), armed ? "Remove?" : "Remove"),
+    ),
+  );
+};
+const CatalogByColour = ({ items, selectedIds, setSelectedIds, onPick, onSet, onTags, dictTags, allTags, onDuplicate, onRemove, fv }) => {
+  const [editId, setEditId] = useState(null);
+  const groups = useMemo(() => {
+    const m = new Map();
+    items.forEach((it) => {
+      const k = pinTwinKey(it);
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(it);
+    });
+    return [...m.values()];
+  }, [items]);
+  const editing = editId ? items.find((i) => i.id === editId) : null;
+  useEffect(() => { if (editId && !editing) setEditId(null); }, [editId, editing]);
+  const sel = new Set(selectedIds || []);
+  const toggle = (ids, on) => setSelectedIds((prev) => (on ? [...new Set([...prev, ...ids])] : prev.filter((id) => !ids.includes(id))));
+  return React.createElement(
+    "div",
+    { className: "flex flex-col lg:flex-row gap-4 items-start", "data-catalog-by-colour": "" },
+    React.createElement(
+      "div",
+      { className: "flex-1 min-w-0 w-full grid gap-3", style: { gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 400px), 1fr))" } },
+      groups.map((g) => {
+        const head = g[0];
+        const ids = g.map((i) => i.id);
+        const allOn = ids.every((id) => sel.has(id));
+        const tagSet = [...new Set(g.flatMap((i) => i.tags || []))];
+        const note = (g.find((i) => i.displayNotes) || {}).displayNotes || "";
+        return React.createElement(
+          "article",
+          {
+            key: pinTwinKey(head),
+            className: `group flex gap-3 p-3 rounded-2xl bg-white dark:bg-neutral-900 border transition-colors ${g.some((i) => i.id === editId) ? "border-sky-500 ring-1 ring-sky-500" : "border-slate-200 dark:border-neutral-800"}`,
+          },
+          React.createElement(
+            "button",
+            {
+              type: "button", onClick: () => onPick(head), title: "Make this the colour in hand",
+              className: "relative w-16 sm:w-24 shrink-0 self-stretch min-h-[80px] sm:min-h-[96px] rounded-xl overflow-hidden border border-black/10 hover:ring-2 hover:ring-sky-500",
+              style: { backgroundColor: DisplayGamut.css(head.L, head.C, head.H, head.color) },
+            },
+            React.createElement(SwatchTreatment, { item: head, size: 96 }),
+          ),
+          React.createElement(
+            "div",
+            { className: "flex-1 min-w-0 flex flex-col gap-1.5" },
+            React.createElement(
+              "div",
+              { className: "flex items-start gap-2" },
+              React.createElement("button", {
+                type: "button", role: "checkbox", "aria-checked": allOn, "aria-label": `Select every finish of ${head.displayName}`,
+                onClick: () => toggle(ids, !allOn),
+                className: `mt-1 w-5 h-5 shrink-0 rounded-md border-2 flex items-center justify-center ${allOn ? "bg-sky-500 border-sky-500 text-white" : "border-slate-300 dark:border-neutral-600"}`,
+              }, allOn && React.createElement(Icon, { name: "check", className: "w-3 h-3" })),
+              React.createElement(
+                "div",
+                { className: "min-w-0 flex-1" },
+                React.createElement("span", { className: "text-lg font-extrabold tracking-tight text-slate-900 dark:text-neutral-100" }, head.displayName),
+                (!fv || fv.on("code")) && head.erpCode && React.createElement("span", { className: "ml-2 text-xs font-mono font-semibold text-slate-500 whitespace-nowrap" }, head.erpCode),
+                head.brand && React.createElement("span", { className: "sm:hidden block text-[11px] text-slate-500" }, getBrandDisplayName(head.brand)),
+              ),
+              head.brand && React.createElement("span", { className: "hidden sm:inline text-xs text-slate-500 whitespace-nowrap mt-1" }, getBrandDisplayName(head.brand)),
+            ),
+            (!fv || fv.on("notes")) && note && React.createElement("div", { className: "text-xs italic text-slate-500 line-clamp-2" }, note),
+            React.createElement(
+              "div",
+              { className: "flex flex-col" },
+              g.map((it) => {
+                const on = sel.has(it.id);
+                const words = CAT_FIELDS.slice(1).map((f) => specWord(it[f.key])).filter(Boolean);
+                return React.createElement(
+                  "div",
+                  {
+                    key: it.id, "data-finish": it.id,
+                    className: `flex items-center gap-2 min-h-[36px] px-1.5 rounded-lg text-[13px] ${it.id === editId ? "bg-slate-100 dark:bg-neutral-800" : "hover:bg-slate-50 dark:hover:bg-neutral-800/60"}`,
+                  },
+                  React.createElement("button", {
+                    type: "button", role: "checkbox", "aria-checked": on, "aria-label": `Select ${it.displayName}, ${specWord(it.doorProfile) || "finish"}`,
+                    onClick: () => toggle([it.id], !on),
+                    className: `w-5 h-5 shrink-0 rounded-md border-2 flex items-center justify-center ${on ? "bg-sky-500 border-sky-500 text-white" : "border-slate-300 dark:border-neutral-600"}`,
+                  }, on && React.createElement(Icon, { name: "check", className: "w-3 h-3" })),
+                  React.createElement(
+                    "button",
+                    { type: "button", onClick: () => { setEditId(it.id); onPick(it); }, title: "Edit this finish", className: "flex-1 min-w-0 flex items-center gap-2 text-left py-1" },
+                    React.createElement("span", { className: "text-slate-600 dark:text-neutral-300" }, React.createElement(ProfileGlyph, { code: it.doorProfile })),
+                    React.createElement("span", { className: "font-bold w-14 shrink-0 text-slate-800 dark:text-neutral-100" }, specWord(it.doorProfile) || "—"),
+                    React.createElement("span", { className: "min-w-0 line-clamp-2 text-slate-600 dark:text-neutral-300 text-[12px] sm:text-[13px] leading-snug" }, words.join(" · ") || "No finish set"),
+                  ),
+                  React.createElement(
+                    "span",
+                    { className: "hidden sm:flex gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity" },
+                    React.createElement("button", { type: "button", onClick: () => onDuplicate(it.id), title: "Duplicate this finish", "aria-label": "Duplicate this finish", className: "w-7 h-7 rounded-md flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-neutral-800" }, React.createElement(Icon, { name: "copy", className: "w-3.5 h-3.5" })),
+                    React.createElement("button", { type: "button", onClick: () => { setEditId(it.id); onPick(it); }, title: "Edit", "aria-label": "Edit this finish", className: "w-7 h-7 rounded-md flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-neutral-800" }, React.createElement(Icon, { name: "pencil-line", className: "w-3.5 h-3.5" })),
+                  ),
+                );
+              }),
+            ),
+            (!fv || fv.on("tags")) && tagSet.length > 0 && React.createElement("div", { className: "flex flex-wrap gap-1" }, tagSet.map((t) => React.createElement("span", { key: t, className: "px-2 h-5 inline-flex items-center rounded-full text-[10px] font-semibold bg-slate-100 dark:bg-neutral-800 text-slate-600 dark:text-neutral-300 border border-slate-200 dark:border-neutral-700" }, t))),
+          ),
+        );
+      }),
+    ),
+    editing && React.createElement("div", { className: "fixed inset-0 z-[59] bg-black/30 lg:hidden", onClick: () => setEditId(null), "aria-hidden": "true" }),
+    editing && React.createElement(
+      "div",
+      { className: "w-full lg:w-[360px] shrink-0 lg:sticky lg:top-2 fixed lg:static inset-x-0 bottom-0 z-[60] lg:z-auto max-h-[75dvh] lg:max-h-none overflow-y-auto" },
+      React.createElement(CatalogEditDrawer, {
+        item: editing, tags: dictTags[editing.id] || [], allTags, onSet, onTags,
+        onClose: () => setEditId(null), onDuplicate, onRemove: (id) => { setEditId(null); onRemove(id); },
+      }),
+    ),
+  );
+};
+const CatalogLayoutSwitch = () => {
+  const on = useCatalogByColour();
+  return React.createElement(
+    "div",
+    { role: "radiogroup", "aria-label": "Catalog layout", className: "inline-flex p-0.5 rounded-lg bg-slate-100 dark:bg-neutral-800 gap-0.5" },
+    [["By colour", true], ["Every finish", false]].map(([t, v]) =>
+      React.createElement("button", {
+        key: t, type: "button", role: "radio", "aria-checked": on === v, onClick: () => catalogByColourStore.set(v),
+        className: `h-8 px-3 rounded-md text-xs font-semibold ${on === v ? "bg-white dark:bg-neutral-900 text-slate-900 dark:text-neutral-100 shadow-sm" : "text-slate-500"}`,
+      }, t),
+    ),
+  );
+};
+
+// ── Top bar, Library menu and search commands ────────────────────────────
+// One bar across the top: the spaces, one search box that also takes
+// commands and colour values, sync status, Measure, and a Library menu for
+// files, import/export, snapshot, sync, appearance and help.
+const useOutside = (ref, on, close) => {
+  useEffect(() => {
+    if (!on) return;
+    const away = (e) => { if (ref.current && !ref.current.contains(e.target)) close(); };
+    const esc = (e) => { if (e.key === "Escape") close(); };
+    document.addEventListener("pointerdown", away, true);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("pointerdown", away, true); document.removeEventListener("keydown", esc); };
+  }, [on]);
+};
+const LibraryMenu = ({ items, dot }) => {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useOutside(ref, open, () => setOpen(false));
+  return React.createElement(
+    "div",
+    { ref, className: "relative shrink-0" },
+    React.createElement(
+      "button",
+      {
+        type: "button", onClick: () => setOpen((v) => !v), "aria-expanded": open, "aria-haspopup": "menu", title: "Library: files, import, export, sync, settings", "aria-label": "Library", "data-library-btn": "",
+        className: "relative w-10 h-10 rounded-xl flex items-center justify-center text-slate-600 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-neutral-800 border border-slate-200 dark:border-neutral-700 md:border-transparent",
+      },
+      React.createElement(Icon, { name: "menu", className: "w-5 h-5" }),
+      dot && React.createElement("span", { className: "absolute top-2 right-2 w-2 h-2 rounded-full", style: { background: dot } }),
+    ),
+    open && React.createElement(
+      "div",
+      { role: "menu", "data-library": "", className: "absolute right-0 top-full mt-2 z-[120] w-72 max-w-[92vw] p-1.5 rounded-2xl bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 shadow-2xl flex flex-col" },
+      items.filter(Boolean).map((it, i) =>
+        it.divider
+          ? React.createElement("div", { key: "d" + i, className: "my-1 h-px bg-slate-200 dark:bg-neutral-800" })
+          : React.createElement(
+              it.file ? "label" : "button",
+              {
+                key: it.label, role: "menuitem", type: it.file ? undefined : "button",
+                onClick: it.file ? undefined : () => { setOpen(false); it.onClick(); },
+                className: "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left text-sm font-medium text-slate-800 dark:text-neutral-100 hover:bg-slate-100 dark:hover:bg-neutral-800 cursor-pointer",
+              },
+              React.createElement("span", { className: "w-8 h-8 rounded-lg bg-slate-100 dark:bg-neutral-800 flex items-center justify-center shrink-0" }, React.createElement(Icon, { name: it.icon, className: "w-4 h-4" })),
+              React.createElement("span", { className: "flex-1 min-w-0" }, it.label, it.hint && React.createElement("span", { className: "block text-[11px] text-slate-500 font-normal" }, it.hint)),
+              it.file && React.createElement("input", {
+                type: "file", accept: it.accept, className: "hidden",
+                onChange: (e) => { setOpen(false); it.onFile(e); },
+                onClick: (e) => { e.target.value = null; },
+              }),
+            ),
+      ),
+    ),
+  );
+};
+// A colour typed or pasted into the search box: hex, css colour functions,
+// "L a b" triplets or an OkLCH triplet.
+const parseColourQuery = (q) => {
+  let s = String(q || "").trim();
+  if (!s) return null;
+  if (/^[0-9a-f]{6}$/i.test(s) || /^[0-9a-f]{3}$/i.test(s)) s = "#" + s;
+  try {
+    if (/^#|^(rgb|hsl|lab|lch|oklab|oklch|color)\s*\(/i.test(s)) {
+      const c = new Color(s).to("oklch");
+      const [L, C, H] = c.coords;
+      if ([L, C].every(isFinite)) return { L, C, H: isFinite(H) ? H : 0, label: s };
+    }
+  } catch (e) {}
+  const m = /^(oklch|lab)?\s*(-?[\d.]+)[\s,]+(-?[\d.]+)[\s,]+(-?[\d.]+)\s*$/i.exec(s);
+  if (m) {
+    const a = +m[2], b = +m[3], c = +m[4];
+    try {
+      if ((m[1] || "").toLowerCase() === "oklch" || (!m[1] && a <= 1 && b <= 0.5)) return { L: a, C: b, H: c, label: `OKLCH ${a} ${b} ${c}` };
+      const o = new Color("lab", [a, b, c]).to("oklch").coords;
+      return { L: o[0], C: o[1], H: isFinite(o[2]) ? o[2] : 0, label: `CIELAB ${a} ${b} ${c}` };
+    } catch (e) {}
+  }
+  return null;
+};
+const CommandMatches = ({ query, commands, onGoColour, onDone }) => {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return null;
+  const col = parseColourQuery(query);
+  const words = q.split(/\s+/).filter(Boolean);
+  const hits = commands.filter((c) => words.every((w) => (c.label + " " + (c.keys || "")).toLowerCase().includes(w))).slice(0, 5);
+  if (!col && !hits.length) return null;
+  const hex = col ? (() => { try { return new Color("oklch", [col.L, col.C, col.H]).to("srgb").toGamut({ space: "srgb" }).toString({ format: "hex" }); } catch (e) { return "#888"; } })() : null;
+  const row = "w-full flex items-center gap-3 px-2.5 py-2 rounded-lg text-left hover:bg-slate-100 dark:hover:bg-neutral-800";
+  return React.createElement(
+    "div",
+    { className: "flex flex-col gap-0.5 pb-1 mb-1 border-b border-slate-100 dark:border-neutral-800", "data-commands": "" },
+    React.createElement("div", { className: "px-2.5 pt-1 text-[10px] font-bold uppercase tracking-widest text-slate-500" }, "Do"),
+    col && React.createElement(
+      "button",
+      { type: "button", className: row, onClick: () => { onGoColour(col); onDone(); } },
+      React.createElement("span", { className: "w-8 h-8 rounded-lg border border-black/10 shrink-0", style: { background: hex } }),
+      React.createElement("span", { className: "flex-1 min-w-0 text-sm font-semibold text-slate-800 dark:text-neutral-100" }, "Go to this colour", React.createElement("span", { className: "block text-[11px] font-mono font-normal text-slate-500" }, `${col.label} → L ${col.L.toFixed(3)} C ${col.C.toFixed(3)} H ${col.H.toFixed(1)}°`)),
+    ),
+    hits.map((c) => React.createElement(
+      "button",
+      { key: c.label, type: "button", className: row, onClick: () => { onDone(); c.run(); } },
+      React.createElement("span", { className: "w-8 h-8 rounded-lg bg-slate-100 dark:bg-neutral-800 flex items-center justify-center shrink-0 text-slate-600 dark:text-neutral-300" }, React.createElement(Icon, { name: c.icon, className: "w-4 h-4" })),
+      React.createElement("span", { className: "flex-1 text-sm font-semibold text-slate-800 dark:text-neutral-100" }, c.label),
+    )),
+  );
+};
+const SyncPill = ({ status, onClick }) => {
+  const st = status && status.state;
+  const [txt, dot] = st === "running" ? ["Syncing…", "#C2711B"] : st === "error" ? ["Sync failed", "#B42318"] : st === "success" || st === "done" ? ["Synced", "#3F7A3A"] : ["Sync", "#8C9A5B"];
+  return React.createElement(
+    "button",
+    { type: "button", onClick, title: (status && status.message) || "Sync your CSVs with GitHub", "data-sync-pill": "", className: "hidden lg:inline-flex items-center gap-2 h-9 px-3 rounded-full border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-[13px] font-semibold text-slate-700 dark:text-neutral-200 hover:border-sky-500 whitespace-nowrap" },
+    React.createElement("span", { className: `w-2 h-2 rounded-full ${st === "running" ? "animate-pulse" : ""}`, style: { background: dot } }),
+    txt,
+  );
+};
+const MeasureButton = ({ onMeasure }) => {
+  const s = useSpectro();
+  if (!s.host) return null;
+  const connected = s.conn === "connected";
+  return React.createElement(
+    "button",
+    {
+      type: "button", onClick: onMeasure, disabled: s.busy, "data-measure-btn": "",
+      title: connected ? "Measure the sample under the Spectro L" : "Connect the spectrophotometer",
+      className: "hidden md:inline-flex items-center gap-2 h-10 px-3.5 rounded-xl bg-sky-500 text-white text-sm font-semibold hover:opacity-90 disabled:opacity-60 whitespace-nowrap",
+    },
+    React.createElement(Icon, { name: s.busy ? "loader" : "scan-line", className: `w-4 h-4 ${s.busy ? "animate-spin" : ""}` }),
+    s.busy ? "Measuring…" : "Measure",
+    connected && s.device && s.device.battery != null && React.createElement("span", { className: "text-[11px] font-medium opacity-80 pl-2 border-l border-current/30" }, `${s.device.battery}%`),
+  );
+};
+const AppTopBar = ({ nav, searchQuery, setSearchQuery, onUndo, onRedo, canUndo, canRedo, syncStatus, onSync, library, onMeasure }) => {
+  const inputRef = useRef(null);
+  useEffect(() => {
+    const k = (e) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && String(e.key).toLowerCase() === "k") { e.preventDefault(); if (inputRef.current) { inputRef.current.focus(); inputRef.current.select(); } }
+      else if (e.key === "/" && !/input|textarea|select/i.test((document.activeElement && document.activeElement.tagName) || "") && !(document.activeElement && document.activeElement.isContentEditable)) { e.preventDefault(); inputRef.current && inputRef.current.focus(); }
+    };
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, []);
+  const iconBtn = (name, onClick, title, disabled) => React.createElement(
+    "button",
+    { type: "button", onClick, disabled, title, "aria-label": title, className: "hidden md:flex w-10 h-10 rounded-xl items-center justify-center text-slate-600 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-neutral-800 disabled:opacity-30 disabled:hover:bg-transparent" },
+    React.createElement(Icon, { name, className: "w-[18px] h-[18px]" }),
+  );
+  return React.createElement(
+    "header",
+    {
+      "data-topbar": "",
+      className: `md:col-span-2 shrink-0 sticky top-0 md:static flex items-center gap-2 md:gap-3 px-3 md:px-4 py-2 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 relative ${searchQuery ? "z-[98]" : "z-40"}`,
+    },
+    React.createElement(
+      "h1",
+      { className: "hidden md:flex items-baseline gap-1 shrink-0 font-black tracking-tight text-lg text-slate-800 dark:text-neutral-100 leading-none pr-1" },
+      React.createElement("span", { className: "text-[11px] font-semibold text-slate-500" }, "The"),
+      React.createElement("span", null, "Color", React.createElement("span", { className: "text-[#2B4032] dark:text-[#B1BC83]" }, "SAMI"), "ficator"),
+    ),
+    React.createElement("nav", { "aria-label": "Spaces", className: "hidden md:flex items-center gap-0.5 p-0.5 rounded-xl bg-slate-100 dark:bg-neutral-800 shrink-0" }, nav),
+    React.createElement(
+      "label",
+      { className: "flex-1 min-w-0 md:flex-[3] md:max-w-2xl flex items-center gap-2 h-10 px-3 rounded-xl bg-slate-100 dark:bg-neutral-800 border border-transparent focus-within:border-sky-500 focus-within:bg-white dark:focus-within:bg-neutral-900" },
+      React.createElement(Icon, { name: "search", className: "w-4 h-4 text-slate-400 shrink-0" }),
+      React.createElement("input", {
+        ref: inputRef, type: "text", value: searchQuery, onChange: (e) => setSearchQuery(e.target.value), "aria-label": "Search or type a command", "data-omnisearch": "",
+        placeholder: "Search names, codes, hex — or a command",
+        className: "flex-1 min-w-0 bg-transparent text-sm text-slate-900 dark:text-white placeholder:text-slate-400 outline-none",
+      }),
+      searchQuery
+        ? React.createElement("button", { type: "button", onClick: () => setSearchQuery(""), "aria-label": "Clear search", className: "text-slate-400 p-0.5" }, React.createElement(Icon, { name: "x", className: "w-4 h-4" }))
+        : React.createElement("span", { className: "hidden md:inline text-[10px] font-mono px-1.5 py-0.5 rounded-md border border-slate-300 dark:border-neutral-600 text-slate-500" }, "⌘K"),
+    ),
+    React.createElement("div", { className: "hidden md:block flex-1" }),
+    iconBtn("undo", onUndo, "Undo (Ctrl+Z)", !canUndo),
+    iconBtn("redo", onRedo, "Redo (Ctrl+Y)", !canRedo),
+    React.createElement(SyncPill, { status: syncStatus, onClick: onSync }),
+    React.createElement(MeasureButton, { onMeasure }),
+    React.createElement(LibraryMenu, { items: library, dot: syncStatus && syncStatus.state === "error" ? "#B42318" : null }),
+  );
+};
+
+// ── Closeness in words ────────────────────────────────────────────────────
+// ΔE OK ×100 as a 4-bar meter and a word: Twin < 1, Very close < 2,
+// Close < 3.5, Noticeable < 6, Different beyond.
+const closenessOf = (d) => {
+  if (!isFinite(d)) return null;
+  return d < 1 ? { word: "Twin", n: 4 } : d < 2 ? { word: "Very close", n: 3 } : d < 3.5 ? { word: "Close", n: 2 } : d < 6 ? { word: "Noticeable", n: 1 } : { word: "Different", n: 0 };
+};
+const ClosenessChip = ({ d, zoom = 1, className = "" }) => {
+  const c = closenessOf(d);
+  if (!c) return null;
+  const fs = Math.max(8, Math.min(11, 5.2 * zoom));
+  return React.createElement(
+    "span",
+    {
+      className: `inline-flex items-center gap-1 rounded-full font-semibold whitespace-nowrap pointer-events-none ${className}`,
+      style: { background: "rgba(251,247,242,.94)", color: "#010D00", fontSize: fs, padding: `${fs * 0.25}px ${fs * 0.7}px ${fs * 0.25}px ${fs * 0.5}px`, boxShadow: "0 1px 2px rgba(1,13,0,.15)" },
+      title: `${c.word} · ΔEok ${(+d).toFixed(2)}`,
+    },
+    React.createElement(
+      "span",
+      { className: "inline-flex items-end", style: { gap: 1.5, height: fs * 0.9 }, "aria-hidden": "true" },
+      [0.4, 0.6, 0.8, 1].map((h, i) => React.createElement("i", { key: i, style: { display: "block", width: Math.max(2, fs * 0.25), height: `${h * 100}%`, borderRadius: 1, background: i < c.n ? "#2B4032" : "#CFC4B7" } })),
+    ),
+    c.word,
+    React.createElement("span", { className: "font-mono font-medium" }, (+d).toFixed(2)),
+  );
+};
+
+// ── Match: closest to the colour in hand, or line to line ─────────────────
+const MATCH_MODE_KEY = "csam-match-mode";
+const matchModeStore = (() => {
+  let v = "closest";
+  try { v = localStorage.getItem(MATCH_MODE_KEY) === "line" ? "line" : "closest"; } catch (e) {}
+  const subs = new Set();
+  return {
+    get: () => v,
+    set: (x) => { v = x === "line" ? "line" : "closest"; try { localStorage.setItem(MATCH_MODE_KEY, v); } catch (e) {} subs.forEach((f) => f()); },
+    subscribe: (f) => { subs.add(f); return () => subs.delete(f); },
+  };
+})();
+const useMatchMode = () => {
+  const [, force] = useState(0);
+  useEffect(() => matchModeStore.subscribe(() => force((x) => x + 1)), []);
+  return matchModeStore.get();
+};
+const MatchModeSwitch = () => {
+  const m = useMatchMode();
+  return React.createElement(
+    "div",
+    { role: "radiogroup", "aria-label": "Match mode", "data-match-mode": "", className: "inline-flex p-0.5 rounded-lg bg-slate-100 dark:bg-neutral-800 gap-0.5 shrink-0" },
+    [["closest", "Closest to this colour", "target"], ["line", "Line to line", "shuffle"]].map(([id, t, ic]) =>
+      React.createElement("button", {
+        key: id, type: "button", role: "radio", "aria-checked": m === id, onClick: () => matchModeStore.set(id),
+        className: `h-8 px-3 rounded-md text-xs font-semibold inline-flex items-center gap-1.5 ${m === id ? "bg-white dark:bg-neutral-900 text-slate-900 dark:text-neutral-100 shadow-sm" : "text-slate-500 hover:text-slate-800"}`,
+      }, React.createElement(Icon, { name: ic, className: "w-3.5 h-3.5" }), t),
+    ),
+  );
+};
+
+// ── Phone: the colour in hand as a bar above the nav, a Measure shutter ──
+const PhoneColourBar = ({ hex, name, code, family, onOpen }) =>
+  React.createElement(
+    "div",
+    { className: "md:hidden order-last shrink-0 px-3 pt-2 pb-1.5 bg-white dark:bg-neutral-900 border-t border-slate-200 dark:border-neutral-800" },
+    React.createElement(
+      "button",
+      {
+        type: "button", onClick: onOpen, "data-phone-colour-bar": "", "aria-label": `Open the colour in hand: ${name || "unnamed"} ${code || ""}`,
+        className: "w-full flex items-center gap-3 pl-1.5 pr-3 py-1.5 rounded-2xl text-left shadow-lg",
+        style: { backgroundColor: "#052212", color: "#F2E8DF" },
+      },
+      React.createElement("span", { className: "w-11 h-11 rounded-xl shrink-0 border border-white/20", style: { backgroundColor: hex } }),
+      React.createElement(
+        "span",
+        { className: "flex-1 min-w-0" },
+        React.createElement("span", { className: "block text-base font-extrabold truncate leading-tight" }, name || "Unnamed"),
+        React.createElement("span", { className: "block text-[12px] font-mono truncate", style: { color: "#C9D0B8" } }, [code, family].filter(Boolean).join(" · ")),
+      ),
+      React.createElement(Icon, { name: "chevron-up", className: "w-5 h-5 shrink-0" }),
+    ),
+  );
+const PhoneShutter = ({ onPress }) => {
+  const s = useSpectro();
+  if (!s.host) return null;
+  return React.createElement(
+    "button",
+    { type: "button", onClick: onPress, disabled: s.busy, "aria-label": "Measure", "data-shutter": "", className: "flex-1 flex flex-col items-center gap-0.5 pb-1 text-[11px] font-semibold text-slate-900 dark:text-neutral-100" },
+    React.createElement(
+      "span",
+      { className: `-mt-5 w-14 h-14 rounded-full flex items-center justify-center shadow-lg border-4 border-white dark:border-neutral-900 ${s.busy ? "animate-pulse" : ""}`, style: { backgroundColor: "#2B4032", color: "#F2E8DF" } },
+      React.createElement(Icon, { name: s.busy ? "loader" : "scan-line", className: `w-6 h-6 ${s.busy ? "animate-spin" : ""}` }),
+    ),
+    s.busy ? "Reading…" : "Measure",
+  );
+};
+const PhoneSheetHeader = ({ onDone }) =>
+  React.createElement(
+    "div",
+    { className: "md:hidden flex items-center justify-between px-4 pt-3 pb-1" },
+    React.createElement("span", { className: "text-[11px] font-bold uppercase tracking-widest text-slate-500" }, "Colour in hand"),
+    React.createElement("button", { type: "button", onClick: onDone, "data-sheet-done": "", className: "h-9 px-4 rounded-full bg-slate-100 dark:bg-neutral-800 text-sm font-semibold text-slate-800 dark:text-neutral-100" }, "Done"),
+  );
+
+// ── Label sheet preview ───────────────────────────────────────────────────
+// The Avery 5159 sheet drawn at its real size (8.5in × 11in, 2 × 7 labels of
+// 4in × 1.5in) and scaled to fit, with every label laid out exactly as the
+// print does it. Below it, the label under the pointer at a readable size.
+const AVERY_IN = 96; // CSS px per inch
+const averyLabelPx = { w: 4 * AVERY_IN, h: 1.5 * AVERY_IN };
+const AveryLabelFace = ({ label, collection }) => {
+  const row = { display: "flex", alignItems: "baseline", fontSize: "6.5pt", lineHeight: 1.1, width: "100%", position: "relative" };
+  const key = { fontWeight: 600, width: "1.05in", flexShrink: 0, color: "#374151" };
+  const val = { fontWeight: 400, color: "#374151", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "1.05in" };
+  const box = { width: "7.5px", height: "7.5px", border: "0.6px solid #6b7280", boxSizing: "border-box", borderRadius: "1px" };
+  const small = { fontWeight: 600, fontSize: "5pt", color: "#374151" };
+  const line = (k, v, extra) => React.createElement("div", { style: row }, React.createElement("span", { style: key }, k), React.createElement("span", { style: { ...val, ...(extra || {}) } }, v));
+  const name = String((collection && collection.on && collection.name) || "").trim();
+  return React.createElement(
+    "div",
+    { style: { width: averyLabelPx.w, height: averyLabelPx.h, display: "flex", background: "#fff", fontFamily: "'Bicyclette', 'Byciclette', 'Inter', system-ui, sans-serif", color: "#374151", overflow: "hidden" } },
+    React.createElement(
+      "div",
+      { style: { width: "0.45in", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#2B4032", color: "#F2E8DF", flexShrink: 0 } },
+      React.createElement("span", { style: { transform: "rotate(-90deg)", fontWeight: 800, fontSize: "22pt", letterSpacing: "0.12em", lineHeight: 1, display: "inline-block" } }, "SAMI"),
+    ),
+    React.createElement(
+      "div",
+      { style: { flexGrow: 1, padding: "0.08in 0.12in", display: "flex", flexDirection: "column", justifyContent: "space-between", height: "100%", boxSizing: "border-box", position: "relative", minWidth: 0 } },
+      React.createElement(
+        "div",
+        { style: { position: "absolute", top: "50%", transform: "translateY(-50%)", right: "0.06in", width: "1.36in", height: "0.88in", display: "flex", flexDirection: "column", justifyContent: "space-between", fontSize: "5pt", zIndex: 1, background: "#fff", border: "0.6px solid #cbd5e1", borderRadius: "2px", padding: "3px 4px", boxSizing: "border-box" } },
+        React.createElement("div", { style: { fontSize: "4.5pt", fontWeight: 700, color: "#4b5563", textTransform: "uppercase", letterSpacing: "0.02em", textAlign: "center", borderBottom: "0.5px solid #e2e8f0", paddingBottom: "2px", lineHeight: 1.1 } }, "For use by SAMI Design only"),
+        React.createElement(
+          "div", { style: { display: "flex", justifyContent: "space-between", padding: "1px 2px" } },
+          ["Approved", "Rejected"].map((t) => React.createElement("div", { key: t, style: { display: "flex", alignItems: "center", gap: "3.5px" } }, React.createElement("div", { style: box }), React.createElement("span", { style: small }, t))),
+        ),
+        ["Date:", "Sign:"].map((t) => React.createElement("div", { key: t, style: { display: "flex", alignItems: "flex-end", gap: "3px", padding: "1px 2px" } }, React.createElement("span", { style: { ...small, minWidth: "22px" } }, t), React.createElement("div", { style: { flexGrow: 1, borderBottom: "0.6px solid #cbd5e1", height: "8px" } }))),
+      ),
+      React.createElement(
+        "div",
+        { style: row },
+        React.createElement("span", { style: key }, "NAME:"),
+        React.createElement("span", { style: { ...val, maxWidth: "2.3in", minWidth: 0, fontSize: "9.5pt", fontWeight: 600, textTransform: "uppercase" } }, label.name),
+        name && React.createElement("span", { style: { marginLeft: "auto", flexShrink: 0, alignSelf: "center", position: "relative", top: "-1px", padding: "1.5px 6px", borderRadius: "999px", background: "#2B4032", color: "#F2E8DF", fontSize: "5.5pt", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", lineHeight: 1.2, whiteSpace: "nowrap", maxWidth: "1.3in", overflow: "hidden", textOverflow: "ellipsis" } }, name),
+      ),
+      line("COLOR CODE:", label.code),
+      line("SHEEN:", label.sheen),
+      line("VISUAL PATTERN:", label.visual),
+      line("TACTILE TEXTURE:", label.tactile, { maxWidth: "none" }),
+      line("DOOR PROFILE:", label.profile, { maxWidth: "none" }),
+      React.createElement(
+        "div",
+        { style: row },
+        React.createElement("span", { style: key }, "MATERIAL:"),
+        React.createElement("span", { style: { ...val, maxWidth: "none" } }, label.material),
+        React.createElement("span", { style: { marginLeft: "auto", fontSize: "6pt", fontStyle: "italic", color: "#94a3b8", whiteSpace: "nowrap" } }, label.id),
+      ),
+    ),
+  );
+};
+// Fits a box of the given natural width into its parent's width.
+const useFitScale = (natural) => {
+  const [el, ref] = useState(null);
+  const [scale, setScale] = useState(0.4);
+  useEffect(() => {
+    if (!el) return;
+    const fit = () => { const w = el.clientWidth; if (w > 0) setScale(w / natural); };
+    fit();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [el, natural]);
+  return [ref, scale];
+};
+const LabelSheetPreview = ({ slots, start, onStart, borders, sheets = 1 }) => {
+  const collection = useLabelCollection();
+  const sheetW = 8.5 * AVERY_IN, sheetH = 11 * AVERY_IN;
+  const [ref, scale] = useFitScale(sheetW);
+  const firstFilled = slots.findIndex(Boolean);
+  const [focus, setFocus] = useState(null);
+  const shown = focus != null && slots[focus] ? focus : firstFilled;
+  const [zref, zscale] = useFitScale(averyLabelPx.w);
+  const filled = slots.filter(Boolean).length;
+  return React.createElement(
+    "div",
+    { className: "w-full flex flex-col gap-3", "data-label-sheet": "" },
+    React.createElement(
+      "div",
+      { className: "flex items-baseline justify-between gap-2" },
+      React.createElement("h4", { className: "font-semibold text-xs uppercase tracking-wider text-slate-500" }, sheets > 1 ? `Sheet 1 of ${sheets}` : "Your sheet"),
+      React.createElement("span", { className: "text-[11px] text-slate-500" }, `${filled} label${filled === 1 ? "" : "s"} · starts at ${start}`),
+    ),
+    React.createElement(
+      "div",
+      { ref, className: "relative w-full rounded-md shadow-lg ring-1 ring-slate-200 overflow-hidden", style: { height: sheetH * scale, background: "#fff" } },
+      React.createElement(
+        "div",
+        {
+          style: {
+            width: sheetW, height: sheetH, transform: `scale(${scale})`, transformOrigin: "0 0",
+            display: "grid", gridTemplateColumns: "4in 4in", gridTemplateRows: "repeat(7, 1.5in)", columnGap: "0.188in",
+            padding: "calc(0.25in + 1mm) 0.156in calc(0.25in - 1mm)", boxSizing: "border-box", alignContent: "start", background: "#fff",
+          },
+        },
+        slots.map((label, i) => {
+          const used = !label && i + 1 < start;
+          const isStart = start === i + 1;
+          return React.createElement(
+            "button",
+            {
+              key: i, type: "button", onClick: () => onStart(i + 1),
+              onPointerEnter: () => setFocus(i), onFocus: () => setFocus(i),
+              title: label ? `${label.name} — label ${i + 1}` : used ? `Label ${i + 1} is skipped (already used). Click to start here.` : `Label ${i + 1}. Click to start here.`,
+              "aria-label": label ? `Label ${i + 1}: ${label.name}` : `Label ${i + 1}, ${used ? "skipped" : "blank"}. Start printing here.`,
+              "aria-pressed": isStart,
+              "data-label-slot": label ? "filled" : used ? "used" : "empty",
+              style: {
+                position: "relative", width: "4in", height: "1.5in", padding: 0, textAlign: "left", cursor: "pointer", overflow: "hidden", background: "#fff",
+                outline: isStart ? "6px solid #0284c7" : borders || !label ? "2px dashed rgba(148,137,126,.55)" : "none", outlineOffset: isStart ? "-6px" : "-2px",
+                ...(used ? { backgroundImage: "repeating-linear-gradient(135deg, rgba(0,0,0,.07) 0 10px, transparent 10px 20px)" } : {}),
+              },
+            },
+            label
+              ? React.createElement(AveryLabelFace, { label, collection })
+              : React.createElement("span", { style: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "28pt", fontWeight: 700, color: "rgba(100,116,139,.45)" } }, used ? "skipped" : String(i + 1)),
+            isStart && React.createElement("span", { style: { position: "absolute", left: 0, top: 0, background: "#0284c7", color: "#fff", fontSize: "13pt", fontWeight: 800, padding: "1px 10px 3px", borderBottomRightRadius: 8, zIndex: 2 } }, "Start"),
+          );
+        }),
+      ),
+    ),
+    React.createElement("p", { className: "text-[11px] text-slate-500 leading-snug" }, "This is sheet 1 as it will print. Click a label to start there; the ones before it stay blank, for a sheet you've already used."),
+    shown >= 0 && React.createElement(
+      "div",
+      { className: "flex flex-col gap-1.5" },
+      React.createElement(
+        "span", { className: "flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-slate-500" },
+        slots[shown].hex && React.createElement("span", { className: "w-3.5 h-3.5 rounded-full ring-1 ring-black/10", style: { background: slots[shown].hex } }),
+        `Label ${shown + 1} · ${slots[shown].name}`,
+      ),
+      React.createElement(
+        "div",
+        { ref: zref, className: "w-full rounded ring-1 ring-slate-200 overflow-hidden", style: { height: averyLabelPx.h * zscale, background: "#fff" }, "data-label-zoom": "" },
+        React.createElement("div", { style: { transform: `scale(${zscale})`, transformOrigin: "0 0", width: averyLabelPx.w } }, React.createElement(AveryLabelFace, { label: slots[shown], collection })),
+      ),
+    ),
+  );
+};
+
+// ── Palette tray ──────────────────────────────────────────────────────────
+// The working palette docked under every view: the colours you've gathered,
+// one tap to go back to any of them, and what you do with a set of colours
+// (compare two, run a gradient, see them full screen, print, save).
+const openInspectorPanel = (tab, title) => {
+  try { window.dispatchEvent(new CustomEvent("csam-inspector-tab", { detail: tab })); } catch (e) {}
+  if (title) {
+    PANEL_OPEN_STATE[title] = true;
+    setTimeout(() => { try { window.dispatchEvent(new CustomEvent("csam-open-panel", { detail: title })); } catch (e) {} }, 60);
+  }
+};
+const TrayChip = ({ icon, label, onClick, title, active, disabled, danger, wide, ...rest }) =>
+  React.createElement(
+    "button",
+    {
+      type: "button", onClick, title: title || label, "aria-label": title || label, disabled, ...rest,
+      className: `h-9 px-3 rounded-full border text-[13px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors disabled:opacity-40 ${
+        active ? "bg-slate-900 text-white border-slate-900 dark:bg-neutral-100 dark:text-neutral-900"
+        : danger ? "border-red-300 text-red-700 hover:bg-red-50"
+        : "border-slate-300 dark:border-neutral-700 text-slate-800 dark:text-neutral-200 hover:border-slate-500"}`,
+    },
+    icon && React.createElement(Icon, { name: icon, className: "w-4 h-4 shrink-0" }),
+    (active || danger || wide) && React.createElement("span", null, label),
+  );
+const PaletteTray = ({ items, current, onAdd, onPick, onRemove, onReorder, onCompare, onFullscreen, onPrint, onSave, saved, onLoad, onClear }) => {
+  const [picking, setPicking] = useState(null); // null, or ids chosen so far for a compare
+  const [saving, setSaving] = useState(null);
+  const [menu, setMenu] = useState(false);
+  const [armed, setArmed] = useState(false);
+  const [drag, setDrag] = useState(null);
+  const menuRef = useRef(null);
+  const [box, setBox] = useState(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    if (!box) return;
+    const fit = () => setWidth(box.clientWidth);
+    fit();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(fit); ro.observe(box);
+    return () => ro.disconnect();
+  }, [box]);
+  const some = width >= 960, all = width >= 1360 || (width >= 900 && items.length === 0);
+  useOutside(menuRef, menu, () => setMenu(false));
+  useEffect(() => { if (!armed) return; const t = setTimeout(() => setArmed(false), 3000); return () => clearTimeout(t); }, [armed]);
+  useEffect(() => { if (picking && items.length < 2) setPicking(null); }, [items.length]);
+  const n = items.length;
+  const choose = (it) => {
+    if (!picking) return onPick(it.item);
+    const next = picking.includes(it.item.id) ? picking.filter((x) => x !== it.item.id) : [...picking, it.item.id];
+    if (next.length === 2) { const [a, b] = next.map((id) => items.find((x) => x.item.id === id).item); setPicking(null); onCompare(a, b); return; }
+    setPicking(next);
+  };
+  const compare = () => {
+    if (picking) return setPicking(null);
+    if (n === 2) return onCompare(items[0].item, items[1].item);
+    setPicking([]);
+  };
+  const near = current && n ? items.reduce((best, it) => { const d = fastDeltaEOK(current.L, current.C, current.H, it.item.L, it.item.C, it.item.H); return !best || d < best.d ? { d, it } : best; }, null) : null;
+  return React.createElement(
+    "div",
+    {
+      role: "region", "aria-label": "Palette", "data-palette-tray": "", ref: setBox,
+      className: "hidden md:flex shrink-0 items-center gap-3 px-4 py-2.5 border-t border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 min-w-0",
+    },
+    React.createElement(
+      "button",
+      { type: "button", onClick: () => openInspectorPanel("palette", "Palette Playground"), title: "Open the palette tools", className: "shrink-0 text-[11px] font-bold uppercase tracking-wider text-slate-500 hover:text-slate-900 dark:hover:text-white inline-flex items-center gap-1.5" },
+      React.createElement(Icon, { name: "palette", className: "w-4 h-4" }), "Palette",
+    ),
+    React.createElement(
+      "div",
+      { className: "flex-1 flex items-center gap-1.5 min-w-0 overflow-x-auto no-scrollbar py-1.5 px-1", "data-tray-swatches": "" },
+      items.map((it, i) => {
+        const chosen = picking && picking.includes(it.item.id);
+        const isHere = near && near.it === it && near.d < 0.5;
+        return React.createElement(
+          "div",
+          {
+            key: it.item.id || i, className: "relative group shrink-0",
+            draggable: !picking,
+            onDragStart: (e) => { e.dataTransfer.setData("text/plain", String(i)); e.dataTransfer.effectAllowed = "move"; setDrag(i); },
+            onDragOver: (e) => { e.preventDefault(); },
+            onDrop: (e) => { e.preventDefault(); const s = parseInt(e.dataTransfer.getData("text/plain"), 10); setDrag(null); if (isFinite(s) && s !== i) onReorder(s, i); },
+            onDragEnd: () => setDrag(null),
+          },
+          React.createElement(
+            "button",
+            {
+              type: "button", onClick: () => choose(it), "data-tray-swatch": "",
+              "aria-label": picking ? `${chosen ? "Unchoose" : "Choose"} ${it.name} to compare` : `Go to ${it.name}`,
+              "aria-pressed": picking ? !!chosen : undefined,
+              title: `${it.name}${it.code ? " · " + it.code : ""}${picking ? "" : " · drag to reorder"}`,
+              className: `block w-10 h-10 rounded-xl bg-cover bg-center transition-transform ${drag === i ? "opacity-30" : ""} ${chosen ? "ring-2 ring-offset-2 ring-sky-500 scale-95" : isHere ? "ring-2 ring-offset-2 ring-slate-900 dark:ring-white" : "ring-1 ring-black/10 hover:-translate-y-0.5"} ${picking && !chosen ? "animate-pulse" : ""}`,
+              style: { backgroundColor: it.hex, backgroundImage: it.image ? `url(${it.image})` : undefined },
+            },
+          ),
+          !picking && React.createElement(
+            "button",
+            { type: "button", onClick: () => onRemove(it.item.id), "aria-label": `Remove ${it.name} from the palette`, title: "Remove", className: "absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900 items-center justify-center hidden group-hover:flex focus:flex shadow" },
+            React.createElement(Icon, { name: "x", className: "w-3 h-3" }),
+          ),
+        );
+      }),
+      React.createElement(
+        "button",
+        { type: "button", onClick: onAdd, disabled: !current, "data-tray-add": "", title: "Add the colour in hand to the palette", "aria-label": "Add the colour in hand to the palette", className: "shrink-0 h-10 rounded-xl border-2 border-dashed border-slate-300 dark:border-neutral-700 text-slate-600 dark:text-neutral-300 hover:border-slate-500 inline-flex items-center gap-1.5 px-2.5 text-[13px] font-semibold" },
+        current && React.createElement("span", { className: "w-5 h-5 rounded-md ring-1 ring-black/10", style: { background: current.hex } }),
+        React.createElement(Icon, { name: "plus", className: "w-4 h-4" }),
+        n === 0 && React.createElement("span", null, "Add the colour in hand"),
+      ),
+    ),
+    n > 0 && React.createElement("span", { className: "shrink-0 text-[13px] text-slate-500 whitespace-nowrap", "data-tray-count": "" },
+      picking ? (picking.length ? "Now pick the second colour" : "Pick two colours to compare") : `${n} colour${n === 1 ? "" : "s"}`),
+    saving != null
+      ? React.createElement(
+          "form",
+          { className: "flex items-center gap-1.5 shrink-0", onSubmit: (e) => { e.preventDefault(); if (saving.trim()) { onSave(saving.trim()); setSaving(null); } } },
+          React.createElement("input", { autoFocus: true, value: saving, onChange: (e) => setSaving(e.target.value), onKeyDown: (e) => { if (e.key === "Escape") setSaving(null); }, "aria-label": "Palette name", placeholder: "Name this palette", className: "h-9 w-48 px-3 rounded-full border border-slate-300 dark:border-neutral-700 bg-white dark:bg-neutral-950 text-sm focus:outline-none focus:ring-1 focus:ring-sky-500" }),
+          React.createElement(TrayChip, { icon: "check", label: "Save", type: "submit", disabled: !saving.trim(), active: true }),
+          React.createElement(TrayChip, { icon: "x", label: "Cancel", onClick: () => setSaving(null) }),
+        )
+      : React.createElement(
+          "div",
+          { className: "flex items-center gap-1.5 shrink-0" },
+          n >= 2 && React.createElement(TrayChip, { icon: "git-compare", label: picking ? "Cancel compare" : "Compare", wide: some, title: n === 2 ? "Compare these two side by side" : "Pick two colours to compare side by side", onClick: compare, active: !!picking, "data-tray-compare": "" }),
+          React.createElement(TrayChip, { icon: "blend", label: "Gradient", wide: all, title: "Make a gradient from the colour in hand", onClick: () => openInspectorPanel("palette", "Gradient") }),
+          React.createElement(TrayChip, { icon: "aperture", label: "Pairings", wide: all, title: "Colours that go with the one in hand", onClick: () => openInspectorPanel("palette", "Harmonies") }),
+          n > 0 && React.createElement(TrayChip, { icon: "maximize", label: "Full screen", wide: all, title: "See the palette full screen", onClick: onFullscreen }),
+          n > 0 && React.createElement(TrayChip, { icon: "printer", label: "Print labels", wide: some, title: "Print Avery 5159 labels for the palette", onClick: onPrint }),
+          React.createElement(
+            "div",
+            { ref: menuRef, className: "relative" },
+            React.createElement(TrayChip, { icon: "save", label: "Save", wide: all, title: n ? "Save or load palettes" : "Load a saved palette", onClick: () => setMenu((v) => !v), "aria-expanded": menu, disabled: !n && !(saved || []).length, "data-tray-save": "" }),
+            menu && React.createElement(
+              "div",
+              { role: "menu", className: "absolute bottom-full right-0 mb-2 w-64 p-1.5 rounded-2xl bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 shadow-xl z-50 flex flex-col" },
+              n > 0 && React.createElement("button", { type: "button", role: "menuitem", onClick: () => { setMenu(false); setSaving(`Palette ${(saved || []).length + 1}`); }, className: "h-10 px-3 rounded-xl text-left text-sm font-semibold hover:bg-slate-100 dark:hover:bg-neutral-800 inline-flex items-center gap-2" }, React.createElement(Icon, { name: "save", className: "w-4 h-4" }), "Save these colours as…"),
+              (saved || []).length > 0 && React.createElement("div", { className: "px-3 pt-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500" }, "Open a saved palette"),
+              React.createElement(
+                "div", { className: "max-h-64 overflow-y-auto flex flex-col" },
+                (saved || []).map((p) => React.createElement(
+                  "button",
+                  { key: p.id, type: "button", role: "menuitem", onClick: () => { setMenu(false); onLoad(p); }, className: "min-h-10 px-3 py-1.5 rounded-xl text-left hover:bg-slate-100 dark:hover:bg-neutral-800 flex items-center gap-2" },
+                  React.createElement("span", { className: "flex shrink-0" }, (p.swatches || []).slice(0, 5).map((h, k) => React.createElement("span", { key: k, className: "w-4 h-4 rounded ring-1 ring-white dark:ring-neutral-900", style: { background: h, marginLeft: k ? -4 : 0 } }))),
+                  React.createElement("span", { className: "text-sm truncate flex-1" }, p.name),
+                  React.createElement("span", { className: "text-[11px] text-slate-500" }, p.count),
+                )),
+              ),
+            ),
+          ),
+          n > 0 && React.createElement(TrayChip, { icon: "trash-2", label: armed ? "Clear all?" : "Clear", wide: all, title: armed ? "Tap again to clear the palette" : "Clear the palette", danger: armed, onClick: () => { if (!armed) return setArmed(true); setArmed(false); onClear(); }, "data-tray-clear": "" }),
+        ),
+  );
+};
+
 const ViewportSwatches = ({
   items,
   layout,
@@ -12870,9 +14104,10 @@ ${item.erpCode}`,
                           }),
                         selectedIds &&
                           React.createElement(
-                            "div",
+                            "button",
                             {
-                              className: `absolute top-0.5 left-0.5 z-30 ${selectedIds.includes(item.id) ? "opacity-100" : "opacity-0 group-hover:opacity-100"} transition-opacity`,
+                              type: "button", "aria-pressed": selectedIds.includes(item.id), "aria-label": `Select ${item.displayName || item.name || item.erpCode || "colour"}`, "data-sel-tick": "",
+                              className: `absolute top-0.5 left-0.5 z-30 focus:opacity-100 ${selectedIds.includes(item.id) ? "opacity-100" : "opacity-0 group-hover:opacity-100"} transition-opacity`,
                               onClick: (e) => {
                                 e.stopPropagation();
                                 setSelectedIds((prev) =>
@@ -13429,9 +14664,10 @@ ${item.erpCode}`,
               }),
             selectedIds &&
               React.createElement(
-                "div",
+                "button",
                 {
-                  className: `absolute top-1 left-1 z-30 ${selectedIds.includes(item.id) ? "opacity-100" : "opacity-0 group-hover:opacity-100"} transition-opacity`,
+                  type: "button", "aria-pressed": selectedIds.includes(item.id), "aria-label": `Select ${item.displayName || item.name || item.erpCode || "colour"}`, "data-sel-tick": "",
+                  className: `absolute top-1 left-1 z-30 focus:opacity-100 ${selectedIds.includes(item.id) ? "opacity-100" : "opacity-0 group-hover:opacity-100"} transition-opacity`,
                   onClick: (e) => {
                     e.stopPropagation();
                     setSelectedIds((prev) =>
@@ -13937,6 +15173,7 @@ const ViewPinsInner = ({
   const grp = useGrouping("pins", sortedItems);
   const fvT = useViewFields("pins", "table");
   const [batchOpen, setBatchOpen] = useState(false);
+  const byColour = useCatalogByColour();
   const batchItems = batchOpen ? pinItems.filter((p) => selectedIds.includes(p.id)) : [];
   const applyBatch = (ch) => {
     const ids = batchItems.map((i) => i.id);
@@ -14027,6 +15264,7 @@ const ViewPinsInner = ({
           className: "w-4 h-4",
         }),
       ),
+      catalogView === "table" && React.createElement(CatalogLayoutSwitch),
       React.createElement(
         "div",
         { className: "ml-auto flex items-center gap-2" },
@@ -14071,7 +15309,7 @@ const ViewPinsInner = ({
           "Total: ",
           sortedItems.length,
         ),
-        React.createElement(SwatchLegend, { className: "ml-3" }),
+        React.createElement(SwatchLegend, { className: "ml-3 hidden md:flex" }),
       ),
     ),
     React.createElement(
@@ -14269,7 +15507,16 @@ const ViewPinsInner = ({
               }),
             )
           : null,
-        catalogView === "table" &&
+        catalogView === "table" && byColour &&
+          React.createElement(CatalogByColour, {
+            items: sortedItems, selectedIds, setSelectedIds, fv: fvT,
+            onPick: (it) => handlePointClick([it.L, it.C, it.H], it.spectral, { brand: it.brand, originalIndex: it.originalIndex }),
+            onSet: (id, key, v) => setSavedColors((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], [key]: v } } : prev)),
+            onTags: (id, list) => setDictTags((prev) => { const n = { ...prev }; if (list && list.length) n[id] = list; else delete n[id]; return n; }),
+            dictTags: dictTags || {}, allTags: globalTags || [],
+            onDuplicate: handleDuplicatePin, onRemove: handleUnlock,
+          }),
+        catalogView === "table" && !byColour &&
         grp.map({ limit: tableLimit })((item) =>
           React.createElement(
             "div",
@@ -14503,149 +15750,28 @@ const ViewPinsInner = ({
           ),
         ),
       ),
-      catalogView === "table" &&
+      catalogView === "table" && !byColour &&
         sortedItems.length > tableLimit &&
         React.createElement(LoadMoreSentinel, {
           left: sortedItems.length - tableLimit,
           onMore: () => setTableLimit((n) => n + 150),
         }),
     ),
-    selectedIds.length > 0 &&
-      React.createElement(
-        "div",
-        {
-          className:
-            "absolute bottom-6 left-1/2 -translate-x-1/2 bg-white dark:bg-neutral-800 shadow-xl border border-slate-200 dark:border-neutral-700 rounded-full px-4 py-2 flex items-center gap-4 z-50 animate-in slide-in-from-bottom-4 whitespace-nowrap max-w-[calc(100%-1rem)] overflow-x-auto no-scrollbar",
-        },
-        React.createElement(
-          "span",
-          {
-            className:
-              "text-[11px] font-bold text-slate-700 dark:text-neutral-300 uppercase tracking-wider",
-          },
-          selectedIds.length,
-          " selected",
-        ),
-        React.createElement("div", {
-          className: "w-px h-4 bg-slate-300 dark:bg-neutral-600",
-        }),
-        React.createElement(
-          "div",
-          { className: "flex items-center gap-2" },
-          React.createElement(Icon, {
-            name: "tag",
-            className: "w-3.5 h-3.5 text-slate-400",
-          }),
-          React.createElement(
-            "div",
-            {
-              className:
-                "flex items-center bg-slate-100 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded overflow-hidden",
-            },
-            React.createElement(
-              "select",
-              {
-                className:
-                  "bg-transparent px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider focus:outline-none border-r border-slate-200 dark:border-neutral-700 text-slate-800 dark:text-neutral-200 cursor-pointer appearance-none",
-                onChange: (e) => {
-                  if (e.target.value) {
-                    handleBatchTag(e.target.value);
-                    e.target.value = "";
-                  }
-                },
-              },
-              React.createElement("option", { value: "" }, "Apply..."),
-              globalTags.map((t) =>
-                React.createElement("option", { key: t, value: t }, t),
-              ),
-            ),
-            React.createElement("input", {
-              type: "text",
-              placeholder: "Or new tag...",
-              className:
-                "bg-transparent px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider focus:outline-none focus:bg-white dark:focus:bg-neutral-800 w-24 text-slate-800 dark:text-neutral-200",
-              onKeyDown: (e) => {
-                if (e.key === "Enter" && e.target.value.trim()) {
-                  handleBatchTag(e.target.value.trim());
-                  e.target.value = "";
-                }
-              },
-            }),
-          ),
-          React.createElement("div", {
-            className: "w-px h-4 bg-slate-300 dark:bg-neutral-600 mx-1",
-          }),
-          React.createElement(Icon, {
-            name: "tag",
-            className: "w-3.5 h-3.5 text-slate-400",
-          }),
-          React.createElement(
-            "div",
-            {
-              className:
-                "flex items-center bg-slate-100 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded overflow-hidden",
-            },
-            React.createElement(
-              "select",
-              {
-                className:
-                  "bg-transparent px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider focus:outline-none text-slate-800 dark:text-neutral-200 cursor-pointer appearance-none",
-                onChange: (e) => {
-                  if (e.target.value) {
-                    handleBatchRemoveTag(e.target.value);
-                    e.target.value = "";
-                  }
-                },
-              },
-              React.createElement("option", { value: "" }, "Remove..."),
-              globalTags.map((t) =>
-                React.createElement("option", { key: t, value: t }, t),
-              ),
-            ),
-          ),
-          React.createElement("div", {
-            className: "w-px h-4 bg-slate-300 dark:bg-neutral-600 mx-1",
-          }),
-          React.createElement(
-            "button",
-            {
-              onClick: () => setBatchOpen(true),
-              title: "Edit the selected colours together: specs, notes, tags",
-              className:
-                "px-3 py-1 bg-sky-600 hover:bg-sky-700 text-white text-[10px] font-bold uppercase tracking-wider rounded flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer",
-            },
-            React.createElement(Icon, { name: "pencil-line", className: "w-3.5 h-3.5" }),
-            "Edit",
-          ),
-          batchOpen && batchItems.length > 0 &&
-            React.createElement(BatchEditModal, {
-              kind: "pins", items: batchItems, allTags: globalTags || [],
-              onApply: applyBatch, onClose: () => setBatchOpen(false),
-            }),
-          React.createElement(
-            "button",
-            {
-              onClick: () => {
-                if (onOpenAveryModal) onOpenAveryModal(selectedIds);
-              },
-              className:
-                "px-3 py-1 bg-emerald-500 hover:bg-emerald-600 text-white text-[10px] font-bold uppercase tracking-wider rounded flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer",
-              title: "Print Avery 5159 Labels for selected swatches",
-            },
-            React.createElement(Icon, { name: "printer", className: "w-3.5 h-3.5" }),
-            "Print Labels",
-          ),
-          React.createElement(
-            "button",
-            {
-              onClick: () => setSelectedIds([]),
-              className:
-                "text-[10px] font-bold uppercase tracking-wider text-slate-500 hover:text-slate-700 dark:hover:text-neutral-300 ml-2 px-2 py-1",
-            },
-            "Cancel",
-          ),
-        ),
-      ),
+    batchOpen && batchItems.length > 0 &&
+      React.createElement(BatchEditModal, {
+        kind: "pins", items: batchItems, allTags: globalTags || [],
+        onApply: applyBatch, onClose: () => setBatchOpen(false),
+      }),
+    React.createElement(SelectionBar, {
+      count: selectedIds.length,
+      noun: selectedIds.length === 1 ? "pin selected" : "pins selected",
+      actions: [
+        { icon: "printer", label: "Print labels", onClick: () => onOpenAveryModal && onOpenAveryModal(selectedIds), title: "Print Avery 5159 labels for the selected pins" },
+        { icon: "pencil-line", label: "Edit together", onClick: () => setBatchOpen(true), title: "Edit the selected colours together: specs, notes, tags" },
+      ],
+      tags: { all: globalTags || [], onAdd: handleBatchTag, onRemove: handleBatchRemoveTag },
+      onClear: () => setSelectedIds([]),
+    }),
   );
 };
 const ViewPins = withStableCallbacks(ViewPinsInner);
@@ -20122,7 +21248,7 @@ const App = () => {
       }));
     }
   };
-  const nounInputClass = `name-input w-full bg-transparent text-center text-2xl font-black uppercase tracking-widest focus:outline-none drop-shadow-md -mt-1 pointer-events-auto ${getGlobalDuplicate(names, crosshair?.activeSavedColor?.type === "pin" ? crosshair.activeSavedColor.id : crosshair?.nearestAnchorId, activeName, savedColors, crosshair?.activeSavedColor?.type === "pin" ? !!crosshair.activeSavedColor.nameOverride : true, crosshair?.activeSavedColor?.type === "pin" ? crosshair?.nearestAnchorId : null) ? "!text-red-500" : isPinned && !crosshair?.exactSavedColor.nameOverride ? "opacity-40 italic" : ""}`;
+  const nounInputClass = `name-input w-full bg-transparent text-left text-[32px] leading-none font-extrabold tracking-tight focus:outline-none drop-shadow-sm pointer-events-auto ${getGlobalDuplicate(names, crosshair?.activeSavedColor?.type === "pin" ? crosshair.activeSavedColor.id : crosshair?.nearestAnchorId, activeName, savedColors, crosshair?.activeSavedColor?.type === "pin" ? !!crosshair.activeSavedColor.nameOverride : true, crosshair?.activeSavedColor?.type === "pin" ? crosshair?.nearestAnchorId : null) ? "!text-red-500" : isPinned && !crosshair?.exactSavedColor.nameOverride ? "opacity-40 italic" : ""}`;
   let deltaEOK = null;
   let deltaE2000 = null;
   if (compSlotA && compSlotB) {
@@ -20552,6 +21678,7 @@ const ViewDatabase = ({
   onMakeAnchors,
 }) => {
   useDisplayGamut();
+  const matchMode = useMatchMode();
   const [anchorNote, setAnchorNote] = useState("");
   const dataForUpdates = fullColorData || colorData;
   // Sort now lives in the global bar; this stays as the fallback for the
@@ -21614,6 +22741,7 @@ const ViewDatabase = ({
       React.createElement(
         "div",
         { className: "flex flex-wrap items-center gap-2" },
+        React.createElement(MatchModeSwitch),
         React.createElement(BrandMenu, {
           brands: allBrands,
           brandLabel: getBrandDisplayName,
@@ -21738,7 +22866,7 @@ const ViewDatabase = ({
           " ",
           "matching",
         ),
-        React.createElement(SwatchLegend, { className: "ml-3" }),
+        React.createElement(SwatchLegend, { className: "ml-3 hidden md:flex" }),
       ),
     ),
     openFilterCol &&
@@ -21746,9 +22874,22 @@ const ViewDatabase = ({
         className: "fixed inset-0 z-40 bg-transparent",
         onClick: () => setOpenFilterCol(null),
       }),
+    matchMode === "line" &&
+      React.createElement(
+        "div",
+        { "data-line-to-line": "", className: "flex-1 overflow-y-auto custom-scrollbar p-4" },
+        React.createElement(
+          "div",
+          { className: "max-w-4xl mx-auto" },
+          React.createElement(CrossReference2, {
+            colorData: dataForUpdates, onSelectColor: handlePointClick,
+            cursor: crosshair ? [crosshair.rawL, crosshair.rawC, crosshair.rawH] : [0.5, 0, 0], ctx: sameGroupContext, wide: true,
+          }),
+        ),
+      ),
     React.createElement(
       "div",
-      { "data-print-view": "db", className: "flex-1 overflow-y-auto custom-scrollbar relative p-4" },
+      { "data-print-view": "db", className: `flex-1 overflow-y-auto custom-scrollbar relative p-4 ${matchMode === "line" ? "hidden" : ""}` },
       (() => {
         const activeCols = Object.keys(columnFilters).filter(isColumnFiltered);
         if (activeCols.length === 0) return null;
@@ -22449,9 +23590,10 @@ const ViewDatabase = ({
                       "absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-emerald-500 z-10",
                   }),
                 React.createElement(
-                  "div",
+                  "button",
                   {
-                    className: "absolute top-1 left-1 z-30",
+                    type: "button", "aria-pressed": !!selectedIds?.includes(item.id), "aria-label": `Select ${item.name || item.erpCode || "colour"}`, "data-sel-tick": "",
+                    className: "absolute top-1 left-1 z-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 rounded",
                     onClick: (e) => {
                       e.stopPropagation();
                       if (selectedIds) {
@@ -22519,7 +23661,9 @@ const ViewDatabase = ({
                     }),
                   ),
                 ),
-                swatchZoom >= 1 && fv.on("name") &&
+                fv.on("deltaE") && item._d !== void 0 && swatchZoom >= 0.9 &&
+                  React.createElement(ClosenessChip, { d: item._d, zoom: swatchZoom, className: "absolute right-1.5 bottom-1.5 z-10" }),
+                false &&
                   React.createElement(
                     "div",
                     {
@@ -22560,9 +23704,15 @@ const ViewDatabase = ({
                 "div",
                 {
                   className:
-                    "flex flex-col items-center text-center px-0.5 pb-2 w-full",
+                    "flex flex-col items-start text-left px-0.5 pb-2 w-full",
                 },
-                fv.on("deltaE") && item._d !== void 0 &&
+                fv.on("name") &&
+                  React.createElement(
+                    "span",
+                    { className: "w-full font-semibold text-slate-900 dark:text-neutral-100 leading-tight line-clamp-2 break-words", style: { fontSize: `${Math.max(9, 6.4 * swatchZoom)}px` }, title: item.displayName },
+                    item.displayName,
+                  ),
+                false && fv.on("deltaE") && item._d !== void 0 &&
                   React.createElement(
                     "div",
                     {
@@ -22595,7 +23745,7 @@ const ViewDatabase = ({
                           target: "_blank",
                           rel: "noopener noreferrer",
                           className:
-                            "hover:text-sky-500 flex items-center justify-center gap-1 drop-shadow-sm",
+                            "hover:text-sky-500 inline-flex items-center gap-1",
                           onClick: (e) => e.stopPropagation(),
                         },
                         React.createElement(Icon, {
@@ -22611,9 +23761,9 @@ const ViewDatabase = ({
                 React.createElement(
                   "span",
                   {
-                    style: { fontSize: `${Math.max(4, 5 * swatchZoom)}px` },
+                    style: { fontSize: `${Math.max(8, 5.2 * swatchZoom)}px` },
                     className:
-                      "text-slate-400 uppercase font-bold tracking-widest truncate w-full mt-1",
+                      "text-slate-500 dark:text-neutral-400 font-medium truncate w-full",
                   },
                   getBrandDisplayName(item.brand),
                 ),
@@ -22644,143 +23794,37 @@ const ViewDatabase = ({
           onMore: () => setListLimit((n) => n + 300),
         }),
     ),
-    selectedIds &&
-      selectedIds.length > 0 &&
-      React.createElement(
-        "div",
-        {
-          className:
-            "absolute bottom-6 left-1/2 -translate-x-1/2 bg-white dark:bg-neutral-800 shadow-xl border border-slate-200 dark:border-neutral-700 rounded-full px-4 py-2 flex items-center gap-4 z-50 animate-in slide-in-from-bottom-4 whitespace-nowrap max-w-[calc(100%-1rem)] overflow-x-auto no-scrollbar",
-        },
-        React.createElement(
-          "span",
-          {
-            className:
-              "text-[11px] font-bold text-slate-700 dark:text-neutral-300 uppercase tracking-wider",
+    batchOpen && batchItems.length > 0 &&
+      React.createElement(BatchEditModal, {
+        kind: "db", items: batchItems, allTags: globalTags || [],
+        onApply: applyBatch, onClose: () => setBatchOpen(false),
+      }),
+    React.createElement(SelectionBar, {
+      count: (selectedIds || []).length,
+      actions: [
+        { icon: "printer", label: "Print labels", onClick: () => onOpenAveryModal && onOpenAveryModal(selectedIds), title: "Print Avery 5159 labels for the selected colours" },
+        onMakeAnchors && {
+          icon: "anchor", label: "Make anchors", title: "Turn the selected colours into anchors named after them",
+          onClick: () => {
+            const sel = new Set(selectedIds || []);
+            const list = sortedItems.filter((it) => sel.has(it.id));
+            if (!list.length) return;
+            setConfirmState({
+              confirmLabel: "Make anchors",
+              message: `Make ${list.length} anchor${list.length === 1 ? "" : "s"} from the selected colours? Each takes the colour's name and position; names already used by an anchor are skipped.`,
+              onConfirm: () => {
+                const r = onMakeAnchors(list);
+                setAnchorNote(`${r.added} anchor${r.added === 1 ? "" : "s"} added${r.skipped - (r.pinGuard || 0) ? `, ${r.skipped - (r.pinGuard || 0)} skipped (name already an anchor)` : ""}${r.pinGuard ? `, ${r.pinGuard} skipped (would rename a catalog pin)` : ""}`);
+                setTimeout(() => setAnchorNote(""), 6000);
+              },
+            });
           },
-          selectedIds.length,
-          " selected",
-        ),
-        React.createElement("div", {
-          className: "w-px h-4 bg-slate-300 dark:bg-neutral-600",
-        }),
-        React.createElement(
-          "div",
-          { className: "flex items-center gap-2" },
-          React.createElement(Icon, {
-            name: "tag",
-            className: "w-3.5 h-3.5 text-slate-400",
-          }),
-          React.createElement(
-            "div",
-            {
-              className:
-                "flex items-center bg-slate-100 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded overflow-hidden",
-            },
-            React.createElement(
-              "select",
-              {
-                className:
-                  "bg-transparent px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider focus:outline-none border-r border-slate-200 dark:border-neutral-700 text-slate-800 dark:text-neutral-200 cursor-pointer appearance-none",
-                onChange: (e) => {
-                  if (e.target.value) {
-                    handleBatchTag(e.target.value);
-                    e.target.value = "";
-                  }
-                },
-              },
-              React.createElement("option", { value: "" }, "Apply..."),
-              globalTags.map((t) =>
-                React.createElement("option", { key: t, value: t }, t),
-              ),
-            ),
-            React.createElement("input", {
-              type: "text",
-              placeholder: "Or new tag...",
-              className:
-                "bg-transparent px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider focus:outline-none focus:bg-white dark:focus:bg-neutral-800 w-24 text-slate-800 dark:text-neutral-200",
-              onKeyDown: (e) => {
-                if (e.key === "Enter" && e.target.value.trim()) {
-                  handleBatchTag(e.target.value.trim());
-                  e.target.value = "";
-                }
-              },
-            }),
-          ),
-          React.createElement("div", {
-            className: "w-px h-4 bg-slate-300 dark:bg-neutral-600 mx-1",
-          }),
-          React.createElement(Icon, {
-            name: "tag",
-            className: "w-3.5 h-3.5 text-slate-400",
-          }),
-          React.createElement(
-            "div",
-            {
-              className:
-                "flex items-center bg-slate-100 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded overflow-hidden",
-            },
-            React.createElement(
-              "select",
-              {
-                className:
-                  "bg-transparent px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider focus:outline-none text-slate-800 dark:text-neutral-200 cursor-pointer appearance-none",
-                onChange: (e) => {
-                  if (e.target.value) {
-                    handleBatchRemoveTag(e.target.value);
-                    e.target.value = "";
-                  }
-                },
-              },
-              React.createElement("option", { value: "" }, "Remove..."),
-              globalTags.map((t) =>
-                React.createElement("option", { key: t, value: t }, t),
-              ),
-            ),
-          ),
-          React.createElement("div", {
-            className: "w-px h-4 bg-slate-300 dark:bg-neutral-600 mx-1",
-          }),
-          React.createElement(
-            "button",
-            {
-              onClick: () => setBatchOpen(true),
-              title: "Edit the selected colours together: specs, notes, tags",
-              className:
-                "px-3 py-1 bg-sky-600 hover:bg-sky-700 text-white text-[10px] font-bold uppercase tracking-wider rounded flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer",
-            },
-            React.createElement(Icon, { name: "pencil-line", className: "w-3.5 h-3.5" }),
-            "Edit",
-          ),
-          batchOpen && batchItems.length > 0 &&
-            React.createElement(BatchEditModal, {
-              kind: "db", items: batchItems, allTags: globalTags || [],
-              onApply: applyBatch, onClose: () => setBatchOpen(false),
-            }),
-          React.createElement(
-            "button",
-            {
-              onClick: () => {
-                if (onOpenAveryModal) onOpenAveryModal(selectedIds);
-              },
-              className:
-                "px-3 py-1 bg-emerald-500 hover:bg-emerald-600 text-white text-[10px] font-bold uppercase tracking-wider rounded flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer",
-              title: "Print Avery 5159 Labels for selected swatches",
-            },
-            React.createElement(Icon, { name: "printer", className: "w-3.5 h-3.5" }),
-            "Print Labels",
-          ),
-          React.createElement(
-            "button",
-            {
-              onClick: () => setSelectedIds([]),
-              className:
-                "text-[10px] font-bold uppercase tracking-wider text-slate-500 hover:text-slate-700 dark:hover:text-neutral-300 ml-2 px-2 py-1",
-            },
-            "Cancel",
-          ),
-        ),
-      ),
+        },
+        { icon: "pencil-line", label: "Edit together", onClick: () => setBatchOpen(true), title: "Edit the selected colours together: specs, notes, tags" },
+      ],
+      tags: { all: globalTags || [], onAdd: handleBatchTag, onRemove: handleBatchRemoveTag },
+      onClear: () => setSelectedIds([]),
+    }),
     fullscreenImage &&
       ReactDOM.createPortal(
         React.createElement(
@@ -23705,10 +24749,10 @@ const AppUI = ({
             key: d.id,
             onClick: go,
             "aria-current": on,
-            className: `flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider whitespace-nowrap transition-colors ${
+            className: `flex items-center gap-1.5 h-9 px-3 rounded-[10px] text-[13px] font-semibold whitespace-nowrap transition-colors ${
               on
-                ? "bg-slate-800 text-white dark:bg-neutral-100 dark:text-neutral-900"
-                : "text-slate-500 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-800"
+                ? "bg-white dark:bg-neutral-900 text-slate-900 dark:text-neutral-100 shadow-sm"
+                : "text-slate-500 dark:text-neutral-400 hover:text-slate-800 dark:hover:text-neutral-200"
             }`,
           },
           icon,
@@ -23722,7 +24766,7 @@ const AppUI = ({
             key: d.id,
             onClick: go,
             "aria-current": on && !mobilePanelsOpen,
-            className: `flex-1 flex flex-col items-center gap-0.5 py-2 text-[10px] font-bold uppercase tracking-wider transition-colors ${
+            className: `flex-1 flex flex-col items-center gap-1 pt-2.5 pb-2 text-[11px] font-semibold transition-colors ${
               on && !mobilePanelsOpen
                 ? "text-slate-900 dark:text-neutral-100"
                 : "text-slate-400 dark:text-neutral-500"
@@ -24113,9 +25157,50 @@ const AppUI = ({
       window.print();
     }
   };
+  const searchCommands = [
+    { label: "Print labels", icon: "printer", keys: "avery label print sheet", run: () => setShowAveryModal(true) },
+    { label: "Export CSV files", icon: "download", keys: "download backup", run: handleSystemExport },
+    {
+      label: "Import a CSV file", icon: "upload", keys: "open load brand",
+      run: () => { const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".csv,text/csv"; inp.onchange = (e) => handleImportCSV(e); inp.click(); },
+    },
+    { label: "Save a snapshot (.html)", icon: "save", keys: "backup state", run: handleSaveApp },
+    { label: "Sync to GitHub", icon: "cloud-upload", keys: "push commit repo", run: () => setShowGithubModal(true) },
+    { label: "Linked CSV files", icon: "folder", keys: "files manage", run: () => setShowFileManager(true) },
+    { label: theme === "dark" ? "Light mode" : "Dark mode", icon: theme === "dark" ? "sun" : "moon", keys: "theme appearance", run: () => setTheme(theme === "dark" ? "light" : "dark") },
+    { label: "How colour works here", icon: "help-circle", keys: "help guide oklch", run: () => setShowHelpPanel(true) },
+    { label: "Go to Explore", icon: "compass", keys: "space plane 3d", run: () => setActiveTab("3d") },
+    { label: "Go to Match", icon: "shuffle", keys: "commercial brands", run: () => setActiveTab("db") },
+    { label: "Go to Catalog", icon: "map-pin", keys: "pins", run: () => setActiveTab("pins") },
+    { label: "Go to Anchors", icon: "anchor", keys: "names", run: () => setActiveTab("anchors") },
+    { label: "Go to Colour groups", icon: "layers", keys: "words families", run: () => setActiveTab("groups") },
+    spectroStore.get().host && { label: "Measure with the spectrophotometer", icon: "scan-line", keys: "nix spectro read", run: () => spectroStore.get().conn === "connected" ? spectroStore.measure() : window.dispatchEvent(new CustomEvent("csam-inspector-tab", { detail: "spectrum" })) },
+  ].filter(Boolean);
+  const libraryItems = [
+    { label: "Linked CSV files", hint: "What loads when the app starts", icon: "folder", onClick: () => setShowFileManager(true) },
+    { label: "Import a CSV", hint: "Brands, pins or anchors", icon: "upload", file: true, accept: ".csv,text/csv,application/csv,text/comma-separated-values,application/vnd.ms-excel", onFile: handleImportCSV },
+    { label: "Export CSV files", icon: "download", onClick: handleSystemExport },
+    { label: "Save a snapshot", hint: "One .html file with everything in it", icon: "save", onClick: handleSaveApp },
+    { label: "Sync to GitHub", hint: (syncStatus && syncStatus.message) || "Push your CSVs to the repo", icon: "cloud-upload", onClick: () => setShowGithubModal(true) },
+    { divider: true },
+    { label: theme === "dark" ? "Light mode" : "Dark mode", icon: theme === "dark" ? "sun" : "moon", onClick: () => setTheme(theme === "dark" ? "light" : "dark") },
+    { label: "How colour works here", hint: "Guide and OKLCH basics", icon: "help-circle", onClick: () => setShowHelpPanel(true) },
+  ];
+  const onTopMeasure = () => {
+    const st = spectroStore.get();
+    if (st.conn === "connected") { spectroStore.measure(); return; }
+    window.dispatchEvent(new CustomEvent("csam-inspector-tab", { detail: "spectrum" }));
+    setMobilePanelsOpen(true);
+  };
   return React.createElement(
     "div",
-    { className: "flex flex-col md:flex-row h-screen overflow-hidden", style: { height: "100dvh" } },
+    { className: `flex flex-col md:grid md:grid-cols-[24rem_minmax(0,1fr)] md:grid-rows-[auto_minmax(0,1fr)] h-screen ${mobilePanelsOpen ? "overflow-y-auto md:overflow-hidden" : "overflow-hidden"}`, style: { height: "100dvh" } },
+    React.createElement(AppTopBar, {
+      nav: renderDestinations("top"), searchQuery, setSearchQuery,
+      onUndo: handleUndo, onRedo: handleRedo, canUndo, canRedo,
+      syncStatus, onSync: () => setShowGithubModal(true),
+      library: libraryItems, onMeasure: onTopMeasure,
+    }),
     React.createElement(
       "div",
       {
@@ -24123,19 +25208,19 @@ const AppUI = ({
         // sliders and the accordion in one column. `contents` keeps the
         // stacked phone layout untouched.
         className:
-          "contents md:flex md:flex-col md:w-[24rem] md:shrink-0 md:h-screen md:overflow-y-auto md:border-r md:border-slate-200 md:dark:border-neutral-800 custom-scrollbar",
+          "contents md:flex md:flex-col md:w-[24rem] md:shrink-0 md:h-full md:min-h-0 md:overflow-y-auto md:border-r md:border-slate-200 md:dark:border-neutral-800 custom-scrollbar",
       },
     React.createElement(
       "header",
       {
         className:
-          `shrink-0 bg-white dark:bg-neutral-900 border-b border-slate-200 dark:border-neutral-800 relative ${searchQuery ? "z-[98]" : "z-30"} md:border-b-0 ${mobilePanelsOpen ? "max-h-[38dvh]" : "max-h-[52dvh]"} overflow-y-auto md:max-h-none md:overflow-visible custom-scrollbar`,
+          `shrink-0 bg-white dark:bg-neutral-900 border-b border-slate-200 dark:border-neutral-800 relative ${searchQuery ? "z-[98]" : "z-30"} md:border-b-0 ${mobilePanelsOpen ? "" : "hidden md:block"} md:max-h-none md:overflow-visible custom-scrollbar`,
       },
       React.createElement(
         "div",
         {
           className:
-            "p-4 border-b border-slate-200 dark:border-neutral-800 flex flex-col gap-3 sticky top-0 bg-white/95 dark:bg-neutral-900/95 backdrop-blur z-20",
+            "hidden",
         },
         React.createElement(
           "div",
@@ -24321,7 +25406,7 @@ const AppUI = ({
           "aria-expanded": headerExpanded,
           title: headerExpanded ? "Collapse color panel" : "Expand color panel",
           className:
-            "md:hidden w-full flex items-center gap-3 px-4 py-2 border-b border-slate-200 dark:border-neutral-800 text-left",
+            "hidden",
         },
         React.createElement("span", {
           className:
@@ -24363,8 +25448,9 @@ const AppUI = ({
         {
           // On a phone the card and sliders are what push the content off
           // screen, so they collapse to a one-line strip by default.
-          className: `${headerExpanded ? "block" : "hidden"} md:block`,
+          className: "block",
         },
+        React.createElement(PhoneSheetHeader, { onDone: () => setMobilePanelsOpen(false) }),
             React.createElement(
               "div",
               { className: "p-3 bg-white dark:bg-neutral-900" },
@@ -24372,7 +25458,7 @@ const AppUI = ({
                 "div",
                 {
                   className:
-                    "h-44 w-full relative rounded-2xl shadow-inner border border-black/5 dark:border-white/5 overflow-hidden transition-colors duration-300",
+                    "h-48 w-full relative rounded-2xl shadow-inner border border-black/5 dark:border-white/5 overflow-hidden transition-colors duration-300",
                   style: sw3d.on ? { background: swBackdrop } : { backgroundColor: DisplayGamut.css(scrubL, scrubC, scrubH, crosshairHex) },
                 },
                 sw3d.on &&
@@ -24417,15 +25503,15 @@ const AppUI = ({
                     "div",
                     { className: "flex items-center gap-2" },
                     React.createElement(Swatch3DToggle, { on: !!sw3d.on, onChange: (v) => setSw3d({ on: v }), ink: swInk }),
-                    React.createElement(
-                      "div",
-                      {
-                        className: sw3d.on
-                          ? "text-xs font-black tracking-tight font-mono"
-                          : "text-xl font-black tracking-tight drop-shadow-md font-mono",
-                      },
-                      crosshair?.activeErpCode || "",
-                    ),
+                    sw3d.on
+                      ? React.createElement("div", { className: "text-xs font-black tracking-tight font-mono" }, crosshair?.activeErpCode || "")
+                      : React.createElement(
+                          "span",
+                          { className: "px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider", style: { background: "rgba(251,247,242,.9)", color: "#010D00" }, "data-loupe-kind": "" },
+                          crosshair?.activeSavedColor?.type === "pin" ? "Catalog pin"
+                            : crosshair?.activeCommercial ? getBrandDisplayName(crosshair.activeCommercial.brand)
+                            : isAnchorHere ? "Anchor" : "Nearest name",
+                        ),
                   ),
                   sw3d.on && (activeName || swMat.name) &&
                     React.createElement("div", { className: "mt-0.5 text-[10px] font-bold uppercase tracking-widest opacity-80 truncate max-w-[220px]" }, activeName || swMat.name),
@@ -24475,6 +25561,7 @@ const AppUI = ({
                     "button",
                     {
                       onClick: toggleAnchorHere,
+                      "aria-pressed": !!isAnchorHere,
                       className: `p-1.5 rounded-lg transition-colors ${isAnchorHere ? "opacity-100" : "opacity-60 hover:opacity-100"}`,
                       title: isAnchorHere
                         ? "Remove the anchor here"
@@ -24489,6 +25576,7 @@ const AppUI = ({
                     "button",
                     {
                       onClick: togglePin,
+                      "aria-pressed": !!isPinned,
                       className: `p-1.5 rounded-lg transition-colors ${isPinned ? "opacity-100" : "opacity-60 hover:opacity-100"}`,
                       title: isPinned
                         ? "Remove Free Pin"
@@ -24503,6 +25591,8 @@ const AppUI = ({
                     "button",
                     {
                       onClick: () => setShowFullscreenPreview(true),
+                      title: "Full screen",
+                      "aria-label": "Full screen",
                       className:
                         "p-1.5 rounded-lg transition-colors opacity-60 hover:opacity-100",
                     },
@@ -24528,14 +25618,14 @@ const AppUI = ({
                   "div",
                   {
                     className:
-                      "absolute inset-0 flex flex-col items-center justify-center p-6 mt-1 z-20 pointer-events-none",
+                      "absolute left-5 right-24 bottom-3.5 flex flex-col items-start justify-end z-20 pointer-events-none",
                     style: { color: swInk },
                   },
                   React.createElement(
                     "div",
                     {
                       className:
-                        "relative w-full flex justify-center items-center group/noun",
+                        "relative w-full flex justify-start items-center group/noun",
                     },
                     React.createElement("input", {
                       type: "text",
@@ -24561,9 +25651,8 @@ const AppUI = ({
                         }),
                       ),
                   ),
-                  crosshair?.snapDist > 1e-4 &&
-                    crosshair?.snapTarget &&
-                    !crosshair.exactSavedColor &&
+                  React.createElement("div", { className: "mt-1.5 text-sm font-bold font-mono drop-shadow-sm", "data-loupe-code": "" }, crosshair?.activeErpCode || ""),
+                  false &&
                     React.createElement(
                       "button",
                       {
@@ -24591,7 +25680,7 @@ const AppUI = ({
                       (crosshair.snapDist * 100).toFixed(2),
                     ),
                 ),
-                !sw3d.on && React.createElement(
+                false && React.createElement(
                   "div",
                   {
                     className:
@@ -24637,8 +25726,23 @@ const AppUI = ({
               "div",
               {
                 className:
-                  "p-5 flex flex-col gap-6 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900",
+                  "px-5 pb-4 pt-1 flex flex-col gap-5 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900",
               },
+              (crosshair?.activeSpectral || isOutOfGamut || (crosshair?.snapDist > 1e-4 && crosshair?.snapTarget && !crosshair.exactSavedColor)) && React.createElement(
+                "div",
+                { className: "flex flex-col gap-2.5", "data-loupe-meta": "" },
+                React.createElement(
+                  "div",
+                  { className: "flex flex-wrap items-center gap-1.5" },
+                  crosshair?.activeSpectral && React.createElement(LoupeChip, { icon: "activity", title: "Has a measured spectrum" }, "Spectral"),
+                  isOutOfGamut && React.createElement(LoupeChip, { icon: "alert-triangle", tone: "warn" }, `Out of ${DisplayGamut.label}`),
+                  crosshair?.snapDist > 1e-4 && crosshair?.snapTarget && !crosshair.exactSavedColor &&
+                    React.createElement(LoupeChip, {
+                      icon: "magnet", tone: "action", title: "Move onto the nearest anchor or pin",
+                      onClick: () => handleUpdate([crosshair.snapTarget.L, crosshair.snapTarget.C, crosshair.snapTarget.H]),
+                    }, `Snap · ΔEok ${(crosshair.snapDist * 100).toFixed(2)}`),
+                ),
+              ),
               React.createElement(SliderGroup, {
                 label: "Lightness",
                 value: scrubL,
@@ -24770,12 +25874,12 @@ const AppUI = ({
         "aside",
         {
           className: `w-full md:w-auto flex-col bg-white dark:bg-neutral-900 z-10 ${
-            mobilePanelsOpen ? "flex flex-1 min-h-0" : "hidden"
-          } md:flex md:flex-none md:h-auto overflow-y-auto md:overflow-y-visible custom-scrollbar`,
+            mobilePanelsOpen ? "flex flex-none" : "hidden"
+          } md:flex md:flex-none md:h-auto overflow-visible`,
         },
       React.createElement(
-            React.Fragment,
-            null,
+            InspectorTabs,
+            { dots: { spectrum: crosshair?.activeSpectral ? "has a measured spectrum" : null, notes: dictNotes?.[crosshair?.nearestAnchorId] ? "has a note" : null } },
             React.createElement(
               CollapsiblePanel,
               {
@@ -25715,13 +26819,13 @@ const AppUI = ({
       "div",
       {
         className:
-          "contents md:flex md:flex-col md:flex-1 md:min-w-0 md:h-screen",
+          "contents md:flex md:flex-col md:flex-1 md:min-w-0 md:h-full md:min-h-0",
       },
     React.createElement(
       "div",
       {
         className:
-          "hidden md:flex shrink-0 items-center gap-2 px-4 py-1.5 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 relative z-20",
+          "hidden",
       },
       React.createElement(
         "div",
@@ -25820,7 +26924,7 @@ const AppUI = ({
         "div",
         {
           className:
-            "flex flex-col md:flex-row md:items-center md:justify-between gap-1 px-4 pt-3 md:pt-4 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 z-10 flex-shrink-0",
+            `${destForTab(activeTab).tabs.length < 2 ? "hidden " : ""}flex flex-col md:flex-row md:items-center md:justify-between gap-1 px-4 pt-3 md:pt-4 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 z-10 flex-shrink-0`,
         },
         React.createElement(
           "div",
@@ -26093,6 +27197,21 @@ const AppUI = ({
       ),
     ),
     ),
+    React.createElement(PaletteTray, {
+      items: palette.map((item) => { const info = getPaletteItemInfo(item); return { item, hex: info.hex, name: info.displayName, code: info.erpCode, image: info.image }; }),
+      current: { L: scrubL, C: scrubC, H: scrubH, hex: compactHex },
+      onAdd: addToPalette,
+      onPick: (item) => handleUpdate([item.L, item.C, item.H], item.spectral, item.brand !== undefined ? { brand: item.brand, originalIndex: item.originalIndex } : null),
+      onRemove: removeFromPalette,
+      onReorder: handleReorderPalette,
+      onCompare: (a, b) => { setCompSlotA(a); setCompSlotB(b); setShowCompareFullscreen(true); },
+      onFullscreen: () => setShowFullscreenPalette(true),
+      onPrint: () => { setAveryPrintSourceType("palette"); setSelectedPrintIds(palette.map((item) => item.id)); setShowAveryModal(true); },
+      saved: (savedPalettes || []).map((p) => ({ id: p.id, name: p.name || "Saved palette", count: (p.colors || []).length, swatches: (p.colors || []).slice(0, 5).map((c) => getPaletteItemInfo(c).hex), colors: p.colors || [] })),
+      onSave: (name) => { const np = { id: crypto.randomUUID(), name, colors: [...palette], createdAt: new Date().toISOString() }; setSavedPalettes((prev) => [...(prev || []), np]); setSelectedSavedPaletteId(np.id); },
+      onLoad: (p) => { setPalette(p.colors); setSelectedSavedPaletteId(p.id); },
+      onClear: () => setPalette([]),
+    }),
     ),
     showCompareFullscreen &&
       compSlotA &&
@@ -27182,27 +28301,17 @@ const AppUI = ({
           ),
         ),
       ),
+    !mobilePanelsOpen && React.createElement(PhoneColourBar, {
+      hex: compactHex, name: activeName || sameGroupLabels.noun, code: crosshair?.activeErpCode, family: colorGroup,
+      onOpen: () => setMobilePanelsOpen(true),
+    }),
     React.createElement(
       "nav",
       {
         className:
-          "md:hidden flex shrink-0 border-t border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 order-last z-40 pb-[env(safe-area-inset-bottom)]",
+          "md:hidden flex items-start shrink-0 sticky bottom-0 border-t border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 order-last z-40 pb-[env(safe-area-inset-bottom)]",
       },
-      renderDestinations("bar"),
-      React.createElement(
-        "button",
-        {
-          onClick: () => setMobilePanelsOpen(!mobilePanelsOpen),
-          "aria-current": mobilePanelsOpen,
-          className: `flex-1 flex flex-col items-center gap-0.5 py-2 text-[10px] font-bold uppercase tracking-wider transition-colors ${
-            mobilePanelsOpen
-              ? "text-slate-900 dark:text-neutral-100"
-              : "text-slate-400 dark:text-neutral-500"
-          }`,
-        },
-        React.createElement(Icon, { name: "panel-right", className: "w-4 h-4" }),
-        "Tools",
-      ),
+      ...(() => { const d = renderDestinations("bar"); return [d[0], d[1], React.createElement(PhoneShutter, { key: "shutter", onPress: onTopMeasure }), d[2], d[3]]; })(),
     ),
     searchQuery &&
       ReactDOM.createPortal(
@@ -27258,6 +28367,7 @@ const AppUI = ({
               React.createElement(
                   "div",
                   { className: "flex-1 overflow-y-auto p-2 flex flex-col gap-1" },
+                  React.createElement(CommandMatches, { query: searchQuery, commands: searchCommands, onGoColour: (c) => handleUpdate([c.L, c.C, c.H]), onDone: () => setSearchQuery("") }),
                   searchResults.length === 0
                     ? React.createElement(
                         "div",
@@ -27410,7 +28520,7 @@ const AppUI = ({
             "div",
             {
               className:
-                "bg-white dark:bg-neutral-900 text-slate-800 dark:text-neutral-100 rounded-2xl w-full max-w-5xl h-[90dvh] shadow-2xl flex flex-col border border-slate-200 dark:border-neutral-800 overflow-hidden",
+                "bg-white dark:bg-neutral-900 text-slate-800 dark:text-neutral-100 rounded-2xl w-full max-w-6xl h-[90dvh] shadow-2xl flex flex-col border border-slate-200 dark:border-neutral-800 overflow-hidden",
             },
             // Header
             React.createElement(
@@ -27442,14 +28552,14 @@ const AppUI = ({
               "div",
               {
                 className:
-                  "flex-1 flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-slate-200 dark:divide-neutral-800 overflow-hidden",
+                  "flex-1 min-h-0 flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-slate-200 dark:divide-neutral-800 overflow-y-auto md:overflow-hidden",
               },
               // Left Panel (Design & Settings)
               React.createElement(
                 "div",
                 {
                   className:
-                    "w-full md:w-[360px] p-5 overflow-y-auto flex flex-col gap-5 bg-slate-50/50 dark:bg-neutral-900/10 custom-scrollbar",
+                    "w-full md:w-[360px] shrink-0 order-last md:order-none p-5 md:overflow-y-auto flex flex-col gap-5 bg-slate-50/50 dark:bg-neutral-900/10 custom-scrollbar",
                 },
                 React.createElement(
                   "div",
@@ -27539,7 +28649,7 @@ const AppUI = ({
                 "div",
                 {
                   className:
-                    "flex-1 p-5 overflow-y-auto flex flex-col lg:flex-row gap-6 custom-scrollbar bg-white dark:bg-neutral-900",
+                    "shrink-0 md:shrink md:flex-1 md:min-w-0 p-5 md:overflow-y-auto flex flex-col lg:flex-row gap-6 custom-scrollbar bg-white dark:bg-neutral-900",
                 },
                 // Selection list
                 React.createElement(
@@ -27571,7 +28681,7 @@ const AppUI = ({
                           },
                           className: `flex-1 py-1 px-2.5 rounded transition-colors text-center cursor-pointer ${
                             averyPrintSourceType === src.id || (averyPrintSourceType === "commercial" && src.id === "db")
-                              ? "bg-white dark:bg-neutral-700 text-sky-600 dark:text-sky-400 shadow-sm font-extrabold"
+                              ? "bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900 shadow-sm font-extrabold"
                               : "text-slate-500 hover:text-slate-700 dark:text-neutral-400 dark:hover:text-neutral-200"
                           }`,
                         },
@@ -27719,74 +28829,27 @@ const AppUI = ({
                     })
                   )
                 ),
-                // Visual Sheet preview container
+                // The sheet as it will print
                 React.createElement(
                   "div",
-                  { className: "w-full lg:w-[280px] flex flex-col gap-3 justify-center items-center" },
-                  React.createElement(
-                    "h4",
-                    { className: "font-semibold text-xs uppercase tracking-wider text-slate-400 text-center w-full animate-pulse-none" },
-                    "First Sheet Layout"
-                  ),
-                  React.createElement(
-                    "div",
-                    {
-                      className:
-                        "relative w-full aspect-[8.5/11] bg-slate-100 dark:bg-neutral-950/45 p-1.5 border border-slate-300 dark:border-neutral-800 rounded-lg shadow-inner max-w-[240px] flex flex-col gap-0.5 justify-between",
-                    },
-                    // Grid template for 14 slots
-                    React.createElement(
-                      "div",
-                      { className: "grid grid-cols-2 grid-rows-7 gap-1 h-full w-full" },
-                      Array.from({ length: 14 }).map((_, slotIdx) => {
-                        const printPages = generateAveryPages();
-                        const firstPageColors = printPages[0] || Array(14).fill(null);
-                        const maybeItem = firstPageColors[slotIdx];
-                        const isStart = printStartIndex === slotIdx + 1;
-                        let cellBg = "bg-white/80 dark:bg-neutral-800/10 text-slate-400";
-                        let innerText = "";
-                        let colorHex = null;
-                        
-                        if (maybeItem) {
-                          const info = getPaletteItemInfo(maybeItem);
-                          colorHex = info.hex;
-                          innerText = info.displayName;
-                        } else if (slotIdx + 1 < printStartIndex) {
-                          cellBg = "bg-slate-300/40 dark:bg-neutral-900/40 text-slate-400/50 line-through";
-                          innerText = "Skip";
-                        } else {
-                          innerText = "Empty";
-                        }
-                        
-                        return React.createElement(
-                          "div",
-                          {
-                            key: slotIdx,
-                            onClick: () => setPrintStartIndex(slotIdx + 1),
-                            className: `relative flex flex-col justify-center items-center p-0.5 text-[8px] font-bold rounded cursor-pointer transition-all border overflow-hidden select-none ${isStart ? "border-sky-500 ring-2 ring-sky-500/50 z-10" : "border-slate-200 dark:border-neutral-800/50 hover:border-slate-400 dark:hover:border-neutral-600"} ${cellBg}`,
-                            style: colorHex ? { backgroundColor: colorHex, color: new Color(colorHex).L > 0.65 ? "#000" : "#fff" } : {},
-                            title: `Slot ${slotIdx + 1}. Click to set as starting label.`,
-                          },
-                          React.createElement(
-                            "div",
-                            { className: "truncate max-w-full text-[7px]" },
-                            innerText
-                          ),
-                          isStart &&
-                            React.createElement(
-                              "div",
-                              { className: "absolute bottom-0 right-0 bg-sky-500 text-white rounded-tl px-0.5 text-[6px] text-center" },
-                              "Start"
-                            )
-                        );
-                      })
-                    )
-                  ),
-                  React.createElement(
-                    "p",
-                    { className: "text-[10px] text-slate-400 text-center italic leading-tight" },
-                    "Slots 1\u201314 on Sheet 1. Checked colors are filled sequentially starting at 'Start'. Click slots to reposition."
-                  )
+                  { className: "w-full lg:w-[380px] shrink-0 flex flex-col order-first lg:order-none" },
+                  (() => {
+                    const pages = generateAveryPages();
+                    const slots = (pages[0] || Array(14).fill(null)).map((item) => {
+                      if (!item) return null;
+                      const info = getPaletteItemInfo(item);
+                      const config = printConfigs[item.id] || {};
+                      const sheen = config.sheen ?? (info.sheen || null) ?? printLabelSheen;
+                      const material = config.material ?? (info.material || null) ?? printLabelMaterial;
+                      const visual = config.visualTexture ?? (info.visualTexture || null) ?? printLabelVisualTexture;
+                      const tactile = config.tactileTexture ?? (info.tactileTexture || null) ?? printLabelTactileTexture;
+                      const profile = config.doorProfile ?? (info.doorProfile || null) ?? printLabelDoorProfile;
+                      const code = get7DigitOklch(info.L, info.C, info.H);
+                      const ab = (v) => String(v || "").split(" ")[0] || "XX";
+                      return { name: info.displayName, hex: info.hex, code, sheen, material, visual, tactile, profile, id: `${code}-${ab(sheen)}-${ab(visual)}-${ab(tactile)}-${ab(profile)}` };
+                    });
+                    return React.createElement(LabelSheetPreview, { slots, start: printStartIndex, onStart: setPrintStartIndex, borders: printLabelBorders, sheets: pages.length });
+                  })()
                 )
               )
             ),
