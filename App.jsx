@@ -293,6 +293,11 @@ const CollapsiblePanel = ({
     PANEL_OPEN_STATE[title] !== undefined ? PANEL_OPEN_STATE[title] : defaultOpen,
   );
   const panelRef = useRef(null);
+  const wasBare = useRef(bare);
+  useEffect(() => {
+    if (wasBare.current && !bare && PANEL_OPEN_STATE[title] === undefined) setIsOpen(true);
+    wasBare.current = bare;
+  }, [bare]);
   useEffect(() => {
     const open = (e) => {
       if (e.detail !== title) return;
@@ -12259,7 +12264,7 @@ const spectroReadingOf = (m, device) => {
 const spectroRegister = (r) => {
   if (r && Array.isArray(r.spectral))
     SPECTRO_META.set(r.spectral, {
-      measurementMethod: `Spectrophotometer${r.mode ? ` ${r.mode}` : ""}, 400–700 nm${r.demo ? " (demo device)" : ""}`,
+      measurementMethod: `Spectrophotometer${r.mode ? ` ${r.mode}` : ""}, 400–700 nm${r.scans > 1 ? `, average of ${r.scans} scans (MCDM ΔE00 ${(+r.mcdm || 0).toFixed(2)})` : ""}${r.demo ? " (demo device)" : ""}`,
       measurementDate: (() => { const d = new Date(r.at); return isNaN(d) ? "" : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; })(),
       measurementDevice: r.device || "Nix",
       illuminant: "D65",
@@ -12268,6 +12273,63 @@ const spectroRegister = (r) => {
   return r;
 };
 
+// ── Averaging several scans of one sample ─────────────────────────────────
+// Reflectance is averaged wavelength by wavelength (the arithmetic mean of the
+// spectra, as instruments do for multi-point averaging); colour is computed
+// from that mean spectrum. Tristimulus values are linear in reflectance, so
+// this is the same as averaging XYZ, never L*a*b* or hex. Scans without a
+// spectrum fall back to averaging XYZ (D65/2°). Differences are CIEDE2000 on
+// CIELAB D50/2°, and the spread is the MCDM (mean colour difference from the
+// mean) used to quote instrument repeatability.
+const spectroHasSp = (r) => Array.isArray(r && r.spectral) && r.spectral.length === SPECTRO_WL.length;
+const spectroXyzOf = (r) => {
+  if (spectroHasSp(r)) { try { return calculateXYZFromSpectral(r.spectral, 2, "D65"); } catch (e) {} }
+  try { return new Color("oklch", [r.L, r.C, r.H || 0]).to("xyz-d65").coords; } catch (e) { return null; }
+};
+const spectroLabOf = (r) => {
+  if (Array.isArray(r.lab) && r.lab.length === 3 && r.lab.every(isFinite)) return r.lab;
+  if (spectroHasSp(r)) return spectroLabD50(r.spectral);
+  try { return new Color("oklch", [r.L, r.C, r.H || 0]).to("lab").coords; } catch (e) { return null; }
+};
+const spectroDE00 = (a, b) => { try { return a && b ? new Color("lab", a).deltaE(new Color("lab", b), "2000") : NaN; } catch (e) { return NaN; } };
+const spectroMeanOf = (scans) => {
+  const n = scans.length;
+  if (!n) return null;
+  if (scans.every(spectroHasSp)) {
+    const sp = SPECTRO_WL.map((_, i) => +(scans.reduce((t, r) => t + r.spectral[i], 0) / n).toFixed(5));
+    const it = fastItemLch({ spectral: sp });
+    if (it) return { L: it.L, C: it.C, H: isNaN(it.H) ? 0 : it.H, hex: it.hex, spectral: sp, lab: spectroLabD50(sp) };
+  }
+  const xs = scans.map(spectroXyzOf).filter(Boolean);
+  if (!xs.length) return null;
+  const xyz = [0, 1, 2].map((k) => xs.reduce((t, v) => t + v[k], 0) / xs.length);
+  const [L, C, H] = fastXyzToOklch(xyz[0], xyz[1], xyz[2]);
+  const c = new Color("xyz-d65", xyz);
+  return { L, C, H: isNaN(H) ? 0 : H, hex: c.clone().to("srgb").toGamut({ space: "srgb" }).toString({ format: "hex" }), spectral: null, lab: c.to("lab").coords };
+};
+// The running average after each scan, how much each new scan moved it, and
+// how far each scan sits from the final average.
+const spectroSessionOf = (scans) => {
+  if (!scans || !scans.length) return null;
+  const steps = [];
+  let prev = null;
+  scans.forEach((r, i) => {
+    const m = spectroMeanOf(scans.slice(0, i + 1));
+    const lab = m && m.lab;
+    steps.push({ id: r.id, mean: m, change: prev ? spectroDE00(prev, lab) : null });
+    prev = lab;
+  });
+  const mean = steps[steps.length - 1].mean;
+  if (!mean) return null;
+  const dev = scans.map((r) => spectroDE00(spectroLabOf(r), mean.lab));
+  const ok = dev.filter(isFinite);
+  const mcdm = ok.length ? ok.reduce((t, v) => t + v, 0) / ok.length : 0;
+  const last = steps[steps.length - 1].change;
+  return {
+    n: scans.length, mean, steps, dev, mcdm, max: ok.length ? Math.max(...ok) : 0, change: last,
+    stable: scans.length >= 3 && isFinite(last) && last < 0.15,
+  };
+};
 // ── Demo device: answers like the native host, with believable spectra ────
 // Reflectance curves are built from four smooth bumps fitted to a target
 // colour, so the Spectral Response panel shows a realistic shape.
@@ -12314,8 +12376,11 @@ const spectroDemoHost = (emit) => {
     if (cmd === "disconnect") { connected = null; emit({ type: "event", event: "disconnected", status: "SUCCESS" }); return reply(id, true, {}); }
     if (cmd === "measure") {
       if (!connected) return reply(id, false, null, "ERROR_NOT_CONNECTED");
-      const [nm, hex] = SPECTRO_DEMO_SAMPLES[n++ % SPECTRO_DEMO_SAMPLES.length];
-      const curve = spectroDemoCurve(hex).map((v) => Math.max(0.002, v * (1 + (Math.random() - 0.5) * 0.02)));
+      // averaging scans the same sample again, in another spot: a small overall
+      // shift (the surface isn't perfectly even) plus a little noise per band
+      const [nm, hex] = SPECTRO_DEMO_SAMPLES[(msg.same ? n - 1 + SPECTRO_DEMO_SAMPLES.length : n++) % SPECTRO_DEMO_SAMPLES.length];
+      const spot = msg.same ? 1 + (Math.random() - 0.5) * 0.05 : 1;
+      const curve = spectroDemoCurve(hex).map((v) => Math.max(0.002, v * spot * (1 + (Math.random() - 0.5) * 0.02)));
       const modes = Array.isArray(msg.modes) && msg.modes.length ? msg.modes : ["M2"];
       // M0/M1 add a little UV-excited brightness in the blue, like a real optical brightener
       const measurements = modes.map((mode) => ({
@@ -12335,19 +12400,42 @@ const spectroStore = (() => {
     source: "auto", host: null, hello: null, license: null,
     scanning: false, devices: [], conn: "idle", device: null,
     mode: "M2", busy: false, error: "", readings: [], remembered: null, autoGo: true,
+    avg: false, scans: [], session: null,
   };
   try {
     const v = JSON.parse(localStorage.getItem(SPECTRO_KEY) || "null");
     if (v && typeof v === "object") {
-      ["source", "mode", "remembered", "autoGo"].forEach((k) => { if (v[k] !== undefined) st[k] = v[k]; });
+      ["source", "mode", "remembered", "autoGo", "avg"].forEach((k) => { if (v[k] !== undefined) st[k] = v[k]; });
       if (Array.isArray(v.readings)) st.readings = v.readings.filter((r) => r && isFinite(r.L)).slice(0, 40).map(spectroRegister);
+      if (Array.isArray(v.scans)) { st.scans = v.scans.filter((r) => r && isFinite(r.L)).slice(0, 100).map(spectroRegister); st.session = spectroSessionOf(st.scans); }
     }
   } catch (e) {}
   const subs = new Set();
   const save = () => {
-    try { localStorage.setItem(SPECTRO_KEY, JSON.stringify({ source: st.source, mode: st.mode, remembered: st.remembered, autoGo: st.autoGo, readings: st.readings })); } catch (e) {}
+    try { localStorage.setItem(SPECTRO_KEY, JSON.stringify({ source: st.source, mode: st.mode, remembered: st.remembered, autoGo: st.autoGo, avg: st.avg, readings: st.readings, scans: st.scans })); } catch (e) {}
   };
   const set = (patch) => { st = { ...st, ...patch }; save(); subs.forEach((f) => f()); };
+  let compound = null, compoundKey = "";
+  const compoundOf = () => {
+    const ses = st.session;
+    if (!ses) return null;
+    const key = st.scans.map((r) => r.id).join(",");
+    if (key === compoundKey && compound) return compound;
+    const last = st.scans[st.scans.length - 1];
+    compoundKey = key;
+    compound = spectroRegister({
+      id: `avg-${last.id}`, at: last.at, mode: last.mode, device: last.device, demo: st.scans.some((r) => r.demo),
+      L: ses.mean.L, C: ses.mean.C, H: ses.mean.H, hex: ses.mean.hex, spectral: ses.mean.spectral,
+      lab: ses.mean.lab ? ses.mean.lab.map((v) => +(+v).toFixed(2)) : null,
+      scans: ses.n, mcdm: +ses.mcdm.toFixed(3),
+    });
+    return compound;
+  };
+  const setScans = (scans, emit) => {
+    set({ scans, session: spectroSessionOf(scans) });
+    const c = compoundOf();
+    if (emit && c) readingListeners.forEach((f) => { try { f(c); } catch (e) {} });
+  };
   const pending = new Map();
   let seq = 0, send = null, readingListeners = new Set();
   const nativeSend = () => {
@@ -12453,11 +12541,16 @@ const spectroStore = (() => {
       if (st.busy || st.conn !== "connected") return null;
       set({ busy: true, error: "" });
       try {
-        const r = await call("measure", { modes: [st.mode] }, 30000);
+        const r = await call("measure", { modes: [st.mode], same: !!(st.avg && st.scans.length) }, 30000);
         const ms = Array.isArray(r.measurements) ? r.measurements : [];
         const m = ms.find((x) => x.mode === st.mode) || ms[0];
         const reading = spectroReadingOf(m, r.device || st.device);
         if (!reading) throw "ERROR_INTERNAL";
+        if (st.avg) {
+          set({ busy: false, device: r.device || st.device });
+          setScans([...st.scans, reading], true);
+          return reading;
+        }
         set({ busy: false, readings: [reading, ...st.readings].slice(0, 40), device: r.device || st.device });
         readingListeners.forEach((f) => { try { f(reading); } catch (e) {} });
         return reading;
@@ -12469,6 +12562,18 @@ const spectroStore = (() => {
       catch (e) { set({ busy: false, error: spectroErrorText(e) }); return false; }
     },
     removeReading: (id) => set({ readings: st.readings.filter((r) => r.id !== id) }),
+    setAvg: (avg) => set({ avg }),
+    compound: compoundOf,
+    removeScan: (id) => setScans(st.scans.filter((r) => r.id !== id), true),
+    discardScans: () => setScans([], false),
+    // the average becomes one reading in the list, and a new sample can start
+    keepAverage: () => {
+      const c = compoundOf();
+      if (!c) return null;
+      set({ readings: [c, ...st.readings.filter((r) => r.id !== c.id)].slice(0, 40) });
+      setScans([], false);
+      return c;
+    },
     clearReadings: () => set({ readings: [] }),
   };
   // the native shell may inject its bridge just after the page starts
@@ -12491,9 +12596,140 @@ const SpectroSignal = ({ rssi }) => {
   return React.createElement("span", { className: "inline-flex items-end gap-[2px] h-3", title: `${rssi} dBm` },
     [1, 2, 3, 4].map((b) => React.createElement("span", { key: b, className: `w-[3px] rounded-sm ${b <= bars ? "bg-sky-500" : "bg-slate-300 dark:bg-neutral-700"}`, style: { height: `${b * 25}%` } })));
 };
-const SpectroPanel = ({ onGo, onPin, cursorSpectral }) => {
+const SPECTRO_SPEC_FIELDS = [
+  { key: "material", label: "Material", options: LABEL_OPTIONS.material },
+  { key: "sheen", label: "Sheen", options: LABEL_OPTIONS.sheen },
+  { key: "visualTexture", label: "Look", options: LABEL_OPTIONS.visualPattern },
+  { key: "tactileTexture", label: "Feel", options: LABEL_OPTIONS.tactileTexture },
+  { key: "doorProfile", label: "Profile", options: LABEL_OPTIONS.doorProfile },
+];
+const spectroLabText = (lab) => (lab ? `L* ${(+lab[0]).toFixed(2)}  a* ${(+lab[1]).toFixed(2)}  b* ${(+lab[2]).toFixed(2)}` : "");
+const spectroDEText = (d) => (isFinite(d) && d !== null ? (+d).toFixed(2) : "–");
+// Save a reading (a single scan or an average) as a pin or as a new colour
+// in a commercial brand, with its name and material.
+const SpectroSaveForm = ({ reading, brands, onSave, onCancel, suggestedName }) => {
+  const [target, setTarget] = useState("pin");
+  const [name, setName] = useState(suggestedName || "");
+  const brandKeys = brands || [];
+  const [brand, setBrand] = useState(() => { try { return localStorage.getItem("csam-spectro-brand") || ""; } catch (e) { return ""; } });
+  const [newBrand, setNewBrand] = useState("");
+  const [code, setCode] = useState("");
+  const [notes, setNotes] = useState(reading && reading.scans > 1 ? `Average of ${reading.scans} scans, spread (MCDM) ΔE00 ${(+reading.mcdm || 0).toFixed(2)}` : "");
+  const [spec, setSpec] = useState({});
+  const brandName = brand === "__new" ? newBrand.trim() : brand;
+  const known = brand && brand !== "__new" && brandKeys.includes(brand);
+  const ok = target === "pin" ? true : !!(brandName && name.trim() && (known || brand === "__new"));
+  const label = (b) => (typeof getBrandDisplayName === "function" ? getBrandDisplayName(b) : b);
+  const field = "w-full min-w-0 h-9 px-2.5 rounded-md border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-[12px] focus:outline-none focus:ring-1 focus:ring-sky-500";
+  const cap = "text-[10px] uppercase tracking-wider text-slate-500 font-bold";
+  const submit = (e) => {
+    e.preventDefault();
+    if (!ok) return;
+    if (target === "commercial") { try { localStorage.setItem("csam-spectro-brand", brand === "__new" ? newBrand.trim() : brand); } catch (err) {} }
+    onSave(reading, { target, name: name.trim(), brand: brandName, code: code.trim(), notes: notes.trim(), ...spec });
+  };
+  return React.createElement(
+    "form",
+    { onSubmit: submit, className: "flex flex-col gap-3 rounded-xl border border-slate-200 dark:border-neutral-700 p-3 bg-slate-50 dark:bg-neutral-800/40", "data-spectro-save": "", "aria-label": "Save the reading" },
+    React.createElement("div", { className: "flex items-center gap-2.5" },
+      React.createElement("span", { className: "w-10 h-10 rounded-lg ring-1 ring-black/10 shrink-0", style: { background: reading.hex } }),
+      React.createElement("div", { className: "min-w-0 flex-1" },
+        React.createElement("div", { className: "text-[13px] font-bold text-slate-800 dark:text-neutral-100" }, reading.scans > 1 ? `Save the average of ${reading.scans} scans` : "Save this reading"),
+        React.createElement("div", { className: "font-mono text-[10px] text-slate-500 truncate" }, `${String(reading.hex).toUpperCase()}  ${spectroLabText(reading.lab)}`))),
+    React.createElement("div", { className: "grid grid-cols-2 rounded-lg border border-slate-200 dark:border-neutral-700 overflow-hidden", role: "radiogroup", "aria-label": "Save as" },
+      [["pin", "Pin", "map-pin"], ["commercial", "Commercial colour", "building-2"]].map(([v, t, ic]) => React.createElement("button", {
+        key: v, type: "button", role: "radio", "aria-checked": target === v, onClick: () => setTarget(v),
+        className: `h-9 inline-flex items-center justify-center gap-1.5 text-[12px] font-semibold ${target === v ? "bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900" : "text-slate-600 dark:text-neutral-300 hover:bg-white dark:hover:bg-neutral-800"}`,
+      }, React.createElement(Icon, { name: ic, className: "w-3.5 h-3.5" }), t))),
+    target === "commercial" && React.createElement("label", { className: "flex flex-col gap-1" },
+      React.createElement("span", { className: cap }, "Brand"),
+      React.createElement("select", { value: known || brand === "__new" ? brand : "", onChange: (e) => setBrand(e.target.value), className: field, "aria-label": "Brand", required: true },
+        React.createElement("option", { value: "", disabled: true }, "Choose a brand…"),
+        brandKeys.slice().sort((a, b) => label(a).localeCompare(label(b))).map((b) => React.createElement("option", { key: b, value: b }, label(b))),
+        React.createElement("option", { value: "__new" }, "New brand…"))),
+    target === "commercial" && brand === "__new" && React.createElement("input", { value: newBrand, onChange: (e) => setNewBrand(e.target.value), placeholder: "New brand name", "aria-label": "New brand name", className: field, autoFocus: true }),
+    React.createElement("div", { className: `grid gap-2 ${target === "commercial" ? "grid-cols-[1fr_7rem]" : "grid-cols-1"}` },
+      React.createElement("label", { className: "flex flex-col gap-1 min-w-0" },
+        React.createElement("span", { className: cap }, target === "pin" ? "Name (optional)" : "Colour name"),
+        React.createElement("input", { value: name, onChange: (e) => setName(e.target.value), placeholder: target === "pin" ? "Leave blank to use the nearest name" : "e.g. Warm Oak", "aria-label": "Colour name", className: field })),
+      target === "commercial" && React.createElement("label", { className: "flex flex-col gap-1 min-w-0" },
+        React.createElement("span", { className: cap }, "Code"),
+        React.createElement("input", { value: code, onChange: (e) => setCode(e.target.value), placeholder: "Optional", "aria-label": "Product code", className: `${field} font-mono` }))),
+    React.createElement("div", { className: "grid grid-cols-2 gap-2" },
+      SPECTRO_SPEC_FIELDS.map((f) => React.createElement("label", { key: f.key, className: "flex flex-col gap-1 min-w-0" },
+        React.createElement("span", { className: cap }, f.label),
+        React.createElement("select", { value: spec[f.key] || "-", onChange: (e) => setSpec((p) => ({ ...p, [f.key]: e.target.value === "-" ? "" : e.target.value })), className: field, "aria-label": f.label },
+          f.options.map((o) => React.createElement("option", { key: o, value: o }, o === "-" ? "Not set" : o)))))),
+    React.createElement("label", { className: "flex flex-col gap-1" },
+      React.createElement("span", { className: cap }, "Notes"),
+      React.createElement("textarea", { value: notes, onChange: (e) => setNotes(e.target.value), rows: 2, "aria-label": "Notes", className: `${field} h-auto py-1.5 resize-y` })),
+    React.createElement("div", { className: "flex items-center justify-end gap-2" },
+      React.createElement("button", { type: "button", onClick: onCancel, className: "h-9 px-3 rounded-md text-[12px] font-semibold text-slate-600 dark:text-neutral-300 hover:bg-white dark:hover:bg-neutral-800" }, "Cancel"),
+      React.createElement("button", { type: "submit", disabled: !ok, "data-spectro-save-go": "", className: "h-9 px-4 rounded-md text-[12px] font-bold bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900 disabled:opacity-40" },
+        target === "pin" ? "Save pin" : `Add to ${brandName ? (known ? label(brandName) : brandName) : "brand"}`)),
+  );
+};
+// The running average while several scans of one sample are taken.
+const SpectroAverage = ({ s, onSave, onGo, here }) => {
+  const ses = s.session;
+  if (!ses) return null;
+  const c = spectroStore.compound();
+  const outlier = (d) => isFinite(d) && ses.n >= 3 && d > Math.max(0.5, 2.5 * ses.mcdm);
+  const maxChange = Math.max(0.0001, ...ses.steps.map((x) => (isFinite(x.change) ? x.change : 0)));
+  return React.createElement(
+    "div",
+    { className: `flex flex-col gap-2.5 rounded-xl border p-3 ${here ? "border-sky-400" : "border-slate-200 dark:border-neutral-700"}`, "data-spectro-average": "" },
+    React.createElement("div", { className: "flex items-center gap-3" },
+      React.createElement("button", { type: "button", onClick: () => onGo && onGo(c), title: "Go to the average", className: "w-12 h-12 rounded-lg ring-1 ring-black/10 shrink-0", style: { background: ses.mean.hex } }),
+      React.createElement("div", { className: "min-w-0 flex-1" },
+        React.createElement("div", { className: "flex items-center gap-2" },
+          React.createElement("span", { className: "text-[13px] font-bold text-slate-800 dark:text-neutral-100", "data-average-count": "" }, ses.n === 1 ? "1 scan" : `Average of ${ses.n} scans`),
+          ses.n >= 2 && React.createElement("span", {
+            className: `text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full ${ses.stable ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300" : "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300"}`,
+            title: ses.stable ? "The last scan moved the average by less than ΔE00 0.15" : "The average is still moving; another scan or two will settle it",
+          }, ses.stable ? "Settled" : ses.n < 3 ? "Keep scanning" : "Still moving")),
+        React.createElement("div", { className: "font-mono text-[10px] text-slate-500 truncate", title: "CIELAB D50/2°" }, spectroLabText(ses.mean.lab)))),
+    ses.n >= 2 && React.createElement("div", { className: "grid grid-cols-2 gap-2" },
+      React.createElement("div", { className: "rounded-lg bg-slate-50 dark:bg-neutral-800/60 px-2.5 py-1.5", title: "CIEDE2000 between this average and the one before the last scan" },
+        React.createElement("div", { className: "text-[10px] uppercase tracking-wider text-slate-500 font-bold" }, "Last scan moved it"),
+        React.createElement("div", { className: "font-mono text-[15px] font-bold text-slate-800 dark:text-neutral-100", "data-average-change": "" }, `ΔE00 ${spectroDEText(ses.change)}`)),
+      React.createElement("div", { className: "rounded-lg bg-slate-50 dark:bg-neutral-800/60 px-2.5 py-1.5", title: "Mean colour difference from the mean (MCDM), CIEDE2000: how much the scans agree" },
+        React.createElement("div", { className: "text-[10px] uppercase tracking-wider text-slate-500 font-bold" }, "Spread (MCDM)"),
+        React.createElement("div", { className: "font-mono text-[15px] font-bold text-slate-800 dark:text-neutral-100", "data-average-mcdm": "" }, `ΔE00 ${spectroDEText(ses.mcdm)}`))),
+    React.createElement("ol", { className: "flex flex-col text-[11px]", "data-average-scans": "" },
+      React.createElement("li", { className: "grid grid-cols-[1.25rem_1.25rem_1fr_3.75rem_3.75rem_1.25rem] items-center gap-1.5 pb-1 text-[9px] uppercase tracking-wider text-slate-400 font-bold" },
+        React.createElement("span", null, "#"), React.createElement("span", null), React.createElement("span", null),
+        React.createElement("span", { className: "text-right" }, "Moved"), React.createElement("span", { className: "text-right" }, "From avg"), React.createElement("span", null)),
+      s.scans.map((r, i) => {
+        const st = ses.steps[i], d = ses.dev[i];
+        return React.createElement("li", { key: r.id, className: "grid grid-cols-[1.25rem_1.25rem_1fr_3.75rem_3.75rem_1.25rem] items-center gap-1.5 py-0.5" },
+          React.createElement("span", { className: "font-mono text-slate-400" }, i + 1),
+          React.createElement("span", { className: "w-5 h-5 rounded ring-1 ring-black/10", style: { background: r.hex } }),
+          React.createElement("span", { className: "h-1.5 rounded-full bg-slate-100 dark:bg-neutral-800 overflow-hidden" },
+            isFinite(st.change) && st.change !== null && React.createElement("span", { className: "block h-full rounded-full bg-sky-500", style: { width: `${Math.max(4, (st.change / maxChange) * 100)}%` } })),
+          React.createElement("span", { className: "font-mono text-right text-slate-600 dark:text-neutral-300" }, i === 0 ? "first" : spectroDEText(st.change)),
+          React.createElement("span", { className: `font-mono text-right ${outlier(d) ? "text-amber-700 dark:text-amber-300 font-bold" : "text-slate-600 dark:text-neutral-300"}`, title: outlier(d) ? "Much further from the average than the others: remove it if the device slipped" : "CIEDE2000 from the average" }, spectroDEText(d)),
+          React.createElement("button", { type: "button", onClick: () => spectroStore.removeScan(r.id), "aria-label": `Remove scan ${i + 1}`, title: "Leave this scan out", className: "text-slate-300 hover:text-red-500" }, React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" })));
+      })),
+    React.createElement("p", { className: "text-[10px] text-slate-500 leading-snug -mt-1" }, "CIEDE2000: how far each scan moved the average, and how far it sits from the average now. Leave out a scan that stands apart."),
+    React.createElement("div", { className: "flex items-center gap-2" },
+      React.createElement("button", { type: "button", onClick: () => onSave(c), "data-average-save": "", className: "flex-1 h-9 rounded-md text-[12px] font-bold bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900 inline-flex items-center justify-center gap-1.5" },
+        React.createElement(Icon, { name: "save", className: "w-3.5 h-3.5" }), ses.n > 1 ? "Save the average…" : "Save…"),
+      React.createElement("button", { type: "button", onClick: () => spectroStore.keepAverage(), title: "Keep the average in the readings list and start a new sample", className: "h-9 px-3 rounded-md text-[12px] font-semibold border border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-200" }, "New sample"),
+      React.createElement("button", { type: "button", onClick: () => spectroStore.discardScans(), title: "Throw these scans away", "aria-label": "Discard the scans", className: "h-9 w-9 rounded-md text-slate-400 hover:text-red-500 inline-flex items-center justify-center" }, React.createElement(Icon, { name: "trash-2", className: "w-4 h-4" }))),
+  );
+};
+const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectral }) => {
   const s = useSpectro();
   const [tile, setTile] = useState("");
+  const [saving, setSaving] = useState(null);
+  const startSave = (r) => { if (!r) return; if (!onSave) { onPin && onPin(r); return; } setSaving(r); };
+  const doSave = (r, opts) => {
+    onSave(r, opts);
+    setSaving(null);
+    if (compound && r && r.id === compound.id) spectroStore.keepAverage();
+  };
+  const compound = s.session ? spectroStore.compound() : null;
   const btn = "px-2.5 py-1.5 rounded-md text-[11px] font-semibold border transition-colors disabled:opacity-50";
   const btnGhost = `${btn} border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-200 hover:bg-slate-50 dark:hover:bg-neutral-800`;
   const btnMain = `${btn} border-sky-600 bg-sky-600 text-white hover:bg-sky-700`;
@@ -12549,8 +12785,13 @@ const SpectroPanel = ({ onGo, onPin, cursorSpectral }) => {
             className: `px-2.5 py-1 text-[11px] font-semibold ${s.mode === m ? "bg-sky-600 text-white" : "text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800"}`,
             title: { M0: "M0: no UV control (legacy)", M1: "M1: D50 incl. UV (paper with optical brighteners)", M2: "M2: UV excluded (most finishes, laminates, paint)" }[m],
           }, m)))),
+      React.createElement("label", { className: "flex items-start gap-2 text-[11px] text-slate-700 dark:text-neutral-200 select-none cursor-pointer" },
+        React.createElement("input", { type: "checkbox", checked: !!s.avg, onChange: (e) => spectroStore.setAvg(e.target.checked), className: "rounded border-slate-300 h-3.5 w-3.5 mt-0.5", "data-spectro-avg": "" }),
+        React.createElement("span", null, React.createElement("span", { className: "font-semibold" }, "Average several scans"),
+          React.createElement("span", { className: "block text-[10px] text-slate-500" }, "Scan the sample in different spots; each scan is averaged in, until you save."))),
       React.createElement("button", { className: `${btnMain} py-2.5 text-sm flex items-center justify-center gap-2`, disabled: s.busy, onClick: () => spectroStore.measure(), "data-spectro-measure": "" },
-        React.createElement(Icon, { name: s.busy ? "loader" : "scan-line", className: `w-4 h-4 ${s.busy ? "animate-spin" : ""}` }), s.busy ? "Measuring…" : "Measure"),
+        React.createElement(Icon, { name: s.busy ? "loader" : "scan-line", className: `w-4 h-4 ${s.busy ? "animate-spin" : ""}` }),
+        s.busy ? "Measuring…" : s.avg ? (s.scans.length ? `Add scan ${s.scans.length + 1}` : "Measure scan 1") : "Measure"),
       React.createElement("label", { className: "flex items-center gap-2 text-[11px] text-slate-600 dark:text-neutral-300 select-none cursor-pointer" },
         React.createElement("input", { type: "checkbox", checked: !!s.autoGo, onChange: (e) => spectroStore.setAutoGo(e.target.checked), className: "rounded border-slate-300 h-3.5 w-3.5" }),
         "Move the cursor to each new reading"),
@@ -12561,6 +12802,9 @@ const SpectroPanel = ({ onGo, onPin, cursorSpectral }) => {
             className: "flex-1 min-w-0 px-2 py-1.5 rounded-md border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-[11px] font-mono" }),
           React.createElement("button", { className: btnGhost, disabled: s.busy || !tile.trim(), onClick: () => spectroStore.calibrate(tile).then((ok) => ok && setTile("")) }, "Calibrate")),
         React.createElement("p", { className: "text-[10px] text-slate-400 mt-1" }, "Place the device on its white calibration tile first."))),
+    // several scans being averaged (shown even if the device drops off)
+    s.session && !(saving && compound && saving.id === compound.id) && React.createElement(SpectroAverage, { s, onSave: startSave, onGo, here: !!(compound && cursorSpectral && compound.spectral === cursorSpectral) }),
+    saving && React.createElement(SpectroSaveForm, { key: saving.id, reading: saving, brands, suggestedName, onSave: doSave, onCancel: () => setSaving(null) }),
     // readings
     s.readings.length > 0 && React.createElement("div", { className: "flex flex-col gap-1" },
       React.createElement("div", { className: "flex items-center justify-between" },
@@ -12575,8 +12819,8 @@ const SpectroPanel = ({ onGo, onPin, cursorSpectral }) => {
               React.createElement("div", { className: "font-mono text-[11px] text-slate-700 dark:text-neutral-200 truncate" },
                 `${String(r.hex).toUpperCase()}${r.lab ? `  L*${r.lab[0].toFixed(1)} a*${r.lab[1].toFixed(1)} b*${r.lab[2].toFixed(1)}` : ""}`),
               React.createElement("div", { className: "text-[10px] text-slate-400 truncate" },
-                `${new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}${r.mode ? ` · ${r.mode}` : ""}${r.demo ? " · demo" : ""}`)),
-            React.createElement("button", { className: "p-1 text-slate-400 hover:text-sky-600", title: "Save as pin", "aria-label": "Save as pin", onClick: () => onPin && onPin(r) }, React.createElement(Icon, { name: "map-pin", className: "w-3.5 h-3.5" })),
+                `${new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}${r.mode ? ` · ${r.mode}` : ""}${r.scans > 1 ? ` · avg of ${r.scans}` : ""}${r.demo ? " · demo" : ""}`)),
+            React.createElement("button", { className: "p-1 text-slate-400 hover:text-sky-600", title: "Save as a pin or a commercial colour", "aria-label": "Save reading", "data-reading-save": "", onClick: () => startSave(r) }, React.createElement(Icon, { name: "save", className: "w-3.5 h-3.5" })),
             React.createElement("button", { className: "p-1 text-slate-300 hover:text-red-500", title: "Remove", "aria-label": "Remove reading", onClick: () => spectroStore.removeReading(r.id) }, React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" })));
         }))),
   );
@@ -13337,7 +13581,7 @@ const MeasureButton = ({ onMeasure }) => {
       className: "hidden md:inline-flex items-center gap-2 h-10 px-3.5 rounded-xl bg-sky-500 text-white text-sm font-semibold hover:opacity-90 disabled:opacity-60 whitespace-nowrap",
     },
     React.createElement(Icon, { name: s.busy ? "loader" : "scan-line", className: `w-4 h-4 ${s.busy ? "animate-spin" : ""}` }),
-    s.busy ? "Measuring…" : "Measure",
+    s.busy ? "Measuring…" : s.avg && s.scans.length ? `Scan ${s.scans.length + 1}` : "Measure",
     connected && s.device && s.device.battery != null && React.createElement("span", { className: "text-[11px] font-medium opacity-80 pl-2 border-l border-current/30" }, `${s.device.battery}%`),
   );
 };
@@ -13483,7 +13727,7 @@ const PhoneShutter = ({ onPress }) => {
       { className: `-mt-5 w-14 h-14 rounded-full flex items-center justify-center shadow-lg border-4 border-white dark:border-neutral-900 ${s.busy ? "animate-pulse" : ""}`, style: { backgroundColor: "#2B4032", color: "#F2E8DF" } },
       React.createElement(Icon, { name: s.busy ? "loader" : "scan-line", className: `w-6 h-6 ${s.busy ? "animate-spin" : ""}` }),
     ),
-    s.busy ? "Reading…" : "Measure",
+    s.busy ? "Reading…" : s.avg && s.scans.length ? `Scan ${s.scans.length + 1}` : "Measure",
   );
 };
 const PhoneSheetHeader = ({ onDone }) =>
@@ -20056,9 +20300,10 @@ const App = () => {
       },
     }));
   };
-  const togglePin = () => {
+  const togglePin = (extra) => {
     if (!crosshair) return;
-    if (crosshair.exactSavedColor?.type === "pin") {
+    const fresh = !!(extra && extra.__new);
+    if (!fresh && crosshair.exactSavedColor?.type === "pin") {
       setSavedColors((prev) => {
         const next = { ...prev };
         delete next[crosshair.exactSavedColor.id];
@@ -20119,6 +20364,7 @@ const App = () => {
           doorProfile: pinDoorProfile,
           tactileTexture: pinTactileTexture,
           visualTexture: pinVisualTexture,
+          ...(fresh ? extra.fields : {}),
         },
       }));
     }
@@ -20135,11 +20381,40 @@ const App = () => {
     spectroGo(r);
   };
   useEffect(() => {
-    const r = spectroPendingPin.current;
+    const p = spectroPendingPin.current;
+    const r = p && p.r ? p.r : p;
     if (!r || !spectroAtCursor(r)) return;
     spectroPendingPin.current = null;
-    if (crosshair.exactSavedColor?.type !== "pin") togglePin();
+    if (p.fields) togglePin({ __new: true, fields: p.fields });
+    else if (crosshair.exactSavedColor?.type !== "pin") togglePin();
   }, [crosshair]);
+  // Save a reading (one scan or an average) as a pin with its name and
+  // material, or as a new colour in a commercial brand.
+  const spectroSave = (r, o) => {
+    if (!r || !o) return;
+    const meta = spectroMetaOf(r.spectral) || {};
+    const specs = { sheen: o.sheen || "", material: o.material || "", doorProfile: o.doorProfile || "", visualTexture: o.visualTexture || "", tactileTexture: o.tactileTexture || "" };
+    const measured = {
+      measurementMethod: meta.measurementMethod || `Spectrophotometer${r.scans > 1 ? `, average of ${r.scans} scans` : ""}`,
+      measurementDate: meta.measurementDate || String(r.at || "").slice(0, 10),
+      measurementDevice: meta.measurementDevice || r.device || "",
+    };
+    if (o.target === "commercial") {
+      const brand = String(o.brand || "").trim();
+      if (!brand || !String(o.name || "").trim()) return;
+      const entry = {
+        name: o.name.trim(), code: o.code || "", hex: r.hex, L: r.L, C: r.C, H: r.H,
+        ...(Array.isArray(r.spectral) ? { spectral: r.spectral.slice(), illuminant: "D65", observer: 2 } : {}),
+        tags: ["measured"], url: "", image: "", notes: o.notes || "", ...specs, ...measured,
+      };
+      updateColorData({ ...(colorData || {}), [brand]: [entry, ...((colorData && colorData[brand]) || [])] });
+      handleUpdate([r.L, r.C, r.H], r.spectral || null, { brand, originalIndex: 0 });
+      return;
+    }
+    spectroPendingPin.current = { r, fields: { nameOverride: o.name || "", notes: o.notes || "", ...specs, ...measured } };
+    if (spectroAtCursor(r)) { spectroPendingPin.current = null; togglePin({ __new: true, fields: { nameOverride: o.name || "", notes: o.notes || "", ...specs, ...measured } }); return; }
+    spectroGo(r);
+  };
   useEffect(() => spectroStore.onReading((r) => { if (spectroStore.get().autoGo) handleUpdate([r.L, r.C, r.H], r.spectral || null); }), []);
   const updateSavedColor = (field, val) => {
     if (!crosshair?.activeSavedColor) return;
@@ -21402,6 +21677,7 @@ const App = () => {
     handlePointClick,
     spectroGo,
     spectroPin,
+    spectroSave,
     crosshair,
     isLight,
     activeColorObj,
@@ -24559,6 +24835,7 @@ const AppUI = ({
   handlePointClick,
   spectroGo,
   spectroPin,
+  spectroSave,
   crosshair,
   isLight,
   activeColorObj,
@@ -25188,7 +25465,11 @@ const AppUI = ({
   ];
   const onTopMeasure = () => {
     const st = spectroStore.get();
-    if (st.conn === "connected") { spectroStore.measure(); return; }
+    if (st.conn === "connected") {
+      spectroStore.measure();
+      if (st.avg) { window.dispatchEvent(new CustomEvent("csam-inspector-tab", { detail: "spectrum" })); setMobilePanelsOpen(true); }
+      return;
+    }
     window.dispatchEvent(new CustomEvent("csam-inspector-tab", { detail: "spectrum" }));
     setMobilePanelsOpen(true);
   };
@@ -25942,8 +26223,8 @@ const AppUI = ({
             ),
             React.createElement(
               CollapsiblePanel,
-              { title: "Spectrophotometer", icon: "bluetooth", defaultOpen: typeof window !== "undefined" && !!(window.NixBridge || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.nix)), summary: spectroSummary(spectroStore.get()) },
-              React.createElement(SpectroPanel, { onGo: spectroGo, onPin: spectroPin, cursorSpectral: crosshair?.temporarySpectral || null }),
+              { title: "Spectrophotometer", icon: "bluetooth", defaultOpen: !!spectroStore.get().host || (typeof window !== "undefined" && !!(window.NixBridge || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.nix))), summary: spectroSummary(spectroStore.get()) },
+              React.createElement(SpectroPanel, { onGo: spectroGo, onPin: spectroPin, onSave: spectroSave, brands: Object.keys(colorData || {}), cursorSpectral: crosshair?.temporarySpectral || null }),
             ),
             React.createElement(
               CollapsiblePanel,
