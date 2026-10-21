@@ -12281,6 +12281,7 @@ const spectroRegister = (r) => {
 // spectrum fall back to averaging XYZ (D65/2°). Differences are CIEDE2000 on
 // CIELAB D50/2°, and the spread is the MCDM (mean colour difference from the
 // mean) used to quote instrument repeatability.
+const SPECTRO_SETTLE_DE = 0.1, SPECTRO_SETTLE_RUN = 3;
 const spectroHasSp = (r) => Array.isArray(r && r.spectral) && r.spectral.length === SPECTRO_WL.length;
 const spectroXyzOf = (r) => {
   if (spectroHasSp(r)) { try { return calculateXYZFromSpectral(r.spectral, 2, "D65"); } catch (e) {} }
@@ -12325,9 +12326,13 @@ const spectroSessionOf = (scans) => {
   const ok = dev.filter(isFinite);
   const mcdm = ok.length ? ok.reduce((t, v) => t + v, 0) / ok.length : 0;
   const last = steps[steps.length - 1].change;
+  // settled: the last SPECTRO_SETTLE_RUN scans in a row each moved the
+  // average by no more than SPECTRO_SETTLE_DE (so it takes at least 4 scans)
+  let steady = 0;
+  for (let i = steps.length - 1; i >= 1; i--) { const c = steps[i].change; if (isFinite(c) && c !== null && c <= SPECTRO_SETTLE_DE) steady++; else break; }
   return {
     n: scans.length, mean, steps, dev, mcdm, max: ok.length ? Math.max(...ok) : 0, change: last,
-    stable: scans.length >= 3 && isFinite(last) && last < 0.15,
+    steady, stable: steady >= SPECTRO_SETTLE_RUN,
   };
 };
 // ── Demo device: answers like the native host, with believable spectra ────
@@ -12693,8 +12698,11 @@ const SpectroAverage = ({ s, onSave, onGo, here }) => {
           React.createElement("span", { className: "text-[13px] font-bold text-slate-800 dark:text-neutral-100", "data-average-count": "" }, ses.n === 1 ? "1 scan" : `Average of ${ses.n} scans`),
           ses.n >= 2 && React.createElement("span", {
             className: `text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full ${ses.stable ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300" : "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300"}`,
-            title: ses.stable ? "The last scan moved the average by less than ΔE00 0.15" : "The average is still moving; another scan or two will settle it",
-          }, ses.stable ? "Settled" : ses.n < 3 ? "Keep scanning" : "Still moving")),
+            title: ses.stable
+              ? `The last ${ses.steady} scans in a row each moved the average by ΔE00 ${SPECTRO_SETTLE_DE} or less`
+              : `Settled once ${SPECTRO_SETTLE_RUN} scans in a row each move the average by ΔE00 ${SPECTRO_SETTLE_DE} or less (${ses.steady} so far)`,
+            "data-average-state": ses.stable ? "settled" : "moving",
+          }, ses.stable ? "Settled" : `${ses.steady} of ${SPECTRO_SETTLE_RUN} steady`)),
         React.createElement("div", { className: "font-mono text-[10px] text-slate-500 truncate", title: "CIELAB D50/2°" }, spectroLabText(ses.mean.lab)))),
     ses.n >= 2 && React.createElement("div", { className: "grid grid-cols-2 gap-2" },
       React.createElement("div", { className: "rounded-lg bg-slate-50 dark:bg-neutral-800/60 px-2.5 py-1.5", title: "CIEDE2000 between this average and the one before the last scan" },
@@ -12714,11 +12722,11 @@ const SpectroAverage = ({ s, onSave, onGo, here }) => {
           React.createElement("span", { className: "w-5 h-5 rounded ring-1 ring-black/10", style: { background: r.hex } }),
           React.createElement("span", { className: "h-1.5 rounded-full bg-slate-100 dark:bg-neutral-800 overflow-hidden" },
             isFinite(st.change) && st.change !== null && React.createElement("span", { className: "block h-full rounded-full bg-sky-500", style: { width: `${Math.max(4, (st.change / maxChange) * 100)}%` } })),
-          React.createElement("span", { className: "font-mono text-right text-slate-600 dark:text-neutral-300" }, i === 0 ? "first" : spectroDEText(st.change)),
+          React.createElement("span", { className: `font-mono text-right ${i > 0 && i >= ses.n - ses.steady ? "text-emerald-700 dark:text-emerald-300 font-bold" : "text-slate-600 dark:text-neutral-300"}`, title: i > 0 && i >= ses.n - ses.steady ? `Within ΔE00 ${SPECTRO_SETTLE_DE}` : undefined }, i === 0 ? "first" : spectroDEText(st.change)),
           React.createElement("span", { className: `font-mono text-right ${outlier(d) ? "text-amber-700 dark:text-amber-300 font-bold" : "text-slate-600 dark:text-neutral-300"}`, title: outlier(d) ? "Much further from the average than the others: remove it if the device slipped" : "CIEDE2000 from the average" }, spectroDEText(d)),
           React.createElement("button", { type: "button", onClick: () => spectroStore.removeScan(r.id), "aria-label": `Remove scan ${i + 1}`, title: "Leave this scan out", className: "text-slate-300 hover:text-red-500" }, React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" })));
       })),
-    React.createElement("p", { className: "text-[10px] text-slate-500 leading-snug -mt-1" }, "CIEDE2000: how far each scan moved the average, and how far it sits from the average now. Leave out a scan that stands apart."),
+    React.createElement("p", { className: "text-[10px] text-slate-500 leading-snug -mt-1" }, `CIEDE2000: how far each scan moved the average, and how far it sits from the average now. Settled after ${SPECTRO_SETTLE_RUN} scans in a row move it ${SPECTRO_SETTLE_DE} or less. Leave out a scan that stands apart.`),
     React.createElement("div", { className: "flex items-center gap-2" },
       React.createElement("button", { type: "button", onClick: () => onSave(c), "data-average-save": "", className: "flex-1 h-9 rounded-md text-[12px] font-bold bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900 inline-flex items-center justify-center gap-1.5" },
         React.createElement(Icon, { name: "save", className: "w-3.5 h-3.5" }), ses.n > 1 ? "Save the average…" : "Save…"),
