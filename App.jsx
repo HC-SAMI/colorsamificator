@@ -12081,6 +12081,486 @@ const CrossReference2 = ({ colorData, onSelectColor, cursor, ctx }) => {
   );
 };
 
+// ── Collection pill on printed labels ─────────────────────────────────────
+// A small pill at the right end of the label's name row (top-right corner;
+// a long name is cut short before it rather than running under it) naming the collection the
+// samples belong to. On by default; the name is remembered in this browser.
+const LABEL_COLLECTION_KEY = "csam-label-collection";
+const labelCollectionStore = (() => {
+  let st = { on: true, name: "Fall 2026" };
+  try { const v = JSON.parse(localStorage.getItem(LABEL_COLLECTION_KEY) || "null"); if (v && typeof v === "object") st = { ...st, ...v }; } catch (e) {}
+  const subs = new Set();
+  return {
+    get: () => st,
+    set: (patch) => { st = { ...st, ...patch }; try { localStorage.setItem(LABEL_COLLECTION_KEY, JSON.stringify(st)); } catch (e) {} subs.forEach((f) => f()); },
+    subscribe: (f) => { subs.add(f); return () => subs.delete(f); },
+  };
+})();
+const useLabelCollection = () => {
+  const [, force] = useState(0);
+  useEffect(() => labelCollectionStore.subscribe(() => force((x) => x + 1)), []);
+  return labelCollectionStore.get();
+};
+const LabelCollectionPill = () => {
+  const lc = useLabelCollection();
+  const name = String(lc.name || "").trim();
+  if (!lc.on || !name) return null;
+  return React.createElement("span", {
+    className: "sami-collection",
+    style: {
+      marginLeft: "auto", flexShrink: 0, alignSelf: "center", position: "relative", top: "-1px",
+      padding: "1.5px 6px", borderRadius: "999px",
+      backgroundColor: "#2B4032", color: "#F2E8DF",
+      fontSize: "5.5pt", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", lineHeight: 1.2,
+      whiteSpace: "nowrap", maxWidth: "1.3in", overflow: "hidden", textOverflow: "ellipsis",
+      WebkitPrintColorAdjust: "exact", printColorAdjust: "exact",
+    },
+  }, name);
+};
+const LabelCollectionOption = () => {
+  const lc = useLabelCollection();
+  return React.createElement(
+    "div",
+    { className: "flex flex-col gap-2 py-2 border-t border-slate-200 dark:border-neutral-800", "data-label-collection": "" },
+    React.createElement("h4", { className: "text-xs font-bold uppercase tracking-wider text-slate-400" }, "Collection"),
+    React.createElement("label", { className: "flex items-center gap-2.5 cursor-pointer text-xs select-none" },
+      React.createElement("input", { type: "checkbox", checked: !!lc.on, onChange: (e) => labelCollectionStore.set({ on: e.target.checked }),
+        className: "rounded border-slate-300 text-sky-500 focus:ring-sky-500 h-3.5 w-3.5" }),
+      React.createElement("span", { className: "text-slate-700 dark:text-neutral-300 font-medium" }, "Show the collection pill on each label")),
+    React.createElement("div", { className: "flex items-center gap-2" },
+      React.createElement("input", { type: "text", value: lc.name || "", disabled: !lc.on, placeholder: "Fall 2026", "aria-label": "Collection name",
+        onChange: (e) => labelCollectionStore.set({ name: e.target.value }),
+        className: "flex-1 min-w-0 px-2.5 py-1.5 rounded-md border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-xs disabled:opacity-50" }),
+      lc.on && String(lc.name || "").trim() && React.createElement("span", {
+        className: "shrink-0 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider", style: { backgroundColor: "#2B4032", color: "#F2E8DF" },
+      }, lc.name)),
+  );
+};
+
+// ── Nix spectrophotometer connector ───────────────────────────────────────
+// Browsers can't talk to Nix devices (there is no Web SDK and the Bluetooth
+// protocol is private), so the app talks to a small native host that runs
+// the Nix Universal SDK and relays JSON messages:
+//   • Android app shell: window.NixBridge.postMessage(json)
+//   • iOS app shell (later): window.webkit.messageHandlers.nix.postMessage(obj)
+//   • Demo device: simulated here, same messages, for trying the workflow.
+// Requests are {id, cmd, ...args} (connect: {address, name}); the host answers with
+// window.__nixEvent({type:"reply", id, ok, error, data}) and pushes
+// {type:"event", event, ...} for scan results, connection and battery changes.
+// The SDK license lives in the native host only, never in this page.
+const SPECTRO_KEY = "csam-spectro";
+const SPECTRO_WL = [400, 410, 420, 430, 440, 450, 460, 470, 480, 490, 500, 510, 520, 530, 540, 550, 560, 570, 580, 590, 600, 610, 620, 630, 640, 650, 660, 670, 680, 690, 700];
+const SPECTRO_ERRORS = {
+  ERROR_UNAUTHORIZED: "This device isn't authorised for the app's Nix license.",
+  ERROR_LICENSE: "The Nix SDK license isn't active. The phone needs internet the first time each device connects, and at least every 30 days.",
+  ERROR_DROPPED_CONNECTION: "The connection dropped. Bring the device closer and try again.",
+  ERROR_TIMEOUT: "The device didn't answer in time.",
+  ERROR_MAX_ATTEMPTS: "Couldn't connect after several attempts. Turn the device off and on, then try again.",
+  ERROR_UNSUPPORTED_DEVICE: "This device type isn't supported by the app's license.",
+  ERROR_INTERNAL: "The Nix SDK reported an internal error.",
+  ERROR_NOT_READY: "The device is busy. Wait a moment and measure again.",
+  ERROR_NOT_SUPPORTED: "The device can't do that.",
+  ERROR_LOW_POWER: "The device battery is too low to measure. Charge it first.",
+  ERROR_AMBIENT_LIGHT: "Too much ambient light. Seat the device flat on the sample and measure again.",
+  ERROR_BLUETOOTH_OFF: "Bluetooth is off. Turn it on and scan again.",
+  ERROR_NO_PERMISSION: "The app needs the Nearby devices (Bluetooth) permission to find the device.",
+  ERROR_NOT_CONNECTED: "No device is connected.",
+  ERROR_INVALID_TILE: "That calibration tile code isn't valid for this device.",
+  ERROR_BLUETOOTH_UNAVAILABLE: "This phone or tablet doesn't have Bluetooth Low Energy.",
+  ERROR_SCAN_DELTA: "The reading wasn't stable. Hold the device still, flat on the sample, and measure again.",
+  ERROR_INVALID_ARGUMENT: "The device rejected that request.",
+  ERROR_LICENSE_BAD_SIGNATURE: "The Nix SDK license signature doesn't match. Check the license set in the app build.",
+  ERROR_LICENSE_INVALID_OPTIONS: "The Nix SDK license options are invalid. Check the license set in the app build.",
+  ERROR_LICENSE_EXPIRED: "The Nix SDK license has expired. Renew it with Nix and rebuild the app.",
+  ERROR_NO_HOST: "Measuring needs the ColorSAMIficator Android app.",
+};
+const spectroErrorText = (e) => SPECTRO_ERRORS[e] || (e ? String(e).replace(/^ERROR_/, "").replace(/_/g, " ").toLowerCase().replace(/^./, (c) => c.toUpperCase()) : "Something went wrong.");
+// Spectral meta (who measured it, how) keyed by the 31-value array itself, so
+// the Spectral Response panel and a pin made from a reading can show it.
+const SPECTRO_META = new WeakMap();
+const spectroMetaOf = (sp) => (sp && typeof sp === "object" ? SPECTRO_META.get(sp) || null : null);
+// Any wavelength grid → the app's 400–700 nm / 10 nm grid, as 0–1 reflectance.
+const spectroResample = (lambda, value) => {
+  if (!Array.isArray(lambda) || !Array.isArray(value) || lambda.length < 2 || lambda.length !== value.length) return null;
+  const pts = lambda.map((l, i) => [+l, +value[i]]).filter((p) => isFinite(p[0]) && isFinite(p[1])).sort((a, b) => a[0] - b[0]);
+  if (pts.length < 2) return null;
+  const max = Math.max(...pts.map((p) => p[1]));
+  const k = max > 2 ? 0.01 : 1; // percent → fraction
+  return SPECTRO_WL.map((w) => {
+    if (w <= pts[0][0]) return pts[0][1] * k;
+    if (w >= pts[pts.length - 1][0]) return pts[pts.length - 1][1] * k;
+    let j = 1;
+    while (pts[j][0] < w) j++;
+    const [l0, v0] = pts[j - 1], [l1, v1] = pts[j];
+    return (v0 + ((v1 - v0) * (w - l0)) / (l1 - l0 || 1)) * k;
+  }).map((v) => Math.max(0, Math.min(1.5, +v.toFixed(5))));
+};
+// CIELAB D50/2° from the spectrum (what colour books and the Nix app quote)
+const spectroLabD50 = (sp) => {
+  try { return new Color("xyz-d50", calculateXYZFromSpectral(sp, 2, "D50")).to("lab").coords.map((v) => (isFinite(v) ? v : 0)); } catch (e) { return null; }
+};
+const spectroDeviceLabel = (d) => (d ? `${d.typeName || d.name || "Nix device"}${d.serial ? ` · SN ${d.serial}` : ""}` : "");
+// A host measurement → a reading the app can use (OkLCH from the spectrum
+// under D65/2°, like every other spectral colour in the app).
+const spectroReadingOf = (m, device) => {
+  if (!m) return null;
+  let spectral = m.spectral ? spectroResample(m.spectral.lambda, m.spectral.value) : null;
+  let L, C, H, hex;
+  if (spectral) {
+    const it = fastItemLch({ spectral });
+    if (!it) return null;
+    ({ L, C, H, hex } = it);
+  } else if (Array.isArray(m.xyzD65) && m.xyzD65.length === 3) {
+    const xyz = m.xyzD65.map((v) => (+v > 2 ? +v / 100 : +v));
+    [L, C, H] = fastXyzToOklch(xyz[0], xyz[1], xyz[2]);
+    hex = new Color("xyz-d65", xyz).to("srgb").toGamut({ space: "srgb" }).toString({ format: "hex" });
+  } else if (m.hex) {
+    const o = fastHexToOklch(m.hex);
+    if (!o) return null;
+    [L, C, H] = o;
+    hex = m.hex;
+  } else return null;
+  if (!isFinite(L) || !isFinite(C)) return null;
+  const at = new Date();
+  const r = {
+    id: `nix-${at.getTime()}-${Math.random().toString(36).slice(2, 6)}`,
+    at: at.toISOString(),
+    mode: m.mode || "",
+    L, C, H: isNaN(H) ? 0 : H, hex,
+    spectral,
+    lab: (Array.isArray(m.labD50) ? m.labD50 : spectral ? spectroLabD50(spectral) : null)?.map((v) => +(+v).toFixed(2)) || null,
+    device: spectroDeviceLabel(device),
+    demo: !!m.demo,
+  };
+  spectroRegister(r);
+  return r;
+};
+const spectroRegister = (r) => {
+  if (r && Array.isArray(r.spectral))
+    SPECTRO_META.set(r.spectral, {
+      measurementMethod: `Spectrophotometer${r.mode ? ` ${r.mode}` : ""}, 400–700 nm${r.demo ? " (demo device)" : ""}`,
+      measurementDate: (() => { const d = new Date(r.at); return isNaN(d) ? "" : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; })(),
+      measurementDevice: r.device || "Nix",
+      illuminant: "D65",
+      observer: 2,
+    });
+  return r;
+};
+
+// ── Demo device: answers like the native host, with believable spectra ────
+// Reflectance curves are built from four smooth bumps fitted to a target
+// colour, so the Spectral Response panel shows a realistic shape.
+const SPECTRO_DEMO_SAMPLES = [
+  ["Natural walnut", "#6b4a33"], ["White oak", "#c8ab84"], ["Arctic white", "#eeede7"], ["Graphite", "#4a4c4f"],
+  ["Sage", "#9aa58e"], ["Navy", "#2c3a55"], ["Terracotta", "#b5654a"], ["Greige", "#b3aa9c"],
+];
+const spectroDemoCurve = (hex) => {
+  const target = new Color(hex).to("xyz-d65").coords;
+  const bump = (c, s) => SPECTRO_WL.map((w) => Math.exp(-((w - c) ** 2) / (2 * s * s)));
+  const basis = [bump(445, 38), bump(540, 40), bump(615, 45)];
+  const flat = SPECTRO_WL.map(() => 1);
+  const xyzOf = (sp) => calculateXYZFromSpectral(sp, 2, "D65");
+  const lo = 0.02 + 0.15 * Math.max(0, target[1]); // a little flat reflectance under the bumps
+  const base = xyzOf(flat).map((v) => v * lo);
+  const M = basis.map(xyzOf); // columns
+  const t = target.map((v, i) => v - base[i]);
+  const a = [[M[0][0], M[1][0], M[2][0]], [M[0][1], M[1][1], M[2][1]], [M[0][2], M[1][2], M[2][2]]];
+  const det = (m) => m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+  const D = det(a) || 1;
+  const w = [0, 1, 2].map((k) => det(a.map((row, i) => row.map((v, j) => (j === k ? t[i] : v)))) / D);
+  return SPECTRO_WL.map((_, i) => Math.max(0.003, Math.min(0.98, lo + w[0] * basis[0][i] + w[1] * basis[1][i] + w[2] * basis[2][i])));
+};
+const spectroDemoHost = (emit) => {
+  let connected = null, scanTimer = null, n = 0;
+  const DEV = { id: "D0:5F:00:00:4C:01", name: "Nix Spectro L", rssi: -52, type: "SPECTROL" };
+  const info = () => ({ ...DEV, typeName: "Nix Spectro L", serial: "DEMO0001", battery: 86, extPower: false, calDue: false, supportsCal: true, modes: ["M0", "M1", "M2"], providesSpectral: true, firmware: "demo" });
+  const reply = (id, ok, data, error) => setTimeout(() => emit({ type: "reply", id, ok, data, error }), 0);
+  return (msg) => {
+    const { id, cmd } = msg;
+    if (cmd === "hello") return reply(id, true, { platform: "demo", sdk: "demo", license: { state: "ACTIVE", expiry: null, types: ["SPECTROL"] }, permissions: true, bluetooth: true, device: connected ? info() : null });
+    if (cmd === "requestPermissions") return reply(id, true, { granted: true });
+    if (cmd === "scan") {
+      clearTimeout(scanTimer);
+      emit({ type: "event", event: "scanState", scanning: true });
+      setTimeout(() => emit({ type: "event", event: "scanResult", device: { ...DEV, rssi: -50 - Math.round(Math.random() * 15) } }), 600);
+      scanTimer = setTimeout(() => emit({ type: "event", event: "scanState", scanning: false }), Math.min(+msg.ms || 4000, 4000));
+      return reply(id, true, {});
+    }
+    if (cmd === "stopScan") { clearTimeout(scanTimer); emit({ type: "event", event: "scanState", scanning: false }); return reply(id, true, {}); }
+    if (cmd === "connect") {
+      return setTimeout(() => { connected = DEV.id; emit({ type: "event", event: "connected", device: info() }); reply(id, true, { device: info() }); }, 700);
+    }
+    if (cmd === "disconnect") { connected = null; emit({ type: "event", event: "disconnected", status: "SUCCESS" }); return reply(id, true, {}); }
+    if (cmd === "measure") {
+      if (!connected) return reply(id, false, null, "ERROR_NOT_CONNECTED");
+      const [nm, hex] = SPECTRO_DEMO_SAMPLES[n++ % SPECTRO_DEMO_SAMPLES.length];
+      const curve = spectroDemoCurve(hex).map((v) => Math.max(0.002, v * (1 + (Math.random() - 0.5) * 0.02)));
+      const modes = Array.isArray(msg.modes) && msg.modes.length ? msg.modes : ["M2"];
+      // M0/M1 add a little UV-excited brightness in the blue, like a real optical brightener
+      const measurements = modes.map((mode) => ({
+        mode, demo: true, sample: nm,
+        spectral: { lambda: SPECTRO_WL.slice(), value: curve.map((v, i) => (mode === "M2" ? v : v + (i < 6 ? 0.01 * (6 - i) * (mode === "M0" ? 1 : 0.8) : 0))) },
+      }));
+      return setTimeout(() => reply(id, true, { measurements, device: info() }), 900);
+    }
+    if (cmd === "calibrate") return setTimeout(() => reply(id, true, { device: info() }), 600);
+    return reply(id, false, null, "ERROR_NOT_SUPPORTED");
+  };
+};
+
+// ── The connection store (one per page) ───────────────────────────────────
+const spectroStore = (() => {
+  let st = {
+    source: "auto", host: null, hello: null, license: null,
+    scanning: false, devices: [], conn: "idle", device: null,
+    mode: "M2", busy: false, error: "", readings: [], remembered: null, autoGo: true,
+  };
+  try {
+    const v = JSON.parse(localStorage.getItem(SPECTRO_KEY) || "null");
+    if (v && typeof v === "object") {
+      ["source", "mode", "remembered", "autoGo"].forEach((k) => { if (v[k] !== undefined) st[k] = v[k]; });
+      if (Array.isArray(v.readings)) st.readings = v.readings.filter((r) => r && isFinite(r.L)).slice(0, 40).map(spectroRegister);
+    }
+  } catch (e) {}
+  const subs = new Set();
+  const save = () => {
+    try { localStorage.setItem(SPECTRO_KEY, JSON.stringify({ source: st.source, mode: st.mode, remembered: st.remembered, autoGo: st.autoGo, readings: st.readings })); } catch (e) {}
+  };
+  const set = (patch) => { st = { ...st, ...patch }; save(); subs.forEach((f) => f()); };
+  const pending = new Map();
+  let seq = 0, send = null, readingListeners = new Set();
+  const nativeSend = () => {
+    if (typeof window === "undefined") return null;
+    if (window.NixBridge && typeof window.NixBridge.postMessage === "function") return ["android", (o) => window.NixBridge.postMessage(JSON.stringify(o))];
+    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.nix) return ["ios", (o) => window.webkit.messageHandlers.nix.postMessage(o)];
+    return null;
+  };
+  const onMessage = (raw) => {
+    let o = raw;
+    if (typeof raw === "string") { try { o = JSON.parse(raw); } catch (e) { return; } }
+    if (!o || typeof o !== "object") return;
+    if (o.type === "reply") {
+      const p = pending.get(o.id);
+      if (!p) return;
+      pending.delete(o.id);
+      clearTimeout(p.t);
+      if (o.ok) p.res(o.data || {}); else p.rej(o.error || "ERROR_INTERNAL");
+      return;
+    }
+    if (o.type !== "event") return;
+    switch (o.event) {
+      case "hello": if (o.license) set({ license: o.license }); break;
+      case "license": set({ license: o.license || null }); break;
+      case "scanState": set({ scanning: !!o.scanning }); break;
+      case "scanResult": {
+        const d = o.device;
+        if (!d || !d.id) break;
+        const list = st.devices.filter((x) => x.id !== d.id).concat([{ ...d, seen: Date.now() }]);
+        list.sort((a, b) => (b.rssi || -999) - (a.rssi || -999));
+        set({ devices: list });
+        break;
+      }
+      case "connected": if (o.device) set({ conn: "connected", device: o.device, error: "" }); break;
+      case "disconnected":
+        set({ conn: "idle", device: null, busy: false, error: o.status && o.status !== "SUCCESS" ? spectroErrorText(o.status) : st.error });
+        break;
+      case "error": set({ error: spectroErrorText(o.error), scanning: false }); break;
+      case "battery": if (st.device) set({ device: { ...st.device, battery: o.level } }); break;
+      case "extPower": if (st.device) set({ device: { ...st.device, extPower: !!o.on } }); break;
+      default: break;
+    }
+  };
+  if (typeof window !== "undefined") window.__nixEvent = onMessage;
+  const call = (cmd, args = {}, ms = 30000) => {
+    if (!send) return Promise.reject("ERROR_NO_HOST");
+    const id = ++seq;
+    return new Promise((res, rej) => {
+      const t = setTimeout(() => { pending.delete(id); rej("ERROR_TIMEOUT"); }, ms);
+      pending.set(id, { res, rej, t });
+      try { send({ ...args, id, cmd }); } catch (e) { clearTimeout(t); pending.delete(id); rej("ERROR_INTERNAL"); }
+    });
+  };
+  const attach = () => {
+    const nat = st.source === "demo" ? null : nativeSend();
+    let host = null;
+    if (nat) { host = nat[0]; send = nat[1]; }
+    else if (st.source === "demo") { host = "demo"; const h = spectroDemoHost((m) => onMessage(m)); send = h; }
+    else send = null;
+    set({ host, conn: "idle", device: null, devices: [], scanning: false, busy: false });
+    if (!send) return;
+    call("hello", {}, 8000).then((d) => {
+      set({ hello: d, license: d.license || null });
+      if (d.device) set({ conn: "connected", device: d.device });
+    }).catch(() => {});
+  };
+  // Android asks for the Bluetooth permission the first time it's needed
+  const withPermission = async (fn) => {
+    try { return await fn(); } catch (e) {
+      if (e !== "ERROR_NO_PERMISSION") throw e;
+      const p = await call("requestPermissions", {}, 120000);
+      if (!p.granted) throw "ERROR_NO_PERMISSION";
+      return fn();
+    }
+  };
+  const api = {
+    get: () => st,
+    subscribe: (f) => { subs.add(f); return () => subs.delete(f); },
+    onReading: (f) => { readingListeners.add(f); return () => readingListeners.delete(f); },
+    attach,
+    setSource: (source) => { if (st.conn === "connected") call("disconnect").catch(() => {}); st = { ...st, source }; attach(); },
+    setMode: (mode) => set({ mode }),
+    setAutoGo: (autoGo) => set({ autoGo }),
+    clearError: () => set({ error: "" }),
+    scan: async () => {
+      set({ error: "", devices: [] });
+      try { await withPermission(() => call("scan", { ms: 15000 })); } catch (e) { set({ error: spectroErrorText(e) }); }
+    },
+    stopScan: () => call("stopScan").catch(() => {}),
+    connect: async (d) => {
+      if (st.scanning) call("stopScan").catch(() => {});
+      set({ conn: "connecting", error: "" });
+      try {
+        const r = await withPermission(() => call("connect", { address: d.id, name: d.name || "" }, 45000));
+        const dev = r.device || st.device;
+        set({ conn: "connected", device: dev, remembered: { id: d.id, name: d.name || dev?.typeName || "Nix device", type: d.type || dev?.type || "" } });
+        if (dev && Array.isArray(dev.modes) && dev.modes.length && !dev.modes.includes(st.mode)) set({ mode: dev.modes.includes("M2") ? "M2" : dev.modes[dev.modes.length - 1] });
+      } catch (e) { set({ conn: "idle", device: null, error: spectroErrorText(e) }); }
+    },
+    disconnect: () => { call("disconnect").catch(() => {}); set({ conn: "idle", device: null }); },
+    forget: () => set({ remembered: null }),
+    measure: async () => {
+      if (st.busy || st.conn !== "connected") return null;
+      set({ busy: true, error: "" });
+      try {
+        const r = await call("measure", { modes: [st.mode] }, 30000);
+        const ms = Array.isArray(r.measurements) ? r.measurements : [];
+        const m = ms.find((x) => x.mode === st.mode) || ms[0];
+        const reading = spectroReadingOf(m, r.device || st.device);
+        if (!reading) throw "ERROR_INTERNAL";
+        set({ busy: false, readings: [reading, ...st.readings].slice(0, 40), device: r.device || st.device });
+        readingListeners.forEach((f) => { try { f(reading); } catch (e) {} });
+        return reading;
+      } catch (e) { set({ busy: false, error: spectroErrorText(e) }); return null; }
+    },
+    calibrate: async (tile) => {
+      set({ busy: true, error: "" });
+      try { const r = await call("calibrate", { tile: String(tile || "").trim() }, 30000); set({ busy: false, device: r.device || st.device }); return true; }
+      catch (e) { set({ busy: false, error: spectroErrorText(e) }); return false; }
+    },
+    removeReading: (id) => set({ readings: st.readings.filter((r) => r.id !== id) }),
+    clearReadings: () => set({ readings: [] }),
+  };
+  // the native shell may inject its bridge just after the page starts
+  if (typeof window !== "undefined") {
+    window.addEventListener("nixbridgeready", () => { if (st.source !== "demo") attach(); });
+    setTimeout(attach, 0);
+  }
+  return api;
+})();
+const useSpectro = () => {
+  const [, force] = useState(0);
+  useEffect(() => spectroStore.subscribe(() => force((x) => x + 1)), []);
+  return spectroStore.get();
+};
+const spectroSummary = (s) =>
+  s.conn === "connected" ? `${s.device?.typeName || "Nix"}${isFinite(s.device?.battery) && s.device?.battery !== null ? ` · ${s.device.battery}%` : ""}` : s.host === "demo" ? "demo" : s.host ? "not connected" : "";
+
+const SpectroSignal = ({ rssi }) => {
+  const bars = rssi >= -60 ? 4 : rssi >= -70 ? 3 : rssi >= -80 ? 2 : 1;
+  return React.createElement("span", { className: "inline-flex items-end gap-[2px] h-3", title: `${rssi} dBm` },
+    [1, 2, 3, 4].map((b) => React.createElement("span", { key: b, className: `w-[3px] rounded-sm ${b <= bars ? "bg-sky-500" : "bg-slate-300 dark:bg-neutral-700"}`, style: { height: `${b * 25}%` } })));
+};
+const SpectroPanel = ({ onGo, onPin, cursorSpectral }) => {
+  const s = useSpectro();
+  const [tile, setTile] = useState("");
+  const btn = "px-2.5 py-1.5 rounded-md text-[11px] font-semibold border transition-colors disabled:opacity-50";
+  const btnGhost = `${btn} border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-200 hover:bg-slate-50 dark:hover:bg-neutral-800`;
+  const btnMain = `${btn} border-sky-600 bg-sky-600 text-white hover:bg-sky-700`;
+  const connected = s.conn === "connected";
+  const dev = s.device;
+  const licenseBad = s.license && s.license.state && s.license.state !== "ACTIVE";
+  return React.createElement("div", { className: "flex flex-col gap-3 text-xs", "data-spectro": "" },
+    // where measurements come from
+    !s.host && React.createElement("div", { className: "rounded-lg bg-slate-50 dark:bg-neutral-800/60 p-3 flex flex-col gap-2 text-slate-600 dark:text-neutral-300" },
+      React.createElement("div", { className: "flex items-start gap-2" },
+        React.createElement(Icon, { name: "bluetooth", className: "w-4 h-4 mt-0.5 shrink-0 text-sky-500" }),
+        React.createElement("span", null, "Measure with a Nix Spectro L over Bluetooth in the ColorSAMIficator Android app. Browsers can't connect to Nix devices directly.")),
+      React.createElement("button", { className: `${btnGhost} self-start`, onClick: () => spectroStore.setSource("demo") }, "Try the demo device")),
+    s.host === "demo" && React.createElement("div", { className: "flex items-center justify-between gap-2 rounded-md bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 px-2.5 py-1.5" },
+      React.createElement("span", null, "Demo device: readings are simulated."),
+      React.createElement("button", { className: "underline font-semibold", onClick: () => spectroStore.setSource("auto") }, "Turn off")),
+    licenseBad && React.createElement("div", { className: "rounded-md bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 px-2.5 py-1.5" },
+      SPECTRO_ERRORS[s.license.state] || `The Nix SDK license isn't active (${String(s.license.state).toLowerCase().replace(/_/g, " ")}). Check the license set in the app build.`),
+    s.error && React.createElement("div", { className: "flex items-start justify-between gap-2 rounded-md bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 px-2.5 py-1.5", role: "alert" },
+      React.createElement("span", null, s.error),
+      React.createElement("button", { "aria-label": "Dismiss", onClick: spectroStore.clearError }, React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" }))),
+    // connecting
+    s.host && !connected && React.createElement("div", { className: "flex flex-col gap-2" },
+      s.remembered && React.createElement("div", { className: "flex items-center gap-2" },
+        React.createElement("button", { className: btnMain, disabled: s.conn === "connecting", onClick: () => spectroStore.connect(s.remembered) },
+          s.conn === "connecting" ? "Connecting…" : `Reconnect ${s.remembered.name}`),
+        React.createElement("button", { className: "text-[10px] text-slate-400 underline", onClick: spectroStore.forget }, "Forget")),
+      React.createElement("div", { className: "flex items-center gap-2" },
+        React.createElement("button", { className: s.remembered ? btnGhost : btnMain, disabled: s.conn === "connecting", onClick: s.scanning ? spectroStore.stopScan : spectroStore.scan },
+          s.scanning ? "Stop scanning" : "Scan for devices"),
+        s.scanning && React.createElement("span", { className: "text-slate-400 animate-pulse" }, "Looking for Nix devices…")),
+      s.devices.length > 0 && React.createElement("ul", { className: "flex flex-col divide-y divide-slate-100 dark:divide-neutral-800 rounded-md border border-slate-200 dark:border-neutral-700" },
+        s.devices.map((d) => React.createElement("li", { key: d.id, className: "flex items-center gap-2 px-2.5 py-2" },
+          React.createElement(SpectroSignal, { rssi: d.rssi }),
+          React.createElement("span", { className: "flex-1 min-w-0 truncate" },
+            React.createElement("span", { className: "font-semibold" }, d.name || "Nix device"),
+            React.createElement("span", { className: "text-slate-400 font-mono ml-1.5 text-[10px]" }, d.id)),
+          React.createElement("button", { className: btnGhost, disabled: s.conn === "connecting", onClick: () => spectroStore.connect(d) }, "Connect")))),
+      !s.scanning && s.devices.length === 0 && React.createElement("p", { className: "text-[10px] text-slate-400" }, "Turn the device on and keep it within a few metres. A device can only be connected to one app at a time.")),
+    // connected
+    connected && React.createElement("div", { className: "flex flex-col gap-2.5" },
+      React.createElement("div", { className: "flex items-center gap-2" },
+        React.createElement("span", { className: "w-2 h-2 rounded-full bg-emerald-500 shrink-0" }),
+        React.createElement("span", { className: "flex-1 min-w-0 truncate font-semibold" }, spectroDeviceLabel(dev)),
+        dev && dev.battery !== null && dev.battery !== undefined && React.createElement("span", { className: "inline-flex items-center gap-1 text-slate-500", title: dev.extPower ? "Charging" : "Battery" },
+          React.createElement(Icon, { name: dev.extPower ? "battery-charging" : dev.battery < 20 ? "battery-low" : "battery", className: "w-4 h-4" }), `${dev.battery}%`),
+        React.createElement("button", { className: "text-[10px] text-slate-400 underline", onClick: spectroStore.disconnect }, "Disconnect")),
+      dev && Array.isArray(dev.modes) && dev.modes.length > 1 && React.createElement("div", { className: "flex items-center gap-2" },
+        React.createElement("span", { className: "text-[10px] uppercase tracking-wider text-slate-400 font-bold" }, "Mode"),
+        React.createElement("div", { className: "inline-flex rounded-md border border-slate-200 dark:border-neutral-700 overflow-hidden", role: "radiogroup" },
+          dev.modes.map((m) => React.createElement("button", {
+            key: m, role: "radio", "aria-checked": s.mode === m, onClick: () => spectroStore.setMode(m),
+            className: `px-2.5 py-1 text-[11px] font-semibold ${s.mode === m ? "bg-sky-600 text-white" : "text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800"}`,
+            title: { M0: "M0: no UV control (legacy)", M1: "M1: D50 incl. UV (paper with optical brighteners)", M2: "M2: UV excluded (most finishes, laminates, paint)" }[m],
+          }, m)))),
+      React.createElement("button", { className: `${btnMain} py-2.5 text-sm flex items-center justify-center gap-2`, disabled: s.busy, onClick: () => spectroStore.measure(), "data-spectro-measure": "" },
+        React.createElement(Icon, { name: s.busy ? "loader" : "scan-line", className: `w-4 h-4 ${s.busy ? "animate-spin" : ""}` }), s.busy ? "Measuring…" : "Measure"),
+      React.createElement("label", { className: "flex items-center gap-2 text-[11px] text-slate-600 dark:text-neutral-300 select-none cursor-pointer" },
+        React.createElement("input", { type: "checkbox", checked: !!s.autoGo, onChange: (e) => spectroStore.setAutoGo(e.target.checked), className: "rounded border-slate-300 h-3.5 w-3.5" }),
+        "Move the cursor to each new reading"),
+      dev && dev.supportsCal && React.createElement("details", { className: "rounded-md border border-slate-200 dark:border-neutral-700 px-2.5 py-1.5", open: !!dev.calDue },
+        React.createElement("summary", { className: `cursor-pointer text-[11px] font-semibold ${dev.calDue ? "text-amber-700 dark:text-amber-300" : "text-slate-500"}` }, dev.calDue ? "Field calibration due" : "Field calibration"),
+        React.createElement("div", { className: "flex items-center gap-2 mt-2" },
+          React.createElement("input", { type: "text", value: tile, onChange: (e) => setTile(e.target.value), placeholder: "Code on the back of the calibration tile", "aria-label": "Calibration tile code",
+            className: "flex-1 min-w-0 px-2 py-1.5 rounded-md border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-[11px] font-mono" }),
+          React.createElement("button", { className: btnGhost, disabled: s.busy || !tile.trim(), onClick: () => spectroStore.calibrate(tile).then((ok) => ok && setTile("")) }, "Calibrate")),
+        React.createElement("p", { className: "text-[10px] text-slate-400 mt-1" }, "Place the device on its white calibration tile first."))),
+    // readings
+    s.readings.length > 0 && React.createElement("div", { className: "flex flex-col gap-1" },
+      React.createElement("div", { className: "flex items-center justify-between" },
+        React.createElement("span", { className: "text-[10px] uppercase tracking-wider text-slate-400 font-bold" }, `Readings (${s.readings.length})`),
+        React.createElement("button", { className: "text-[10px] text-slate-400 underline", onClick: spectroStore.clearReadings }, "Clear")),
+      React.createElement("ul", { className: "flex flex-col gap-1 max-h-[260px] overflow-y-auto", "data-spectro-readings": "" },
+        s.readings.map((r) => {
+          const here = cursorSpectral && r.spectral && cursorSpectral === r.spectral;
+          return React.createElement("li", { key: r.id, className: `flex items-center gap-2 rounded-md px-1.5 py-1 ${here ? "bg-sky-50 dark:bg-sky-900/20" : "hover:bg-slate-50 dark:hover:bg-neutral-800/50"}` },
+            React.createElement("button", { className: "w-7 h-7 rounded-md border border-black/10 shrink-0", style: { backgroundColor: r.hex }, title: "Go to this colour", onClick: () => onGo && onGo(r) }),
+            React.createElement("button", { className: "flex-1 min-w-0 text-left", onClick: () => onGo && onGo(r) },
+              React.createElement("div", { className: "font-mono text-[11px] text-slate-700 dark:text-neutral-200 truncate" },
+                `${String(r.hex).toUpperCase()}${r.lab ? `  L*${r.lab[0].toFixed(1)} a*${r.lab[1].toFixed(1)} b*${r.lab[2].toFixed(1)}` : ""}`),
+              React.createElement("div", { className: "text-[10px] text-slate-400 truncate" },
+                `${new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}${r.mode ? ` · ${r.mode}` : ""}${r.demo ? " · demo" : ""}`)),
+            React.createElement("button", { className: "p-1 text-slate-400 hover:text-sky-600", title: "Save as pin", "aria-label": "Save as pin", onClick: () => onPin && onPin(r) }, React.createElement(Icon, { name: "map-pin", className: "w-3.5 h-3.5" })),
+            React.createElement("button", { className: "p-1 text-slate-300 hover:text-red-500", title: "Remove", "aria-label": "Remove reading", onClick: () => spectroStore.removeReading(r.id) }, React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" })));
+        }))),
+  );
+};
+
 const ViewportSwatches = ({
   items,
   layout,
@@ -18143,7 +18623,7 @@ const App = () => {
       if (hit) {
         activeSpectral = hit.spectral;
         activeSpectralMeta = { illuminant: hit.illuminant, observer: hit.observer, measurementMethod: hit.measurementMethod, measurementDate: hit.measurementDate, measurementDevice: hit.measurementDevice };
-      } else if (okSpec(temporarySpectral)) { activeSpectral = temporarySpectral; activeSpectralMeta = {}; }
+      } else if (okSpec(temporarySpectral)) { activeSpectral = temporarySpectral; activeSpectralMeta = spectroMetaOf(temporarySpectral) || {}; }
     }
     return {
       activeSpectral,
@@ -18501,6 +18981,10 @@ const App = () => {
             .toGamut({ space: "srgb" }).to("srgb")
             .toString({ format: "hex" }),
           spectral: crosshair.activeSpectral || crosshair.temporarySpectral,
+          ...(() => {
+            const mt = spectroMetaOf(crosshair.activeSpectral || crosshair.temporarySpectral);
+            return mt ? { measurementMethod: mt.measurementMethod, measurementDate: mt.measurementDate, measurementDevice: mt.measurementDevice } : {};
+          })(),
           brand: pinBrand,
           originalIndex: pinOriginalIndex,
           image: pinImage,
@@ -18513,6 +18997,24 @@ const App = () => {
       }));
     }
   };
+  // Spectrophotometer readings: go to one, or save it as a pin (the cursor
+  // moves there first, then the pin is made once the cursor has arrived).
+  const spectroPendingPin = useRef(null);
+  const spectroGo = (r) => { if (r) handleUpdate([r.L, r.C, r.H], r.spectral || null); };
+  const spectroAtCursor = (r) => crosshair && Math.abs(scrubL - r.L) < 1e-6 && Math.abs(scrubC - r.C) < 1e-6 && crosshair.temporarySpectral === (r.spectral || null);
+  const spectroPin = (r) => {
+    if (!r) return;
+    if (spectroAtCursor(r)) { if (crosshair.exactSavedColor?.type !== "pin") togglePin(); return; }
+    spectroPendingPin.current = r;
+    spectroGo(r);
+  };
+  useEffect(() => {
+    const r = spectroPendingPin.current;
+    if (!r || !spectroAtCursor(r)) return;
+    spectroPendingPin.current = null;
+    if (crosshair.exactSavedColor?.type !== "pin") togglePin();
+  }, [crosshair]);
+  useEffect(() => spectroStore.onReading((r) => { if (spectroStore.get().autoGo) handleUpdate([r.L, r.C, r.H], r.spectral || null); }), []);
   const updateSavedColor = (field, val) => {
     if (!crosshair?.activeSavedColor) return;
     setSavedColors((prev) => ({
@@ -19772,6 +20274,8 @@ const App = () => {
     filteredViewData,
     handleUpdate,
     handlePointClick,
+    spectroGo,
+    spectroPin,
     crosshair,
     isLight,
     activeColorObj,
@@ -23009,6 +23513,8 @@ const AppUI = ({
   filteredViewData,
   handleUpdate,
   handlePointClick,
+  spectroGo,
+  spectroPin,
   crosshair,
   isLight,
   activeColorObj,
@@ -24329,6 +24835,11 @@ const AppUI = ({
                 cursor: [scrubL, scrubC, scrubH],
                 ctx: sameGroupContext,
               }),
+            ),
+            React.createElement(
+              CollapsiblePanel,
+              { title: "Spectrophotometer", icon: "bluetooth", defaultOpen: typeof window !== "undefined" && !!(window.NixBridge || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.nix)), summary: spectroSummary(spectroStore.get()) },
+              React.createElement(SpectroPanel, { onGo: spectroGo, onPin: spectroPin, cursorSpectral: crosshair?.temporarySpectral || null }),
             ),
             React.createElement(
               CollapsiblePanel,
@@ -27015,6 +27526,7 @@ const AppUI = ({
                     React.createElement("span", { className: "text-slate-700 dark:text-neutral-300 font-medium" }, "Show layout guidelines (dashed)")
                   )
                 ),
+                React.createElement(LabelCollectionOption),
                 React.createElement(
                   "div",
                   { className: "mt-auto pt-4 border-t border-slate-200 dark:border-neutral-800 text-xs text-slate-500 flex flex-col gap-1" },
@@ -27578,7 +28090,8 @@ const AppUI = ({
                   "div",
                   { className: "sami-row" },
                   React.createElement("span", { className: "sami-label" }, "NAME:"),
-                  React.createElement("span", { className: "sami-value sami-lg uppercase", style: { maxWidth: "2.3in" } }, info.displayName)
+                  React.createElement("span", { className: "sami-value sami-lg uppercase", style: { maxWidth: "2.3in", minWidth: 0 } }, info.displayName),
+                  React.createElement(LabelCollectionPill)
                 ),
                 // Row 2: Color Code
                 React.createElement(
