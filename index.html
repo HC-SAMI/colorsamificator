@@ -57,5 +57,9 @@ tailwind.config = {
 })();
 </script>
 
+<script>
+// Offline support: the service worker keeps a copy of everything the app loads.
+if ("serviceWorker" in navigator) window.addEventListener("load", function () { navigator.serviceWorker.register("./sw.js").catch(function () {}); });
+</script>
 </body>
 </html>

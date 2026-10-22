@@ -12254,7 +12254,7 @@ const spectroReadingOf = (m, device) => {
     mode: m.mode || "",
     L, C, H: isNaN(H) ? 0 : H, hex,
     spectral,
-    lab: (Array.isArray(m.labD50) ? m.labD50 : spectral ? spectroLabD50(spectral) : null)?.map((v) => +(+v).toFixed(2)) || null,
+    lab: (spectral ? spectroLabD50(spectral) : Array.isArray(m.labD50) ? m.labD50 : null)?.map((v) => +(+v).toFixed(2)) || null,
     device: spectroDeviceLabel(device),
     demo: !!m.demo,
   };
@@ -12271,6 +12271,55 @@ const spectroRegister = (r) => {
       observer: 2,
     });
   return r;
+};
+
+// ── One surface, one colour, whatever the device settings ─────────────────
+// Every scan asks the device for all its UV modes at once (M0 legacy, M1 UV
+// included, M2 UV excluded) and keeps each reflectance spectrum. The colour is
+// always worked out from the spectrum itself, under fixed CIE standards
+// (OkLCH from D65/2°, CIELAB and ΔE00 from D50/2°), so the instrument's own
+// illuminant/observer settings never enter into it, and one UV mode (M2 by
+// default) is used for every reading alike. A surface whose M1 and M2 spectra
+// differ fluoresces (optical brighteners); that's measured and shown rather
+// than mistaken for a different colour.
+const SPECTRO_MODES = ["M0", "M1", "M2"];
+const SPECTRO_BASIS_ORDER = { M2: ["M2", "M1", "M0"], M1: ["M1", "M2", "M0"], M0: ["M0", "M1", "M2"] };
+const spectroSpOk = (sp) => Array.isArray(sp) && sp.length === SPECTRO_WL.length && sp.some((v) => +v > 0);
+const spectroPick = (spectra, basis) => (SPECTRO_BASIS_ORDER[basis] || SPECTRO_BASIS_ORDER.M2).find((k) => spectra && spectroSpOk(spectra[k])) || null;
+const spectroFluorOf = (spectra) => {
+  if (!spectra || !spectroSpOk(spectra.M2)) return null;
+  const ref = spectroLabD50(spectra.M2);
+  const ds = ["M1", "M0"].filter((k) => spectroSpOk(spectra[k])).map((k) => spectroDE00(spectroLabD50(spectra[k]), ref)).filter(isFinite);
+  return ds.length ? +Math.max(...ds).toFixed(2) : null;
+};
+// the same reading, its colour worked out from the chosen UV mode's spectrum
+const spectroRebase = (r, basis) => {
+  if (!r || !r.spectra) return r;
+  const k = spectroPick(r.spectra, basis);
+  if (!k || (k === r.mode && r.spectral === r.spectra[k])) return r;
+  const sp = r.spectra[k], it = fastItemLch({ spectral: sp });
+  if (!it) return r;
+  return spectroRegister({ ...r, mode: k, spectral: sp, L: it.L, C: it.C, H: isNaN(it.H) ? 0 : it.H, hex: it.hex, lab: (spectroLabD50(sp) || []).map((v) => +(+v).toFixed(2)) });
+};
+// a whole scan (every mode) → one reading
+const spectroReadingFrom = (ms, device, basis) => {
+  const spectra = {};
+  let base = null;
+  (ms || []).forEach((m) => { const sp = m && m.spectral ? spectroResample(m.spectral.lambda, m.spectral.value) : null; if (spectroSpOk(sp) && m.mode) spectra[m.mode] = sp; });
+  const k = spectroPick(spectra, basis);
+  base = (ms || []).find((m) => m && m.mode === k) || (ms || [])[0];
+  const r = spectroReadingOf(base, device);
+  if (!r) return null;
+  if (Object.keys(spectra).length) { r.spectra = spectra; r.modes = Object.keys(spectra).sort(); r.fluor = spectroFluorOf(spectra); }
+  return spectroRegister(r);
+};
+// readings saved before every mode was kept: what they have is what they had
+const spectroNormalize = (r) => {
+  if (!r || !isFinite(r.L)) return r;
+  const out = { ...r };
+  if (!out.spectra && spectroSpOk(out.spectral) && out.mode) out.spectra = { [out.mode]: out.spectral };
+  if (spectroSpOk(out.spectral)) out.lab = (spectroLabD50(out.spectral) || out.lab || []).map((v) => +(+v).toFixed(2));
+  return out;
 };
 
 // ── Averaging several scans of one sample ─────────────────────────────────
@@ -12390,7 +12439,7 @@ const spectroDemoHost = (emit) => {
       // M0/M1 add a little UV-excited brightness in the blue, like a real optical brightener
       const measurements = modes.map((mode) => ({
         mode, demo: true, sample: nm,
-        spectral: { lambda: SPECTRO_WL.slice(), value: curve.map((v, i) => (mode === "M2" ? v : v + (i < 6 ? 0.01 * (6 - i) * (mode === "M0" ? 1 : 0.8) : 0))) },
+        spectral: { lambda: SPECTRO_WL.slice(), value: curve.map((v, i) => (mode === "M2" || nm !== "Arctic white" ? v * (1 + (Math.random() - 0.5) * 0.004) : v + (i < 6 ? 0.012 * (6 - i) * (mode === "M0" ? 1 : 0.8) : 0))) },
       }));
       return setTimeout(() => reply(id, true, { measurements, device: info() }), 900);
     }
@@ -12407,20 +12456,21 @@ const spectroStore = (() => {
     mode: "M2", busy: false, error: "", readings: [], remembered: null, autoGo: true,
     avg: false, scans: [], session: null,
     qc: { open: false, ref: null, target: null, tol: 1, follow: true },
-    latest: null,
+    latest: null, basis: "M2",
   };
   try {
     const v = JSON.parse(localStorage.getItem(SPECTRO_KEY) || "null");
     if (v && typeof v === "object") {
-      ["source", "mode", "remembered", "autoGo", "avg"].forEach((k) => { if (v[k] !== undefined) st[k] = v[k]; });
-      if (Array.isArray(v.readings)) st.readings = v.readings.filter((r) => r && isFinite(r.L)).slice(0, 40).map(spectroRegister);
+      ["source", "remembered", "autoGo", "avg", "basis"].forEach((k) => { if (v[k] !== undefined) st[k] = v[k]; });
+      if (!SPECTRO_BASIS_ORDER[st.basis]) st.basis = "M2";
+      if (Array.isArray(v.readings)) st.readings = v.readings.filter((r) => r && isFinite(r.L)).slice(0, 40).map((r) => spectroRegister(spectroRebase(spectroNormalize(r), st.basis)));
       if (v.qc && typeof v.qc === "object") { st.qc = { ...st.qc, ...v.qc }; ["ref", "target"].forEach((k) => { if (st.qc[k] && !isFinite(st.qc[k].L)) st.qc[k] = null; else if (st.qc[k]) spectroRegister(st.qc[k]); }); }
-      if (Array.isArray(v.scans)) { st.scans = v.scans.filter((r) => r && isFinite(r.L)).slice(0, 100).map(spectroRegister); st.session = spectroSessionOf(st.scans); }
+      if (Array.isArray(v.scans)) { st.scans = v.scans.filter((r) => r && isFinite(r.L)).slice(0, 100).map((r) => spectroRegister(spectroRebase(spectroNormalize(r), st.basis))); st.session = spectroSessionOf(st.scans); }
     }
   } catch (e) {}
   const subs = new Set();
   const save = () => {
-    try { localStorage.setItem(SPECTRO_KEY, JSON.stringify({ source: st.source, mode: st.mode, remembered: st.remembered, autoGo: st.autoGo, avg: st.avg, readings: st.readings, scans: st.scans, qc: st.qc })); } catch (e) {}
+    try { localStorage.setItem(SPECTRO_KEY, JSON.stringify({ source: st.source, basis: st.basis, remembered: st.remembered, autoGo: st.autoGo, avg: st.avg, readings: st.readings, scans: st.scans, qc: st.qc })); } catch (e) {}
   };
   const set = (patch) => { st = { ...st, ...patch }; save(); subs.forEach((f) => f()); };
   let compound = null, compoundKey = "";
@@ -12432,11 +12482,11 @@ const spectroStore = (() => {
     if (!d || d.v !== 1) return;
     const from = d.from || "phone";
     const known = new Set(st.readings.map((r) => r.id));
-    const add = (Array.isArray(d.readings) ? d.readings : []).filter((r) => r && isFinite(r.L) && !known.has(r.id)).map((r) => spectroRegister({ ...r, remote: from }));
+    const add = (Array.isArray(d.readings) ? d.readings : []).filter((r) => r && isFinite(r.L) && !known.has(r.id)).map((r) => spectroRegister(spectroRebase(spectroNormalize({ ...r, remote: from }), st.basis)));
     if (add.length) set({ readings: [...add, ...st.readings].sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 40) });
     const rs = (Array.isArray(d.scans) ? d.scans : []).filter((r) => r && isFinite(r.L));
     const key = rs.map((r) => r.id).join(",");
-    if (key !== remoteScansKey && !(remoteScansKey === null && key === "")) setScans(rs.map((r) => spectroRegister({ ...r, remote: from })), false);
+    if (key !== remoteScansKey && !(remoteScansKey === null && key === "")) setScans(rs.map((r) => spectroRegister(spectroRebase(spectroNormalize({ ...r, remote: from }), st.basis))), false);
     remoteScansKey = key;
     const L = d.latest;
     if (L && isFinite(L.L) && L.id !== remoteLatestId) {
@@ -12445,7 +12495,7 @@ const spectroStore = (() => {
       const fresh = Date.now() - (Date.parse(L.at || d.at) || 0) < 120000;
       if (!first || fresh) {
         const c = compoundOf();
-        const r = c && c.id === L.id ? c : spectroRegister({ ...L, remote: from });
+        const r = c && c.id === L.id ? c : spectroRegister(spectroRebase(spectroNormalize({ ...L, remote: from }), st.basis));
         qcFollow(r);
         readingListeners.forEach((f) => { try { f(r); } catch (e) {} });
       }
@@ -12463,6 +12513,16 @@ const spectroStore = (() => {
       L: ses.mean.L, C: ses.mean.C, H: ses.mean.H, hex: ses.mean.hex, spectral: ses.mean.spectral,
       lab: ses.mean.lab ? ses.mean.lab.map((v) => +(+v).toFixed(2)) : null,
       scans: ses.n, mcdm: +ses.mcdm.toFixed(3),
+      ...(() => {
+        const spectra = {};
+        SPECTRO_MODES.forEach((k) => {
+          if (!st.scans.every((r) => r.spectra && spectroSpOk(r.spectra[k]))) return;
+          spectra[k] = SPECTRO_WL.map((_, i) => +(st.scans.reduce((t, r) => t + r.spectra[k][i], 0) / st.scans.length).toFixed(5));
+        });
+        const k = [...new Set(st.scans.map((r) => r.mode))];
+        if (Object.keys(spectra).length) { const b = spectroPick(spectra, st.basis); if (b) spectra[b] = ses.mean.spectral || spectra[b]; }
+        return Object.keys(spectra).length ? { spectra, modes: Object.keys(spectra).sort(), fluor: spectroFluorOf(spectra), mode: k.length === 1 ? k[0] : "mixed" } : { mode: k.length === 1 ? k[0] : "mixed" };
+      })(),
     });
     return compound;
   };
@@ -12471,6 +12531,7 @@ const spectroStore = (() => {
     const c = compoundOf();
     if (emit && c) { qcFollow(c); readingListeners.forEach((f) => { try { f(c); } catch (e) {} }); }
   };
+  const r0dev = () => st.device;
   const pending = new Map();
   let seq = 0, send = null, readingListeners = new Set();
   const nativeSend = () => {
@@ -12552,7 +12613,14 @@ const spectroStore = (() => {
     onReading: (f) => { readingListeners.add(f); return () => readingListeners.delete(f); },
     attach,
     setSource: (source) => { if (st.conn === "connected") call("disconnect").catch(() => {}); st = { ...st, source }; attach(); },
-    setMode: (mode) => set({ mode }),
+    // which UV mode's spectrum the colour comes from, for every reading at once
+    setBasis: (basis) => {
+      if (!SPECTRO_BASIS_ORDER[basis]) return;
+      const rb = (r) => spectroRebase(r, basis);
+      st = { ...st, basis, readings: st.readings.map(rb), qc: { ...st.qc, ref: st.qc.ref && st.qc.ref.spectra ? spectroQcItem(rb(st.qc.ref), st.qc.ref.from) : st.qc.ref, target: st.qc.target && st.qc.target.spectra ? spectroQcItem(rb(st.qc.target), st.qc.target.from) : st.qc.target } };
+      compoundKey = "";
+      setScans(st.scans.map(rb), false);
+    },
     setAutoGo: (autoGo) => set({ autoGo }),
     clearError: () => set({ error: "" }),
     scan: async () => {
@@ -12567,7 +12635,7 @@ const spectroStore = (() => {
         const r = await withPermission(() => call("connect", { address: d.id, name: d.name || "" }, 45000));
         const dev = r.device || st.device;
         set({ conn: "connected", device: dev, remembered: { id: d.id, name: d.name || dev?.typeName || "Nix device", type: d.type || dev?.type || "" } });
-        if (dev && Array.isArray(dev.modes) && dev.modes.length && !dev.modes.includes(st.mode)) set({ mode: dev.modes.includes("M2") ? "M2" : dev.modes[dev.modes.length - 1] });
+
       } catch (e) { set({ conn: "idle", device: null, error: spectroErrorText(e) }); }
     },
     disconnect: () => { call("disconnect").catch(() => {}); set({ conn: "idle", device: null }); },
@@ -12576,10 +12644,11 @@ const spectroStore = (() => {
       if (st.busy || st.conn !== "connected") return null;
       set({ busy: true, error: "" });
       try {
-        const r = await call("measure", { modes: [st.mode], same: !!((st.avg && st.scans.length) || (st.qc.open && st.qc.ref)) }, 30000);
+        const dev = r0dev();
+        const modes = dev && Array.isArray(dev.modes) && dev.modes.length ? dev.modes : SPECTRO_MODES;
+        const r = await call("measure", { modes, same: !!((st.avg && st.scans.length) || (st.qc.open && st.qc.ref)) }, 30000);
         const ms = Array.isArray(r.measurements) ? r.measurements : [];
-        const m = ms.find((x) => x.mode === st.mode) || ms[0];
-        const reading = spectroReadingOf(m, r.device || st.device);
+        const reading = spectroReadingFrom(ms, r.device || st.device, st.basis);
         if (!reading) throw "ERROR_INTERNAL";
         // No real surface reads L* below 1 (even black laminate is ~15-25): the
         // device saw nothing, usually because it wasn't seated on the sample.
@@ -12736,7 +12805,8 @@ const SpectroAverage = ({ s, onSave, onGo, here }) => {
               : `Settled once ${SPECTRO_SETTLE_RUN} scans in a row each move the average by ΔE00 ${SPECTRO_SETTLE_DE} or less (${ses.steady} so far)`,
             "data-average-state": ses.stable ? "settled" : "moving",
           }, ses.stable ? "Settled" : `${ses.steady} of ${SPECTRO_SETTLE_RUN} steady`)),
-        React.createElement("div", { className: "font-mono text-[10px] text-slate-500 truncate", title: "CIELAB D50/2°" }, spectroLabText(ses.mean.lab)))),
+        React.createElement("div", { className: "font-mono text-[10px] text-slate-500 truncate", title: "CIELAB D50/2°" }, spectroLabText(ses.mean.lab)),
+        c && c.fluor > 0.5 && React.createElement("div", { className: "text-[10px] text-amber-800 dark:text-amber-300", "data-average-fluor": "" }, `This surface fluoresces: it reads ΔE00 ${c.fluor} brighter with UV (optical brighteners). Colour shown from ${s.basis}.`))),
     ses.n >= 2 && React.createElement("div", { className: "grid grid-cols-2 gap-2" },
       React.createElement("div", { className: "rounded-lg bg-slate-50 dark:bg-neutral-800/60 px-2.5 py-1.5", title: "CIEDE2000 between this average and the one before the last scan" },
         React.createElement("div", { className: "text-[10px] uppercase tracking-wider text-slate-500 font-bold" }, "Last scan moved it"),
@@ -12780,6 +12850,7 @@ const spectroQcItem = (r, from) => (r ? {
   L: r.L, C: r.C, H: isFinite(r.H) ? r.H : 0, hex: r.hex,
   spectral: spectroHasSp(r) ? r.spectral : null, lab: Array.isArray(r.lab) ? r.lab : null,
   scans: r.scans || 0, at: r.at || "", mode: r.mode || "",
+  ...(r.spectra ? { spectra: r.spectra } : {}),
 } : null);
 const spectroLabUnder = (sp, ill) => {
   try {
@@ -13064,14 +13135,16 @@ const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectr
         dev && dev.battery !== null && dev.battery !== undefined && React.createElement("span", { className: "inline-flex items-center gap-1 text-slate-500", title: dev.extPower ? "Charging" : "Battery" },
           React.createElement(Icon, { name: dev.extPower ? "battery-charging" : dev.battery < 20 ? "battery-low" : "battery", className: "w-4 h-4" }), `${dev.battery}%`),
         React.createElement("button", { className: "text-[10px] text-slate-400 underline", onClick: spectroStore.disconnect }, "Disconnect")),
-      dev && Array.isArray(dev.modes) && dev.modes.length > 1 && React.createElement("div", { className: "flex items-center gap-2" },
-        React.createElement("span", { className: "text-[10px] uppercase tracking-wider text-slate-400 font-bold" }, "Mode"),
+      dev && Array.isArray(dev.modes) && dev.modes.length > 1 && React.createElement("div", { className: "flex items-center gap-2 flex-wrap" },
+        React.createElement("span", { className: "text-[10px] uppercase tracking-wider text-slate-400 font-bold", title: "Every scan captures all the modes; this picks which spectrum the colour comes from, for every reading at once" }, "Colour from"),
         React.createElement("div", { className: "inline-flex rounded-md border border-slate-200 dark:border-neutral-700 overflow-hidden", role: "radiogroup" },
           dev.modes.map((m) => React.createElement("button", {
-            key: m, role: "radio", "aria-checked": s.mode === m, onClick: () => spectroStore.setMode(m),
-            className: `px-2.5 py-1 text-[11px] font-semibold ${s.mode === m ? "bg-sky-600 text-white" : "text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800"}`,
+            key: m, role: "radio", "aria-checked": s.basis === m, onClick: () => spectroStore.setBasis(m), "data-basis": m,
+            className: `px-2.5 py-1 text-[11px] font-semibold ${s.basis === m ? "bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900" : "text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800"}`,
             title: { M0: "M0: no UV control (legacy)", M1: "M1: D50 incl. UV (paper with optical brighteners)", M2: "M2: UV excluded (most finishes, laminates, paint)" }[m],
           }, m)))),
+      dev && Array.isArray(dev.modes) && dev.modes.length > 1 && React.createElement("p", { className: "text-[10px] text-slate-500 leading-snug -mt-1" },
+        `Each scan captures ${dev.modes.join(", ")} and the colour is worked out from the spectrum under fixed standards (OkLCH D65/2°, CIELAB D50/2°), so the same surface reads the same whatever the device is set to. ${s.basis} is used for every reading${s.basis === "M2" ? " (UV excluded: right for laminates, wood, paint)" : ""}.`),
       React.createElement("label", { className: "flex items-start gap-2 text-[11px] text-slate-700 dark:text-neutral-200 select-none cursor-pointer" },
         React.createElement("input", { type: "checkbox", checked: !!s.avg, onChange: (e) => spectroStore.setAvg(e.target.checked), className: "rounded border-slate-300 h-3.5 w-3.5 mt-0.5", "data-spectro-avg": "" }),
         React.createElement("span", null, React.createElement("span", { className: "font-semibold" }, "Average several scans"),
@@ -13107,7 +13180,7 @@ const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectr
               React.createElement("div", { className: "font-mono text-[11px] text-slate-700 dark:text-neutral-200 truncate" },
                 `${String(r.hex).toUpperCase()}${r.lab ? `  L*${r.lab[0].toFixed(1)} a*${r.lab[1].toFixed(1)} b*${r.lab[2].toFixed(1)}` : ""}`),
               React.createElement("div", { className: "text-[10px] text-slate-400 truncate" },
-                `${new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}${r.mode ? ` · ${r.mode}` : ""}${r.scans > 1 ? ` · avg of ${r.scans}` : ""}${r.remote ? " · live" : ""}${r.demo ? " · demo" : ""}`)),
+                `${new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}${r.mode ? ` · ${r.mode}` : ""}${r.scans > 1 ? ` · avg of ${r.scans}` : ""}${r.fluor > 0.5 ? ` · fluoresces (ΔE00 ${r.fluor} with UV)` : ""}${r.remote ? " · live" : ""}${r.demo ? " · demo" : ""}`)),
             React.createElement("button", { className: `p-1 ${s.qc.ref && s.qc.ref.id === r.id ? "text-emerald-600" : "text-slate-400 hover:text-sky-600"}`, title: "Use as the quality-control reference", "aria-label": "Use as QC reference", "data-reading-ref": "", onClick: () => spectroStore.setQc({ ref: spectroQcItem(r, r.scans > 1 ? `Average of ${r.scans}` : "Scan"), open: true }) }, React.createElement(Icon, { name: "target", className: "w-3.5 h-3.5" })),
             React.createElement("button", { className: "p-1 text-slate-400 hover:text-sky-600", title: "Save as a pin or a commercial colour", "aria-label": "Save reading", "data-reading-save": "", onClick: () => startSave(r) }, React.createElement(Icon, { name: "save", className: "w-3.5 h-3.5" })),
             React.createElement("button", { className: "p-1 text-slate-300 hover:text-red-500", title: "Remove", "aria-label": "Remove reading", onClick: () => spectroStore.removeReading(r.id) }, React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" })));
@@ -13848,9 +13921,26 @@ const CommandMatches = ({ query, commands, onGoColour, onDone }) => {
     )),
   );
 };
+// Online / offline, as the browser sees it.
+const useOnline = () => {
+  const [on, setOn] = useState(typeof navigator === "undefined" ? true : navigator.onLine !== false);
+  useEffect(() => {
+    const up = () => setOn(true), down = () => setOn(false);
+    window.addEventListener("online", up); window.addEventListener("offline", down);
+    return () => { window.removeEventListener("online", up); window.removeEventListener("offline", down); };
+  }, []);
+  return on;
+};
+const OfflinePill = () => {
+  const on = useOnline();
+  if (on) return null;
+  return React.createElement("div", { role: "status", "data-offline": "", className: "absolute top-full left-1/2 -translate-x-1/2 mt-1.5 z-50 inline-flex items-center gap-2 h-8 px-3.5 rounded-full shadow-lg text-[12px] font-semibold whitespace-nowrap", style: { background: "#052212", color: "#F2E8DF" } },
+    React.createElement("span", { className: "w-2 h-2 rounded-full", style: { background: "#C2711B" } }),
+    React.createElement("span", null, "Offline", React.createElement("span", { className: "hidden md:inline" }, " · your work is kept here"), " · syncs when you're back online"));
+};
 const SyncPill = ({ status, onClick }) => {
   const st = status && status.state;
-  const [txt, dot] = st === "running" ? ["Syncing…", "#C2711B"] : st === "error" ? ["Sync failed", "#B42318"] : st === "success" || st === "done" ? ["Synced", "#3F7A3A"] : ["Sync", "#8C9A5B"];
+  const [txt, dot] = st === "running" ? ["Syncing…", "#C2711B"] : st === "queued" ? ["Sync waiting", "#C2711B"] : st === "error" ? ["Sync failed", "#B42318"] : st === "success" || st === "done" ? ["Synced", "#3F7A3A"] : ["Sync", "#8C9A5B"];
   return React.createElement(
     "button",
     { type: "button", onClick, title: (status && status.message) || "Sync your CSVs with GitHub", "data-sync-pill": "", className: "hidden lg:inline-flex items-center gap-2 h-9 px-3 rounded-full border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-[13px] font-semibold text-slate-700 dark:text-neutral-200 hover:border-sky-500 whitespace-nowrap" },
@@ -13904,6 +13994,7 @@ const AppTopBar = ({ nav, searchQuery, setSearchQuery, onUndo, onRedo, canUndo, 
       "data-topbar": "",
       className: `md:col-span-2 shrink-0 sticky top-0 md:static flex items-center gap-2 md:gap-3 px-3 md:px-4 py-2 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 relative ${searchQuery ? "z-[98]" : "z-40"}`,
     },
+    React.createElement(OfflinePill),
     React.createElement(
       "h1",
       { className: "hidden md:flex items-baseline gap-1 shrink-0 font-black tracking-tight text-lg text-slate-800 dark:text-neutral-100 leading-none pr-1" },
@@ -14354,7 +14445,9 @@ const liveStore = (() => {
   try { const v = JSON.parse(localStorage.getItem(LIVE_KEY) || "null"); if (v && ["off", "send", "receive"].includes(v.mode)) st.mode = v.mode; } catch (e) {}
   const subs = new Set();
   const set = (p) => { st = { ...st, ...p }; try { localStorage.setItem(LIVE_KEY, JSON.stringify({ mode: st.mode })); } catch (e) {} subs.forEach((f) => f()); };
-  let cfg = null, sha = null, etag = "", timer = null, busy = false, again = false, lastKey = "", debounce = null, branchOk = false;
+  let cfg = null, sha = null, etag = "", timer = null, busy = false, again = false, lastKey = "", debounce = null, branchOk = false, sentKey = null, dirty = false;
+  const offline = () => typeof navigator !== "undefined" && navigator.onLine === false;
+  const netErr = (e) => e instanceof TypeError || /failed to fetch|networkerror|load failed|network request failed/i.test(String(e && e.message ? e.message : e));
   const base = () => `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}`;
   const api = (path, opts = {}) => fetch(base() + path, {
     cache: "no-store", ...opts,
@@ -14385,13 +14478,16 @@ const liveStore = (() => {
   const snapshot = () => {
     const s = spectroStore.get();
     const dev = s.device ? spectroDeviceLabel(s.device) : "";
-    return { v: 1, from: dev || "Phone", at: new Date().toISOString(), latest: s.latest || null, readings: s.readings.slice(0, 20), scans: s.avg ? s.scans : [], avg: !!s.avg };
+    return { v: 1, from: dev || "Phone", at: new Date().toISOString(), latest: s.latest || null, readings: s.readings.slice(0, 40), scans: s.avg ? s.scans : [], avg: !!s.avg };
   };
-  const keyOf = () => { const s = spectroStore.get(); return [s.latest && s.latest.id, s.readings.slice(0, 20).map((r) => r.id).join(","), s.avg ? s.scans.map((r) => r.id).join(",") : ""].join("|"); };
+  const keyOf = () => { const s = spectroStore.get(); return [s.latest && s.latest.id, s.readings.slice(0, 40).map((r) => r.id).join(","), s.avg ? s.scans.map((r) => r.id).join(",") : ""].join("|"); };
   const publish = async () => {
     if (st.mode !== "send" || !st.cfgOk) return;
+    // offline: everything stays in the readings list; the next send carries it
+    if (offline()) { dirty = true; set({ status: "offline", error: "" }); return; }
     if (busy) { again = true; return; }
     busy = true;
+    const k = keyOf();
     try {
       await ensureBranch();
       const body = (withSha) => JSON.stringify({ message: "Live reading", branch: LIVE_BRANCH, content: liveB64(JSON.stringify(snapshot())), ...(withSha ? { sha: withSha } : {}) });
@@ -14399,14 +14495,20 @@ const liveStore = (() => {
       if (r.status === 409 || r.status === 422) { sha = await currentSha(); r = await api(`/contents/${LIVE_PATH}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: body(sha) }); }
       if (!r.ok) throw why(r);
       sha = ((await r.json()).content || {}).sha || null;
+      sentKey = k; dirty = false;
       set({ status: "live", error: "", lastAt: Date.now(), sent: st.sent + 1 });
-    } catch (e) { set({ status: "error", error: String(e && e.message ? e.message : e) }); }
+    } catch (e) {
+      dirty = true;
+      if (netErr(e) || offline()) set({ status: "offline", error: "" });
+      else set({ status: "error", error: String(e && e.message ? e.message : e) });
+    }
     busy = false;
     if (again) { again = false; publish(); }
   };
   const poll = async () => {
     if (st.mode !== "receive" || !st.cfgOk) return;
     if (typeof document !== "undefined" && document.hidden) return;
+    if (offline()) { if (st.status !== "offline") set({ status: "offline", error: "" }); return; }
     try {
       const r = await api(`/contents/${LIVE_PATH}?ref=${LIVE_BRANCH}`, { headers: { Accept: "application/vnd.github.raw+json", ...(etag ? { "If-None-Match": etag } : {}) } });
       if (r.status === 304) { if (st.status !== "live") set({ status: "live", error: "" }); return; }
@@ -14416,7 +14518,10 @@ const liveStore = (() => {
       const d = JSON.parse(await r.text());
       spectroStore.ingestRemote(d);
       set({ status: "live", error: "", lastAt: Date.parse(d.at) || Date.now(), lastFrom: d.from || "", got: st.got + 1 });
-    } catch (e) { set({ status: "error", error: String(e && e.message ? e.message : e) }); }
+    } catch (e) {
+      if (netErr(e) || offline()) set({ status: "offline", error: "" });
+      else set({ status: "error", error: String(e && e.message ? e.message : e) });
+    }
   };
   const restart = () => {
     clearInterval(timer); timer = null;
@@ -14432,6 +14537,16 @@ const liveStore = (() => {
     debounce = setTimeout(publish, 250);
   });
   if (typeof document !== "undefined") document.addEventListener("visibilitychange", () => { if (!document.hidden && st.mode === "receive") poll(); });
+  // back online: send what was measured meanwhile, or catch up on it
+  if (typeof window !== "undefined") {
+    window.addEventListener("online", () => {
+      if (st.mode === "send" && (dirty || keyOf() !== sentKey)) publish();
+      if (st.mode === "receive") poll();
+    });
+    window.addEventListener("offline", () => { if (st.mode !== "off") set({ status: "offline", error: "" }); });
+    // a send that failed for another reason is retried now and then
+    setInterval(() => { if (st.mode === "send" && dirty && !offline() && !busy) publish(); }, 30000);
+  }
   return {
     get: () => st,
     subscribe: (f) => { subs.add(f); return () => subs.delete(f); },
@@ -14456,8 +14571,9 @@ const useLive = () => {
 const liveAgo = (t) => { if (!t) return ""; const s = Math.max(0, Math.round((Date.now() - t) / 1000)); return s < 5 ? "just now" : s < 60 ? `${s} s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); };
 const LiveLink = ({ onSetup, hasDevice }) => {
   const lv = useLive();
-  const dot = lv.status === "error" ? "#B42318" : lv.status === "live" ? "#3F7A3A" : "#C2711B";
+  const dot = lv.status === "error" ? "#B42318" : lv.status === "live" ? "#3F7A3A" : "#C2711B"; // offline/waiting: amber
   const line = lv.mode === "off" ? "" : lv.status === "error" ? lv.error
+    : lv.status === "offline" ? (lv.mode === "send" ? "Offline · readings are kept here and sent when the connection is back" : "Offline · will catch up when the connection is back")
     : lv.mode === "send" ? (lv.lastAt ? `Sharing · last sent ${liveAgo(lv.lastAt)}` : "Sharing · each new reading is sent")
     : lv.status === "waiting" ? "Waiting for the other device to send a reading…" : lv.lastAt ? `Live · ${lv.lastFrom || "phone"} · ${liveAgo(lv.lastAt)}` : "Connecting…";
   return React.createElement(
@@ -21537,6 +21653,11 @@ const App = () => {
       setShowGithubModal(true);
       return;
     }
+    const queue = () => {
+      try { localStorage.setItem("csam-sync-pending", "1"); } catch (e2) {}
+      setSyncStatus({ state: "queued", message: "You're offline. The sync runs by itself as soon as the connection is back; your changes are kept on this device meanwhile.", log: [] });
+    };
+    if (typeof navigator !== "undefined" && navigator.onLine === false) { queue(); return; }
     setSyncStatus({ state: "running", message: "Checking access...", log: [] });
     try {
       const info = await ghVerify(cfg);
@@ -21571,11 +21692,24 @@ const App = () => {
           ...result.skipped.map((p) => `${p} — unchanged`),
         ],
       });
+      try { localStorage.removeItem("csam-sync-pending"); } catch (e2) {}
     } catch (e) {
       console.error(e);
+      // the connection dropped part-way: try again when it's back
+      if ((typeof navigator !== "undefined" && navigator.onLine === false) || e instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(String(e && e.message))) { queue(); return; }
       setSyncStatus({ state: "error", message: e.message, log: [] });
     }
   };
+  const syncRef = useRef(null);
+  syncRef.current = handleSyncToCSV;
+  useEffect(() => {
+    const pending = () => { try { return localStorage.getItem("csam-sync-pending") === "1"; } catch (e) { return false; } };
+    const resume = () => { if (pending() && navigator.onLine !== false) setTimeout(() => syncRef.current && syncRef.current(), 1500); };
+    window.addEventListener("online", resume);
+    // the app was closed with a sync still waiting: run it once the data has loaded
+    const t = setTimeout(resume, 8000);
+    return () => { window.removeEventListener("online", resume); clearTimeout(t); };
+  }, []);
   const handleSystemImport = (e) => {
     const file = e.target.files[0];
     if (!file) return;
