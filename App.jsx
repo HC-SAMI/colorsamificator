@@ -12407,6 +12407,7 @@ const spectroStore = (() => {
     mode: "M2", busy: false, error: "", readings: [], remembered: null, autoGo: true,
     avg: false, scans: [], session: null,
     qc: { open: false, ref: null, target: null, tol: 1, follow: true },
+    latest: null,
   };
   try {
     const v = JSON.parse(localStorage.getItem(SPECTRO_KEY) || "null");
@@ -12424,7 +12425,32 @@ const spectroStore = (() => {
   const set = (patch) => { st = { ...st, ...patch }; save(); subs.forEach((f) => f()); };
   let compound = null, compoundKey = "";
   // quality control: the target follows each new reading (or running average)
-  const qcFollow = (r) => { if (st.qc.follow && r) set({ qc: { ...st.qc, target: spectroQcItem(r, "Latest scan") } }); };
+  const qcFollow = (r) => { if (!r) return; set({ latest: r, ...(st.qc.follow ? { qc: { ...st.qc, target: spectroQcItem(r, r.remote ? `From ${r.remote}` : "Latest scan") } } : {}) }); };
+  // readings sent live from another device (see liveStore)
+  let remoteScansKey = null, remoteLatestId = null;
+  const ingestRemote = (d) => {
+    if (!d || d.v !== 1) return;
+    const from = d.from || "phone";
+    const known = new Set(st.readings.map((r) => r.id));
+    const add = (Array.isArray(d.readings) ? d.readings : []).filter((r) => r && isFinite(r.L) && !known.has(r.id)).map((r) => spectroRegister({ ...r, remote: from }));
+    if (add.length) set({ readings: [...add, ...st.readings].sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 40) });
+    const rs = (Array.isArray(d.scans) ? d.scans : []).filter((r) => r && isFinite(r.L));
+    const key = rs.map((r) => r.id).join(",");
+    if (key !== remoteScansKey && !(remoteScansKey === null && key === "")) setScans(rs.map((r) => spectroRegister({ ...r, remote: from })), false);
+    remoteScansKey = key;
+    const L = d.latest;
+    if (L && isFinite(L.L) && L.id !== remoteLatestId) {
+      const first = remoteLatestId === null;
+      remoteLatestId = L.id;
+      const fresh = Date.now() - (Date.parse(L.at || d.at) || 0) < 120000;
+      if (!first || fresh) {
+        const c = compoundOf();
+        const r = c && c.id === L.id ? c : spectroRegister({ ...L, remote: from });
+        qcFollow(r);
+        readingListeners.forEach((f) => { try { f(r); } catch (e) {} });
+      }
+    }
+  };
   const compoundOf = () => {
     const ses = st.session;
     if (!ses) return null;
@@ -12581,6 +12607,7 @@ const spectroStore = (() => {
     removeReading: (id) => set({ readings: st.readings.filter((r) => r.id !== id) }),
     setAvg: (avg) => set({ avg }),
     setQc: (patch) => set({ qc: { ...st.qc, ...patch } }),
+    ingestRemote,
     compound: compoundOf,
     removeScan: (id) => setScans(st.scans.filter((r) => r.id !== id), true),
     discardScans: () => setScans([], false),
@@ -12977,8 +13004,9 @@ const SpectroQC = ({ s, cursor, colorData }) => {
     ),
   );
 };
-const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectral, cursor, colorData }) => {
+const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectral, cursor, colorData, onSetupSync }) => {
   const s = useSpectro();
+  const lv = useLive();
   const [tile, setTile] = useState("");
   const [saving, setSaving] = useState(null);
   const startSave = (r) => { if (!r) return; if (!onSave) { onPin && onPin(r); return; } setSaving(r); };
@@ -12995,8 +13023,9 @@ const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectr
   const dev = s.device;
   const licenseBad = s.license && s.license.state && s.license.state !== "ACTIVE";
   return React.createElement("div", { className: "flex flex-col gap-3 text-xs", "data-spectro": "" },
+    React.createElement(LiveLink, { onSetup: onSetupSync, hasDevice: !!s.host }),
     // where measurements come from
-    !s.host && React.createElement("div", { className: "rounded-lg bg-slate-50 dark:bg-neutral-800/60 p-3 flex flex-col gap-2 text-slate-600 dark:text-neutral-300" },
+    !s.host && lv.mode !== "receive" && React.createElement("div", { className: "rounded-lg bg-slate-50 dark:bg-neutral-800/60 p-3 flex flex-col gap-2 text-slate-600 dark:text-neutral-300" },
       React.createElement("div", { className: "flex items-start gap-2" },
         React.createElement(Icon, { name: "bluetooth", className: "w-4 h-4 mt-0.5 shrink-0 text-sky-500" }),
         React.createElement("span", null, "Measure with a Nix Spectro L over Bluetooth in the ColorSAMIficator Android app. Browsers can't connect to Nix devices directly.")),
@@ -13078,7 +13107,7 @@ const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectr
               React.createElement("div", { className: "font-mono text-[11px] text-slate-700 dark:text-neutral-200 truncate" },
                 `${String(r.hex).toUpperCase()}${r.lab ? `  L*${r.lab[0].toFixed(1)} a*${r.lab[1].toFixed(1)} b*${r.lab[2].toFixed(1)}` : ""}`),
               React.createElement("div", { className: "text-[10px] text-slate-400 truncate" },
-                `${new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}${r.mode ? ` · ${r.mode}` : ""}${r.scans > 1 ? ` · avg of ${r.scans}` : ""}${r.demo ? " · demo" : ""}`)),
+                `${new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}${r.mode ? ` · ${r.mode}` : ""}${r.scans > 1 ? ` · avg of ${r.scans}` : ""}${r.remote ? " · live" : ""}${r.demo ? " · demo" : ""}`)),
             React.createElement("button", { className: `p-1 ${s.qc.ref && s.qc.ref.id === r.id ? "text-emerald-600" : "text-slate-400 hover:text-sky-600"}`, title: "Use as the quality-control reference", "aria-label": "Use as QC reference", "data-reading-ref": "", onClick: () => spectroStore.setQc({ ref: spectroQcItem(r, r.scans > 1 ? `Average of ${r.scans}` : "Scan"), open: true }) }, React.createElement(Icon, { name: "target", className: "w-3.5 h-3.5" })),
             React.createElement("button", { className: "p-1 text-slate-400 hover:text-sky-600", title: "Save as a pin or a commercial colour", "aria-label": "Save reading", "data-reading-save": "", onClick: () => startSave(r) }, React.createElement(Icon, { name: "save", className: "w-3.5 h-3.5" })),
             React.createElement("button", { className: "p-1 text-slate-300 hover:text-red-500", title: "Remove", "aria-label": "Remove reading", onClick: () => spectroStore.removeReading(r.id) }, React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" })));
@@ -13831,6 +13860,15 @@ const SyncPill = ({ status, onClick }) => {
 };
 const MeasureButton = ({ onMeasure }) => {
   const s = useSpectro();
+  const lv = useLive();
+  if (!s.host && lv.mode === "receive" && lv.cfgOk)
+    return React.createElement(
+      "button",
+      { type: "button", onClick: onMeasure, "data-live-pill": "", title: lv.status === "error" ? lv.error : lv.lastAt ? `Live readings from ${lv.lastFrom || "your phone"}, last ${liveAgo(lv.lastAt)}` : "Waiting for readings from your phone",
+        className: "hidden md:inline-flex items-center gap-2 h-10 px-3.5 rounded-xl border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-sm font-semibold text-slate-700 dark:text-neutral-200 whitespace-nowrap" },
+      React.createElement("span", { className: `w-2 h-2 rounded-full ${lv.status === "live" ? "animate-pulse" : ""}`, style: { background: lv.status === "error" ? "#B42318" : lv.status === "live" ? "#3F7A3A" : "#C2711B" } }),
+      lv.status === "error" ? "Live link error" : "Live from phone",
+    );
   if (!s.host) return null;
   const connected = s.conn === "connected";
   return React.createElement(
@@ -14296,6 +14334,153 @@ const PaletteTray = ({ items, current, onAdd, onPick, onRemove, onReorder, onCom
           ),
           n > 0 && React.createElement(TrayChip, { icon: "trash-2", label: armed ? "Clear all?" : "Clear", wide: all, title: armed ? "Tap again to clear the palette" : "Clear the palette", danger: armed, onClick: () => { if (!armed) return setArmed(true); setArmed(false); onClear(); }, "data-tray-clear": "" }),
         ),
+  );
+};
+
+// ── Live link: readings from the phone appear on the computer ─────────────
+// The device that measures writes a small JSON file (its latest reading or
+// running average, its recent readings and the scans being averaged) to a
+// side branch of the GitHub repo the app already syncs with; the other device
+// checks that file every few seconds with a conditional request (an
+// unchanged file answers 304, which GitHub doesn't count against the rate
+// limit). The side branch never touches the live site.
+const LIVE_KEY = "csam-live";
+const LIVE_BRANCH = "csam-live";
+const LIVE_PATH = "live/readings.json";
+const LIVE_POLL_MS = 3000;
+const liveB64 = (str) => { const b = new TextEncoder().encode(str); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s); };
+const liveStore = (() => {
+  let st = { mode: "off", cfgOk: false, keep: false, status: "idle", error: "", lastAt: null, lastFrom: "", sent: 0, got: 0 };
+  try { const v = JSON.parse(localStorage.getItem(LIVE_KEY) || "null"); if (v && ["off", "send", "receive"].includes(v.mode)) st.mode = v.mode; } catch (e) {}
+  const subs = new Set();
+  const set = (p) => { st = { ...st, ...p }; try { localStorage.setItem(LIVE_KEY, JSON.stringify({ mode: st.mode })); } catch (e) {} subs.forEach((f) => f()); };
+  let cfg = null, sha = null, etag = "", timer = null, busy = false, again = false, lastKey = "", debounce = null, branchOk = false;
+  const base = () => `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}`;
+  const api = (path, opts = {}) => fetch(base() + path, {
+    cache: "no-store", ...opts,
+    headers: { Authorization: `Bearer ${cfg.token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", ...(opts.headers || {}) },
+  });
+  const why = (r) => (r.status === 401 ? "GitHub refused the token" : r.status === 403 ? "The token can't write to this repo (it needs Contents: read and write)" : r.status === 404 ? "Repo not found, or the token can't see it" : `GitHub answered ${r.status}`);
+  const ensureBranch = async () => {
+    if (branchOk) return;
+    const b = await api(`/branches/${LIVE_BRANCH}`);
+    if (b.ok) { branchOk = true; return; }
+    if (b.status !== 404) throw why(b);
+    const repo = await api("");
+    if (!repo.ok) throw why(repo);
+    const def = (await repo.json()).default_branch || "main";
+    const ref = await api(`/git/ref/heads/${encodeURIComponent(def)}`);
+    if (!ref.ok) throw why(ref);
+    const head = (await ref.json()).object.sha;
+    const mk = await api("/git/refs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ref: `refs/heads/${LIVE_BRANCH}`, sha: head }) });
+    if (!mk.ok && mk.status !== 422) throw why(mk); // 422: someone made it meanwhile
+    branchOk = true;
+  };
+  const currentSha = async () => {
+    const r = await api(`/contents/${LIVE_PATH}?ref=${LIVE_BRANCH}`);
+    if (r.status === 404) return null;
+    if (!r.ok) throw why(r);
+    return (await r.json()).sha || null;
+  };
+  const snapshot = () => {
+    const s = spectroStore.get();
+    const dev = s.device ? spectroDeviceLabel(s.device) : "";
+    return { v: 1, from: dev || "Phone", at: new Date().toISOString(), latest: s.latest || null, readings: s.readings.slice(0, 20), scans: s.avg ? s.scans : [], avg: !!s.avg };
+  };
+  const keyOf = () => { const s = spectroStore.get(); return [s.latest && s.latest.id, s.readings.slice(0, 20).map((r) => r.id).join(","), s.avg ? s.scans.map((r) => r.id).join(",") : ""].join("|"); };
+  const publish = async () => {
+    if (st.mode !== "send" || !st.cfgOk) return;
+    if (busy) { again = true; return; }
+    busy = true;
+    try {
+      await ensureBranch();
+      const body = (withSha) => JSON.stringify({ message: "Live reading", branch: LIVE_BRANCH, content: liveB64(JSON.stringify(snapshot())), ...(withSha ? { sha: withSha } : {}) });
+      let r = await api(`/contents/${LIVE_PATH}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: body(sha) });
+      if (r.status === 409 || r.status === 422) { sha = await currentSha(); r = await api(`/contents/${LIVE_PATH}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: body(sha) }); }
+      if (!r.ok) throw why(r);
+      sha = ((await r.json()).content || {}).sha || null;
+      set({ status: "live", error: "", lastAt: Date.now(), sent: st.sent + 1 });
+    } catch (e) { set({ status: "error", error: String(e && e.message ? e.message : e) }); }
+    busy = false;
+    if (again) { again = false; publish(); }
+  };
+  const poll = async () => {
+    if (st.mode !== "receive" || !st.cfgOk) return;
+    if (typeof document !== "undefined" && document.hidden) return;
+    try {
+      const r = await api(`/contents/${LIVE_PATH}?ref=${LIVE_BRANCH}`, { headers: { Accept: "application/vnd.github.raw+json", ...(etag ? { "If-None-Match": etag } : {}) } });
+      if (r.status === 304) { if (st.status !== "live") set({ status: "live", error: "" }); return; }
+      if (r.status === 404) { set({ status: "waiting", error: "" }); return; }
+      if (!r.ok) throw why(r);
+      etag = r.headers.get("ETag") || "";
+      const d = JSON.parse(await r.text());
+      spectroStore.ingestRemote(d);
+      set({ status: "live", error: "", lastAt: Date.parse(d.at) || Date.now(), lastFrom: d.from || "", got: st.got + 1 });
+    } catch (e) { set({ status: "error", error: String(e && e.message ? e.message : e) }); }
+  };
+  const restart = () => {
+    clearInterval(timer); timer = null;
+    if (st.mode === "receive" && st.cfgOk) { poll(); timer = setInterval(poll, LIVE_POLL_MS); }
+    if (st.mode === "send" && st.cfgOk) { lastKey = keyOf(); if (st.status !== "live") set({ status: "ready" }); }
+  };
+  spectroStore.subscribe(() => {
+    if (st.mode !== "send") return;
+    const k = keyOf();
+    if (k === lastKey) return;
+    lastKey = k;
+    clearTimeout(debounce);
+    debounce = setTimeout(publish, 250);
+  });
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", () => { if (!document.hidden && st.mode === "receive") poll(); });
+  return {
+    get: () => st,
+    subscribe: (f) => { subs.add(f); return () => subs.delete(f); },
+    configure: (c) => {
+      const ok = !!(c && c.token && c.owner && c.repo);
+      const same = cfg && c && cfg.token === c.token && cfg.owner === c.owner && cfg.repo === c.repo;
+      cfg = ok ? { token: c.token, owner: c.owner, repo: c.repo } : null;
+      if (!same) { sha = null; etag = ""; branchOk = false; }
+      set({ cfgOk: ok, keep: !!(c && c.keep) });
+      if (!same) restart();
+    },
+    setMode: (mode) => { set({ mode, status: "idle", error: "" }); etag = ""; restart(); if (mode === "send") publish(); },
+    sendNow: () => publish(),
+  };
+})();
+const useLive = () => {
+  const [, force] = useState(0);
+  useEffect(() => liveStore.subscribe(() => force((x) => x + 1)), []);
+  useEffect(() => { const t = setInterval(() => force((x) => x + 1), 5000); return () => clearInterval(t); }, []);
+  return liveStore.get();
+};
+const liveAgo = (t) => { if (!t) return ""; const s = Math.max(0, Math.round((Date.now() - t) / 1000)); return s < 5 ? "just now" : s < 60 ? `${s} s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); };
+const LiveLink = ({ onSetup, hasDevice }) => {
+  const lv = useLive();
+  const dot = lv.status === "error" ? "#B42318" : lv.status === "live" ? "#3F7A3A" : "#C2711B";
+  const line = lv.mode === "off" ? "" : lv.status === "error" ? lv.error
+    : lv.mode === "send" ? (lv.lastAt ? `Sharing · last sent ${liveAgo(lv.lastAt)}` : "Sharing · each new reading is sent")
+    : lv.status === "waiting" ? "Waiting for the other device to send a reading…" : lv.lastAt ? `Live · ${lv.lastFrom || "phone"} · ${liveAgo(lv.lastAt)}` : "Connecting…";
+  return React.createElement(
+    "div",
+    { className: "flex flex-col gap-2 rounded-xl border border-slate-200 dark:border-neutral-700 p-3", "data-live": "" },
+    React.createElement("div", { className: "flex items-center gap-2" },
+      React.createElement(Icon, { name: "link", className: "w-4 h-4 text-slate-500" }),
+      React.createElement("span", { className: "text-[12px] font-bold text-slate-800 dark:text-neutral-100 flex-1" }, "Live link"),
+      lv.mode !== "off" && React.createElement("span", { className: `w-2 h-2 rounded-full ${lv.status === "live" ? "animate-pulse" : ""}`, style: { background: dot } })),
+    !lv.cfgOk
+      ? React.createElement(React.Fragment, null,
+          React.createElement("p", { className: "text-[11px] text-slate-600 dark:text-neutral-300 leading-snug" }, "See this phone's readings on your computer within seconds. Both devices use your GitHub sync: set it up on each with “Remember on this device”."),
+          React.createElement("button", { type: "button", onClick: onSetup, className: "self-start h-8 px-3 rounded-md border border-slate-200 dark:border-neutral-700 text-[12px] font-semibold text-slate-700 dark:text-neutral-200" }, "Set up GitHub sync"))
+      : React.createElement(React.Fragment, null,
+          React.createElement("div", { className: "grid grid-cols-3 rounded-lg border border-slate-200 dark:border-neutral-700 overflow-hidden", role: "radiogroup", "aria-label": "Live link" },
+            [["off", "Off"], ["send", "Send"], ["receive", "Receive"]].map(([v, t]) => React.createElement("button", {
+              key: v, type: "button", role: "radio", "aria-checked": lv.mode === v, onClick: () => liveStore.setMode(v), "data-live-mode": v,
+              title: v === "send" ? "Send this device's readings" : v === "receive" ? "Show readings sent from another device" : "No live link",
+              className: `h-8 text-[12px] font-semibold ${lv.mode === v ? "bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900" : "text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800"}`,
+            }, t))),
+          lv.mode === "off" && React.createElement("p", { className: "text-[10px] text-slate-500 leading-snug" }, hasDevice ? "On the phone with the Spectro L, choose Send. On the computer, choose Receive." : "On the computer, choose Receive. On the phone with the Spectro L, choose Send."),
+          line && React.createElement("p", { className: `text-[11px] leading-snug ${lv.status === "error" ? "text-red-700 dark:text-red-300" : "text-slate-600 dark:text-neutral-300"}`, "data-live-status": "", role: lv.status === "error" ? "alert" : undefined }, line),
+          lv.mode !== "off" && !lv.keep && React.createElement("p", { className: "text-[10px] text-amber-800 dark:text-amber-300 leading-snug" }, "The token is only kept for this session. Tick “Remember on this device” in GitHub sync so the link survives closing the app.")),
   );
 };
 
@@ -18383,6 +18568,19 @@ const GitHubSyncModal = ({ config, setConfig, status, onSync, onPull, onClose })
             "Keep the token for this browser session only",
           ),
           React.createElement(
+            "label",
+            { className: "flex items-start gap-2 text-xs text-slate-600 cursor-pointer" },
+            React.createElement("input", {
+              type: "checkbox",
+              checked: !!draft.keep,
+              disabled: busy,
+              onChange: (e) => setDraft({ ...draft, keep: e.target.checked }),
+              "data-sync-keep": "",
+              className: "mt-0.5",
+            }),
+            React.createElement("span", null, "Remember on this device", React.createElement("span", { className: "block text-[10px] text-slate-400" }, "Needed for the live link, so readings from your phone reach your computer. Only tick it on your own devices.")),
+          ),
+          React.createElement(
             "p",
             { className: "text-[10px] text-slate-400 leading-relaxed" },
             "The token stays in this browser and goes only to api.github.com. It is never written into an export or a saved state file. Revoke it from GitHub settings at any time.",
@@ -18426,6 +18624,18 @@ const GitHubSyncModal = ({ config, setConfig, status, onSync, onPull, onClose })
                 "px-4 py-2 rounded-xl text-xs uppercase tracking-widest text-slate-500 hover:text-slate-800 disabled:opacity-40 mr-auto",
             },
             "Close",
+          ),
+          React.createElement(
+            "button",
+            {
+              disabled: busy || !draft.owner || !draft.repo || !draft.token,
+              onClick: () => { setConfig(draft); onClose(); },
+              "data-sync-save": "",
+              title: "Keep these settings without syncing (for the live link)",
+              className:
+                "px-4 py-2 rounded-xl text-xs uppercase tracking-widest border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-40",
+            },
+            "Save",
           ),
           React.createElement(
             "button",
@@ -19065,19 +19275,28 @@ const App = () => {
   const [githubConfig, setGithubConfig] = useState(() => {
     // sessionStorage is unavailable in some sandboxes, so never let it throw.
     try {
+      const kept = localStorage.getItem("csam-github-keep");
+      if (kept) return JSON.parse(kept);
+    } catch (e) {}
+    try {
       const raw = sessionStorage.getItem("csam-github");
       if (raw) return JSON.parse(raw);
     } catch (e) {}
-    return { token: "", owner: "", repo: "", branch: "", path: "data", remember: false };
+    return { token: "", owner: "", repo: "", branch: "", path: "data", remember: false, keep: false };
   });
   useEffect(() => {
     try {
-      if (githubConfig.remember) {
+      if (githubConfig.remember || githubConfig.keep) {
         sessionStorage.setItem("csam-github", JSON.stringify(githubConfig));
       } else {
         sessionStorage.removeItem("csam-github");
       }
     } catch (e) {}
+    try {
+      if (githubConfig.keep) localStorage.setItem("csam-github-keep", JSON.stringify(githubConfig));
+      else localStorage.removeItem("csam-github-keep");
+    } catch (e) {}
+    liveStore.configure(githubConfig);
   }, [githubConfig]);
   const loadInitialData = useCallback(async () => {
     let loadedColorData = null;
@@ -26485,7 +26704,7 @@ const AppUI = ({
               CollapsiblePanel,
               { title: "Spectrophotometer", icon: "bluetooth", defaultOpen: !!spectroStore.get().host || (typeof window !== "undefined" && !!(window.NixBridge || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.nix))), summary: spectroSummary(spectroStore.get()) },
               React.createElement(SpectroPanel, {
-                onGo: spectroGo, onPin: spectroPin, onSave: spectroSave, brands: Object.keys(colorData || {}), cursorSpectral: crosshair?.temporarySpectral || null, colorData,
+                onGo: spectroGo, onPin: spectroPin, onSave: spectroSave, onSetupSync: () => setShowGithubModal(true), brands: Object.keys(colorData || {}), cursorSpectral: crosshair?.temporarySpectral || null, colorData,
                 cursor: crosshair ? { id: `cursor-${scrubL.toFixed(4)}-${scrubC.toFixed(4)}-${scrubH.toFixed(2)}`, L: scrubL, C: scrubC, H: scrubH, hex: compactHex, spectral: crosshair.activeSpectral || null, name: activeName || "", brand: crosshair.activeCommercial?.brand || "" } : null,
               }),
             ),
