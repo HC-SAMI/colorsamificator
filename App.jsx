@@ -402,10 +402,10 @@ const SPECTRAL_TABLES = {
   },
   illuminants: {
     D50: [
-      53.24, 65.75, 70.08, 63.63, 80.19, 93.45, 96.11, 95.77, 98.71, 94.75,
-      97.47, 98.48, 97.52, 102.15, 100.22, 101.44, 100, 98.34, 100.07, 95.04,
-      98.94, 98.54, 98.17, 95.12, 97.54, 95.47, 97.35, 101.37, 98.05, 88.58,
-      92.44,
+      49.308, 56.513, 60.034, 57.818, 74.825, 87.247, 90.612, 91.368, 95.109, 91.963,
+      95.724, 96.613, 97.129, 102.099, 100.755, 102.317, 100, 97.735, 98.918, 93.499,
+      97.688, 99.269, 99.042, 95.722, 98.857, 95.667, 98.19, 103.003, 99.133, 87.381,
+      91.604,
     ],
     D65: [
       82.75, 91.49, 93.43, 86.68, 104.86, 117.01, 117.81, 114.86, 115.92,
@@ -12222,9 +12222,17 @@ const spectroResample = (lambda, value) => {
   }).map((v) => Math.max(0, Math.min(1.5, +v.toFixed(5))));
 };
 // CIELAB D50/2° from the spectrum (what colour books and the Nix app quote)
-const spectroLabD50 = (sp) => {
-  try { return new Color("xyz-d50", calculateXYZFromSpectral(sp, 2, "D50")).to("lab").coords.map((v) => (isFinite(v) ? v : 0)); } catch (e) { return null; }
+const spectroLabUnder = (sp, ill) => {
+  try {
+    const xyz = calculateXYZFromSpectral(sp, 2, ill), w = calculateXYZFromSpectral(SPECTRO_WL.map(() => 1), 2, ill);
+    const f = (t) => (t > 216 / 24389 ? Math.cbrt(t) : (24389 / 27 * t + 16) / 116);
+    const [fx, fy, fz] = [0, 1, 2].map((i) => f(xyz[i] / w[i]));
+    return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+  } catch (e) { return null; }
 };
+// Relative to the white worked out from the same tables (as instruments do with
+// their weighting tables), so a spectrally flat grey comes out with a* = b* = 0.
+const spectroLabD50 = (sp) => spectroLabUnder(sp, "D50");
 const spectroDeviceLabel = (d) => (d ? `${d.typeName || d.name || "Nix device"}${d.serial ? ` · SN ${d.serial}` : ""}` : "");
 // A host measurement → a reading the app can use (OkLCH from the spectrum
 // under D65/2°, like every other spectral colour in the app).
@@ -12852,14 +12860,6 @@ const spectroQcItem = (r, from) => (r ? {
   scans: r.scans || 0, at: r.at || "", mode: r.mode || "",
   ...(r.spectra ? { spectra: r.spectra } : {}),
 } : null);
-const spectroLabUnder = (sp, ill) => {
-  try {
-    const xyz = calculateXYZFromSpectral(sp, 2, ill), w = calculateXYZFromSpectral(SPECTRO_WL.map(() => 1), 2, ill);
-    const f = (t) => (t > 216 / 24389 ? Math.cbrt(t) : (24389 / 27 * t + 16) / 116);
-    const [fx, fy, fz] = [0, 1, 2].map((i) => f(xyz[i] / w[i]));
-    return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
-  } catch (e) { return null; }
-};
 const SPECTRO_HUE_WORDS = [[25, "red"], [55, "orange"], [95, "yellow"], [135, "green"], [190, "cyan"], [250, "blue"], [300, "violet"], [345, "pink"]];
 const spectroHueToward = (h, dh) => {
   if (!isFinite(dh) || Math.abs(dh) < 0.05) return "";
