@@ -6580,7 +6580,7 @@ const anchorNameOf = (an, names) =>
   String((names && names[an.nameKey]) || (names && names[an.id]) || an.sc.nameOverride || "").trim();
 // CSV headers in any case or spacing ("NOUN", "noun", "Oklch L") map onto the
 // names the importer reads, so a file exported elsewhere still loads its names.
-const CSV_CANONICAL_KEYS = "Adjective Anchor AnchorId Anchor_ID Brand BrandName Brand_Name CIE_A CIE_B CIE_L DoorProfile Door_Profile ERP_Code HEX ID Illuminant Image LAB_L Lab_A Lab_B Lab_L Material Measurement_Date Measurement_Device Measurement_Method Name Note Noun NounOverride Noun_Override OKLCH_C OKLCH_H OKLCH_L Observer Original_Index Parent ParentId ParentPinId Parent_ID Parent_Pin_ID PinId Pin_ID Profile RGB_B RGB_G RGB_R Sheen Spectral TactileTexture Tactile_Texture Tags Type URL VisualPattern VisualTexture Visual_Pattern Visual_Texture Texture_Albedo Texture_Normal Texture_Roughness Texture_Gloss Texture_Height Texture_AO Texture_Reflection Texture_Width_cm Texture_Normal_DX".split(" ");
+const CSV_CANONICAL_KEYS = "Adjective Anchor AnchorId Anchor_ID Brand BrandName Brand_Name CIE_A CIE_B CIE_L DoorProfile Door_Profile ERP_Code HEX ID Illuminant Image LAB_L Lab_A Lab_B Lab_L Material Measurement_Date Measurement_Device Measurement_Method Name Note Noun NounOverride Noun_Override OKLCH_C OKLCH_H OKLCH_L Observer Original_Index Parent ParentId ParentPinId Parent_ID Parent_Pin_ID PinId Pin_ID Profile RGB_B RGB_G RGB_R Sheen Spectral TactileTexture Tactile_Texture Tags Type URL VisualPattern VisualTexture Visual_Pattern Visual_Texture Texture_Albedo Texture_Normal Texture_Roughness Texture_Gloss Texture_Height Texture_AO Texture_Reflection Texture_Width_cm Texture_Normal_DX Scan_Log".split(" ");
 const CSV_KEY_LOOKUP = (() => {
   const m = {};
   CSV_CANONICAL_KEYS.forEach((k) => { const n = k.toLowerCase().replace(/[\s_-]+/g, ""); if (!m[n]) m[n] = k; });
@@ -12440,7 +12440,7 @@ const spectroDemoHost = (emit) => {
       if (!connected) return reply(id, false, null, "ERROR_NOT_CONNECTED");
       // averaging scans the same sample again, in another spot: a small overall
       // shift (the surface isn't perfectly even) plus a little noise per band
-      const [nm, hex] = SPECTRO_DEMO_SAMPLES[(msg.same ? n - 1 + SPECTRO_DEMO_SAMPLES.length : n++) % SPECTRO_DEMO_SAMPLES.length];
+      const [nm, hex] = msg.like ? ["Sample", msg.like] : SPECTRO_DEMO_SAMPLES[(msg.same ? n - 1 + SPECTRO_DEMO_SAMPLES.length : n++) % SPECTRO_DEMO_SAMPLES.length];
       const spot = msg.same ? 1 + (Math.random() - 0.5) * 0.05 : 1;
       const curve = spectroDemoCurve(hex).map((v) => Math.max(0.002, v * spot * (1 + (Math.random() - 0.5) * 0.02)));
       const modes = Array.isArray(msg.modes) && msg.modes.length ? msg.modes : ["M2"];
@@ -12464,21 +12464,22 @@ const spectroStore = (() => {
     mode: "M2", busy: false, error: "", readings: [], remembered: null, autoGo: true,
     avg: false, scans: [], session: null,
     qc: { open: false, ref: null, target: null, tol: 1, follow: true },
-    latest: null, basis: "M2",
+    latest: null, basis: "M2", addTo: null,
   };
   try {
     const v = JSON.parse(localStorage.getItem(SPECTRO_KEY) || "null");
     if (v && typeof v === "object") {
-      ["source", "remembered", "autoGo", "avg", "basis"].forEach((k) => { if (v[k] !== undefined) st[k] = v[k]; });
+      ["source", "remembered", "autoGo", "avg", "basis", "addTo"].forEach((k) => { if (v[k] !== undefined) st[k] = v[k]; });
       if (!SPECTRO_BASIS_ORDER[st.basis]) st.basis = "M2";
       if (Array.isArray(v.readings)) st.readings = v.readings.filter((r) => r && isFinite(r.L)).slice(0, 40).map((r) => spectroRegister(spectroRebase(spectroNormalize(r), st.basis)));
       if (v.qc && typeof v.qc === "object") { st.qc = { ...st.qc, ...v.qc }; ["ref", "target"].forEach((k) => { if (st.qc[k] && !isFinite(st.qc[k].L)) st.qc[k] = null; else if (st.qc[k]) spectroRegister(st.qc[k]); }); }
       if (Array.isArray(v.scans)) { st.scans = v.scans.filter((r) => r && isFinite(r.L)).slice(0, 100).map((r) => spectroRegister(spectroRebase(spectroNormalize(r), st.basis))); st.session = spectroSessionOf(st.scans); }
+      if (st.addTo && !st.scans.length) st.addTo = null;
     }
   } catch (e) {}
   const subs = new Set();
   const save = () => {
-    try { localStorage.setItem(SPECTRO_KEY, JSON.stringify({ source: st.source, basis: st.basis, remembered: st.remembered, autoGo: st.autoGo, avg: st.avg, readings: st.readings, scans: st.scans, qc: st.qc })); } catch (e) {}
+    try { localStorage.setItem(SPECTRO_KEY, JSON.stringify({ source: st.source, basis: st.basis, remembered: st.remembered, autoGo: st.autoGo, avg: st.avg, addTo: st.addTo, readings: st.readings, scans: st.scans, qc: st.qc })); } catch (e) {}
   };
   const set = (patch) => { st = { ...st, ...patch }; save(); subs.forEach((f) => f()); };
   let compound = null, compoundKey = "";
@@ -12521,6 +12522,7 @@ const spectroStore = (() => {
       L: ses.mean.L, C: ses.mean.C, H: ses.mean.H, hex: ses.mean.hex, spectral: ses.mean.spectral,
       lab: ses.mean.lab ? ses.mean.lab.map((v) => +(+v).toFixed(2)) : null,
       scans: ses.n, mcdm: +ses.mcdm.toFixed(3),
+      scanLog: st.scans.map((r) => r.entry || scanLogEntryOf(r)),
       ...(() => {
         const spectra = {};
         SPECTRO_MODES.forEach((k) => {
@@ -12654,7 +12656,7 @@ const spectroStore = (() => {
       try {
         const dev = r0dev();
         const modes = dev && Array.isArray(dev.modes) && dev.modes.length ? dev.modes : SPECTRO_MODES;
-        const r = await call("measure", { modes, same: !!((st.avg && st.scans.length) || (st.qc.open && st.qc.ref)) }, 30000);
+        const r = await call("measure", { modes, same: !!((st.avg && st.scans.length) || (st.qc.open && st.qc.ref)), like: st.addTo && st.session ? st.session.mean.hex : undefined }, 30000);
         const ms = Array.isArray(r.measurements) ? r.measurements : [];
         const reading = spectroReadingFrom(ms, r.device || st.device, st.basis);
         if (!reading) throw "ERROR_INTERNAL";
@@ -12684,6 +12686,27 @@ const spectroStore = (() => {
     removeReading: (id) => set({ readings: st.readings.filter((r) => r.id !== id) }),
     setAvg: (avg) => set({ avg }),
     setQc: (patch) => set({ qc: { ...st.qc, ...patch } }),
+    // add scans to a colour measured before: its earlier scans come back into
+    // the averaging session, new ones join them, and saving writes the lot back
+    startAddTo: (target, log) => {
+      const scans = (log || []).map((e) => scanLogReading(e, st.basis)).filter(Boolean);
+      if (!scans.length) return;
+      st = { ...st, avg: true, addTo: target };
+      compoundKey = "";
+      setScans(scans, true);
+    },
+    cancelAddTo: () => { st = { ...st, addTo: null }; setScans([], false); },
+    finishAddTo: () => {
+      const target = st.addTo, c = compoundOf();
+      if (!target || !c) return null;
+      const log = st.scans.map((r) => r.entry || scanLogEntryOf(r));
+      const done = spectroRegister({ ...c, id: `avg-${Date.now()}`, scanLog: log });
+      let readings = st.readings;
+      if (target.kind === "reading") readings = [done, ...readings.filter((r) => r.id !== target.id)].slice(0, 40);
+      st = { ...st, addTo: null, readings };
+      setScans([], false);
+      return { target, log, compound: done };
+    },
     ingestRemote,
     compound: compoundOf,
     removeScan: (id) => setScans(st.scans.filter((r) => r.id !== id), true),
@@ -12792,7 +12815,7 @@ const SpectroSaveForm = ({ reading, brands, onSave, onCancel, suggestedName }) =
   );
 };
 // The running average while several scans of one sample are taken.
-const SpectroAverage = ({ s, onSave, onGo, here }) => {
+const SpectroAverage = ({ s, onSave, onGo, here, onFinishAdd }) => {
   const ses = s.session;
   if (!ses) return null;
   const c = spectroStore.compound();
@@ -12804,6 +12827,7 @@ const SpectroAverage = ({ s, onSave, onGo, here }) => {
     React.createElement("div", { className: "flex items-center gap-3" },
       React.createElement("button", { type: "button", onClick: () => onGo && onGo(c), title: "Go to the average", className: "w-12 h-12 rounded-lg ring-1 ring-black/10 shrink-0", style: { background: ses.mean.hex } }),
       React.createElement("div", { className: "min-w-0 flex-1" },
+        s.addTo && React.createElement("div", { className: "text-[10px] font-bold uppercase tracking-wider text-sky-700 dark:text-sky-300 truncate", "data-adding-to": "" }, `Adding to ${s.addTo.name || "this colour"} · ${s.scans.filter((r) => r.prior).length} earlier + ${s.scans.filter((r) => !r.prior).length} new`),
         React.createElement("div", { className: "flex items-center gap-2" },
           React.createElement("span", { className: "text-[13px] font-bold text-slate-800 dark:text-neutral-100", "data-average-count": "" }, ses.n === 1 ? "1 scan" : `Average of ${ses.n} scans`),
           ses.n >= 2 && React.createElement("span", {
@@ -12829,7 +12853,7 @@ const SpectroAverage = ({ s, onSave, onGo, here }) => {
       s.scans.map((r, i) => {
         const st = ses.steps[i], d = ses.dev[i];
         return React.createElement("li", { key: r.id, className: "grid grid-cols-[1.25rem_1.25rem_1fr_3.75rem_3.75rem_1.25rem] items-center gap-1.5 py-0.5" },
-          React.createElement("span", { className: "font-mono text-slate-400" }, i + 1),
+          React.createElement("span", { className: "font-mono text-slate-400", title: r.prior ? "An earlier scan of this colour" : "A new scan" }, r.prior ? `${i + 1}·` : i + 1),
           React.createElement("span", { className: "w-5 h-5 rounded ring-1 ring-black/10", style: { background: r.hex } }),
           React.createElement("span", { className: "h-1.5 rounded-full bg-slate-100 dark:bg-neutral-800 overflow-hidden" },
             isFinite(st.change) && st.change !== null && React.createElement("span", { className: "block h-full rounded-full bg-sky-500", style: { width: `${Math.max(4, (st.change / maxChange) * 100)}%` } })),
@@ -12838,7 +12862,11 @@ const SpectroAverage = ({ s, onSave, onGo, here }) => {
           React.createElement("button", { type: "button", onClick: () => spectroStore.removeScan(r.id), "aria-label": `Remove scan ${i + 1}`, title: "Leave this scan out", className: "text-slate-300 hover:text-red-500" }, React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" })));
       })),
     React.createElement("p", { className: "text-[10px] text-slate-500 leading-snug -mt-1" }, `CIEDE2000: how far each scan moved the average, and how far it sits from the average now. Settled after ${SPECTRO_SETTLE_RUN} scans in a row move it ${SPECTRO_SETTLE_DE} or less. Leave out a scan that stands apart.`),
-    React.createElement("div", { className: "flex items-center gap-2" },
+    s.addTo && React.createElement("div", { className: "flex items-center gap-2" },
+      React.createElement("button", { type: "button", onClick: onFinishAdd, "data-average-finish": "", className: "flex-1 h-9 rounded-md text-[12px] font-bold bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900 inline-flex items-center justify-center gap-1.5 min-w-0" },
+        React.createElement(Icon, { name: "save", className: "w-3.5 h-3.5 shrink-0" }), React.createElement("span", { className: "truncate" }, `Save to ${s.addTo.name || "the colour"}`)),
+      React.createElement("button", { type: "button", onClick: () => spectroStore.cancelAddTo(), title: "Leave the colour as it was", className: "h-9 px-3 rounded-md text-[12px] font-semibold border border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-200" }, "Cancel")),
+    !s.addTo && React.createElement("div", { className: "flex items-center gap-2" },
       React.createElement("button", { type: "button", onClick: () => onSave(c), "data-average-save": "", className: "flex-1 h-9 rounded-md text-[12px] font-bold bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900 inline-flex items-center justify-center gap-1.5" },
         React.createElement(Icon, { name: "save", className: "w-3.5 h-3.5" }), ses.n > 1 ? "Save the average…" : "Save…"),
       React.createElement("button", { type: "button", onClick: () => spectroStore.keepAverage(), title: "Keep the average in the readings list and start a new sample", className: "h-9 px-3 rounded-md text-[12px] font-semibold border border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-200" }, "New sample"),
@@ -13075,7 +13103,7 @@ const SpectroQC = ({ s, cursor, colorData }) => {
     ),
   );
 };
-const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectral, cursor, colorData, onSetupSync }) => {
+const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectral, cursor, colorData, onSetupSync, onAddToSave }) => {
   const s = useSpectro();
   const lv = useLive();
   const [tile, setTile] = useState("");
@@ -13163,7 +13191,7 @@ const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectr
           React.createElement("button", { className: btnGhost, disabled: s.busy || !tile.trim(), onClick: () => spectroStore.calibrate(tile).then((ok) => ok && setTile("")) }, "Calibrate")),
         React.createElement("p", { className: "text-[10px] text-slate-400 mt-1" }, "Place the device on its white calibration tile first."))),
     // several scans being averaged (shown even if the device drops off)
-    s.session && !(saving && compound && saving.id === compound.id) && React.createElement(SpectroAverage, { s, onSave: startSave, onGo, here: !!(compound && cursorSpectral && compound.spectral === cursorSpectral) }),
+    s.session && !(saving && compound && saving.id === compound.id) && React.createElement(SpectroAverage, { s, onSave: startSave, onGo, onFinishAdd: () => { const res = spectroStore.finishAddTo(); if (res && res.target.kind !== "reading" && onAddToSave) onAddToSave(res); else if (res && onGo) onGo(res.compound); }, here: !!(compound && cursorSpectral && compound.spectral === cursorSpectral) }),
     saving && React.createElement(SpectroSaveForm, { key: saving.id, reading: saving, brands, suggestedName, onSave: doSave, onCancel: () => setSaving(null) }),
     React.createElement(SpectroQC, { s, cursor, colorData }),
     // readings
@@ -13182,6 +13210,7 @@ const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectr
               React.createElement("div", { className: "text-[10px] text-slate-400 truncate" },
                 `${new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}${r.mode ? ` · ${r.mode}` : ""}${r.scans > 1 ? ` · avg of ${r.scans}` : ""}${r.fluor > 0.5 ? ` · fluoresces (ΔE00 ${r.fluor} with UV)` : ""}${r.remote ? " · live" : ""}${r.demo ? " · demo" : ""}`)),
             React.createElement("button", { className: `p-1 ${s.qc.ref && s.qc.ref.id === r.id ? "text-emerald-600" : "text-slate-400 hover:text-sky-600"}`, title: "Use as the quality-control reference", "aria-label": "Use as QC reference", "data-reading-ref": "", onClick: () => spectroStore.setQc({ ref: spectroQcItem(r, r.scans > 1 ? `Average of ${r.scans}` : "Scan"), open: true }) }, React.createElement(Icon, { name: "target", className: "w-3.5 h-3.5" })),
+            React.createElement("button", { className: "p-1 text-slate-400 hover:text-sky-600", title: "Add more scans to this reading's average", "aria-label": "Add scans to this reading", "data-reading-add": "", onClick: () => spectroStore.startAddTo({ key: `rd:${r.id}`, kind: "reading", id: r.id, name: r.scans > 1 ? `the average of ${r.scans}` : "this reading" }, r.scanLog && r.scanLog.length ? r.scanLog : [scanLogEntryOf(r)]) }, React.createElement(Icon, { name: "list-plus", className: "w-3.5 h-3.5" })),
             React.createElement("button", { className: "p-1 text-slate-400 hover:text-sky-600", title: "Save as a pin or a commercial colour", "aria-label": "Save reading", "data-reading-save": "", onClick: () => startSave(r) }, React.createElement(Icon, { name: "save", className: "w-3.5 h-3.5" })),
             React.createElement("button", { className: "p-1 text-slate-300 hover:text-red-500", title: "Remove", "aria-label": "Remove reading", onClick: () => spectroStore.removeReading(r.id) }, React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" })));
         }))),
@@ -14597,6 +14626,135 @@ const LiveLink = ({ onSetup, hasDevice }) => {
           lv.mode === "off" && React.createElement("p", { className: "text-[10px] text-slate-500 leading-snug" }, hasDevice ? "On the phone with the Spectro L, choose Send. On the computer, choose Receive." : "On the computer, choose Receive. On the phone with the Spectro L, choose Send."),
           line && React.createElement("p", { className: `text-[11px] leading-snug ${lv.status === "error" ? "text-red-700 dark:text-red-300" : "text-slate-600 dark:text-neutral-300"}`, "data-live-status": "", role: lv.status === "error" ? "alert" : undefined }, line),
           lv.mode !== "off" && !lv.keep && React.createElement("p", { className: "text-[10px] text-amber-800 dark:text-amber-300 leading-snug" }, "The token is only kept for this session. Tick “Remember on this device” in GitHub sync so the link survives closing the app.")),
+  );
+};
+
+// ── Scan log: every scan behind a measured colour ─────────────────────────
+// A pin, a commercial colour or a kept reading built from spectrophotometer
+// scans carries the scans themselves: when, which device, which UV modes, how
+// it was measured, and each mode's reflectance curve. The colour's own
+// spectrum is their wavelength-by-wavelength mean, so more scans can be added
+// later and the average is simply worked out again from all of them.
+// In CSV files the log travels as one base64 column (Scan_Log), curves stored
+// as integers in 1/10000 reflectance.
+const SCANLOG_Q = 10000;
+const scanLogRound = (sp) => (Array.isArray(sp) ? sp.map((v) => Math.round(+v * SCANLOG_Q) / SCANLOG_Q) : sp);
+const scanLogEncode = (log) => {
+  if (!Array.isArray(log) || !log.length) return "";
+  try {
+    const c = log.map((e) => ({
+      i: e.id, t: e.at || "", d: e.device || "", m: e.mode || "", x: e.method || "", o: e.origin || "", z: e.demo ? 1 : 0,
+      s: Object.fromEntries(Object.entries(e.spectra || {}).filter(([, sp]) => Array.isArray(sp)).map(([k, sp]) => [k, sp.map((v) => Math.round(+v * SCANLOG_Q))])),
+    }));
+    const b = new TextEncoder().encode(JSON.stringify(c));
+    let s = "";
+    for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+    return btoa(s);
+  } catch (e) { return ""; }
+};
+const scanLogDecode = (str) => {
+  const t = String(str || "").trim();
+  if (!t) return null;
+  try {
+    const bin = atob(t), b = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
+    const c = JSON.parse(new TextDecoder().decode(b));
+    if (!Array.isArray(c)) return null;
+    const out = c.map((e) => ({
+      id: e.i, at: e.t || "", device: e.d || "", mode: e.m || "", method: e.x || "", origin: e.o || "", demo: !!e.z,
+      spectra: Object.fromEntries(Object.entries(e.s || {}).map(([k, sp]) => [k, sp.map((v) => v / SCANLOG_Q)])),
+    })).filter((e) => e.id && Object.keys(e.spectra).length);
+    return out.length ? out : null;
+  } catch (e) { return null; }
+};
+// a reading (single scan) → a log entry
+const scanLogEntryOf = (r) => ({
+  id: r.id, at: r.at || new Date().toISOString(), device: r.device || "", mode: r.mode || "",
+  method: `Spectrophotometer, ${(r.modes && r.modes.length ? r.modes : [r.mode || "?"]).join("/")}, 400–700 nm${r.demo ? " (demo device)" : ""}`,
+  origin: r.origin || (r.remote ? "live" : ""), demo: !!r.demo,
+  spectra: Object.fromEntries(Object.entries(r.spectra || (r.spectral ? { [r.mode || "M2"]: r.spectral } : {})).map(([k, sp]) => [k, scanLogRound(sp)])),
+});
+// a colour measured before logs existed: its spectrum is the first entry
+const scanLogOriginalOf = (obj) => ({
+  id: `orig-${Math.random().toString(36).slice(2, 9)}`, at: obj.measurementDate || "", device: obj.measurementDevice || "",
+  mode: "", method: obj.measurementMethod || "As recorded", origin: "original", demo: false,
+  spectra: { "?": scanLogRound(obj.spectral) },
+});
+const scanLogOf = (obj) => (obj && Array.isArray(obj.scanLog) && obj.scanLog.length ? obj.scanLog : obj && spectroSpOk(obj.spectral) ? [scanLogOriginalOf(obj)] : []);
+// a log entry → a scan the averaging session can use, in the chosen UV mode
+const scanLogReading = (e, basis) => {
+  const k = spectroPick(e.spectra, basis) || Object.keys(e.spectra || {})[0];
+  const sp = k && e.spectra[k];
+  if (!spectroSpOk(sp)) return null;
+  const it = fastItemLch({ spectral: sp });
+  if (!it) return null;
+  return spectroRegister({
+    id: e.id, at: e.at, device: e.device, demo: e.demo, origin: e.origin, method: e.method, prior: true, entry: e,
+    mode: k === "?" ? "" : k, modes: Object.keys(e.spectra).filter((m) => m !== "?").sort(), spectra: e.spectra, spectral: sp,
+    L: it.L, C: it.C, H: isNaN(it.H) ? 0 : it.H, hex: it.hex, lab: (spectroLabD50(sp) || []).map((v) => +(+v).toFixed(2)),
+  });
+};
+// what a log adds up to: mean spectrum (in the chosen mode), colour, spread
+const scanLogSummary = (log, basis) => {
+  const scans = (log || []).map((e) => scanLogReading(e, basis)).filter(Boolean);
+  if (!scans.length) return null;
+  const ses = spectroSessionOf(scans);
+  if (!ses) return null;
+  const devices = [...new Set(scans.map((r) => r.device).filter(Boolean))];
+  const dates = scans.map((r) => r.at).filter(Boolean).sort();
+  return {
+    scans, ses, devices, first: dates[0] || "", last: dates[dates.length - 1] || "",
+    method: `Spectrophotometer, ${scans.length === 1 ? "1 scan" : `average of ${scans.length} scans (MCDM ΔE00 ${ses.mcdm.toFixed(2)})`}, colour from ${basis}`,
+  };
+};
+const scanLogDate = (t) => { const d = new Date(t); return t && !isNaN(d) ? d.toLocaleString([], { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : t || "Date not recorded"; };
+// Inside the Spectral Response panel: what the curve is built from, and a
+// way to add more scans to it.
+const SpectralScanLog = ({ owner, onAdd }) => {
+  const s = useSpectro();
+  const [hi, setHi] = useState(null);
+  const log = owner ? scanLogOf(owner.obj) : [];
+  const sum = useMemo(() => scanLogSummary(log, s.basis), [owner && owner.obj, s.basis]);
+  if (!owner || !sum) return null;
+  const adding = s.addTo && s.addTo.key === owner.key;
+  const W = 300, Hh = 90;
+  const max = Math.max(0.05, ...sum.scans.flatMap((r) => r.spectral), ...(sum.ses.mean.spectral || [])) * 1.06;
+  const path = (sp) => sp.map((v, i) => `${i ? "L" : "M"}${(i / (sp.length - 1)) * W},${Hh - (v / max) * Hh}`).join(" ");
+  const n = sum.scans.length;
+  return React.createElement(
+    "details",
+    { className: "mt-3 rounded-xl border border-slate-200 dark:border-neutral-700", "data-scan-log": "" },
+    React.createElement("summary", { className: "cursor-pointer select-none px-3 py-2.5 flex items-center gap-2 text-[12px] font-semibold text-slate-700 dark:text-neutral-200" },
+      React.createElement(Icon, { name: "layers", className: "w-4 h-4" }),
+      React.createElement("span", { className: "flex-1" }, n === 1 ? (log[0].origin === "original" ? "1 measurement (as recorded)" : "Built from 1 scan") : `Built from ${n} scans`),
+      n > 1 && React.createElement("span", { className: "font-mono text-[10px] text-slate-500" }, `MCDM ΔE00 ${sum.ses.mcdm.toFixed(2)}`)),
+    React.createElement("div", { className: "flex flex-col gap-3 px-3 pb-3" },
+      React.createElement("div", { className: "grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]" },
+        [["Scans", String(n)], ["Spread (MCDM)", n > 1 ? `ΔE00 ${sum.ses.mcdm.toFixed(2)}` : "–"], ["First", scanLogDate(sum.first)], ["Latest", scanLogDate(sum.last)],
+          ["Devices", sum.devices.join(", ") || "Not recorded"], ["Colour from", `${s.basis} · OkLCH D65/2°, CIELAB D50/2°`]].map(([k, v]) =>
+          React.createElement("div", { key: k, className: "min-w-0" },
+            React.createElement("div", { className: "text-[9px] uppercase tracking-wider text-slate-500 font-bold" }, k),
+            React.createElement("div", { className: "truncate text-slate-700 dark:text-neutral-200", title: v }, v)))),
+      React.createElement("svg", { viewBox: `0 0 ${W} ${Hh + 2}`, className: "w-full h-24 text-slate-700 dark:text-neutral-200", preserveAspectRatio: "none", "aria-label": "Every scan's curve and their average", "data-scan-curves": "" },
+        sum.scans.map((r, i) => React.createElement("path", { key: r.id, d: path(r.spectral), fill: "none", stroke: r.hex, strokeOpacity: hi === null || hi === i ? 0.95 : 0.2, strokeWidth: hi === i ? 2.5 : 1.2, vectorEffect: "non-scaling-stroke" })),
+        n > 1 && React.createElement("path", { d: path(sum.ses.mean.spectral), fill: "none", stroke: "currentColor", strokeWidth: 2, strokeDasharray: "5 3", vectorEffect: "non-scaling-stroke" })),
+      React.createElement("div", { className: "flex justify-between text-[9px] font-mono text-slate-400 -mt-2" }, React.createElement("span", null, "400 nm"), n > 1 && React.createElement("span", null, "- - average"), React.createElement("span", null, "700 nm")),
+      React.createElement("ol", { className: "flex flex-col divide-y divide-slate-100 dark:divide-neutral-800", "data-scan-rows": "" },
+        sum.scans.map((r, i) => React.createElement("li", { key: r.id, className: "flex items-start gap-2 py-1.5", onPointerEnter: () => setHi(i), onPointerLeave: () => setHi(null) },
+          React.createElement("span", { className: "font-mono text-[10px] text-slate-400 w-4 pt-0.5" }, i + 1),
+          React.createElement("span", { className: "w-5 h-5 rounded ring-1 ring-black/10 shrink-0", style: { background: r.hex } }),
+          React.createElement("span", { className: "min-w-0 flex-1 text-[11px] leading-snug" },
+            React.createElement("span", { className: "block text-slate-800 dark:text-neutral-100" }, scanLogDate(r.at)),
+            React.createElement("span", { className: "block text-slate-500 break-words", title: r.method }, r.device || "Device not recorded"),
+            React.createElement("span", { className: "block text-slate-500 break-words" },
+              [r.origin === "original" ? "as recorded" : r.modes && r.modes.length > 1 ? `${r.mode} used (kept ${r.modes.join(", ")})` : r.mode, r.origin === "live" ? "sent live" : "", r.demo ? "demo" : ""].filter(Boolean).join(" · ")),
+            r.origin === "original" && r.method && React.createElement("span", { className: "block text-slate-400 truncate" }, r.method)),
+          n > 1 && React.createElement("span", { className: "font-mono text-[10px] text-slate-600 dark:text-neutral-300 text-right shrink-0", title: "CIEDE2000 from the average" }, `ΔE00 ${(sum.ses.dev[i] || 0).toFixed(2)}`)))),
+      React.createElement("button", {
+        type: "button", onClick: () => onAdd && onAdd(owner, log), disabled: adding, "data-scan-add": "",
+        className: "h-9 rounded-md text-[12px] font-bold bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900 inline-flex items-center justify-center gap-1.5 disabled:opacity-50",
+      }, React.createElement(Icon, { name: "plus", className: "w-4 h-4" }), adding ? "Adding scans now (Spectrophotometer panel)" : "Add more scans to this colour"),
+    ),
   );
 };
 
@@ -18054,6 +18212,7 @@ const processCSVData = (
           colorObj.measurementDate = String(row.Measurement_Date).trim();
         if (row.Measurement_Device)
           colorObj.measurementDevice = String(row.Measurement_Device).trim();
+        if (row.Scan_Log) { const lg = scanLogDecode(row.Scan_Log); if (lg) colorObj.scanLog = lg; }
         if (existingIdx >= 0) {
           newColorData[finalBrand][existingIdx] = {
             ...newColorData[finalBrand][existingIdx],
@@ -18191,6 +18350,7 @@ const processCSVData = (
         newSavedColors[pinId].measurementDevice = String(
           row.Measurement_Device,
         ).trim();
+      if (row.Scan_Log) { const lg = scanLogDecode(row.Scan_Log); if (lg) newSavedColors[pinId].scanLog = lg; }
       if (row.Tags)
         newTags[pinId] = row.Tags.split(",")
           .map((t) => t.trim())
@@ -20983,6 +21143,30 @@ const App = () => {
     if (p.fields) togglePin({ __new: true, fields: p.fields });
     else if (crosshair.exactSavedColor?.type !== "pin") togglePin();
   }, [crosshair]);
+  const spectroAddTo = (res) => {
+    if (!res || !res.compound) return;
+    const { target, log, compound: c } = res;
+    const sum = scanLogSummary(log, spectroStore.get().basis);
+    const fields = {
+      L: c.L, C: c.C, H: c.H, spectral: c.spectral, scanLog: log, illuminant: "D65", observer: 2,
+      measurementMethod: sum ? sum.method : "Spectrophotometer", measurementDate: sum ? String(sum.last).slice(0, 10) : "", measurementDevice: sum ? sum.devices.join(", ") : "",
+    };
+    if (target.kind === "pin") {
+      const h = (c.H * Math.PI) / 180;
+      setSavedColors((prev) => (prev[target.id] ? { ...prev, [target.id]: { ...prev[target.id], ...fields, a: c.C * Math.sin(h), b: c.C * Math.cos(h), color: c.hex } } : prev));
+      handleUpdate([c.L, c.C, c.H], c.spectral);
+    } else if (target.kind === "commercial") {
+      const arr = colorData && colorData[target.brand];
+      if (!arr) return;
+      let idx = target.index;
+      if (!arr[idx] || arr[idx].name !== target.name) idx = arr.findIndex((e) => e && e.name === target.name);
+      if (idx < 0) return;
+      const next = arr.slice();
+      next[idx] = { ...arr[idx], ...fields, hex: c.hex };
+      updateColorData({ ...colorData, [target.brand]: next });
+      handleUpdate([c.L, c.C, c.H], c.spectral, { brand: target.brand, originalIndex: idx });
+    }
+  };
   // Save a reading (one scan or an average) as a pin with its name and
   // material, or as a new colour in a commercial brand.
   const spectroSave = (r, o) => {
@@ -20998,7 +21182,8 @@ const App = () => {
       const brand = String(o.brand || "").trim();
       if (!brand || !String(o.name || "").trim()) return;
       const entry = {
-        name: o.name.trim(), code: o.code || "", hex: r.hex, L: r.L, C: r.C, H: r.H,
+        name: o.name.trim(), code: o.code || "", url: o.code || "", erpCode: o.code || "", hex: r.hex, L: r.L, C: r.C, H: r.H,
+        scanLog: r.scanLog && r.scanLog.length ? r.scanLog : [scanLogEntryOf(r)],
         ...(Array.isArray(r.spectral) ? { spectral: r.spectral.slice(), illuminant: "D65", observer: 2 } : {}),
         tags: ["measured"], url: "", image: "", notes: o.notes || "", ...specs, ...measured,
       };
@@ -21006,8 +21191,9 @@ const App = () => {
       handleUpdate([r.L, r.C, r.H], r.spectral || null, { brand, originalIndex: 0 });
       return;
     }
-    spectroPendingPin.current = { r, fields: { nameOverride: o.name || "", notes: o.notes || "", ...specs, ...measured } };
-    if (spectroAtCursor(r)) { spectroPendingPin.current = null; togglePin({ __new: true, fields: { nameOverride: o.name || "", notes: o.notes || "", ...specs, ...measured } }); return; }
+    const pinFields = { nameOverride: o.name || "", notes: o.notes || "", ...specs, ...measured, scanLog: r.scanLog && r.scanLog.length ? r.scanLog : [scanLogEntryOf(r)] };
+    spectroPendingPin.current = { r, fields: pinFields };
+    if (spectroAtCursor(r)) { spectroPendingPin.current = null; togglePin({ __new: true, fields: pinFields }); return; }
     spectroGo(r);
   };
   useEffect(() => spectroStore.onReading((r) => { if (spectroStore.get().autoGo) handleUpdate([r.L, r.C, r.H], r.spectral || null); }), []);
@@ -21316,6 +21502,7 @@ const App = () => {
             Measurement_Method: sc.measurementMethod || "",
             Measurement_Date: sc.measurementDate || "",
             Measurement_Device: sc.measurementDevice || "",
+            Scan_Log: sc.scanLog ? scanLogEncode(sc.scanLog) : "",
           });
         });
       if (groupSettings) {
@@ -21438,6 +21625,7 @@ const App = () => {
           Measurement_Method: "",
           Measurement_Date: "",
           Measurement_Device: "",
+          Scan_Log: "",
           Texture_Albedo: "",
           Texture_Normal: "",
           Texture_Roughness: "",
@@ -21536,6 +21724,7 @@ const App = () => {
             });
           }
           row.Spectral = color.spectral ? JSON.stringify(color.spectral) : "";
+          row.Scan_Log = color.scanLog ? scanLogEncode(color.scanLog) : "";
           return row;
         });
         files[`${brand}.csv`] = Papa.unparse(brandData);
@@ -22291,6 +22480,7 @@ const App = () => {
     spectroGo,
     spectroPin,
     spectroSave,
+    spectroAddTo,
     crosshair,
     isLight,
     activeColorObj,
@@ -25449,6 +25639,7 @@ const AppUI = ({
   spectroGo,
   spectroPin,
   spectroSave,
+  spectroAddTo,
   crosshair,
   isLight,
   activeColorObj,
@@ -26823,6 +27014,23 @@ const AppUI = ({
                     measurementDevice: (crosshair.activeSpectralMeta || {}).measurementDevice,
                   },
                 }),
+                React.createElement(SpectralScanLog, {
+                  owner: (() => {
+                    const okSp = (sp) => Array.isArray(sp) && sp.length === 31;
+                    const pin = crosshair?.exactSavedColor?.type === "pin" ? savedColors[crosshair.exactSavedColor.id] : null;
+                    if (pin && okSp(pin.spectral)) return { key: `pin:${pin.id}`, kind: "pin", id: pin.id, name: pin.nameOverride || activeName || "this pin", obj: pin };
+                    const ac = crosshair?.activeCommercial, cm = ac && colorData?.[ac.brand]?.[ac.originalIndex];
+                    if (cm && okSp(cm.spectral)) return { key: `cm:${ac.brand}:${cm.name}`, kind: "commercial", brand: ac.brand, index: ac.originalIndex, name: cm.name, obj: cm };
+                    const rd = crosshair?.temporarySpectral && spectroStore.get().readings.find((r) => r.spectral === crosshair.temporarySpectral);
+                    if (rd) return { key: `rd:${rd.id}`, kind: "reading", id: rd.id, name: rd.scans > 1 ? `the average of ${rd.scans}` : "this reading", obj: rd };
+                    return null;
+                  })(),
+                  onAdd: (owner, log) => {
+                    const { obj, ...target } = owner;
+                    spectroStore.startAddTo(target, owner.kind === "reading" && !(obj.scanLog && obj.scanLog.length) ? [scanLogEntryOf(obj)] : log);
+                    openInspectorPanel("spectrum", "Spectrophotometer");
+                  },
+                }),
               ),
             React.createElement(
               CollapsiblePanel,
@@ -26838,7 +27046,7 @@ const AppUI = ({
               CollapsiblePanel,
               { title: "Spectrophotometer", icon: "bluetooth", defaultOpen: !!spectroStore.get().host || (typeof window !== "undefined" && !!(window.NixBridge || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.nix))), summary: spectroSummary(spectroStore.get()) },
               React.createElement(SpectroPanel, {
-                onGo: spectroGo, onPin: spectroPin, onSave: spectroSave, onSetupSync: () => setShowGithubModal(true), brands: Object.keys(colorData || {}), cursorSpectral: crosshair?.temporarySpectral || null, colorData,
+                onGo: spectroGo, onPin: spectroPin, onSave: spectroSave, onAddToSave: spectroAddTo, onSetupSync: () => setShowGithubModal(true), brands: Object.keys(colorData || {}), cursorSpectral: crosshair?.temporarySpectral || null, colorData,
                 cursor: crosshair ? { id: `cursor-${scrubL.toFixed(4)}-${scrubC.toFixed(4)}-${scrubH.toFixed(2)}`, L: scrubL, C: scrubC, H: scrubH, hex: compactHex, spectral: crosshair.activeSpectral || null, name: activeName || "", brand: crosshair.activeCommercial?.brand || "" } : null,
               }),
             ),
