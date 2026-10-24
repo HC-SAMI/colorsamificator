@@ -12761,6 +12761,8 @@ const SpectroSaveForm = ({ reading, brands, onSave, onCancel, suggestedName }) =
   const [code, setCode] = useState("");
   const [notes, setNotes] = useState(reading && reading.scans > 1 ? `Average of ${reading.scans} scans, spread (MCDM) ΔE00 ${(+reading.mcdm || 0).toFixed(2)}` : "");
   const [spec, setSpec] = useState({});
+  const [picture, setPicture] = useState(null);
+  const picUrl = useMemo(() => (picture ? URL.createObjectURL(picture) : ""), [picture]);
   const brandName = brand === "__new" ? newBrand.trim() : brand;
   const known = brand && brand !== "__new" && brandKeys.includes(brand);
   const ok = target === "pin" ? true : !!(brandName && name.trim() && (known || brand === "__new"));
@@ -12771,7 +12773,7 @@ const SpectroSaveForm = ({ reading, brands, onSave, onCancel, suggestedName }) =
     e.preventDefault();
     if (!ok) return;
     if (target === "commercial") { try { localStorage.setItem("csam-spectro-brand", brand === "__new" ? newBrand.trim() : brand); } catch (err) {} }
-    onSave(reading, { target, name: name.trim(), brand: brandName, code: code.trim(), notes: notes.trim(), ...spec });
+    onSave(reading, { target, name: name.trim(), brand: brandName, code: code.trim(), notes: notes.trim(), ...spec, ...(target === "commercial" && picture ? { picture } : {}) });
   };
   return React.createElement(
     "form",
@@ -12805,6 +12807,9 @@ const SpectroSaveForm = ({ reading, brands, onSave, onCancel, suggestedName }) =
         React.createElement("span", { className: cap }, f.label),
         React.createElement("select", { value: spec[f.key] || "-", onChange: (e) => setSpec((p) => ({ ...p, [f.key]: e.target.value === "-" ? "" : e.target.value })), className: field, "aria-label": f.label },
           f.options.map((o) => React.createElement("option", { key: o, value: o }, o === "-" ? "Not set" : o)))))),
+    target === "commercial" && typeof PicturePanel !== "undefined" && React.createElement("div", { className: "flex flex-col gap-1" },
+      React.createElement("span", { className: cap }, "Picture (optional)"),
+      React.createElement(PicturePanel, { name: name || "this colour", image: picUrl, local: !!picture, compact: true, onPick: async (b) => setPicture(b), onRemove: () => setPicture(null) })),
     React.createElement("label", { className: "flex flex-col gap-1" },
       React.createElement("span", { className: cap }, "Notes"),
       React.createElement("textarea", { value: notes, onChange: (e) => setNotes(e.target.value), rows: 2, "aria-label": "Notes", className: `${field} h-auto py-1.5 resize-y` })),
@@ -13452,7 +13457,7 @@ const INSPECTOR_TABS = [
   { id: "values", label: "Values", icon: "sliders", titles: ["Conversions"] },
   { id: "spectrum", label: "Spectrum", icon: "activity", titles: ["Spectrophotometer", "Spectral Response"] },
   { id: "palette", label: "Palette", icon: "aperture", titles: ["Harmonies", "Palette Playground", "Gradient", "Delta E Comparisons"] },
-  { id: "notes", label: "Notes", icon: "sticky-note", titles: ["Tags", "Anchor Notes"] },
+  { id: "notes", label: "Notes", icon: "sticky-note", titles: ["Picture", "Tags", "Anchor Notes"] },
 ];
 const INSPECTOR_KEY = "csam-inspector-tab";
 const InspectorTabs = ({ children, dots }) => {
@@ -14755,6 +14760,135 @@ const SpectralScanLog = ({ owner, onAdd }) => {
         className: "h-9 rounded-md text-[12px] font-bold bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900 inline-flex items-center justify-center gap-1.5 disabled:opacity-50",
       }, React.createElement(Icon, { name: "plus", className: "w-4 h-4" }), adding ? "Adding scans now (Spectrophotometer panel)" : "Add more scans to this colour"),
     ),
+  );
+};
+
+// ── Pictures of commercial colours, kept in the repo ──────────────────────
+// A photo taken with the camera or a picture file is shrunk to at most
+// 1200 px (JPEG), kept in this browser (IndexedDB) and shown at once; the next
+// GitHub sync writes it to data/images/<brand>/<colour>.jpg and points the
+// colour's Image column at it, so nothing depends on outside websites.
+// Pictures that already live elsewhere are copied into data/images by the
+// repo's "Mirror images" action, which leaves a data/images/index.json map
+// (outside address → repo path) that the app applies when it loads.
+const PIC_MAX = 1200;
+const pictureStore = (() => {
+  let dbp = null;
+  const subs = new Set();
+  const open = () => {
+    if (dbp) return dbp;
+    dbp = new Promise((res, rej) => {
+      try {
+        const rq = indexedDB.open("csam-pictures", 1);
+        rq.onupgradeneeded = () => rq.result.createObjectStore("pics");
+        rq.onsuccess = () => res(rq.result);
+        rq.onerror = () => rej(rq.error);
+      } catch (e) { rej(e); }
+    });
+    return dbp;
+  };
+  const tx = async (mode, fn) => {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const t = db.transaction("pics", mode), s = t.objectStore("pics");
+      const r = fn(s);
+      t.oncomplete = () => res(r && "result" in r ? r.result : undefined);
+      t.onerror = () => rej(t.error);
+    });
+  };
+  return {
+    get: (key) => tx("readonly", (s) => s.get(key)).catch(() => undefined),
+    put: (key, rec) => tx("readwrite", (s) => s.put(rec, key)).then(() => subs.forEach((fn) => fn(key))),
+    del: (key) => tx("readwrite", (s) => s.delete(key)).then(() => subs.forEach((fn) => fn(key))),
+    keys: () => tx("readonly", (s) => s.getAllKeys()).catch(() => []),
+    subscribe: (fn) => (subs.add(fn), () => subs.delete(fn)),
+  };
+})();
+// one object URL per stored picture, made once
+const PIC_URLS = new Map();
+const pictureUrlOf = (key, blob) => {
+  const hit = PIC_URLS.get(key);
+  if (hit && hit.blob === blob) return hit.url;
+  if (hit) URL.revokeObjectURL(hit.url);
+  const url = URL.createObjectURL(blob);
+  PIC_URLS.set(key, { blob, url });
+  return url;
+};
+const picSlug = (s) => String(s || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "colour";
+// a camera photo or picture file → an upright JPEG no larger than PIC_MAX
+const pictureFromFile = async (file) => {
+  if (!file || !/^image\//.test(file.type || "image/")) throw new Error("That file isn't a picture.");
+  let src;
+  try { src = await createImageBitmap(file, { imageOrientation: "from-image" }); }
+  catch (e) {
+    src = await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("Couldn't read that picture.")); im.src = URL.createObjectURL(file); });
+  }
+  const w = src.width || src.naturalWidth, h = src.height || src.naturalHeight;
+  const k = Math.min(1, PIC_MAX / Math.max(w, h));
+  const cv = document.createElement("canvas");
+  cv.width = Math.max(1, Math.round(w * k)); cv.height = Math.max(1, Math.round(h * k));
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.drawImage(src, 0, 0, cv.width, cv.height);
+  const blob = await new Promise((res) => cv.toBlob(res, "image/jpeg", 0.86));
+  if (!blob) throw new Error("Couldn't prepare that picture.");
+  return blob;
+};
+// For a sync: every stored picture as a repo file under <dataDir>/images/,
+// and the Image value (the same path) for each colour
+const pictureRepoFiles = async (dataDir, siteRoot = "") => {
+  const keys = await pictureStore.keys();
+  const files = {}, byKey = new Map(), used = new Set();
+  const dir = String(dataDir || "data").replace(/^\/+|\/+$/g, "");
+  for (const key of keys) {
+    const r = await pictureStore.get(key);
+    if (!r || !r.blob) continue;
+    const base = `${dir ? dir + "/" : ""}images/${picSlug(r.brand)}/${picSlug(r.name)}`;
+    let p = `${base}.jpg`, n = 2;
+    while (used.has(p)) p = `${base}-${n++}.jpg`;
+    used.add(p);
+    files[p] = new Uint8Array(await r.blob.arrayBuffer());
+    byKey.set(key, siteRoot && p.startsWith(siteRoot) ? p.slice(siteRoot.length) : p);
+  }
+  return { files, byKey };
+};
+// The picture box: what the colour shows now, and ways to give it one.
+const PicturePanel = ({ name, image, local, onPick, onRemove, compact }) => {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [over, setOver] = useState(false);
+  const cam = useRef(null), pick = useRef(null);
+  const take = async (file) => {
+    if (!file) return;
+    setBusy(true); setErr("");
+    try { await onPick(await pictureFromFile(file)); } catch (e) { setErr(String(e && e.message ? e.message : e)); }
+    setBusy(false);
+  };
+  const btn = "h-9 px-3 rounded-md text-[12px] font-semibold border border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-200 inline-flex items-center gap-1.5 hover:border-slate-400 disabled:opacity-50";
+  const external = image && /^https?:/i.test(image);
+  return React.createElement(
+    "div",
+    {
+      className: `flex flex-col gap-2.5 ${over ? "ring-2 ring-sky-500 rounded-lg" : ""}`, "data-picture": "",
+      onDragOver: (e) => { e.preventDefault(); setOver(true); }, onDragLeave: () => setOver(false),
+      onDrop: (e) => { e.preventDefault(); setOver(false); const f = e.dataTransfer.files && e.dataTransfer.files[0]; take(f); },
+    },
+    React.createElement("div", { className: `relative rounded-lg overflow-hidden bg-slate-100 dark:bg-neutral-800 ${compact ? "h-28" : "h-44"} flex items-center justify-center` },
+      image
+        ? React.createElement("img", { src: image, alt: name ? `Picture of ${name}` : "Picture", className: "w-full h-full object-cover", "data-picture-img": "" })
+        : React.createElement("span", { className: "text-[11px] text-slate-500 text-center px-4" }, "No picture yet. Take one, choose a file, or drop it here."),
+      busy && React.createElement("span", { className: "absolute inset-0 bg-black/30 flex items-center justify-center text-white text-[12px] font-semibold" }, "Preparing…")),
+    React.createElement("div", { className: "flex flex-wrap gap-1.5" },
+      React.createElement("button", { type: "button", className: btn, disabled: busy, onClick: () => cam.current && cam.current.click(), "data-picture-camera": "" }, React.createElement(Icon, { name: "camera", className: "w-4 h-4" }), "Take photo"),
+      React.createElement("button", { type: "button", className: btn, disabled: busy, onClick: () => pick.current && pick.current.click(), "data-picture-file": "" }, React.createElement(Icon, { name: "image", className: "w-4 h-4" }), "Choose picture"),
+      image && onRemove && React.createElement("button", { type: "button", className: `${btn} text-red-700 dark:text-red-300`, disabled: busy, onClick: onRemove }, React.createElement(Icon, { name: "trash-2", className: "w-4 h-4" }), "Remove")),
+    React.createElement("input", { ref: cam, type: "file", accept: "image/*", capture: "environment", className: "hidden", onChange: (e) => { take(e.target.files && e.target.files[0]); e.target.value = ""; }, "aria-label": "Take a photo" }),
+    React.createElement("input", { ref: pick, type: "file", accept: "image/*", className: "hidden", onChange: (e) => { take(e.target.files && e.target.files[0]); e.target.value = ""; }, "aria-label": "Choose a picture", "data-picture-input": "" }),
+    err && React.createElement("p", { className: "text-[11px] text-red-700 dark:text-red-300", role: "alert" }, err),
+    React.createElement("p", { className: "text-[10px] text-slate-500 leading-snug" },
+      local ? "Kept on this device; the next GitHub sync puts it in the repo (data/images)."
+        : external ? "This picture comes from another website. The repo's Mirror images action copies it into data/images."
+        : image ? "Stored in the repo." : "Pictures are saved in the repo's data/images folder when you sync."),
   );
 };
 
@@ -21143,6 +21277,72 @@ const App = () => {
     if (p.fields) togglePin({ __new: true, fields: p.fields });
     else if (crosshair.exactSavedColor?.type !== "pin") togglePin();
   }, [crosshair]);
+  const setCommercialPicture = async (brand, index, blob, hint) => {
+    const cur = hint || (colorData && colorData[brand] && colorData[brand][index]);
+    if (!cur || !blob) return;
+    const key = materialKeyFor(brand, cur, index);
+    await pictureStore.put(key, { blob, name: cur.name || "colour", brand, index, updated: Date.now() });
+    const url = pictureUrlOf(key, blob);
+    setColorData((prev) => {
+      if (!prev || !prev[brand]) return prev;
+      const arr = prev[brand].slice();
+      let i = index;
+      if (!arr[i] || arr[i].name !== cur.name) i = arr.findIndex((e) => e && e.name === cur.name);
+      if (i < 0) return prev;
+      arr[i] = { ...arr[i], image: url };
+      return { ...prev, [brand]: arr };
+    });
+  };
+  const removeCommercialPicture = async (brand, index) => {
+    const cur = colorData && colorData[brand] && colorData[brand][index];
+    if (!cur) return;
+    await pictureStore.del(materialKeyFor(brand, cur, index));
+    setColorData((prev) => {
+      if (!prev || !prev[brand] || !prev[brand][index]) return prev;
+      const arr = prev[brand].slice();
+      arr[index] = { ...arr[index], image: "" };
+      return { ...prev, [brand]: arr };
+    });
+  };
+  const picturesApplied = useRef(false);
+  useEffect(() => {
+    if (!colorData || picturesApplied.current) return;
+    picturesApplied.current = true;
+    (async () => {
+      let mirror = {};
+      try { const r = await fetch("data/images/index.json", { cache: "no-cache" }); if (r.ok) mirror = (await r.json()) || {}; } catch (e) {}
+      const recs = {};
+      for (const k of await pictureStore.keys()) { const r = await pictureStore.get(k); if (r && r.blob) recs[k] = r; }
+      if (!Object.keys(recs).length && !Object.keys(mirror).length) return;
+      const drop = [];
+      setColorData((prev) => {
+        if (!prev) return prev;
+        let changed = false;
+        const next = {};
+        Object.entries(prev).forEach(([brand, arr]) => {
+          next[brand] = (arr || []).map((e, i) => {
+            if (!e) return e;
+            const r = recs[materialKeyFor(brand, e, i)];
+            if (r) {
+              if (r.syncedPath && e.image === r.syncedPath) { drop.push(materialKeyFor(brand, e, i)); return e; }
+              changed = true; return { ...e, image: pictureUrlOf(materialKeyFor(brand, e, i), r.blob) };
+            }
+            if (e.image && mirror[e.image]) { changed = true; return { ...e, image: mirror[e.image] }; }
+            return e;
+          });
+        });
+        return changed ? next : prev;
+      });
+      drop.forEach((k) => pictureStore.del(k));
+      if (Object.keys(mirror).length)
+        setSavedColors((prev) => {
+          let changed = false;
+          const next = { ...prev };
+          Object.values(prev).forEach((sc) => { if (sc && sc.image && mirror[sc.image]) { next[sc.id] = { ...sc, image: mirror[sc.image] }; changed = true; } });
+          return changed ? next : prev;
+        });
+    })();
+  }, [colorData]);
   const spectroAddTo = (res) => {
     if (!res || !res.compound) return;
     const { target, log, compound: c } = res;
@@ -21188,6 +21388,7 @@ const App = () => {
         tags: ["measured"], url: "", image: "", notes: o.notes || "", ...specs, ...measured,
       };
       updateColorData({ ...(colorData || {}), [brand]: [entry, ...((colorData && colorData[brand]) || [])] });
+      if (o.picture) setTimeout(() => setCommercialPicture(brand, 0, o.picture, entry), 0);
       handleUpdate([r.L, r.C, r.H], r.spectral || null, { brand, originalIndex: 0 });
       return;
     }
@@ -21357,7 +21558,7 @@ const App = () => {
   };
   // Builds every CSV that lives in the repo's data/ folder, keyed by filename.
   // Shared by the ZIP download and the GitHub sync so the two can't drift.
-  const buildExportFiles = (texByKey) => {
+  const buildExportFiles = (texByKey, picsByKey) => {
       const files = {};
       const anchorsCsv = [];
       const pinsCsv = [];
@@ -21478,7 +21679,7 @@ const App = () => {
             Anchor_ID: (findNearestAnchor(sc.L, sc.C, sc.H, savedColors) || {}).nameKey || "",
             Brand: sc.brand || "",
             Original_Index: sc.originalIndex !== undefined ? sc.originalIndex : "",
-            Image: sc.image || "",
+            Image: sc.image && !/^blob:/i.test(sc.image) ? sc.image : "",
             // Noun is the resolved name, for reading only — it is not
             // re-imported. An override round-trips in its own column.
             Noun: sc.nameOverride || pinNames.displayName || "",
@@ -21699,7 +21900,7 @@ const App = () => {
             ...extra,
             ERP_Code: color.url || "",
             Note: customNote || "",
-            Image: color.image && isImageRef(color.image) ? color.image : "",
+            Image: (picsByKey && picsByKey.get(materialKeyFor(brand, color, listIdx))) || (color.image && isImageRef(color.image) && !/^blob:/i.test(color.image) ? color.image : ""),
             ...textureColumnsOf((texByKey && texByKey.get(materialKeyFor(brand, color, listIdx))) || color.textures),
             Tags: (color.tags || dictTags[customId] || []).join(","),
             Sheen: color.sheen || "",
@@ -21859,8 +22060,10 @@ const App = () => {
       setSyncStatus({ state: "running", message: "Gathering texture maps...", log: [] });
       const siteRoot = dir.includes("/") ? dir.slice(0, dir.lastIndexOf("/") + 1) : "";
       const tex = await textureRepoFiles(siteRoot);
-      const built = buildExportFiles(tex.byKey);
-      const files = { ...tex.files };
+      setSyncStatus({ state: "running", message: "Gathering pictures...", log: [] });
+      const pics = await pictureRepoFiles(dir, siteRoot);
+      const built = buildExportFiles(tex.byKey, pics.byKey);
+      const files = { ...tex.files, ...pics.files };
       Object.keys(built).forEach((name) => {
         files[dir ? `${dir}/${name}` : name] = built[name];
       });
@@ -21882,6 +22085,8 @@ const App = () => {
         ],
       });
       try { localStorage.removeItem("csam-sync-pending"); } catch (e2) {}
+      // pictures now in the repo: remember where, so the next load uses the repo copy
+      for (const [k, p] of pics.byKey) { const r = await pictureStore.get(k); if (r) await pictureStore.put(k, { ...r, syncedPath: p }); }
     } catch (e) {
       console.error(e);
       // the connection dropped part-way: try again when it's back
@@ -22481,6 +22686,8 @@ const App = () => {
     spectroPin,
     spectroSave,
     spectroAddTo,
+    setCommercialPicture,
+    removeCommercialPicture,
     crosshair,
     isLight,
     activeColorObj,
@@ -25640,6 +25847,8 @@ const AppUI = ({
   spectroPin,
   spectroSave,
   spectroAddTo,
+  setCommercialPicture,
+  removeCommercialPicture,
   crosshair,
   isLight,
   activeColorObj,
@@ -27790,6 +27999,22 @@ const AppUI = ({
                   }),
               ),
             ),
+            (() => {
+              const ac = crosshair?.activeCommercial;
+              const p = crosshair?.activeSavedColor?.type === "pin" ? savedColors[crosshair.activeSavedColor.id] : null;
+              const t = ac && colorData?.[ac.brand]?.[ac.originalIndex] ? { brand: ac.brand, index: ac.originalIndex } : p && p.brand && p.originalIndex !== undefined && colorData?.[p.brand]?.[p.originalIndex] ? { brand: p.brand, index: p.originalIndex } : null;
+              if (!t) return null;
+              const m = colorData[t.brand][t.index];
+              return React.createElement(
+                CollapsiblePanel,
+                { title: "Picture", icon: "camera", defaultOpen: true, summary: m.image ? "" : "none" },
+                React.createElement(PicturePanel, {
+                  name: m.name, image: m.image && isImageRef(m.image) ? m.image : "", local: /^blob:/i.test(m.image || ""),
+                  onPick: (blob) => setCommercialPicture(t.brand, t.index, blob),
+                  onRemove: () => removeCommercialPicture(t.brand, t.index),
+                }),
+              );
+            })(),
             React.createElement(
               CollapsiblePanel,
               { title: "Tags", icon: "tag", defaultOpen: false },
