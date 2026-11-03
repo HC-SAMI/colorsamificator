@@ -13137,6 +13137,14 @@ const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectr
     s.host === "demo" && React.createElement("div", { className: "flex items-center justify-between gap-2 rounded-md bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 px-2.5 py-1.5" },
       React.createElement("span", null, "Demo device: readings are simulated."),
       React.createElement("button", { className: "underline font-semibold", onClick: () => spectroStore.setSource("auto") }, "Turn off")),
+    // what the Nix licence in this build unlocks, as the SDK reports it
+    s.license && s.license.state === "ACTIVE" && React.createElement("div", { className: "rounded-md bg-slate-50 dark:bg-neutral-800/60 px-2.5 py-1.5 text-[11px] text-slate-600 dark:text-neutral-300", "data-license": "" },
+      React.createElement("span", { className: "font-semibold" }, "Nix licence active"),
+      Array.isArray(s.license.types) && s.license.types.length
+        ? ` · works with ${s.license.types.map((t) => String(t).replace(/_/g, " ").toLowerCase().replace(/\b([a-z])/g, (c) => c.toUpperCase()).replace(/([a-z])(\d)/gi, "$1 $2").replace(/^Qc$/, "QC")).join(", ")}`
+        : " · device list not reported",
+      s.license.expiry ? ` · until ${s.license.expiry}` : "",
+      dev && dev.type && Array.isArray(s.license.types) && s.license.types.length && !s.license.types.includes(dev.type) && React.createElement("span", { className: "block text-red-700 dark:text-red-300 font-semibold mt-0.5" }, `This licence doesn't include the connected ${dev.typeName || dev.type}.`)),
     licenseBad && React.createElement("div", { className: "rounded-md bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 px-2.5 py-1.5" },
       SPECTRO_ERRORS[s.license.state] || `The Nix SDK license isn't active (${String(s.license.state).toLowerCase().replace(/_/g, " ")}). Check the license set in the app build.`),
     s.error && React.createElement("div", { className: "flex items-start justify-between gap-2 rounded-md bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 px-2.5 py-1.5", role: "alert" },
