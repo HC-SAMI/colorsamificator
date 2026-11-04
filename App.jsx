@@ -2659,6 +2659,103 @@ function createSpaceEngine(opts) {
   ghostDots.renderOrder = -1;
   overlay.add(ghostDots);
 
+  // Scan spread: an ellipsoid per colour with several scans (95% of them),
+  // shaded brighter toward its outline so its shape reads, plus every scan as
+  // a small dot in its own colour. Rides along with separation like the dots.
+  let spreadOn = true;
+  const blobGroup = new THREE.Group();
+  overlay.add(blobGroup);
+  const blobGeo = new THREE.SphereGeometry(1, 32, 20);
+  const blobRim = { value: new THREE.Color(0, 0, 0) };
+  const blobVert = `varying vec3 vN; varying vec3 vV;
+    void main() { vec4 mv = modelViewMatrix * vec4(position, 1.0); vN = normalize(normalMatrix * normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }`;
+  const blobFrag = `precision highp float; uniform vec3 uColor; uniform vec3 uRim; uniform float uAlpha; varying vec3 vN; varying vec3 vV;
+    void main() { float f = 1.0 - abs(dot(normalize(vN), normalize(vV)));
+      float a = uAlpha * (0.24 + 0.76 * pow(f, 1.6));
+      gl_FragColor = vec4(mix(uColor, uRim, 0.45 * pow(f, 3.0)), min(1.0, a)); }`;
+  let blobs = [], blobMats = [];   // blobs[i] = { mesh, base, center, mi }
+  const scanGeo = new THREE.BufferGeometry();
+  const scanMat = ghostMat.clone();
+  scanMat.uniforms = { uSep: shared.uSep, uSize: { value: 7 * Math.min(window.devicePixelRatio || 1, 2) }, uRing: dotMat.uniforms.uRing };
+  scanMat.fragmentShader = dotMat.fragmentShader.replace("gl_FragColor = vec4(d > 0.62 ? uRing : vColor, 1.0);", "gl_FragColor = vec4(d > 0.7 ? uRing : vColor, 0.95);");
+  scanMat.transparent = true; scanMat.depthTest = false; scanMat.depthWrite = false;
+  const scanDots = new THREE.Points(scanGeo, scanMat);
+  scanDots.frustumCulled = false;
+  scanDots.renderOrder = 4;
+  overlay.add(scanDots);
+  let scanOwnerOf = null, scanVis = null, scanOwner = null, scanN = 0;
+  const buildBlobs = () => {
+    blobs.forEach((b) => blobGroup.remove(b.mesh));
+    blobMats.forEach((m) => m.dispose());
+    blobs = []; blobMats = [];
+    const M = S.markers, pos = [], col = [], own = [];
+    M.forEach((m, mi) => {
+      const sp = m.spread;
+      if (!sp || !sp.scans || sp.scans.length < 2) return;
+      const wp = sp.scans.map((s) => spaceToWorld(s.L, s.C, isFinite(s.H) ? s.H : 0));
+      const shape = spaceSpreadShape(wp);
+      if (!shape) return;
+      const [[u, ru], [v, rv], [w, rw]] = shape.axes, c = shape.center;
+      const base = new THREE.Matrix4().set(
+        u[0] * ru, v[0] * rv, w[0] * rw, c[0],
+        u[1] * ru, v[1] * rv, w[1] * rw, c[1],
+        u[2] * ru, v[2] * rv, w[2] * rw, c[2],
+        0, 0, 0, 1);
+      const rgb = spaceDisplayRgb(m.hex, m.L, m.C, m.H);
+      const mat = new THREE.ShaderMaterial({
+        vertexShader: blobVert, fragmentShader: blobFrag,
+        uniforms: { uColor: { value: new THREE.Color(rgb[0], rgb[1], rgb[2]) }, uRim: blobRim, uAlpha: { value: 0.8 } },
+        transparent: true, depthTest: false, depthWrite: false, side: THREE.FrontSide,
+      });
+      const mesh = new THREE.Mesh(blobGeo, mat);
+      mesh.matrixAutoUpdate = false; mesh.matrix.copy(base); mesh.frustumCulled = false; mesh.renderOrder = 3;
+      blobGroup.add(mesh); blobMats.push(mat);
+      blobs.push({ mesh, base, center: c, mi });
+      sp.scans.forEach((s, k) => { pos.push(...wp[k]); col.push(...spaceDisplayRgb(s.hex, s.L, s.C, s.H)); own.push(blobs.length - 1); });
+    });
+    scanN = own.length;
+    if (scanGeo.attributes.position) scanGeo.dispose();
+    scanOwnerOf = own;
+    scanVis = new Float32Array(scanN).fill(1);
+    scanOwner = new Float32Array(scanN * 3);
+    scanGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+    scanGeo.setAttribute("aColor", new THREE.BufferAttribute(new Float32Array(col), 3));
+    scanGeo.setAttribute("aKind", new THREE.BufferAttribute(new Float32Array(scanN), 1));
+    scanGeo.setAttribute("aVis", new THREE.BufferAttribute(scanVis, 1));
+    scanGeo.setAttribute("aOwner", new THREE.BufferAttribute(scanOwner, 3));
+    placeBlobs(); updateBlobVis();
+  };
+  // separation: a blob moves with the cell its centre sits in
+  function placeBlobs() {
+    if (!blobs.length) return;
+    const s = S.sep, sep = ready && N && s;
+    blobs.forEach((b) => {
+      b.mesh.matrix.copy(b.base);
+      b.off = [0, 0, 0];
+      if (sep) {
+        const j = cellOf(b.center[0], b.center[1], b.center[2]);
+        b.off = [px[j], py[j], pz[j]];
+        const e = b.mesh.matrix.elements;
+        e[12] += px[j] * s; e[13] += py[j] * s; e[14] += pz[j] * s;
+      }
+      b.mesh.matrixWorldNeedsUpdate = true;
+    });
+    if (scanOwner) {
+      for (let i = 0; i < scanN; i++) { const o = blobs[scanOwnerOf[i]].off; scanOwner[i * 3] = o[0]; scanOwner[i * 3 + 1] = o[1]; scanOwner[i * 3 + 2] = o[2]; }
+      scanGeo.attributes.aOwner.needsUpdate = true;
+    }
+    requestRender();
+  }
+  function updateBlobVis() {
+    blobs.forEach((b) => (b.mesh.visible = spreadOn && (!mVis || mVis[b.mi] > 0.5)));
+    if (scanVis) {
+      for (let i = 0; i < scanN; i++) scanVis[i] = blobs[scanOwnerOf[i]].mesh.visible ? 1 : 0;
+      scanGeo.attributes.aVis.needsUpdate = true;
+    }
+    scanDots.visible = spreadOn && scanN > 0;
+    requestRender();
+  }
+
   // Swatch cards: a square of the anchor's colour over a label strip, always
   // facing the camera. Far away the strip takes the colour too, so the space
   // reads as a cloud; close up it turns to paper and carries the name.
@@ -3350,6 +3447,7 @@ function createSpaceEngine(opts) {
     }
     if (dotGeo.attributes.aOwner) dotGeo.attributes.aOwner.needsUpdate = true;
     if (mcardGeo.attributes.iOwner) mcardGeo.attributes.iOwner.needsUpdate = true;
+    placeBlobs();
     requestRender();
   };
   // Where a world point is drawn once separated: moved with its cell.
@@ -3396,6 +3494,7 @@ function createSpaceEngine(opts) {
     mcardGeo.setAttribute("iLook", new THREE.InstancedBufferAttribute(look, 3));
     mcardGeo.setAttribute("iImg", new THREE.InstancedBufferAttribute(mImg, 1));
     mcardGeo.instanceCount = n;
+    buildBlobs();
     applyMode3D();
     updateMarkerOwners();
     updateDotVisibility();
@@ -3403,10 +3502,11 @@ function createSpaceEngine(opts) {
   function updateDotVisibility() {
     if (!mVis) return;
     const M = S.markers, { hl, hc, hh } = S.ranges["3d"];
-    if (hl === null && hc === null && hh === null) { if (mVisAll) return; mVis.fill(1); mVisAll = true; }
+    if (hl === null && hc === null && hh === null) { if (mVisAll) return updateBlobVis(); mVis.fill(1); mVisAll = true; }
     else { mVisAll = false; for (let i = 0; i < M.length; i++) mVis[i] = inRangeLCH(M[i].L, M[i].C, M[i].H) ? 1 : 0; }
     dotGeo.attributes.aVis.needsUpdate = true;
     if (mcardGeo.attributes.iVis) mcardGeo.attributes.iVis.needsUpdate = true;
+    updateBlobVis();
     updateCardState();
     requestRender();
   }
@@ -4495,9 +4595,14 @@ function createSpaceEngine(opts) {
       };
       buildGroupLines3D(); scheduleSections();
     },
+    setSpread(on) {
+      if (spreadOn === !!on) return;
+      spreadOn = !!on;
+      updateBlobVis();
+    },
     setMarkers(list) {
       const lookSig = (lk) => (lk ? `${lk.hatch ? 1 : 0}${lk.profile}${lk.light === false ? 0 : 1}${lk.image || ""}` : "");
-      const sig = list.length + ":" + list.map((m) => `${m.L},${m.C},${m.H},${m.hex},${m.kind},${lookSig(m.look)}`).join(";");
+      const sig = list.length + ":" + list.map((m) => `${m.L},${m.C},${m.H},${m.hex},${m.kind},${lookSig(m.look)},${m.spread ? m.spread.key : ""}`).join(";");
       S.markers = list;
       if (sig === markerSig) return;
       markerSig = sig;
@@ -4586,7 +4691,7 @@ function createSpaceEngine(opts) {
       shared.uSep.value = 1 + sep;
       cellMat.uniforms.uAlpha.value = opacity;
       cardMat.uniforms.uAlpha.value = opacity;
-      placeMarker(); updatePlanes(); buildGamutZones();
+      placeMarker(); updatePlanes(); buildGamutZones(); placeBlobs();
       if (geoChange) { rebuild(true); rebuildActive(); } else requestRender();
     },
     setTheme({ dark, fg, bg }) {
@@ -4596,6 +4701,7 @@ function createSpaceEngine(opts) {
       rimMat.uniforms.uColor.value.copy(fgc);
       dotMat.uniforms.uRing.value.copy(fgc);
       markerMats.forEach((m) => m.color.copy(fgc));
+      blobRim.value.copy(fgc);
       tetherMat.color.copy(fgc);
       groupMat.color.copy(fgc);
       const guide3 = (hex) => { const c = spaceSrgbToCanvas(spaceHexToRgb(hex)); return new THREE.Color(c[0], c[1], c[2]); };
@@ -4644,7 +4750,8 @@ function createSpaceEngine(opts) {
       scene.traverse((o) => { o.geometry && o.geometry.dispose(); });
       overlay.traverse((o) => { o.geometry && o.geometry.dispose(); });
       atlasTex.dispose(); photoQueue = [];
-      [cellMat, activeMat, rimMat, dotMat, ghostMat, cardMat, mcardMat, tetherMat, groupMat, axis.material, plL.material, plC.material, plH.material, ...markerMats].forEach((m) => m.dispose());
+      [cellMat, activeMat, rimMat, dotMat, ghostMat, cardMat, mcardMat, tetherMat, groupMat, axis.material, plL.material, plC.material, plH.material, ...markerMats, ...blobMats, scanMat].forEach((m) => m.dispose());
+      blobGeo.dispose();
       renderer.dispose();
       renderer.forceContextLoss();
     },
@@ -4882,6 +4989,84 @@ const useGroupLinesPref = () => {
   const set = (v) => { try { localStorage.setItem(GROUP_LINES_KEY, v ? "on" : "off"); } catch (e) {} groupLinesSubs.forEach((f) => f()); };
   return [on, set];
 };
+// ── Scan spread: a colour measured several times, as a region ─────────────
+// Heterogeneous surfaces (wood grain, stone, textured laminate) read a little
+// differently at every spot. A colour with two or more logged scans is drawn
+// in the 3D view as the region its scans cover: an ellipsoid from their
+// covariance in OkLab holding about 95% of them, with each scan as a dot.
+const SPREAD_KEY = "csam-space-spread";
+const spreadSubs = new Set();
+const useSpreadPref = () => {
+  const read = () => { try { return localStorage.getItem(SPREAD_KEY) !== "off"; } catch (e) { return true; } };
+  const [on, setOn] = useState(read);
+  useEffect(() => { const f = () => setOn(read()); spreadSubs.add(f); return () => spreadSubs.delete(f); }, []);
+  const set = (v) => { try { localStorage.setItem(SPREAD_KEY, v ? "on" : "off"); } catch (e) {} spreadSubs.forEach((f) => f()); };
+  return [on, set];
+};
+const SpaceSpreadSetting = () => {
+  const [on, set] = useSpreadPref();
+  return React.createElement(SpaceSwitch, { on, onChange: set, label: "Scan spread (colours with several scans)" });
+};
+// the UV mode colours are read from; re-renders only when it changes
+const useSpectroBasis = () => {
+  const [b, setB] = useState(() => spectroStore.get().basis || "M2");
+  useEffect(() => spectroStore.subscribe(() => { const n = spectroStore.get().basis || "M2"; setB((p) => (p === n ? p : n)); }), []);
+  return b;
+};
+// a scan log → its scans' colours (in the chosen UV mode) and their spread
+const SPREAD_CACHE = new WeakMap();
+const scanSpreadOf = (log, basis) => {
+  if (!Array.isArray(log) || log.length < 2) return null;
+  let m = SPREAD_CACHE.get(log);
+  if (!m) SPREAD_CACHE.set(log, (m = new Map()));
+  if (m.has(basis)) return m.get(basis);
+  let out = null;
+  try {
+    const sum = scanLogSummary(log, basis);
+    if (sum && sum.scans.length >= 2)
+      out = {
+        n: sum.scans.length, mcdm: sum.ses.mcdm,
+        key: `${basis}:${sum.scans.length}:${sum.ses.mcdm.toFixed(4)}`,
+        scans: sum.scans.map((r) => ({ L: r.L, C: r.C, H: r.H, hex: r.hex })),
+      };
+  } catch (e) {}
+  m.set(basis, out);
+  return out;
+};
+// symmetric 3×3 → eigenvalues and eigenvectors (columns), by Jacobi rotations
+const spreadEig3 = (A) => {
+  const a = A.map((r) => r.slice()), v = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  for (let sweep = 0; sweep < 40; sweep++) {
+    if (a[0][1] ** 2 + a[0][2] ** 2 + a[1][2] ** 2 < 1e-24) break;
+    for (const [p, q] of [[0, 1], [0, 2], [1, 2]]) {
+      if (Math.abs(a[p][q]) < 1e-30) continue;
+      const th = (a[q][q] - a[p][p]) / (2 * a[p][q]);
+      const t = (th >= 0 ? 1 : -1) / (Math.abs(th) + Math.sqrt(th * th + 1));
+      const c = 1 / Math.sqrt(t * t + 1), s = t * c;
+      for (let k = 0; k < 3; k++) { const x = a[k][p], y = a[k][q]; a[k][p] = c * x - s * y; a[k][q] = s * x + c * y; }
+      for (let k = 0; k < 3; k++) { const x = a[p][k], y = a[q][k]; a[p][k] = c * x - s * y; a[q][k] = s * x + c * y; }
+      for (let k = 0; k < 3; k++) { const x = v[k][p], y = v[k][q]; v[k][p] = c * x - s * y; v[k][q] = s * x + c * y; }
+    }
+  }
+  return { vals: [a[0][0], a[1][1], a[2][2]], vecs: [0, 1, 2].map((j) => [v[0][j], v[1][j], v[2][j]]) };
+};
+const SPREAD_K = Math.sqrt(7.815);   // χ², 3 degrees of freedom, 95%
+// world points → { center, axes: [[unit vector, radius] × 3] } (a right-handed frame)
+const spaceSpreadShape = (pts) => {
+  const n = pts.length;
+  if (n < 2) return null;
+  const c = [0, 0, 0];
+  pts.forEach((p) => { c[0] += p[0] / n; c[1] += p[1] / n; c[2] += p[2] / n; });
+  const S = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  pts.forEach((p) => { const d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]]; for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) S[i][j] += (d[i] * d[j]) / (n - 1); });
+  const { vals, vecs } = spreadEig3(S);
+  const r = vals.map((x) => SPREAD_K * Math.sqrt(Math.max(0, x)));
+  const floor = Math.max(0.02, 0.12 * Math.max(...r));   // two scans make a line: give it some body
+  const [e0, e1] = vecs;
+  const e2 = [e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2], e0[0] * e1[1] - e0[1] * e1[0]];
+  return { center: c, axes: [[e0, Math.max(floor, r[0])], [e1, Math.max(floor, r[1])], [e2, Math.max(floor, r[2])]] };
+};
+
 const SpaceGroupLinesSetting = () => {
   const [on, set] = useGroupLinesPref();
   return React.createElement(SpaceSwitch, { on, onChange: set, label: "Colour group lines" });
@@ -4933,6 +5118,7 @@ const SpaceSettings = ({ k, v, preset, sync, onPreset, onPatch, onSync, onReset 
       onChange: (x) => onPatch({ gamut: x }),
     }),
     React.createElement(SpaceGroupLinesSetting),
+    k === "3d" && React.createElement(SpaceSpreadSetting),
     React.createElement(SpaceGamutSetting),
     // A section's own axis is its depth: 0 shows only what crosses the plane,
     // more brings in the colours on either side, seen straight on, up to all
@@ -5102,6 +5288,8 @@ const ViewSpaceInner = ({
   });
   const setBinSource = (v) => { setBinSourceState(v); try { localStorage.setItem(SPACE_BIN_KEY, v); } catch (e) {} };
   const groupLinesOn = useGroupLinesPref()[0];
+  const spreadOn = useSpreadPref()[0];
+  const spreadBasis = useSpectroBasis();
   // Four fixed canvases: the large one and three small ones. `slots` says which
   // view each shows; maximizing a small view swaps it with the large one.
   const bigRef = useRef(null), s1Ref = useRef(null), s2Ref = useRef(null), s3Ref = useRef(null);
@@ -5284,6 +5472,7 @@ const ViewSpaceInner = ({
           const n = spacePointLabel(p, names || {});
           return `Pin · ${n !== "Unnamed" ? n : p.erpCode || p.pinId || "unnamed"}`;
         })(),
+        spread: scanSpreadOf(p.scanLog, spreadBasis),
         look: lookOf(p, p.brand !== undefined && p.originalIndex !== undefined ? colorData?.[p.brand]?.[p.originalIndex] : null),
         pick: [p.L, p.C, p.H, { pinId: p.pinId }] });
     });
@@ -5296,12 +5485,13 @@ const ViewSpaceInner = ({
           out.push({ L: c.L, C: c.C, H, hex: spaceHexFor(c.hex, c.L, c.C, H), kind: "brand",
             label: `${typeof getBrandDisplayName === "function" ? getBrandDisplayName(brand) : brand} · ${c.name}`,
             look: lookOf(c, null),
+            spread: scanSpreadOf(c.scanLog, spreadBasis),
             pick: [c.L, c.C, H, { brand, originalIndex: oi }] });
         });
       });
     }
     return out;
-  }, [points, colorData, names]);
+  }, [points, colorData, names, spreadBasis]);
 
   // The colours the bins are built around, and the markers drawn besides them
   // (a pin or commercial colour that is itself a bin is not drawn twice).
@@ -5383,6 +5573,7 @@ const ViewSpaceInner = ({
   const eng = active ? engineRef.current : null;
   useEffect(() => { ready && eng && eng.setAnchors(seeds.list, seeds.regions || null); }, [ready, seeds, active]);
   useEffect(() => { ready && eng && eng.setMarkers(markersShown); }, [ready, markersShown, active]);
+  useEffect(() => { ready && eng && eng.setSpread(spreadOn); }, [ready, spreadOn, active]);
   useEffect(() => { ready && eng && eng.setTether(tether); }, [ready, tether, active]);
   useEffect(() => { ready && eng && eng.setCursor(scrubL, scrubC, ((scrubH % 360) + 360) % 360); }, [ready, scrubL, scrubC, scrubH, active]);
   // A jump to a colour elsewhere in the app: zoom so names are readable. One
@@ -5636,6 +5827,9 @@ const ViewSpaceInner = ({
               { className: "text-[10px] font-mono text-slate-500 dark:text-neutral-400" },
               `L ${hover.item.L.toFixed(3)} · C ${hover.item.C.toFixed(3)} · H ${hover.item.H.toFixed(1)}°`,
             ),
+            hover.item.spread &&
+              React.createElement("span", { className: "text-[10px] text-slate-500 dark:text-neutral-400", "data-hover-spread": "" },
+                `${hover.item.spread.n} scans · spread MCDM ΔE00 ${hover.item.spread.mcdm.toFixed(2)}`),
           ),
         ),
     ),
@@ -20363,6 +20557,7 @@ const App = () => {
           nameOverride: sc.nameOverride,
           anchorId,
           isCustomAnchor: sc.type === "anchor",
+          scanLog: sc.scanLog,
           image: sc.image || (sc.notes?.startsWith("http") ? sc.notes : undefined),
           brand: sc.brand,
           originalIndex: sc.originalIndex,
