@@ -19747,6 +19747,16 @@ const App = () => {
     const currentTagLibrary = Array.isArray(initialState?.tagLibrary) ? [...initialState.tagLibrary] : [];
     const rawUrls = {};
     const discoverCSVFiles = async () => {
+      // a static host can't list a folder; its build writes data/manifest.json instead
+      try {
+        const mr = await fetch("./data/manifest.json", { cache: "no-store" });
+        if (mr.ok) {
+          const m = await mr.json();
+          const list = (Array.isArray(m) ? m : m && m.csv) || [];
+          const csvs = list.filter((n) => typeof n === "string" && n.toLowerCase().endsWith(".csv"));
+          if (csvs.length) return csvs;
+        }
+      } catch (e) {}
       try {
         const res = await fetch("./data/");
         if (res.ok) {
