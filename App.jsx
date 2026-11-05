@@ -1180,6 +1180,8 @@ const MatchRow = ({ label, match, onSelectColor, setFullscreenImage, fmt }) => {
           label,
           " \xB7 \u0394Eok ",
           fmt(match.d, 2),
+          match.scanX && React.createElement("span", { className: "normal-case tracking-normal", "data-match-scans": "" },
+            `· ${match.scanX.n} scans · closest ${fmt(match.scanX.near, 2)}${match.scanX.ov > 0 ? (match.scanX.point ? " · in range" : ` · overlap ${Math.round(match.scanX.ov * 100)}%`) : ""}`),
           (match.url || match.erpCode) && String(match.url || match.erpCode).startsWith("http") &&
             React.createElement(
               "a",
@@ -1204,11 +1206,16 @@ const CommercialMatches = ({
   names,
   onSelectColor,
   savedColors = {},
+  targetLog = null,
 }) => {
   // Hooks must run on every render, so they stay above any early return.
   const [fullscreenImage, setFullscreenImage] = useState(null);
   const [maxDeltaE, setMaxDeltaE] = useState(1.0);
   const [searchQuery, setSearchQuery] = useState("");
+  const [rankBy, setRankBy] = useState(() => { try { return localStorage.getItem("csam-match-rank") || "average"; } catch (e) { return "average"; } });
+  const setRank = (v) => { setRankBy(v); try { localStorage.setItem("csam-match-rank", v); } catch (e) {} };
+  const spreadBasis = useSpectroBasis();
+  const targetSpread = useMemo(() => scanSpreadOf(targetLog, spreadBasis), [targetLog, spreadBasis]);
   const c = useMemo(
     () =>
       new Color("oklch", [
@@ -1240,7 +1247,22 @@ const CommercialMatches = ({
           if (!lch) continue;
           const hexVal = lch.hex;
           const d = fastDeltaEOK(cL, cC, cH, lch.L, lch.C, lch.H);
-          if (d <= maxDeltaE) {
+          // a colour with several scans: its scan closest to the target (or
+          // to the target's scans) and how far the two ranges overlap
+          let sx = null;
+          if (rankBy !== "average" && Array.isArray(item.scanLog) && item.scanLog.length > 1) {
+            const sp = scanSpreadOf(item.scanLog, spreadBasis), R = sp && spreadRegionOf(sp);
+            if (sp && R) {
+              const tg = targetSpread ? targetSpread.scans : [{ L: cL, C: cC, H: cH }];
+              let near = Infinity;
+              tg.forEach((t) => sp.scans.forEach((s) => { const e = fastDeltaEOK(t.L, t.C, t.H, s.L, s.C, s.H); if (e < near) near = e; }));
+              const TR = targetSpread ? spreadRegionOf(targetSpread) : null;
+              const inMine = spreadShareIn(tg, R);
+              sx = { n: sp.n, near, ov: TR ? (inMine + spreadShareIn(sp.scans, TR)) / 2 : inMine, point: !TR };
+            }
+          }
+          const dEff = sx ? Math.min(d, sx.near) : d;
+          if (dEff <= maxDeltaE || (rankBy === "overlap" && sx && sx.ov > 0)) {
             if (filterSameNoun && sameGroup) {
               const itemL = lch.L;
               const itemC = lch.C;
@@ -1260,6 +1282,8 @@ const CommercialMatches = ({
                 C: lch.C,
                 H: lch.H,
                 d,
+                dEff,
+                scanX: sx,
                 brand: brandKey,
                 originalIndex: listIdx,
               },
@@ -1294,6 +1318,8 @@ const CommercialMatches = ({
     searchedMatches.sort((a, b) => {
       const aVerified = a.match.spectral && a.match.spectral.length > 0 ? 1 : 0;
       const bVerified = b.match.spectral && b.match.spectral.length > 0 ? 1 : 0;
+      if (rankBy === "overlap") { const ao = a.match.scanX ? a.match.scanX.ov : 0, bo = b.match.scanX ? b.match.scanX.ov : 0; if (ao !== bo) return bo - ao; }
+      if (rankBy !== "average") return a.match.dEff - b.match.dEff;
       if (aVerified !== bVerified) return bVerified - aVerified;
       return a.match.d - b.match.d;
     });
@@ -1308,6 +1334,9 @@ const CommercialMatches = ({
     filterSameNoun,
     names,
     savedColors,
+    rankBy,
+    spreadBasis,
+    targetSpread,
   ]);
 
   if (!crosshair) return null;
@@ -1366,6 +1395,15 @@ const CommercialMatches = ({
             "flex-1 h-1 bg-slate-200 dark:bg-neutral-700 rounded-lg appearance-none cursor-pointer",
         }),
       ),
+      React.createElement("div", { className: "flex items-center gap-1.5 flex-wrap", "data-match-rank": "" },
+        React.createElement("span", { className: "text-[10px] text-slate-500 w-12" }, "Rank by"),
+        [["average", "Average", "Distance between the average colours"],
+          ["closest", "Closest scan", "Colours with several scans also match on their closest scan"],
+          ["overlap", "Overlap", "Colours whose range of scans takes in the target come first"]].map(([id, label, title]) =>
+          React.createElement("button", {
+            key: id, type: "button", onClick: () => setRank(id), "aria-pressed": rankBy === id, title, "data-rank": id,
+            className: `h-6 px-2 rounded-full text-[10px] font-semibold border ${rankBy === id ? "bg-slate-900 text-white border-slate-900 dark:bg-neutral-100 dark:text-neutral-900 dark:border-neutral-100" : "border-slate-200 dark:border-neutral-700 text-slate-600 dark:text-neutral-300 hover:border-slate-400"}`,
+          }, label))),
     ),
     filteredMatches
       ? React.createElement(
@@ -2684,35 +2722,53 @@ function createSpaceEngine(opts) {
   scanDots.renderOrder = 4;
   overlay.add(scanDots);
   let scanOwnerOf = null, scanVis = null, scanOwner = null, scanN = 0;
+  // each blob's surface comes from its density region (cached on the colour's
+  // spread), built a few per frame so a big catalogue doesn't stall the view
+  let blobJob = 0;
+  const blobGeoOf = (sp) => {
+    if (!sp._mesh) sp._mesh = spreadMesh(spreadRegionOf(sp), 36000) || { pos: new Float32Array(0), nor: new Float32Array(0), idx: new Uint16Array(0) };
+    const g = new THREE.BufferGeometry(), d = sp._mesh;
+    g.setAttribute("position", new THREE.BufferAttribute(d.pos, 3));
+    g.setAttribute("normal", new THREE.BufferAttribute(d.nor, 3));
+    g.setIndex(new THREE.BufferAttribute(d.idx, 1));
+    return g;
+  };
   const buildBlobs = () => {
-    blobs.forEach((b) => blobGroup.remove(b.mesh));
+    blobs.forEach((b) => { blobGroup.remove(b.mesh); if (b.mesh.geometry !== blobGeo) b.mesh.geometry.dispose(); });
     blobMats.forEach((m) => m.dispose());
     blobs = []; blobMats = [];
+    const job = ++blobJob;
     const M = S.markers, pos = [], col = [], own = [];
     M.forEach((m, mi) => {
       const sp = m.spread;
       if (!sp || !sp.scans || sp.scans.length < 2) return;
-      const wp = sp.scans.map((s) => spaceToWorld(s.L, s.C, isFinite(s.H) ? s.H : 0));
-      const shape = spaceSpreadShape(wp);
-      if (!shape) return;
-      const [[u, ru], [v, rv], [w, rw]] = shape.axes, c = shape.center;
-      const base = new THREE.Matrix4().set(
-        u[0] * ru, v[0] * rv, w[0] * rw, c[0],
-        u[1] * ru, v[1] * rv, w[1] * rw, c[1],
-        u[2] * ru, v[2] * rv, w[2] * rw, c[2],
-        0, 0, 0, 1);
+      const R = spreadRegionOf(sp);
+      if (!R) return;
+      const wp = R.pts, c = R.center;
+      const base = new THREE.Matrix4();
       const rgb = spaceDisplayRgb(m.hex, m.L, m.C, m.H);
       const mat = new THREE.ShaderMaterial({
         vertexShader: blobVert, fragmentShader: blobFrag,
         uniforms: { uColor: { value: new THREE.Color(rgb[0], rgb[1], rgb[2]) }, uRim: blobRim, uAlpha: { value: 0.8 } },
         transparent: true, depthTest: false, depthWrite: false, side: THREE.FrontSide,
       });
-      const mesh = new THREE.Mesh(blobGeo, mat);
-      mesh.matrixAutoUpdate = false; mesh.matrix.copy(base); mesh.frustumCulled = false; mesh.renderOrder = 3;
+      const mesh = new THREE.Mesh(sp._mesh ? blobGeoOf(sp) : blobGeo, mat);
+      mesh.matrixAutoUpdate = false; mesh.frustumCulled = false; mesh.renderOrder = 3;
       blobGroup.add(mesh); blobMats.push(mat);
-      blobs.push({ mesh, base, center: c, mi });
+      blobs.push({ mesh, base, center: c, mi, sp, region: R, ready: !!sp._mesh });
       sp.scans.forEach((s, k) => { pos.push(...wp[k]); col.push(...spaceDisplayRgb(s.hex, s.L, s.C, s.H)); own.push(blobs.length - 1); });
     });
+    blob2D.clear();
+    // meshes not built yet: one at a time, between frames
+    const todo = blobs.filter((b) => !b.ready);
+    const next = () => {
+      if (disposed || job !== blobJob || !todo.length) return;
+      const b = todo.shift();
+      b.mesh.geometry = blobGeoOf(b.sp); b.ready = true;
+      updateBlobVis();
+      setTimeout(next, 0);
+    };
+    if (todo.length) setTimeout(next, 0);
     scanN = own.length;
     if (scanGeo.attributes.position) scanGeo.dispose();
     scanOwnerOf = own;
@@ -2747,9 +2803,9 @@ function createSpaceEngine(opts) {
     requestRender();
   }
   function updateBlobVis() {
-    blobs.forEach((b) => (b.mesh.visible = spreadOn && (!mVis || mVis[b.mi] > 0.5)));
+    blobs.forEach((b) => (b.mesh.visible = b.ready && spreadOn && (!mVis || mVis[b.mi] > 0.5)));
     if (scanVis) {
-      for (let i = 0; i < scanN; i++) scanVis[i] = blobs[scanOwnerOf[i]].mesh.visible ? 1 : 0;
+      for (let i = 0; i < scanN; i++) { const b = blobs[scanOwnerOf[i]]; scanVis[i] = spreadOn && (!mVis || mVis[b.mi] > 0.5) ? 1 : 0; }
       scanGeo.attributes.aVis.needsUpdate = true;
     }
     scanDots.visible = spreadOn && scanN > 0;
@@ -4276,6 +4332,70 @@ function createSpaceEngine(opts) {
     }
     ctx.restore();
   };
+  // Scan spread in the sections: the 3D region cut by the plane (with depth,
+  // its silhouette through that depth), filled in the colour with an outline,
+  // and the scans lying within the view's depth as small dots. The field is
+  // kept per plane, so moving the cursor within a section doesn't redo it.
+  const blob2D = new Map();
+  const drawBlobs2D = (k) => {
+    if (!spreadOn || !blobs.length) return;
+    const v = SV[k], ctx = v.ctx, W = v.cv.width, H = v.cv.height, [L, C, Hh] = S.cursor;
+    if (k === "c" && C < 0.002) return;
+    const D = depthOf(k), TOL = 0.0005, reach = Math.max(D, TOL), r2d = 180 / Math.PI, dp = DPR();
+    const dHue = (a, b) => ((((a - b) % 360) + 540) % 360) - 180;
+    if (blob2D.size > 120) blob2D.clear();
+    blobs.forEach((b) => {
+      const m = S.markers[b.mi], R = b.region, sp = b.sp;
+      if (!m || !R || (mVis && !(mVis[b.mi] > 0.5)) || !inRangeLCH(m.L, m.C, m.H, k)) return;
+      const scans = sp.scans, sxz = Math.max(R.axisSig[0], R.axisSig[2]), sy = R.axisSig[1];
+      const meanC = scans.reduce((t, s) => t + s.C, 0) / scans.length;
+      if (k === "h" && meanC > 0.004 && Math.abs(dHue(m.H, Hh)) > 90) return;   // the far half of the hue plane
+      // where the scans sit along this view's depth axis
+      const depthAt = (s) => (k === "l" ? s.L - L : k === "c" ? s.C - C : dHue(s.H, Hh));
+      const pad = k === "l" ? (3.2 * sy) / LW : k === "c" ? (3.2 * sxz) / CW : ((3.2 * sxz) / CW / Math.max(0.01, meanC)) * r2d;
+      const ds = scans.map(depthAt), dmin = Math.min(...ds) - pad, dmax = Math.max(...ds) + pad;
+      const t0 = Math.max(-reach, dmin), t1 = Math.min(reach, dmax);
+      if (t0 > t1) return;
+      const ts = D <= TOL ? [0] : Array.from({ length: 7 }, (_, i) => t0 + ((t1 - t0) * i) / 6);
+      const toWorld = k === "l" ? (u, w, t) => [u * CW, (L + t - LC) * LW, -w * CW]
+        : k === "c" ? (u, w, t) => spaceToWorld((w * CW) / LW, Math.max(0, C + t), 180 + (u / C) * r2d)
+          : (u, w, t) => spaceToWorld((w * CW) / LW, Math.max(0, u), Hh + t);
+      const uv = (s) => {
+        if (k === "l") { const h = s.H / r2d; return [s.C * Math.sin(h), s.C * Math.cos(h)]; }
+        if (k === "c") return [((s.H - 180) / r2d) * C, (s.L * LW) / CW];
+        return [s.C, (s.L * LW) / CW];
+      };
+      const Pp = scans.map(uv), pu = (3.2 * sxz) / CW, pw = k === "l" ? pu : (3.2 * sy) / CW;
+      let u0 = Math.min(...Pp.map((p) => p[0])) - pu, u1 = Math.max(...Pp.map((p) => p[0])) + pu;
+      const w0 = Math.min(...Pp.map((p) => p[1])) - pw, w1 = Math.max(...Pp.map((p) => p[1])) + pw;
+      if (k === "h") u0 = Math.max(0, u0);
+      if (u2px(v, u1) < 0 || u2px(v, u0) > W || v2py(v, w0) < 0 || v2py(v, w1) > H) return;
+      const plane = k === "l" ? L.toFixed(4) : k === "c" ? C.toFixed(4) : Hh.toFixed(2);
+      const key = `${k}|${plane}|${D}|${sp.key}|${b.mi}`;
+      let ct = blob2D.get(key);
+      if (ct === undefined) { ct = spreadContour(spreadField2D(R, toWorld, u0, u1, w0, w1, ts, 40)); blob2D.set(key, ct); }
+      const rgb = spaceDisplayRgb(m.hex, m.L, m.C, m.H);
+      ctx.save();
+      if (ct) {
+        ctx.beginPath();
+        ct.polys.forEach((poly) => { poly.forEach(([u, w], i) => (i ? ctx.lineTo(u2px(v, u), v2py(v, w)) : ctx.moveTo(u2px(v, u), v2py(v, w)))); ctx.closePath(); });
+        ctx.fillStyle = spaceCss(rgb, 0.5); ctx.fill();
+        ctx.beginPath();
+        ct.segs.forEach(([p, q]) => { ctx.moveTo(u2px(v, p[0]), v2py(v, p[1])); ctx.lineTo(u2px(v, q[0]), v2py(v, q[1])); });
+        ctx.lineJoin = "round"; ctx.lineCap = "round";
+        ctx.strokeStyle = S.dark ? "rgba(0,0,0,0.6)" : "rgba(255,255,255,0.85)"; ctx.lineWidth = 3 * dp; ctx.stroke();
+        ctx.strokeStyle = fgCss(); ctx.lineWidth = 1.2 * dp; ctx.stroke();
+      }
+      scans.forEach((s, i) => {
+        if (Math.abs(ds[i]) > reach) return;
+        const x = u2px(v, Pp[i][0]), y = v2py(v, Pp[i][1]);
+        ctx.beginPath(); ctx.arc(x, y, 2.6 * dp, 0, Math.PI * 2);
+        ctx.fillStyle = spaceCss(spaceDisplayRgb(s.hex, s.L, s.C, s.H)); ctx.fill();
+        ctx.strokeStyle = fgCss(); ctx.lineWidth = 0.8 * dp; ctx.stroke();
+      });
+      ctx.restore();
+    });
+  };
   const drawGuides = (k) => {
     const v = SV[k], ctx = v.ctx, W = v.cv.width, H = v.cv.height, [L, C, Hh] = S.cursor, G = S.guide;
     // "On the plane" for pins and commercial colours: within half a display
@@ -4283,6 +4403,7 @@ function createSpaceEngine(opts) {
     const hr = (Hh * Math.PI) / 180, TOL = 0.0005;
     drawAnchors2D(k);
     drawGroupLines(k);
+    drawBlobs2D(k);
     // Pins' pull zones (the sphere within which a pin names the cursor), as
     // dashed outlines in bins view: where the sphere cuts the plane, or its
     // full outline for a pin seen through the view's depth. The vertical axis
@@ -4598,7 +4719,7 @@ function createSpaceEngine(opts) {
     setSpread(on) {
       if (spreadOn === !!on) return;
       spreadOn = !!on;
-      updateBlobVis();
+      updateBlobVis(); scheduleSections();
     },
     setMarkers(list) {
       const lookSig = (lk) => (lk ? `${lk.hatch ? 1 : 0}${lk.profile}${lk.light === false ? 0 : 1}${lk.image || ""}` : "");
@@ -4989,11 +5110,17 @@ const useGroupLinesPref = () => {
   const set = (v) => { try { localStorage.setItem(GROUP_LINES_KEY, v ? "on" : "off"); } catch (e) {} groupLinesSubs.forEach((f) => f()); };
   return [on, set];
 };
-// ── Scan spread: a colour measured several times, as a region ─────────────
+// ── Scan spread: a colour measured several times, as the region it covers ──
 // Heterogeneous surfaces (wood grain, stone, textured laminate) read a little
-// differently at every spot. A colour with two or more logged scans is drawn
-// in the 3D view as the region its scans cover: an ellipsoid from their
-// covariance in OkLab holding about 95% of them, with each scan as a dot.
+// differently at every spot. A colour with two or more logged scans gets a
+// region: a kernel density estimate of its scans in OkLab (each scan a small
+// Gaussian, shaped like the scans' own scatter), cut at the level that holds
+// 95% of them (a highest-density region). Its outline follows the scans: two
+// clusters stay two lobes, a curved run of scans stays curved. The same
+// region draws the 3D blob, the outlines in the 2D sections and the QC plot,
+// and answers "is this inside that colour's range?" for QC and Match.
+// Everything is worked out in the 3D view's world space (OkLab scaled per
+// axis), which only rescales OkLab, so "inside" and shares are unchanged.
 const SPREAD_KEY = "csam-space-spread";
 const spreadSubs = new Set();
 const useSpreadPref = () => {
@@ -5027,13 +5154,13 @@ const scanSpreadOf = (log, basis) => {
       out = {
         n: sum.scans.length, mcdm: sum.ses.mcdm,
         key: `${basis}:${sum.scans.length}:${sum.ses.mcdm.toFixed(4)}`,
-        scans: sum.scans.map((r) => ({ L: r.L, C: r.C, H: r.H, hex: r.hex })),
+        scans: sum.scans.map((r) => ({ L: r.L, C: r.C, H: isFinite(r.H) ? r.H : 0, hex: r.hex, lab: r.lab && r.lab.length === 3 ? r.lab : spectroLabD50(r.spectral) })),
       };
   } catch (e) {}
   m.set(basis, out);
   return out;
 };
-// symmetric 3×3 → eigenvalues and eigenvectors (columns), by Jacobi rotations
+// symmetric 3×3 → eigenvalues and eigenvectors (vecs[j] is the j-th), by Jacobi rotations
 const spreadEig3 = (A) => {
   const a = A.map((r) => r.slice()), v = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
   for (let sweep = 0; sweep < 40; sweep++) {
@@ -5050,21 +5177,226 @@ const spreadEig3 = (A) => {
   }
   return { vals: [a[0][0], a[1][1], a[2][2]], vecs: [0, 1, 2].map((j) => [v[0][j], v[1][j], v[2][j]]) };
 };
-const SPREAD_K = Math.sqrt(7.815);   // χ², 3 degrees of freedom, 95%
-// world points → { center, axes: [[unit vector, radius] × 3] } (a right-handed frame)
-const spaceSpreadShape = (pts) => {
-  const n = pts.length;
-  if (n < 2) return null;
-  const c = [0, 0, 0];
-  pts.forEach((p) => { c[0] += p[0] / n; c[1] += p[1] / n; c[2] += p[2] / n; });
-  const S = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-  pts.forEach((p) => { const d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]]; for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) S[i][j] += (d[i] * d[j]) / (n - 1); });
-  const { vals, vecs } = spreadEig3(S);
-  const r = vals.map((x) => SPREAD_K * Math.sqrt(Math.max(0, x)));
-  const floor = Math.max(0.02, 0.12 * Math.max(...r));   // two scans make a line: give it some body
-  const [e0, e1] = vecs;
-  const e2 = [e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2], e0[0] * e1[1] - e0[1] * e1[0]];
-  return { center: c, axes: [[e0, Math.max(floor, r[0])], [e1, Math.max(floor, r[1])], [e2, Math.max(floor, r[2])]] };
+const SPREAD_HDR = 0.95;
+const spreadWorld = (s) => spaceToWorld(s.L, s.C, isFinite(s.H) ? s.H : 0);
+// a spread → its density region (cached on the spread)
+const spreadRegionOf = (sp) => {
+  if (!sp || !sp.scans || sp.scans.length < 2) return null;
+  if (sp._region !== undefined) return sp._region;
+  let R = null;
+  try {
+    const pts = sp.scans.map(spreadWorld), n = pts.length;
+    const c = [0, 0, 0];
+    pts.forEach((p) => { c[0] += p[0] / n; c[1] += p[1] / n; c[2] += p[2] / n; });
+    const Sg = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    pts.forEach((p) => { const d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]]; for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) Sg[i][j] += (d[i] * d[j]) / (n - 1); });
+    const { vals, vecs } = spreadEig3(Sg);
+    const sMax = Math.sqrt(Math.max(0, ...vals));
+    // Scott's rule, a little narrower so the outline follows the scans; a
+    // floor keeps two scans (a line) or a flat run (a sheet) from vanishing
+    const h = 0.8 * Math.pow(n, -1 / 7), floor = Math.max(0.01, 0.2 * sMax);
+    const ksig = vals.map((l) => h * Math.max(floor, Math.sqrt(Math.max(0, l))));
+    const Hi = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    for (let j = 0; j < 3; j++) for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) Hi[a][b] += (vecs[j][a] * vecs[j][b]) / (ksig[j] * ksig[j]);
+    const h00 = Hi[0][0], h01 = 2 * Hi[0][1], h02 = 2 * Hi[0][2], h11 = Hi[1][1], h12 = 2 * Hi[1][2], h22 = Hi[2][2];
+    const P = new Float64Array(n * 3);
+    pts.forEach((p, i) => P.set(p, i * 3));
+    const f = (x, y, z) => {
+      let t = 0;
+      for (let i = 0; i < n; i++) {
+        const dx = x - P[i * 3], dy = y - P[i * 3 + 1], dz = z - P[i * 3 + 2];
+        const q = dx * (h00 * dx + h01 * dy + h02 * dz) + dy * (h11 * dy + h12 * dz) + h22 * dz * dz;
+        if (q < 36) t += Math.exp(-0.5 * q);
+      }
+      return t;
+    };
+    const grad = (x, y, z) => {
+      const g = [0, 0, 0];
+      for (let i = 0; i < n; i++) {
+        const dx = x - P[i * 3], dy = y - P[i * 3 + 1], dz = z - P[i * 3 + 2];
+        const q = dx * (h00 * dx + h01 * dy + h02 * dz) + dy * (h11 * dy + h12 * dz) + h22 * dz * dz;
+        if (q >= 36) continue;
+        const k = Math.exp(-0.5 * q);
+        g[0] -= k * (Hi[0][0] * dx + Hi[0][1] * dy + Hi[0][2] * dz);
+        g[1] -= k * (Hi[1][0] * dx + Hi[1][1] * dy + Hi[1][2] * dz);
+        g[2] -= k * (Hi[2][0] * dx + Hi[2][1] * dy + Hi[2][2] * dz);
+      }
+      return g;
+    };
+    const own = pts.map((p) => f(p[0], p[1], p[2])), sorted = own.slice().sort((x, y) => x - y);
+    const tau = sorted[Math.floor((1 - SPREAD_HDR) * n)] * 0.999;
+    // the kernel's reach along each world axis, for bounding boxes
+    const axisSig = [0, 1, 2].map((a) => Math.sqrt(vecs.reduce((t, v, j) => t + (v[a] * ksig[j]) ** 2, 0)));
+    const lo = [0, 1, 2].map((a) => Math.min(...pts.map((p) => p[a])) - 3.2 * axisSig[a]);
+    const hi = [0, 1, 2].map((a) => Math.max(...pts.map((p) => p[a])) + 3.2 * axisSig[a]);
+    R = {
+      n, pts, center: c, f, grad, tau, ksig, axisSig, lo, hi, own: sorted,
+      inside: (w) => f(w[0], w[1], w[2]) >= tau,
+      // 0 at the outline … 1 at the densest scan: the share of its own scans this point is denser than
+      depth: (w) => { const v = f(w[0], w[1], w[2]); let k = 0; while (k < n && sorted[k] <= v) k++; return k / n; },
+    };
+  } catch (e) { R = null; }
+  sp._region = R;
+  return R;
+};
+// The region's surface as a triangle mesh (surface nets on a grid over its box).
+const SPREAD_EDGES = [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]];
+const spreadMesh = (R, maxNodes = 60000) => {
+  if (!R) return null;
+  const ext = [0, 1, 2].map((a) => R.hi[a] - R.lo[a]);
+  let size = Math.min(Math.max(...ext) / 44, Math.min(...R.ksig) / 1.3);
+  let dims;
+  for (let g = 0; g < 60; g++) { dims = ext.map((e) => Math.max(4, Math.ceil(e / size) + 1)); if (dims[0] * dims[1] * dims[2] <= maxNodes) break; size *= 1.12; }
+  const [nx, ny, nz] = dims, tau = R.tau;
+  const F = new Float32Array(nx * ny * nz);
+  for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++)
+    F[(k * ny + j) * nx + i] = R.f(R.lo[0] + i * size, R.lo[1] + j * size, R.lo[2] + k * size);
+  const node = (i, j, k) => F[(k * ny + j) * nx + i];
+  const cx = nx - 1, cy = ny - 1, cz = nz - 1, cid = (i, j, k) => (k * cy + j) * cx + i;
+  const vIdx = new Int32Array(cx * cy * cz).fill(-1), pos = [], nor = [], idx = [];
+  const cv = new Float32Array(8);
+  for (let k = 0; k < cz; k++) for (let j = 0; j < cy; j++) for (let i = 0; i < cx; i++) {
+    let mask = 0;
+    for (let c = 0; c < 8; c++) { cv[c] = node(i + (c & 1), j + ((c >> 1) & 1), k + ((c >> 2) & 1)); if (cv[c] >= tau) mask |= 1 << c; }
+    if (mask === 0 || mask === 255) continue;
+    let sx = 0, sy = 0, sz = 0, m = 0;
+    for (const [a, b] of SPREAD_EDGES) {
+      const ia = cv[a] >= tau, ib = cv[b] >= tau;
+      if (ia === ib) continue;
+      const t = (tau - cv[a]) / (cv[b] - cv[a]);
+      sx += (a & 1) + t * ((b & 1) - (a & 1)); sy += ((a >> 1) & 1) + t * (((b >> 1) & 1) - ((a >> 1) & 1)); sz += ((a >> 2) & 1) + t * (((b >> 2) & 1) - ((a >> 2) & 1)); m++;
+    }
+    const x = R.lo[0] + (i + sx / m) * size, y = R.lo[1] + (j + sy / m) * size, z = R.lo[2] + (k + sz / m) * size;
+    vIdx[cid(i, j, k)] = pos.length / 3;
+    pos.push(x, y, z);
+    const g = R.grad(x, y, z), gl = Math.hypot(g[0], g[1], g[2]) || 1;
+    nor.push(-g[0] / gl, -g[1] / gl, -g[2] / gl);   // density falls outward
+  }
+  const quad = (c0, c1, c2, c3, out) => {
+    const q = [vIdx[c0], vIdx[c1], vIdx[c2], vIdx[c3]];
+    if (q.some((v) => v < 0)) return;
+    const p = (v) => [pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]];
+    const [a, b, c] = [p(q[0]), p(q[1]), p(q[2])];
+    const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    const n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+    if (n[0] * out[0] + n[1] * out[1] + n[2] * out[2] < 0) q.reverse();
+    idx.push(q[0], q[1], q[2], q[0], q[2], q[3]);
+  };
+  for (let k = 1; k < nz - 1; k++) for (let j = 1; j < ny - 1; j++) for (let i = 0; i < nx - 1; i++) {
+    const a = node(i, j, k) >= tau, b = node(i + 1, j, k) >= tau;
+    if (a !== b) quad(cid(i, j - 1, k - 1), cid(i, j, k - 1), cid(i, j, k), cid(i, j - 1, k), [a ? 1 : -1, 0, 0]);
+  }
+  for (let k = 1; k < nz - 1; k++) for (let j = 0; j < ny - 1; j++) for (let i = 1; i < nx - 1; i++) {
+    const a = node(i, j, k) >= tau, b = node(i, j + 1, k) >= tau;
+    if (a !== b) quad(cid(i - 1, j, k - 1), cid(i, j, k - 1), cid(i, j, k), cid(i - 1, j, k), [0, a ? 1 : -1, 0]);
+  }
+  for (let k = 0; k < nz - 1; k++) for (let j = 1; j < ny - 1; j++) for (let i = 1; i < nx - 1; i++) {
+    const a = node(i, j, k) >= tau, b = node(i, j, k + 1) >= tau;
+    if (a !== b) quad(cid(i - 1, j - 1, k), cid(i, j - 1, k), cid(i, j, k), cid(i - 1, j, k), [0, 0, a ? 1 : -1]);
+  }
+  return { pos: new Float32Array(pos), nor: new Float32Array(nor), idx: pos.length / 3 > 65535 ? new Uint32Array(idx) : new Uint16Array(idx), dims };
+};
+// The region seen in a plane: field(u, w) = the most dense it gets along the
+// depth samples ts (one sample: a cut through it; several: its silhouette
+// through that depth). toWorld(u, w, t) → world point.
+const spreadField2D = (R, toWorld, u0, u1, w0, w1, ts, N = 44) => {
+  const M = Math.max(8, Math.round(N * Math.min(2.5, Math.max(0.4, (w1 - w0) / Math.max(1e-9, u1 - u0)))));
+  const vals = new Float32Array(N * M);
+  for (let j = 0; j < M; j++) for (let i = 0; i < N; i++) {
+    const u = u0 + ((u1 - u0) * i) / (N - 1), w = w0 + ((w1 - w0) * j) / (M - 1);
+    let best = 0;
+    for (const t of ts) { const p = toWorld(u, w, t); const v = R.f(p[0], p[1], p[2]); if (v > best) best = v; }
+    vals[j * N + i] = best;
+  }
+  return { N, M, u0, u1, w0, w1, vals, tau: R.tau };
+};
+// marching squares: the inside as small polygons (fill them in one path) and the outline as segments
+const spreadContour = (fld) => {
+  const { N, M, u0, u1, w0, w1, vals, tau } = fld;
+  const U = (i) => u0 + ((u1 - u0) * i) / (N - 1), Wv = (j) => w0 + ((w1 - w0) * j) / (M - 1);
+  const polys = [], segs = [];
+  let any = false;
+  for (let j = 0; j < M - 1; j++) for (let i = 0; i < N - 1; i++) {
+    const cs = [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]];
+    const v = cs.map(([a, b]) => vals[b * N + a]), inn = v.map((x) => x >= tau);
+    if (!inn.some(Boolean)) continue;
+    any = true;
+    if (inn.every(Boolean)) { polys.push(cs.map(([a, b]) => [U(a), Wv(b)])); continue; }
+    const poly = [], cross = [];
+    for (let c = 0; c < 4; c++) {
+      const d = (c + 1) % 4;
+      if (inn[c]) poly.push([U(cs[c][0]), Wv(cs[c][1])]);
+      if (inn[c] !== inn[d]) {
+        const t = (tau - v[c]) / (v[d] - v[c]);
+        const p = [U(cs[c][0]) + t * (U(cs[d][0]) - U(cs[c][0])), Wv(cs[c][1]) + t * (Wv(cs[d][1]) - Wv(cs[c][1]))];
+        poly.push(p); cross.push(p);
+      }
+    }
+    polys.push(poly);
+    if (cross.length === 2) segs.push([cross[0], cross[1]]);
+    else if (cross.length === 4) { if (inn[0]) { segs.push([cross[0], cross[3]]); segs.push([cross[1], cross[2]]); } else { segs.push([cross[0], cross[1]]); segs.push([cross[2], cross[3]]); } }
+  }
+  return any ? { polys, segs } : null;
+};
+// A QC item (or any colour) as scans: its logged scans, or itself as one
+const spreadSideOf = (item, basis) => {
+  if (!item) return null;
+  const sp = Array.isArray(item.scanLog) && item.scanLog.length > 1 ? scanSpreadOf(item.scanLog, basis) : null;
+  if (sp) return { n: sp.n, mcdm: sp.mcdm, scans: sp.scans, sp, region: spreadRegionOf(sp) };
+  const lab = Array.isArray(item.lab) && item.lab.length === 3 ? item.lab : spectroHasSp(item) ? spectroLabD50(item.spectral) : spectroLabOf(item);
+  return { n: 1, mcdm: 0, scans: [{ L: item.L, C: item.C, H: isFinite(item.H) ? item.H : 0, hex: item.hex, lab }], sp: null, region: null };
+};
+const spreadMeanLab = (scans) => [0, 1, 2].map((i) => scans.reduce((t, s) => t + s.lab[i], 0) / scans.length);
+const spreadShareIn = (scans, R) => (R ? scans.filter((s) => R.inside(spreadWorld(s))).length / scans.length : null);
+// Two colours, scan by scan
+const spreadCompare = (A, B, tol, dAvg) => {
+  if (!A || !B) return null;
+  const de = [];
+  A.scans.forEach((a) => B.scans.forEach((b) => { const d = spectroDE00(a.lab, b.lab); if (isFinite(d)) de.push(d); }));
+  de.sort((x, y) => x - y);
+  const q = (p) => (de.length ? de[Math.min(de.length - 1, Math.floor(p * de.length))] : NaN);
+  const AinB = spreadShareIn(A.scans, B.region), BinA = spreadShareIn(B.scans, A.region);
+  const within = de.length ? de.filter((d) => d <= tol).length / de.length : 0;
+  // the averages' ΔE00 as worked out elsewhere when given (from the average spectra), else from the scans
+  const dMean = isFinite(dAvg) ? dAvg : spectroDE00(spreadMeanLab(A.scans), spreadMeanLab(B.scans));
+  const spreads = [A, B].filter((s) => s.n > 1).map((s) => s.mcdm);
+  const sep = spreads.length ? dMean / Math.max(0.05, spreads.reduce((t, x) => t + x, 0) / spreads.length) : null;
+  const shares = [AinB, BinA].filter((x) => x !== null);
+  const verdict = shares.length && shares.every((x) => x >= 0.5) ? "same"
+    : shares.some((x) => x > 0) || within >= 0.05 ? "places" : "distinct";
+  // in family: the target's scans (B) inside the reference's range (A)
+  const fam = A.region ? { share: BinA, pass: B.n === 1 ? BinA >= 1 : BinA >= 0.9, depth: B.n === 1 ? A.region.depth(spreadWorld(B.scans[0])) : null } : null;
+  return { dMean, nearest: de[0], median: q(0.5), p95: q(0.95), within, pairs: de.length, AinB, BinA, sep, verdict, fam };
+};
+// How a grainy surface varies: lightness range, and how its spread splits
+// between lightness, chroma and hue (shares of the variance in OkLab, taken
+// along the average colour's own L, chroma and hue directions).
+const spreadGrain = (scans) => {
+  if (!scans || scans.length < 2) return null;
+  const n = scans.length, ok = scans.map((s) => [s.L, s.C * Math.cos((s.H * Math.PI) / 180), s.C * Math.sin((s.H * Math.PI) / 180)]);
+  const m = [0, 1, 2].map((i) => ok.reduce((t, p) => t + p[i], 0) / n);
+  const mh = Math.atan2(m[2], m[1]), cr = [Math.cos(mh), Math.sin(mh)], hu = [-Math.sin(mh), Math.cos(mh)];
+  let vL = 0, vC = 0, vH = 0;
+  ok.forEach((p) => { const da = p[1] - m[1], db = p[2] - m[2]; vL += (p[0] - m[0]) ** 2; vC += (da * cr[0] + db * cr[1]) ** 2; vH += (da * hu[0] + db * hu[1]) ** 2; });
+  const tot = vL + vC + vH || 1;
+  const byL = scans.slice().sort((a, b) => a.L - b.L);
+  const pick = (p) => byL[Math.min(n - 1, Math.max(0, Math.round(p * (n - 1))))];
+  const dark = pick(0.05), light = pick(0.95);
+  const lab = (s) => s.lab;
+  return {
+    shares: { L: vL / tot, C: vC / tot, H: vH / tot },
+    Lmin: byL[0].L, Lmax: byL[n - 1].L, Lspan: light.L - dark.L,
+    contrast: lab(dark) && lab(light) ? spectroDE00(lab(dark), lab(light)) : NaN,
+    strip: byL,
+  };
+};
+// the active colour's own scan log (a commercial colour or a pin at the cursor)
+const activeScanLogOf = (crosshair, colorData, savedColors) => {
+  if (!crosshair) return null;
+  const ac = crosshair.activeCommercial, cm = ac && colorData && colorData[ac.brand] && colorData[ac.brand][ac.originalIndex];
+  if (cm && Array.isArray(cm.scanLog) && cm.scanLog.length > 1) return cm.scanLog;
+  const pin = crosshair.exactSavedColor && crosshair.exactSavedColor.type === "pin" && savedColors ? savedColors[crosshair.exactSavedColor.id] : null;
+  return pin && Array.isArray(pin.scanLog) && pin.scanLog.length > 1 ? pin.scanLog : null;
 };
 
 const SpaceGroupLinesSetting = () => {
@@ -13085,6 +13417,7 @@ const spectroQcItem = (r, from) => (r ? {
   L: r.L, C: r.C, H: isFinite(r.H) ? r.H : 0, hex: r.hex,
   spectral: spectroHasSp(r) ? r.spectral : null, lab: Array.isArray(r.lab) ? r.lab : null,
   scans: r.scans || 0, at: r.at || "", mode: r.mode || "",
+  ...(Array.isArray(r.scanLog) && r.scanLog.length > 1 ? { scanLog: r.scanLog } : {}),
   ...(r.spectra ? { spectra: r.spectra } : {}),
 } : null);
 const SPECTRO_HUE_WORDS = [[25, "red"], [55, "orange"], [95, "yellow"], [135, "green"], [190, "cyan"], [250, "blue"], [300, "violet"], [345, "pink"]];
@@ -13138,8 +13471,14 @@ const SpectroQcPlot = ({ rf, tgt, tol, scans }) => {
   const a0 = rf.C * Math.cos((rf.H * Math.PI) / 180), b0 = rf.C * Math.sin((rf.H * Math.PI) / 180);
   const ta = tgt ? tgt.C * Math.cos((tgt.H * Math.PI) / 180) : a0, tb = tgt ? tgt.C * Math.sin((tgt.H * Math.PI) / 180) : b0;
   const ringR = ring.reduce((m, [x, y]) => Math.max(m, Math.hypot(x - a0, y - b0)), 0);
+  const spBasis = useSpectroBasis();
+  const side = useMemo(() => (rf && Array.isArray(rf.scanLog) && rf.scanLog.length > 1 ? spreadSideOf(rf, spBasis) : null), [rf, spBasis]);
+  const reg = side && side.region;
+  const regA = reg ? [-reg.hi[2] / SPACE_CW, -reg.lo[2] / SPACE_CW] : null, regB = reg ? [reg.lo[0] / SPACE_CW, reg.hi[0] / SPACE_CW] : null;
+  const refPts = side ? side.scans.map((r) => [r.C * Math.cos((r.H * Math.PI) / 180), r.C * Math.sin((r.H * Math.PI) / 180)]) : [];
   const scanPts = (scans || []).map((r) => [r.C * Math.cos((r.H * Math.PI) / 180), r.C * Math.sin((r.H * Math.PI) / 180)]);
-  const far = Math.max(ringR * 1.35, Math.hypot(ta - a0, tb - b0) * 1.25, ...scanPts.map(([x, y]) => Math.hypot(x - a0, y - b0) * 1.15), 0.004);
+  const far = Math.max(ringR * 1.35, Math.hypot(ta - a0, tb - b0) * 1.25, ...scanPts.map(([x, y]) => Math.hypot(x - a0, y - b0) * 1.15), 0.004,
+    ...(reg ? [regA[0] - a0, regA[1] - a0, regB[0] - b0, regB[1] - b0].map((x) => Math.abs(x) * 0.8) : []));
   const R = Math.ceil(far * 1000) / 1000;
   const X = (a) => P + ((a - (a0 - R)) / (2 * R)) * (S - 2 * P), Y = (b) => S - P - ((b - (b0 - R)) / (2 * R)) * (S - 2 * P);
   const cells = useMemo(() => {
@@ -13152,6 +13491,18 @@ const SpectroQcPlot = ({ rf, tgt, tol, scans }) => {
     }
     return out;
   }, [rf.L, a0, b0, R]);
+  const regPath = useMemo(() => {
+    if (!reg) return null;
+    const lo = reg.lo[1] / SPACE_LW + SPACE_LC, hi = reg.hi[1] / SPACE_LW + SPACE_LC;
+    const ts = Array.from({ length: 14 }, (_, i) => lo + ((hi - lo) * i) / 13);
+    const ct = spreadContour(spreadField2D(reg, (a, b, l) => [b * SPACE_CW, (l - SPACE_LC) * SPACE_LW, -a * SPACE_CW], a0 - R, a0 + R, b0 - R, b0 + R, ts, 56));
+    if (!ct) return null;
+    const pt = (a, b) => `${X(a).toFixed(1)},${Y(b).toFixed(1)}`;
+    return {
+      fill: ct.polys.map((poly) => "M" + poly.map(([a, b]) => pt(a, b)).join("L") + "Z").join(""),
+      line: ct.segs.map(([p, q]) => `M${pt(p[0], p[1])}L${pt(q[0], q[1])}`).join(""),
+    };
+  }, [reg, a0, b0, R]);
   const cw = (S - 2 * P) / 18;
   const ux = Math.cos((rf.H * Math.PI) / 180), uy = Math.sin((rf.H * Math.PI) / 180);
   const L = 0.42 * (S - 2 * P);
@@ -13168,6 +13519,9 @@ const SpectroQcPlot = ({ rf, tgt, tol, scans }) => {
     rf.C > 0.004 && React.createElement("text", { x: cx - uy * L, y: cy - ux * L, fontSize: 8, fontWeight: 700, fill: "#fff", stroke: "rgba(0,0,0,.45)", strokeWidth: 2, paintOrder: "stroke", textAnchor: "middle", dominantBaseline: "middle" }, "h+"),
     ring.length > 2 && React.createElement("polygon", { points: ring.map(([a, b]) => `${X(a)},${Y(b)}`).join(" "), fill: "rgba(255,255,255,.18)", stroke: "#fff", strokeWidth: 1.5, "data-qc-ring": "" }),
     ring.length > 2 && React.createElement("polygon", { points: ring.map(([a, b]) => `${X(a)},${Y(b)}`).join(" "), fill: "none", stroke: "rgba(0,0,0,.35)", strokeWidth: 0.6 }),
+    regPath && React.createElement("path", { d: regPath.fill, fill: "rgba(255,255,255,.28)", stroke: "none", "data-qc-region": "" }),
+    regPath && React.createElement("path", { d: regPath.line, fill: "none", stroke: "rgba(0,0,0,.55)", strokeWidth: 1.3, strokeDasharray: "3 2.5", strokeLinecap: "round" }),
+    refPts.map(([a, b], i) => React.createElement("circle", { key: `r${i}`, cx: X(a), cy: Y(b), r: 1.7, fill: "#fff", stroke: "rgba(0,0,0,.55)", strokeWidth: 0.5 })),
     scanPts.map(([a, b], i) => React.createElement("circle", { key: i, cx: X(a), cy: Y(b), r: 2.2, fill: "rgba(255,255,255,.85)", stroke: "rgba(0,0,0,.5)", strokeWidth: 0.6 })),
     tgt && React.createElement("line", { x1: cx, y1: cy, x2: X(ta), y2: Y(tb), stroke: "#010D00", strokeWidth: 1.2 }),
     React.createElement("circle", { cx, cy, r: 6, fill: "none", stroke: "#010D00", strokeWidth: 2 }),
@@ -13225,7 +13579,7 @@ const SpectroQcSource = ({ onPick, latest, cursor, colorData, readings, placehol
   const hits = t ? list.filter(({ brand, e }) => `${e.name || ""} ${e.code || e.erpCode || ""} ${brand}`.toLowerCase().includes(t)).slice(0, 8) : [];
   const pickCm = ({ brand, i, e }) => {
     const it = fastItemLch({ spectral: e.spectral }) || e;
-    onPick(spectroQcItem({ id: `cm-${brand}-${i}`, name: e.name, brand, L: it.L, C: it.C, H: it.H, hex: it.hex || e.hex, spectral: e.spectral }, e.code || e.erpCode || "Commercial"));
+    onPick(spectroQcItem({ id: `cm-${brand}-${i}`, name: e.name, brand, L: it.L, C: it.C, H: it.H, hex: it.hex || e.hex, spectral: e.spectral, scanLog: e.scanLog }, e.code || e.erpCode || "Commercial"));
     setQ(""); setOpen(false);
   };
   const chip = "h-7 px-2.5 rounded-full border border-slate-200 dark:border-neutral-700 text-[11px] font-semibold text-slate-700 dark:text-neutral-200 hover:border-slate-400 disabled:opacity-40 whitespace-nowrap";
@@ -13245,6 +13599,50 @@ const SpectroQcSource = ({ onPick, latest, cursor, colorData, readings, placehol
             React.createElement("span", { className: "w-5 h-5 rounded ring-1 ring-black/10 shrink-0", style: { background: h.e.hex } }),
             React.createElement("span", { className: "min-w-0 flex-1 text-[12px] truncate" }, h.e.name),
             React.createElement("span", { className: "text-[10px] text-slate-400 truncate max-w-[40%]" }, typeof getBrandDisplayName === "function" ? getBrandDisplayName(h.brand) : h.brand)))))));
+};
+const SpectroQcScans = ({ rf, tgt, tol, avgDe }) => {
+  const basis = useSpectroBasis();
+  const A = useMemo(() => spreadSideOf(rf, basis), [rf, basis]);
+  const B = useMemo(() => spreadSideOf(tgt, basis), [tgt, basis]);
+  const cmp = useMemo(() => (A && B && (A.n > 1 || B.n > 1) ? spreadCompare(A, B, tol, avgDe) : null), [A, B, tol, avgDe]);
+  if (!cmp) return null;
+  const pct = (x) => (x === null || x === undefined ? "–" : `${Math.round(x * 100)}%`);
+  const f2 = (x) => (isFinite(x) ? x.toFixed(2) : "–");
+  const V = {
+    same: ["Interchangeable", "Each sits inside the other's natural range: by its scans, one passes for the other.", "bg-emerald-50 text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300"],
+    places: ["Overlap in places", "Some spots match, but overall they are different surfaces.", "bg-amber-50 text-amber-800 dark:bg-amber-900/20 dark:text-amber-300"],
+    distinct: ["Distinct", "Hardly any pair of scans is within tolerance and neither falls in the other's range.", "bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300"],
+  }[cmp.verdict];
+  const fam = cmp.fam;
+  const rows = [
+    ["Averages", `ΔE00 ${f2(cmp.dMean)}`, "CIEDE2000 between the two average colours (as at the top)"],
+    ["Closest pair of scans", `ΔE00 ${f2(cmp.nearest)}`, "The two most alike spots, one from each side"],
+    ["Median pair", `ΔE00 ${f2(cmp.median)}`, "Half of all scan pairs are closer than this"],
+    ["95% of pairs within", `ΔE00 ${f2(cmp.p95)}`, "Only the most different 5% of scan pairs are further apart"],
+    [`Pairs within ${tol}`, `${pct(cmp.within)} of ${cmp.pairs}`, "Scan pairs within the tolerance"],
+    ["Reference in target's range", A.n > 0 && B.n > 1 ? pct(cmp.AinB) : "–", "Share of the reference's scans inside the target's range (95% region)"],
+    ["Target in reference's range", A.n > 1 ? pct(cmp.BinA) : "–", "Share of the target's scans inside the reference's range (95% region)"],
+    ["Spread (MCDM ΔE00)", `${A.n > 1 ? f2(A.mcdm) : "1 scan"} · ${B.n > 1 ? f2(B.mcdm) : "1 scan"}`, "How much each side varies from its own average: reference · target"],
+    ["Apart vs own spread", cmp.sep !== null && isFinite(cmp.sep) ? `${cmp.sep.toFixed(1)}×` : "–", "Distance between the averages divided by the sides' average spread: below 1, they differ less than each varies"],
+  ];
+  return React.createElement("div", { className: "flex flex-col gap-2", "data-qc-scans": "" },
+    React.createElement("span", { className: "text-[10px] uppercase tracking-wider text-slate-500 font-bold" }, `Scan by scan · ${A.n} × ${B.n} scans`),
+    React.createElement("div", { className: `rounded-lg px-2.5 py-2 ${V[2]}`, "data-qc-scan-verdict": cmp.verdict },
+      React.createElement("div", { className: "text-[13px] font-extrabold" }, V[0]),
+      React.createElement("div", { className: "text-[11px] leading-snug opacity-90" }, V[1])),
+    fam && React.createElement("div", { className: `rounded-lg px-2.5 py-2 ${fam.pass ? "bg-emerald-50 dark:bg-emerald-900/20" : "bg-red-50 dark:bg-red-900/20"}`, "data-qc-family": fam.pass ? "pass" : "fail" },
+      React.createElement("div", { className: "text-[10px] uppercase tracking-wider text-slate-500 font-bold" }, "In family"),
+      React.createElement("div", { className: `text-[12px] font-bold ${fam.pass ? "text-emerald-800 dark:text-emerald-300" : "text-red-700 dark:text-red-300"}` },
+        fam.pass ? "Pass · inside the reference's range" : "Fail · outside the reference's range"),
+      React.createElement("div", { className: "text-[10px] text-slate-600 dark:text-neutral-300 leading-snug" },
+        B.n === 1
+          ? fam.pass ? `Sits deeper in the range than ${pct(fam.depth)} of the reference's own ${A.n} scans.` : `Outside the region that holds 95% of the reference's ${A.n} scans.`
+          : `${pct(fam.share)} of the target's ${B.n} scans fall inside the range of the reference's ${A.n} (passes at 90%).`)),
+    React.createElement("div", { className: "flex flex-col divide-y divide-slate-100 dark:divide-neutral-800 text-[11px]" },
+      rows.map(([k, v, title]) => React.createElement("div", { key: k, className: "flex items-center justify-between gap-2 py-1", title },
+        React.createElement("span", { className: "text-slate-600 dark:text-neutral-300" }, k),
+        React.createElement("span", { className: "font-mono font-bold text-slate-800 dark:text-neutral-100" }, v)))),
+    A.n > 1 && React.createElement("p", { className: "text-[10px] text-slate-500 leading-snug" }, `On the plot, the dashed outline is the reference's range: where its ${A.n} scans fall (95%), seen from above through all its lightness. The solid ring is the ΔE00 ${tol} tolerance.`));
 };
 const spectroSigned = (v, d = 3) => (isFinite(v) ? `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(d)}` : "–");
 const SpectroQC = ({ s, cursor, colorData }) => {
@@ -13297,6 +13695,7 @@ const SpectroQC = ({ s, cursor, colorData }) => {
             React.createElement("span", { className: `font-mono font-bold ${u.de > qc.tol ? "text-red-700 dark:text-red-300" : "text-slate-800 dark:text-neutral-100"}` }, isFinite(u.de) ? u.de.toFixed(2) : "–"))),
           res.under.some((u) => u.de > qc.tol && u.de > res.de00 * 1.5) && React.createElement("p", { className: "text-[10px] text-amber-800 dark:text-amber-300" }, "The spectra differ: this pair matches in daylight but drifts apart under other light (metamerism).")),
         !res.both && React.createElement("p", { className: "text-[10px] text-slate-500" }, "One side has no spectrum, so the comparison uses its colour values only.")),
+      qc.ref && qc.target && React.createElement(SpectroQcScans, { rf: qc.ref, tgt: qc.target, tol: qc.tol, avgDe: res && isFinite(res.de00) ? res.de00 : undefined }),
       React.createElement(SpectroQcCurves, { rf: qc.ref || {}, tgt: qc.target }),
       !qc.ref && React.createElement("p", { className: "text-[11px] text-slate-500" }, "Set a reference: a new or previous scan, the colour at the cursor, or a commercial colour with a spectrum. Then scan the sample to check it."),
     ),
@@ -14942,6 +15341,24 @@ const SpectralScanLog = ({ owner, onAdd }) => {
           React.createElement("div", { key: k, className: "min-w-0" },
             React.createElement("div", { className: "text-[9px] uppercase tracking-wider text-slate-500 font-bold" }, k),
             React.createElement("div", { className: "truncate text-slate-700 dark:text-neutral-200", title: v }, v)))),
+      n > 1 && (() => {
+        const g = spreadGrain(sum.scans);
+        if (!g) return null;
+        const pc = (x) => `${Math.round(x * 100)}%`;
+        const main = [["L", "lightness"], ["C", "chroma"], ["H", "hue"]].sort((a, b2) => g.shares[b2[0]] - g.shares[a[0]])[0];
+        return React.createElement("div", { className: "flex flex-col gap-1.5", "data-grain": "" },
+          React.createElement("div", { className: "text-[9px] uppercase tracking-wider text-slate-500 font-bold" }, "Grain contrast"),
+          React.createElement("div", { className: "flex h-5 rounded overflow-hidden ring-1 ring-black/10", title: "Every scan, darkest to lightest", "data-grain-strip": "" },
+            g.strip.map((sc, i) => React.createElement("span", { key: i, className: "flex-1", style: { background: sc.hex } }))),
+          React.createElement("div", { className: "grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]" },
+            [["Lightness range", `L ${g.Lmin.toFixed(3)}–${g.Lmax.toFixed(3)}`, "OkLCH lightness of the darkest and lightest scans"],
+              ["Dark to light", isFinite(g.contrast) ? `ΔE00 ${g.contrast.toFixed(2)}` : "–", "Between the 5% darkest and 5% lightest scans"],
+              ["Varies mostly in", `${main[1]} (${pc(g.shares[main[0]])})`, "Where most of the scans' spread lies"],
+              ["L · C · h split", `${pc(g.shares.L)} · ${pc(g.shares.C)} · ${pc(g.shares.H)}`, "Share of the spread along lightness, chroma and hue"]].map(([k, v2, title]) =>
+              React.createElement("div", { key: k, className: "min-w-0", title },
+                React.createElement("div", { className: "text-[9px] uppercase tracking-wider text-slate-500 font-bold" }, k),
+                React.createElement("div", { className: "truncate text-slate-700 dark:text-neutral-200" }, v2)))));
+      })(),
       React.createElement("svg", { viewBox: `0 0 ${W} ${Hh + 2}`, className: "w-full h-24 text-slate-700 dark:text-neutral-200", preserveAspectRatio: "none", "aria-label": "Every scan's curve and their average", "data-scan-curves": "" },
         sum.scans.map((r, i) => React.createElement("path", { key: r.id, d: path(r.spectral), fill: "none", stroke: r.hex, strokeOpacity: hi === null || hi === i ? 0.95 : 0.2, strokeWidth: hi === i ? 2.5 : 1.2, vectorEffect: "non-scaling-stroke" })),
         n > 1 && React.createElement("path", { d: path(sum.ses.mean.spectral), fill: "none", stroke: "currentColor", strokeWidth: 2, strokeDasharray: "5 3", vectorEffect: "non-scaling-stroke" })),
@@ -27415,6 +27832,7 @@ const AppUI = ({
                 names,
                 savedColors,
                 onSelectColor: handlePointClick,
+                targetLog: activeScanLogOf(crosshair, colorData, savedColors),
               }),
             ),
             crosshair?.activeSpectral &&
@@ -27469,7 +27887,7 @@ const AppUI = ({
               { title: "Spectrophotometer", icon: "bluetooth", defaultOpen: !!spectroStore.get().host || (typeof window !== "undefined" && !!(window.NixBridge || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.nix))), summary: spectroSummary(spectroStore.get()) },
               React.createElement(SpectroPanel, {
                 onGo: spectroGo, onPin: spectroPin, onSave: spectroSave, onAddToSave: spectroAddTo, onSetupSync: () => setShowGithubModal(true), brands: Object.keys(colorData || {}), cursorSpectral: crosshair?.temporarySpectral || null, colorData,
-                cursor: crosshair ? { id: `cursor-${scrubL.toFixed(4)}-${scrubC.toFixed(4)}-${scrubH.toFixed(2)}`, L: scrubL, C: scrubC, H: scrubH, hex: compactHex, spectral: crosshair.activeSpectral || null, name: activeName || "", brand: crosshair.activeCommercial?.brand || "" } : null,
+                cursor: crosshair ? { id: `cursor-${scrubL.toFixed(4)}-${scrubC.toFixed(4)}-${scrubH.toFixed(2)}`, L: scrubL, C: scrubC, H: scrubH, hex: compactHex, spectral: crosshair.activeSpectral || null, name: activeName || "", brand: crosshair.activeCommercial?.brand || "", scanLog: activeScanLogOf(crosshair, colorData, savedColors) || undefined } : null,
               }),
             ),
             React.createElement(
