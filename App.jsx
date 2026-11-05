@@ -5137,8 +5137,8 @@ const SpaceSpreadSetting = () => {
 };
 // the UV mode colours are read from; re-renders only when it changes
 const useSpectroBasis = () => {
-  const [b, setB] = useState(() => spectroStore.get().basis || "M2");
-  useEffect(() => spectroStore.subscribe(() => { const n = spectroStore.get().basis || "M2"; setB((p) => (p === n ? p : n)); }), []);
+  const [b, setB] = useState(() => spectroStore.get().basis || "M1");
+  useEffect(() => spectroStore.subscribe(() => { const n = spectroStore.get().basis || "M1"; setB((p) => (p === n ? p : n)); }), []);
   return b;
 };
 // a scan log → its scans' colours (in the chosen UV mode) and their spread
@@ -12822,7 +12822,7 @@ const spectroRegister = (r) => {
 const SPECTRO_MODES = ["M0", "M1", "M2"];
 const SPECTRO_BASIS_ORDER = { M2: ["M2", "M1", "M0"], M1: ["M1", "M2", "M0"], M0: ["M0", "M1", "M2"] };
 const spectroSpOk = (sp) => Array.isArray(sp) && sp.length === SPECTRO_WL.length && sp.some((v) => +v > 0);
-const spectroPick = (spectra, basis) => (SPECTRO_BASIS_ORDER[basis] || SPECTRO_BASIS_ORDER.M2).find((k) => spectra && spectroSpOk(spectra[k])) || null;
+const spectroPick = (spectra, basis) => (SPECTRO_BASIS_ORDER[basis] || SPECTRO_BASIS_ORDER.M1).find((k) => spectra && spectroSpOk(spectra[k])) || null;
 const spectroFluorOf = (spectra) => {
   if (!spectra || !spectroSpOk(spectra.M2)) return null;
   const ref = spectroLabD50(spectra.M2);
@@ -12993,13 +12993,14 @@ const spectroStore = (() => {
     mode: "M2", busy: false, error: "", readings: [], remembered: null, autoGo: true,
     avg: false, scans: [], session: null,
     qc: { open: false, ref: null, target: null, tol: 1, follow: true },
-    latest: null, basis: "M2", addTo: null,
+    latest: null, basis: "M1", addTo: null,
   };
   try {
     const v = JSON.parse(localStorage.getItem(SPECTRO_KEY) || "null");
     if (v && typeof v === "object") {
       ["source", "remembered", "autoGo", "avg", "basis", "addTo"].forEach((k) => { if (v[k] !== undefined) st[k] = v[k]; });
-      if (!SPECTRO_BASIS_ORDER[st.basis]) st.basis = "M2";
+      if (v.basisV !== 2 && st.basis === "M2") st.basis = "M1";
+      if (!SPECTRO_BASIS_ORDER[st.basis]) st.basis = "M1";
       if (Array.isArray(v.readings)) st.readings = v.readings.filter((r) => r && isFinite(r.L)).slice(0, 40).map((r) => spectroRegister(spectroRebase(spectroNormalize(r), st.basis)));
       if (v.qc && typeof v.qc === "object") { st.qc = { ...st.qc, ...v.qc }; ["ref", "target"].forEach((k) => { if (st.qc[k] && !isFinite(st.qc[k].L)) st.qc[k] = null; else if (st.qc[k]) spectroRegister(st.qc[k]); }); }
       if (Array.isArray(v.scans)) { st.scans = v.scans.filter((r) => r && isFinite(r.L)).slice(0, 100).map((r) => spectroRegister(spectroRebase(spectroNormalize(r), st.basis))); st.session = spectroSessionOf(st.scans); }
@@ -13008,7 +13009,7 @@ const spectroStore = (() => {
   } catch (e) {}
   const subs = new Set();
   const save = () => {
-    try { localStorage.setItem(SPECTRO_KEY, JSON.stringify({ source: st.source, basis: st.basis, remembered: st.remembered, autoGo: st.autoGo, avg: st.avg, addTo: st.addTo, readings: st.readings, scans: st.scans, qc: st.qc })); } catch (e) {}
+    try { localStorage.setItem(SPECTRO_KEY, JSON.stringify({ basisV: 2, source: st.source, basis: st.basis, remembered: st.remembered, autoGo: st.autoGo, avg: st.avg, addTo: st.addTo, readings: st.readings, scans: st.scans, qc: st.qc })); } catch (e) {}
   };
   const set = (patch) => { st = { ...st, ...patch }; save(); subs.forEach((f) => f()); };
   let compound = null, compoundKey = "";
@@ -13778,10 +13779,10 @@ const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectr
           dev.modes.map((m) => React.createElement("button", {
             key: m, role: "radio", "aria-checked": s.basis === m, onClick: () => spectroStore.setBasis(m), "data-basis": m,
             className: `px-2.5 py-1 text-[11px] font-semibold ${s.basis === m ? "bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900" : "text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-neutral-800"}`,
-            title: { M0: "M0: no UV control (legacy)", M1: "M1: D50 incl. UV (paper with optical brighteners)", M2: "M2: UV excluded (most finishes, laminates, paint)" }[m],
+            title: { M0: "M0: no UV control (legacy)", M1: "M1: UV included, D50 (the default: how the catalogue was measured)", M2: "M2: UV excluded (shows a surface without its optical brighteners)" }[m],
           }, m)))),
       dev && Array.isArray(dev.modes) && dev.modes.length > 1 && React.createElement("p", { className: "text-[10px] text-slate-500 leading-snug -mt-1" },
-        `Each scan captures ${dev.modes.join(", ")} and the colour is worked out from the spectrum under fixed standards (OkLCH D65/2°, CIELAB D50/2°), so the same surface reads the same whatever the device is set to. ${s.basis} is used for every reading${s.basis === "M2" ? " (UV excluded: right for laminates, wood, paint)" : ""}.`),
+        `Each scan captures ${dev.modes.join(", ")} and the colour is worked out from the spectrum under fixed standards (OkLCH D65/2°, CIELAB D50/2°), so the same surface reads the same whatever the device is set to. ${s.basis} is used for every reading${s.basis === "M1" ? " (UV included, the default: the catalogue's colours were measured in M1, so scans compare like for like)" : s.basis === "M2" ? " (UV excluded: the catalogue was measured in M1, so whites with optical brighteners may read differently)" : ""}.`),
       React.createElement("label", { className: "flex items-start gap-2 text-[11px] text-slate-700 dark:text-neutral-200 select-none cursor-pointer" },
         React.createElement("input", { type: "checkbox", checked: !!s.avg, onChange: (e) => spectroStore.setAvg(e.target.checked), className: "rounded border-slate-300 h-3.5 w-3.5 mt-0.5", "data-spectro-avg": "" }),
         React.createElement("span", null, React.createElement("span", { className: "font-semibold" }, "Average several scans"),
