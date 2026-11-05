@@ -13176,13 +13176,13 @@ const spectroStore = (() => {
     },
     disconnect: () => { call("disconnect").catch(() => {}); set({ conn: "idle", device: null }); },
     forget: () => set({ remembered: null }),
-    measure: async () => {
+    measure: async (opt = {}) => {
       if (st.busy || st.conn !== "connected") return null;
       set({ busy: true, error: "" });
       try {
         const dev = r0dev();
         const modes = dev && Array.isArray(dev.modes) && dev.modes.length ? dev.modes : SPECTRO_MODES;
-        const r = await call("measure", { modes, same: !!((st.avg && st.scans.length) || (st.qc.open && st.qc.ref)), like: st.addTo && st.session ? st.session.mean.hex : undefined }, 30000);
+        const r = await call("measure", { modes, same: opt.same !== undefined ? !!opt.same : !!((st.avg && st.scans.length) || (st.qc.open && st.qc.ref)), like: opt.like || (st.addTo && st.session ? st.session.mean.hex : undefined) }, 30000);
         const ms = Array.isArray(r.measurements) ? r.measurements : [];
         const reading = spectroReadingFrom(ms, r.device || st.device, st.basis);
         if (!reading) throw "ERROR_INTERNAL";
@@ -13193,7 +13193,7 @@ const spectroStore = (() => {
           set({ busy: false, device: r.device || st.device, error: `That reading came back black (L* ${(+lstar).toFixed(1)}), so it was left out. Seat the device flat on the sample, covering the opening, and measure again.` });
           return null;
         }
-        if (st.avg) {
+        if (st.avg && !opt.shop) {
           set({ busy: false, device: r.device || st.device });
           setScans([...st.scans, reading], true);
           return reading;
@@ -19894,6 +19894,439 @@ const TagManagerModal = ({ tags, targets, onCreate, onDelete, onApply, onRemove,
   );
 };
 
+// ── Shop screen: identify and check colours with a Nix, on a phone ─────────
+// A full-screen view for the shop floor, apart from the full app: big touch
+// targets, one job per screen. Identify: scan a surface, see the closest
+// commercial colour, keep scanning other spots until the match settles.
+// Quality check: pick a reference, scan, get a pass or a fail.
+//
+// Match accuracy is 100% at ΔE00 0 and drops 10 points per ΔE00 unit (ΔE00 1,
+// about the smallest difference most people see side by side, is 90%; ΔE00
+// 5, an obvious difference, is 50%). Overlap is the share of the operator's
+// scans that fall within the colour: inside its range of scans (95% region)
+// when it has several, else within ΔE00 2 of it. Matches are ranked on both
+// (60% accuracy, 40% overlap), so a grainy surface whose spots all fall in a
+// wood's real range beats one that is close only on average.
+const SHOP_KEY = "csam-shop", SHOP_TOL = 2;
+const shopStore = (() => {
+  const read = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k) || "null"); return v === null ? d : v; } catch (e) { return d; } };
+  const narrow = typeof window !== "undefined" && window.innerWidth < 640;
+  let st = {
+    mode: read(SHOP_KEY, narrow ? "identify" : "off"),
+    scans: read(`${SHOP_KEY}-scans`, []),
+    history: read(`${SHOP_KEY}-history`, []),
+    checks: read(`${SHOP_KEY}-checks`, []),
+    ref: read(`${SHOP_KEY}-ref`, null),
+    tol: read(`${SHOP_KEY}-tol`, 1),
+    brands: read(`${SHOP_KEY}-brands`, null),   // null = brands with measured colours
+    last: read(`${SHOP_KEY}-last`, null),
+  };
+  const subs = new Set();
+  const keep = { mode: SHOP_KEY, scans: `${SHOP_KEY}-scans`, history: `${SHOP_KEY}-history`, checks: `${SHOP_KEY}-checks`, ref: `${SHOP_KEY}-ref`, tol: `${SHOP_KEY}-tol`, brands: `${SHOP_KEY}-brands`, last: `${SHOP_KEY}-last` };
+  return {
+    get: () => st,
+    set: (patch) => {
+      st = { ...st, ...patch };
+      Object.keys(patch).forEach((k) => { if (keep[k]) { try { localStorage.setItem(keep[k], JSON.stringify(st[k])); } catch (e) {} } });
+      subs.forEach((f) => f());
+    },
+    subscribe: (f) => (subs.add(f), () => subs.delete(f)),
+  };
+})();
+const useShop = () => {
+  const [, force] = useState(0);
+  useEffect(() => shopStore.subscribe(() => force((x) => x + 1)), []);
+  return shopStore.get();
+};
+const shopAccuracy = (de00) => (isFinite(de00) ? Math.max(0, Math.min(100, 100 - 10 * de00)) : 0);
+const shopVerdict = (acc) => (acc >= 90 ? ["Excellent match", "good"] : acc >= 80 ? ["Good match", "good"] : acc >= 65 ? ["Close, not exact", "warn"] : ["Not a match", "bad"]);
+const SHOP_TONE = {
+  good: "bg-emerald-50 text-emerald-800 dark:bg-emerald-900/25 dark:text-emerald-300",
+  warn: "bg-amber-50 text-amber-800 dark:bg-amber-900/25 dark:text-amber-300",
+  bad: "bg-red-50 text-red-700 dark:bg-red-900/25 dark:text-red-300",
+};
+const SHOP_LAB = new WeakMap();
+const shopLabOf = (item) => {
+  let v = SHOP_LAB.get(item);
+  if (v) return v;
+  const it = fastItemLch(item);
+  if (!it) return null;
+  let lab = spectroSpOk(item.spectral) ? spectroLabD50(item.spectral) : null;
+  if (!lab) { try { lab = new Color("oklch", [it.L, it.C, isFinite(it.H) ? it.H : 0]).to("lab").coords; } catch (e) {} }
+  v = { L: it.L, C: it.C, H: isFinite(it.H) ? it.H : 0, hex: it.hex, lab };
+  SHOP_LAB.set(item, v);
+  return v;
+};
+const shopScanLab = (r) => (Array.isArray(r.lab) && r.lab.length === 3 ? r.lab : spectroLabOf(r) || new Color("oklch", [r.L, r.C, r.H || 0]).to("lab").coords);
+// brands the shop matches against: chosen, or every brand with a measured colour
+const shopBrandsOf = (colorData, chosen) => {
+  const all = Object.keys(colorData || {});
+  if (Array.isArray(chosen) && chosen.length) return all.filter((b) => chosen.includes(b));
+  return all.filter((b) => (colorData[b] || []).some((e) => e && spectroSpOk(e.spectral)));
+};
+const shopRank = (scans, colorData, basis, brands, limit = 6) => {
+  if (!scans || !scans.length || !colorData) return null;
+  const ses = scans.length > 1 ? spectroSessionOf(scans) : null;
+  const mean = ses ? ses.mean : scans[0];
+  const mlab = shopScanLab(mean), slabs = scans.map(shopScanLab);
+  const pool = [];
+  brands.forEach((brand) => (colorData[brand] || []).forEach((item, idx) => {
+    if (!item) return;
+    const c = shopLabOf(item);
+    if (!c) return;
+    pool.push({ brand, idx, item, c, deok: fastDeltaEOK(mean.L, mean.C, mean.H, c.L, c.C, c.H) });
+  }));
+  pool.sort((a, b) => a.deok - b.deok);
+  const cand = pool.slice(0, 40);
+  // colours with a range of scans: close in range though further on average
+  pool.slice(40).forEach((p) => { if (p.deok < 8 && Array.isArray(p.item.scanLog) && p.item.scanLog.length > 1) cand.push(p); });
+  const list = cand.map((p) => {
+    const de00 = p.c.lab ? spectroDE00(mlab, p.c.lab) : p.deok;
+    const sp = Array.isArray(p.item.scanLog) && p.item.scanLog.length > 1 ? scanSpreadOf(p.item.scanLog, basis) : null;
+    const R = sp && spreadRegionOf(sp);
+    const inCount = scans.reduce((t, r, i) => t + ((R ? R.inside(spreadWorld(r)) : p.c.lab && spectroDE00(slabs[i], p.c.lab) <= SHOP_TOL) ? 1 : 0), 0);
+    const acc = shopAccuracy(de00), overlap = inCount / scans.length;
+    return { ...p, key: `${p.brand}|${p.idx}`, de00, acc, inCount, overlap, rangeN: sp ? sp.n : 0, score: 0.6 * acc + 40 * overlap };
+  });
+  list.sort((a, b) => b.score - a.score || a.de00 - b.de00);
+  return { n: scans.length, mean, mcdm: ses ? ses.mcdm : 0, list: list.slice(0, limit) };
+};
+// the scans a sample still needs: 3, or 5 for a surface that varies (grain)
+const shopNeed = (rank) => (rank && rank.n > 1 && rank.mcdm > 1 ? 5 : 3);
+const shopBrandName = (b) => (typeof getBrandDisplayName === "function" ? getBrandDisplayName(b) : b);
+const shopBuzz = () => { try { navigator.vibrate && navigator.vibrate(35); } catch (e) {} };
+const h = React.createElement;
+
+// ── Pieces ──
+const ShopSwatch = ({ hex, image, className = "", label }) =>
+  h("span", { className: `relative block rounded-2xl ring-1 ring-black/10 overflow-hidden shrink-0 ${className}`, style: { background: hex }, "aria-label": label },
+    image && h("img", { src: image, alt: "", className: "absolute inset-0 w-full h-full object-cover", onError: (e) => { e.currentTarget.style.display = "none"; } }));
+const ShopMetric = ({ label, value, sub, testid }) =>
+  h("div", { className: "flex-1 min-w-0 rounded-2xl bg-slate-50 dark:bg-neutral-800/70 px-3 py-2.5", "data-shop-metric": testid },
+    h("div", { className: "text-[11px] uppercase tracking-wider font-bold text-slate-500" }, label),
+    h("div", { className: "font-mono text-[26px] leading-tight font-extrabold text-slate-900 dark:text-neutral-50" }, value),
+    sub && h("div", { className: "text-[12px] text-slate-500 leading-snug" }, sub));
+const ShopBigButton = ({ onClick, disabled, children, tone = "main", testid, className = "" }) =>
+  h("button", {
+    type: "button", onClick, disabled, "data-shop": testid,
+    className: `min-h-[56px] px-5 rounded-2xl text-[17px] font-bold inline-flex items-center justify-center gap-2.5 transition-transform active:scale-[.98] disabled:opacity-45 ${tone === "main" ? "bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900" : tone === "ghost" ? "bg-slate-100 text-slate-800 dark:bg-neutral-800 dark:text-neutral-100" : "border-2 border-slate-300 dark:border-neutral-600 text-slate-800 dark:text-neutral-100"} ${className}`,
+  }, children);
+
+// ── Device: connect with one tap ──
+const ShopDevice = () => {
+  const s = useSpectro();
+  if (s.conn === "connected") {
+    const d = s.device || {};
+    return h("div", { className: "flex items-center gap-2 text-[13px] font-semibold text-slate-700 dark:text-neutral-200", "data-shop-device": "connected" },
+      h("span", { className: "w-2.5 h-2.5 rounded-full bg-emerald-500" }),
+      h("span", { className: "truncate" }, d.typeName || d.name || "Nix"),
+      isFinite(d.battery) && h("span", { className: "font-mono text-slate-500" }, `${d.battery}%`));
+  }
+  return null;
+};
+const ShopConnect = () => {
+  const s = useSpectro();
+  if (s.conn === "connected") return null;
+  const connecting = s.conn === "connecting";
+  return h("div", { className: "rounded-3xl border-2 border-dashed border-slate-300 dark:border-neutral-700 p-5 flex flex-col gap-3", "data-shop-connect": "" },
+    h("div", { className: "flex items-center gap-3" },
+      h(Icon, { name: "bluetooth", className: "w-7 h-7 text-sky-600" }),
+      h("div", { className: "text-[19px] font-extrabold text-slate-900 dark:text-neutral-50" }, connecting ? "Connecting…" : "Connect your Nix")),
+    !s.host && h("p", { className: "text-[15px] text-slate-600 dark:text-neutral-300 leading-snug" }, "Open the ColorSAMIficator Android app to use a Nix Mini 3 or Spectro L. Turn the device on first."),
+    s.host && !connecting && s.remembered && h(ShopBigButton, { onClick: () => spectroStore.connect(s.remembered), testid: "reconnect" }, h(Icon, { name: "bluetooth", className: "w-5 h-5" }), `Connect ${s.remembered.name || "Nix"}`),
+    s.host && !connecting && h(ShopBigButton, { onClick: () => spectroStore.scan(), tone: s.remembered ? "outline" : "main", disabled: s.scanning, testid: "find" }, h(Icon, { name: "search", className: "w-5 h-5" }), s.scanning ? "Looking for devices…" : "Find devices"),
+    s.devices && s.devices.length > 0 && h("div", { className: "flex flex-col gap-2" },
+      s.devices.map((d) => h("button", { key: d.id, type: "button", onClick: () => spectroStore.connect(d), "data-shop": "device",
+        className: "min-h-[60px] px-4 rounded-2xl bg-slate-100 dark:bg-neutral-800 flex items-center gap-3 text-left active:scale-[.98]" },
+        h(Icon, { name: "bluetooth", className: "w-5 h-5 text-sky-600" }),
+        h("span", { className: "flex-1 text-[17px] font-bold text-slate-900 dark:text-neutral-50" }, d.name || "Nix device"),
+        h("span", { className: "text-[14px] font-semibold text-sky-700 dark:text-sky-300" }, "Connect")))),
+    s.error && h("p", { role: "alert", className: "text-[15px] text-red-700 dark:text-red-300 leading-snug" }, s.error),
+    s.source !== "demo" && h("button", { type: "button", onClick: () => spectroStore.setSource("demo"), "data-shop": "demo", className: "min-h-[48px] text-[15px] font-semibold text-slate-600 dark:text-neutral-300 underline underline-offset-4 self-start" }, "Practise with the demo device"),
+    s.source === "demo" && h("p", { className: "text-[13px] text-slate-500" }, "Demo device: it scans real catalogue colours, so you can practise."));
+};
+// a scan, with the demo copying a catalogue colour so practice finds real matches
+const shopMeasure = async (likeHex, same) => {
+  const s = spectroStore.get();
+  const r = await spectroStore.measure({ shop: true, same, like: s.host === "demo" ? likeHex : undefined });
+  if (r) shopBuzz();
+  return r;
+};
+const ShopScanButton = ({ onScan, label = "Scan", sub }) => {
+  const s = useSpectro();
+  const ready = s.conn === "connected";
+  return h("button", {
+    type: "button", onClick: onScan, disabled: !ready || s.busy, "data-shop": "scan",
+    className: "w-full min-h-[76px] rounded-3xl bg-sky-600 text-white text-[22px] font-extrabold flex flex-col items-center justify-center shadow-lg active:scale-[.98] transition-transform disabled:bg-slate-300 disabled:text-slate-600 dark:disabled:bg-neutral-700 dark:disabled:text-neutral-300 disabled:shadow-none",
+  },
+    h("span", { className: "inline-flex items-center gap-3" }, h(Icon, { name: s.busy ? "loader" : "scan", className: `w-7 h-7 ${s.busy ? "animate-spin" : ""}` }), s.busy ? "Scanning…" : ready ? label : "Connect the Nix first"),
+    sub && ready && !s.busy && h("span", { className: "text-[13px] font-semibold opacity-85" }, sub));
+};
+
+// ── Identify ──
+const ShopIdentify = ({ colorData, onOpenColour, onCheck }) => {
+  const sh = useShop();
+  const s = useSpectro();
+  const basis = useSpectroBasis();
+  const [pick, setPick] = useState(null);
+  const [demoLike, setDemoLike] = useState(null);
+  const brands = useMemo(() => shopBrandsOf(colorData, sh.brands), [colorData, sh.brands]);
+  const scans = sh.scans;
+  const rank = useMemo(() => shopRank(scans, colorData, basis, brands), [scans, colorData, basis, brands]);
+  const prev = useMemo(() => (scans.length > 1 ? shopRank(scans.slice(0, -1), colorData, basis, brands, 1) : null), [scans, colorData, basis, brands]);
+  const need = shopNeed(rank), n = scans.length;
+  const top = rank && rank.list[0];
+  const stable = !!(top && prev && prev.list[0] && prev.list[0].key === top.key);
+  const done = n >= need && stable;
+  const shown = (rank && pick && rank.list.find((m) => m.key === pick)) || top;
+  const scan = async () => {
+    let like = demoLike;
+    if (!scans.length && s.host === "demo") {
+      const pool = brands.flatMap((b) => (colorData[b] || []).filter((e) => e && spectroSpOk(e.spectral)));
+      const e = pool[Math.floor(Math.random() * pool.length)];
+      like = e ? e.hex || (shopLabOf(e) || {}).hex : null;
+      setDemoLike(like);
+    }
+    const r = await shopMeasure(like, scans.length > 0);
+    if (r) shopStore.set({ scans: [...shopStore.get().scans, r] });
+  };
+  const finish = () => {
+    if (top) {
+      const m = shown;
+      const rec = { at: new Date().toISOString(), name: m.item.name, brand: m.brand, idx: m.idx, hex: m.c.hex, acc: Math.round(m.acc), overlap: Math.round(m.overlap * 100), deok: +m.deok.toFixed(2), n };
+      shopStore.set({ history: [rec, ...sh.history].slice(0, 30), last: rec, scans: [] });
+    } else shopStore.set({ scans: [] });
+    setPick(null); setDemoLike(null);
+  };
+  const restart = () => { shopStore.set({ scans: [] }); setPick(null); setDemoLike(null); };
+  const undo = () => { shopStore.set({ scans: scans.slice(0, -1) }); setPick(null); };
+  const prompt = !n ? ["Place the Nix flat on the surface, then tap Scan.", ""]
+    : done ? ["Match confirmed", `Same best match over your last scans (${n} in all).`]
+      : n >= need ? ["The best match changed", "Scan one more spot to settle it."]
+        : [`Scan ${need - n} more spot${need - n > 1 ? "s" : ""} to confirm`, rank && rank.mcdm > 1 ? "This surface varies: move to a different part of the grain each time." : "Move the Nix to a different spot each time."];
+  return h("div", { className: "flex flex-col gap-4 pb-4", "data-shop-identify": "" },
+    h(ShopConnect),
+    // the refine prompt and progress
+    h("div", { className: `rounded-3xl px-4 py-3.5 ${done ? SHOP_TONE.good : "bg-sky-50 text-sky-900 dark:bg-sky-900/25 dark:text-sky-100"}`, "data-shop-prompt": done ? "done" : String(Math.max(0, need - n)) },
+      h("div", { className: "flex items-center gap-2.5" },
+        h(Icon, { name: done ? "check-circle" : "scan", className: "w-6 h-6 shrink-0" }),
+        h("div", { className: "text-[18px] font-extrabold leading-snug" }, prompt[0])),
+      prompt[1] && h("div", { className: "text-[15px] leading-snug mt-1 opacity-90" }, prompt[1]),
+      n > 0 && h("div", { className: "flex gap-1.5 mt-3", "aria-label": `${n} of ${Math.max(need, n)} scans` },
+        Array.from({ length: Math.max(need, n) }, (_, i) => h("span", { key: i, className: `h-2.5 flex-1 rounded-full ${i < n ? "bg-current" : "bg-current opacity-20"}` })))),
+    // best match
+    shown && h("div", { className: "rounded-3xl border border-slate-200 dark:border-neutral-700 p-4 flex flex-col gap-3.5", "data-shop-best": shown.key },
+      h("div", { className: "flex items-stretch gap-3" },
+        h("div", { className: "flex flex-col items-center gap-1" },
+          h(ShopSwatch, { hex: rank.mean.hex, className: "w-20 h-20", label: "Your sample" }),
+          h("span", { className: "text-[12px] font-semibold text-slate-500" }, "Your sample")),
+        h("div", { className: "flex flex-col items-center gap-1" },
+          h(ShopSwatch, { hex: shown.c.hex, image: shown.item.image, className: "w-20 h-20", label: shown.item.name }),
+          h("span", { className: "text-[12px] font-semibold text-slate-500" }, shown === top ? "Best match" : "Selected")),
+        h("div", { className: "min-w-0 flex-1 flex flex-col justify-center" },
+          h("div", { className: "text-[22px] leading-tight font-extrabold text-slate-900 dark:text-neutral-50 break-words", "data-shop-name": "" }, shown.item.name),
+          h("div", { className: "text-[15px] text-slate-600 dark:text-neutral-300 truncate" }, [shopBrandName(shown.brand), shown.item.code || shown.item.erpCode].filter((x) => x && !/^https?:/.test(x)).join(" · ")))),
+      h("div", { className: `rounded-2xl px-3.5 py-2 text-[16px] font-extrabold ${SHOP_TONE[shopVerdict(shown.acc)[1]]}`, "data-shop-verdict": "" }, shopVerdict(shown.acc)[0]),
+      h("div", { className: "flex gap-2" },
+        h(ShopMetric, { label: "Accuracy", value: `${Math.round(shown.acc)}%`, sub: `ΔE00 ${shown.de00.toFixed(2)}`, testid: "acc" }),
+        h(ShopMetric, { label: "Overlap", value: `${Math.round(shown.overlap * 100)}%`, sub: `${shown.inCount} of ${n} scan${n > 1 ? "s" : ""}${shown.rangeN ? " in its range" : " within ΔE00 2"}`, testid: "overlap" }),
+        h(ShopMetric, { label: "ΔEok", value: shown.deok.toFixed(2), sub: "OKLab ×100", testid: "deok" })),
+      h("div", { className: "flex gap-2" },
+        h(ShopBigButton, { onClick: () => onCheck(shown), tone: "ghost", className: "flex-1", testid: "to-qc" }, h(Icon, { name: "check-circle", className: "w-5 h-5" }), "Check it"),
+        h(ShopBigButton, { onClick: () => onOpenColour(shown), tone: "ghost", className: "flex-1", testid: "open" }, h(Icon, { name: "maximize-2", className: "w-5 h-5" }), "Details"))),
+    // other candidates
+    rank && rank.list.length > 1 && h("div", { className: "flex flex-col gap-2" },
+      h("div", { className: "text-[13px] uppercase tracking-wider font-bold text-slate-500 px-1" }, "Other close colours"),
+      rank.list.filter((m) => m.key !== shown.key).slice(0, 4).map((m) => h("button", {
+        key: m.key, type: "button", onClick: () => setPick(m.key), "data-shop-alt": m.key,
+        className: "min-h-[72px] rounded-2xl bg-slate-50 dark:bg-neutral-800/70 px-3 flex items-center gap-3 text-left active:scale-[.99]",
+      },
+        h(ShopSwatch, { hex: m.c.hex, image: m.item.image, className: "w-12 h-12" }),
+        h("span", { className: "min-w-0 flex-1" },
+          h("span", { className: "block text-[16px] font-bold text-slate-900 dark:text-neutral-50 truncate" }, m.item.name),
+          h("span", { className: "block text-[13px] text-slate-500 truncate" }, shopBrandName(m.brand))),
+        h("span", { className: "text-right shrink-0" },
+          h("span", { className: "block font-mono text-[17px] font-extrabold text-slate-900 dark:text-neutral-50" }, `${Math.round(m.acc)}%`),
+          h("span", { className: "block font-mono text-[12px] text-slate-500" }, `${Math.round(m.overlap * 100)}% · ΔEok ${m.deok.toFixed(2)}`))))),
+    // recent identifications
+    !n && sh.history.length > 0 && h("div", { className: "flex flex-col gap-2", "data-shop-history": "" },
+      h("div", { className: "text-[13px] uppercase tracking-wider font-bold text-slate-500 px-1" }, "Recent"),
+      sh.history.slice(0, 6).map((r, i) => h("div", { key: i, className: "min-h-[60px] rounded-2xl bg-slate-50 dark:bg-neutral-800/70 px-3 flex items-center gap-3" },
+        h(ShopSwatch, { hex: r.hex, className: "w-10 h-10" }),
+        h("span", { className: "min-w-0 flex-1" },
+          h("span", { className: "block text-[15px] font-bold text-slate-900 dark:text-neutral-50 truncate" }, r.name),
+          h("span", { className: "block text-[12px] text-slate-500 truncate" }, `${shopBrandName(r.brand)} · ${new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`)),
+        h("span", { className: "font-mono text-[14px] font-bold text-slate-700 dark:text-neutral-200" }, `${r.acc}%`)))),
+    // the action bar
+    h("div", { className: "sticky bottom-0 -mx-4 px-4 pt-3 pb-1 bg-[#ffffff] dark:bg-[#161616] flex flex-col gap-2" },
+      h(ShopScanButton, { onScan: scan, label: n ? (done ? "Scan again" : "Scan next spot") : "Scan", sub: n ? `${n} scan${n > 1 ? "s" : ""} so far` : "" }),
+      n > 0 && h("div", { className: "flex gap-2" },
+        h(ShopBigButton, { onClick: undo, tone: "outline", className: "flex-1", testid: "undo" }, h(Icon, { name: "undo-2", className: "w-5 h-5" }), "Undo scan"),
+        h(ShopBigButton, { onClick: done ? finish : restart, tone: done ? "main" : "outline", className: "flex-1", testid: done ? "finish" : "restart" }, h(Icon, { name: done ? "check" : "rotate-ccw", className: "w-5 h-5" }), done ? "Next sample" : "Start over"))));
+};
+
+// ── Quality check ──
+const shopQcItemOf = (brand, idx, item) => {
+  const c = shopLabOf(item);
+  return spectroQcItem({ id: `shop-${brand}-${idx}`, name: item.name, brand, L: c.L, C: c.C, H: c.H, hex: c.hex, spectral: spectroSpOk(item.spectral) ? item.spectral : null, lab: c.lab, scanLog: item.scanLog }, item.code || item.erpCode || "Commercial");
+};
+const shopWords = (res, ref) => {
+  const w = [];
+  if (Math.abs(res.dL) >= 0.005) w.push(res.dL > 0 ? "lighter" : "darker");
+  if (Math.abs(res.dC) >= 0.004) w.push(res.dC > 0 ? "stronger colour" : "duller");
+  if (!res.neutral && Math.abs(res.dh) >= 1.5) w.push(`more ${(spectroHueToward(ref.H, res.dh) || "").replace(/^toward /, "")}`.trim());
+  return w.filter((x) => x && x !== "more");
+};
+const ShopRefPicker = ({ colorData, brands, onPick, onClose, last }) => {
+  const [q, setQ] = useState("");
+  const t = q.trim().toLowerCase();
+  const hits = useMemo(() => {
+    if (!t) return [];
+    const out = [];
+    brands.forEach((b) => (colorData[b] || []).forEach((e, i) => { if (e && out.length < 40 && `${e.name || ""} ${e.code || e.erpCode || ""} ${shopBrandName(b)}`.toLowerCase().includes(t)) out.push({ b, i, e }); }));
+    return out;
+  }, [t, colorData, brands]);
+  return h("div", { className: "fixed inset-0 z-[520] bg-[#ffffff] dark:bg-[#161616] flex flex-col", role: "dialog", "aria-label": "Choose the reference", "data-shop-picker": "" },
+    h("div", { className: "flex items-center gap-2 px-4 pt-[max(12px,env(safe-area-inset-top))] pb-3 border-b border-slate-200 dark:border-neutral-800" },
+      h("input", { autoFocus: true, value: q, onChange: (e) => setQ(e.target.value), placeholder: "Name or code of the reference", "aria-label": "Search for the reference",
+        className: "flex-1 min-h-[52px] px-4 rounded-2xl bg-slate-100 dark:bg-neutral-800 text-[17px] focus:outline-none focus:ring-2 focus:ring-sky-500" }),
+      h("button", { type: "button", onClick: onClose, className: "min-w-[52px] min-h-[52px] rounded-2xl flex items-center justify-center text-slate-600", "aria-label": "Close" }, h(Icon, { name: "x", className: "w-6 h-6" }))),
+    h("div", { className: "flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-2" },
+      !t && last && (() => {
+        const e = colorData[last.brand] && colorData[last.brand][last.idx];
+        return e ? h("button", { type: "button", onClick: () => onPick(shopQcItemOf(last.brand, last.idx, e)), "data-shop": "use-last", className: "min-h-[72px] rounded-2xl bg-sky-50 dark:bg-sky-900/25 px-3 flex items-center gap-3 text-left" },
+          h(ShopSwatch, { hex: last.hex, className: "w-12 h-12" }),
+          h("span", { className: "min-w-0 flex-1" },
+            h("span", { className: "block text-[12px] uppercase tracking-wider font-bold text-sky-700 dark:text-sky-300" }, "Last identified"),
+            h("span", { className: "block text-[17px] font-bold text-slate-900 dark:text-neutral-50 truncate" }, e.name))) : null;
+      })(),
+      !t && h("p", { className: "text-[15px] text-slate-500 px-1" }, "Type a name or code."),
+      hits.map(({ b, i, e }) => h("button", { key: `${b}-${i}`, type: "button", onClick: () => onPick(shopQcItemOf(b, i, e)), "data-shop-ref-hit": "",
+        className: "min-h-[68px] rounded-2xl bg-slate-50 dark:bg-neutral-800/70 px-3 flex items-center gap-3 text-left active:scale-[.99]" },
+        h(ShopSwatch, { hex: (shopLabOf(e) || {}).hex || e.hex, image: e.image, className: "w-11 h-11" }),
+        h("span", { className: "min-w-0 flex-1" },
+          h("span", { className: "block text-[16px] font-bold text-slate-900 dark:text-neutral-50 truncate" }, e.name),
+          h("span", { className: "block text-[13px] text-slate-500 truncate" }, [shopBrandName(b), Array.isArray(e.scanLog) && e.scanLog.length > 1 ? `${e.scanLog.length} scans` : ""].filter(Boolean).join(" · ")))))));
+};
+const ShopQC = ({ colorData }) => {
+  const sh = useShop();
+  const [picking, setPicking] = useState(false);
+  const basis = useSpectroBasis();
+  const brands = useMemo(() => shopBrandsOf(colorData, sh.brands), [colorData, sh.brands]);
+  const ref = sh.ref, tol = sh.tol;
+  const checks = sh.checks.filter((c) => ref && c.ref === ref.id);
+  const latest = checks[0];
+  const scan = async () => {
+    if (!ref) return;
+    const r = await shopMeasure(ref.hex, true);
+    if (!r) return;
+    const tgt = spectroQcItem(r, "Scan");
+    const res = spectroQcOf(ref, tgt);
+    if (!res) return;
+    let fam = null;
+    if (Array.isArray(ref.scanLog) && ref.scanLog.length > 1) { const c = spreadCompare(spreadSideOf(ref, basis), spreadSideOf(tgt, basis), tol); fam = c && c.fam ? { pass: c.fam.pass, depth: c.fam.depth } : null; }
+    const rec = { id: r.id, ref: ref.id, at: r.at, hex: r.hex, de00: +res.de00.toFixed(2), deok: +res.deok.toFixed(2), pass: res.de00 <= tol, words: shopWords(res, ref), fam };
+    shopStore.set({ checks: [rec, ...shopStore.get().checks].slice(0, 200) });
+  };
+  const passed = checks.filter((c) => c.pass).length;
+  return h("div", { className: "flex flex-col gap-4 pb-4", "data-shop-qc": "" },
+    h(ShopConnect),
+    // the reference
+    h("button", { type: "button", onClick: () => setPicking(true), "data-shop": "ref",
+      className: "min-h-[84px] rounded-3xl border border-slate-200 dark:border-neutral-700 px-4 py-3 flex items-center gap-3 text-left active:scale-[.99]" },
+      ref ? h(ShopSwatch, { hex: ref.hex, className: "w-14 h-14" }) : h("span", { className: "w-14 h-14 rounded-2xl border-2 border-dashed border-slate-300 dark:border-neutral-600 flex items-center justify-center" }, h(Icon, { name: "plus", className: "w-6 h-6 text-slate-400" })),
+      h("span", { className: "min-w-0 flex-1" },
+        h("span", { className: "block text-[12px] uppercase tracking-wider font-bold text-slate-500" }, "Reference"),
+        h("span", { className: "block text-[19px] font-extrabold text-slate-900 dark:text-neutral-50 truncate", "data-shop-ref-name": "" }, ref ? ref.name || ref.hex : "Choose the colour to check against"),
+        ref && h("span", { className: "block text-[13px] text-slate-500 truncate" }, [shopBrandName(ref.brand), Array.isArray(ref.scanLog) && ref.scanLog.length > 1 ? `range of ${ref.scanLog.length} scans` : ""].filter(Boolean).join(" · "))),
+      h("span", { className: "text-[15px] font-semibold text-sky-700 dark:text-sky-300" }, ref ? "Change" : "Choose")),
+    // tolerance
+    h("div", { className: "flex items-center gap-3", "data-shop-tol": "" },
+      h("span", { className: "text-[16px] font-bold text-slate-700 dark:text-neutral-200 flex-1" }, "Tolerance ΔE00"),
+      h("button", { type: "button", onClick: () => shopStore.set({ tol: Math.max(0.2, +(tol - 0.1).toFixed(1)) }), "aria-label": "Lower tolerance", className: "w-14 h-14 rounded-2xl bg-slate-100 dark:bg-neutral-800 flex items-center justify-center" }, h(Icon, { name: "minus", className: "w-6 h-6" })),
+      h("span", { className: "font-mono text-[24px] font-extrabold w-14 text-center", "data-shop-tol-value": "" }, tol.toFixed(1)),
+      h("button", { type: "button", onClick: () => shopStore.set({ tol: Math.min(10, +(tol + 0.1).toFixed(1)) }), "aria-label": "Raise tolerance", className: "w-14 h-14 rounded-2xl bg-slate-100 dark:bg-neutral-800 flex items-center justify-center" }, h(Icon, { name: "plus", className: "w-6 h-6" }))),
+    // the latest result
+    latest && h("div", { className: `rounded-3xl px-5 py-5 flex flex-col gap-2 ${latest.pass ? "bg-emerald-600 text-white" : "bg-red-600 text-white"}`, "data-shop-result": latest.pass ? "pass" : "fail" },
+      h("div", { className: "flex items-center gap-3" },
+        h(Icon, { name: latest.pass ? "check-circle" : "x-circle", className: "w-10 h-10" }),
+        h("div", { className: "text-[40px] leading-none font-black tracking-tight" }, latest.pass ? "PASS" : "FAIL"),
+        h("div", { className: "ml-auto text-right" },
+          h("div", { className: "font-mono text-[30px] leading-none font-extrabold" }, latest.de00.toFixed(2)),
+          h("div", { className: "text-[13px] font-semibold opacity-90" }, `ΔE00 · limit ${tol.toFixed(1)}`))),
+      h("div", { className: "text-[16px] font-semibold leading-snug" }, latest.words.length ? `Sample is ${latest.words.join(", ")}.` : "No clear direction: an even, small difference."),
+      h("div", { className: "text-[13px] opacity-90" }, `ΔEok ${latest.deok.toFixed(2)}${latest.fam ? ` · ${latest.fam.pass ? "inside" : "outside"} the reference's range of scans` : ""}`)),
+    // all checks against this reference
+    checks.length > 0 && h("div", { className: "flex flex-col gap-2", "data-shop-checks": "" },
+      h("div", { className: "flex items-center px-1" },
+        h("span", { className: "text-[13px] uppercase tracking-wider font-bold text-slate-500 flex-1" }, `Checks · ${passed} of ${checks.length} passed`),
+        h("button", { type: "button", onClick: () => shopStore.set({ checks: shopStore.get().checks.filter((c) => c.ref !== ref.id) }), className: "min-h-[44px] px-2 text-[14px] font-semibold text-slate-500" }, "Clear")),
+      checks.slice(0, 12).map((c) => h("div", { key: c.id, className: "min-h-[56px] rounded-2xl bg-slate-50 dark:bg-neutral-800/70 px-3 flex items-center gap-3" },
+        h("span", { className: `w-3 h-3 rounded-full ${c.pass ? "bg-emerald-500" : "bg-red-500"}` }),
+        h(ShopSwatch, { hex: c.hex, className: "w-9 h-9" }),
+        h("span", { className: "flex-1 text-[14px] text-slate-600 dark:text-neutral-300" }, new Date(c.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })),
+        h("span", { className: `font-mono text-[17px] font-extrabold ${c.pass ? "text-emerald-700 dark:text-emerald-300" : "text-red-700 dark:text-red-300"}` }, c.de00.toFixed(2))))),
+    !ref && h("p", { className: "text-[15px] text-slate-500 px-1 leading-snug" }, "Choose the reference colour, then scan each piece. Each scan is checked against the tolerance."),
+    h("div", { className: "sticky bottom-0 -mx-4 px-4 pt-3 pb-1 bg-[#ffffff] dark:bg-[#161616]" },
+      ref ? h(ShopScanButton, { onScan: scan, label: checks.length ? "Check next piece" : "Scan to check" }) : h(ShopBigButton, { onClick: () => setPicking(true), className: "w-full min-h-[76px] text-[20px]", testid: "choose-ref" }, h(Icon, { name: "search", className: "w-6 h-6" }), "Choose the reference")),
+    picking && h(ShopRefPicker, { colorData, brands, last: sh.last, onClose: () => setPicking(false), onPick: (it) => { shopStore.set({ ref: it }); setPicking(false); } }));
+};
+
+// ── Settings: which brands to match ──
+const ShopSettings = ({ colorData, onClose }) => {
+  const sh = useShop();
+  const all = Object.keys(colorData || {}).filter((b) => (colorData[b] || []).length && !/^(anchors|pins|template|palettes)$/i.test(b)).sort((a, b) => shopBrandName(a).localeCompare(shopBrandName(b)));
+  const chosen = shopBrandsOf(colorData, sh.brands);
+  const toggle = (b) => { const next = chosen.includes(b) ? chosen.filter((x) => x !== b) : [...chosen, b]; shopStore.set({ brands: next.length ? next : null }); };
+  return h("div", { className: "fixed inset-0 z-[520] bg-[#ffffff] dark:bg-[#161616] flex flex-col", role: "dialog", "aria-label": "Brands to match", "data-shop-settings": "" },
+    h("div", { className: "flex items-center gap-2 px-4 pt-[max(12px,env(safe-area-inset-top))] pb-3 border-b border-slate-200 dark:border-neutral-800" },
+      h("div", { className: "flex-1 text-[20px] font-extrabold" }, "Brands to match"),
+      h("button", { type: "button", onClick: onClose, className: "min-h-[52px] px-4 rounded-2xl bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900 text-[16px] font-bold" }, "Done")),
+    h("div", { className: "flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-1.5" },
+      h("button", { type: "button", onClick: () => shopStore.set({ brands: null }), className: "min-h-[48px] text-left text-[15px] font-semibold text-sky-700 dark:text-sky-300" }, "Reset to brands with measured colours"),
+      all.map((b) => h("label", { key: b, className: "min-h-[56px] rounded-2xl bg-slate-50 dark:bg-neutral-800/70 px-4 flex items-center gap-3 cursor-pointer" },
+        h("input", { type: "checkbox", checked: chosen.includes(b), onChange: () => toggle(b), className: "w-6 h-6 rounded" }),
+        h("span", { className: "flex-1 text-[16px] font-semibold" }, shopBrandName(b)),
+        h("span", { className: "text-[13px] text-slate-500 font-mono" }, (colorData[b] || []).length)))));
+};
+
+// ── The screen ──
+const ShopMode = ({ colorData, onOpenColour }) => {
+  const sh = useShop();
+  const [settings, setSettings] = useState(false);
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
+  useEffect(() => { const f = () => setNarrow(window.innerWidth < 768); window.addEventListener("resize", f); return () => window.removeEventListener("resize", f); }, []);
+  const mode = sh.mode;
+  if (mode === "off") {
+    return narrow ? h("button", {
+      type: "button", onClick: () => shopStore.set({ mode: "identify" }), "data-shop-enter": "",
+      className: "fixed z-[450] right-4 min-h-[56px] px-5 rounded-full bg-sky-600 text-white text-[16px] font-extrabold shadow-xl inline-flex items-center gap-2 active:scale-[.97]",
+      style: { bottom: "calc(env(safe-area-inset-bottom) + 88px)" },
+    }, h(Icon, { name: "scan", className: "w-5 h-5" }), "Scan mode") : null;
+  }
+  const tabs = [["identify", "Identify", "scan"], ["qc", "Quality check", "check-circle"], ["off", "Full app", "layout-grid"]];
+  return h("div", { className: "fixed inset-0 z-[500] bg-[#ffffff] dark:bg-[#161616] text-slate-900 dark:text-neutral-50 flex flex-col", "data-shop-mode": mode },
+    h("header", { className: "flex items-center gap-3 px-4 pt-[max(10px,env(safe-area-inset-top))] pb-2.5 border-b border-slate-100 dark:border-neutral-800" },
+      h("div", { className: "flex-1 min-w-0" },
+        h("div", { className: "text-[22px] font-black tracking-tight" }, mode === "qc" ? "Quality check" : "Identify"),
+        h(ShopDevice)),
+      h("button", { type: "button", onClick: () => setSettings(true), "aria-label": "Brands to match", "data-shop": "settings", className: "w-12 h-12 rounded-2xl bg-slate-100 dark:bg-neutral-800 flex items-center justify-center" }, h(Icon, { name: "sliders-horizontal", className: "w-5 h-5" }))),
+    h("main", { className: "flex-1 overflow-y-auto px-4 pt-4 max-w-xl w-full mx-auto" },
+      mode === "qc"
+        ? h(ShopQC, { colorData: colorData || {} })
+        : h(ShopIdentify, {
+          colorData: colorData || {},
+          onOpenColour: (m) => { onOpenColour && onOpenColour(m); shopStore.set({ mode: "off" }); },
+          onCheck: (m) => shopStore.set({ ref: shopQcItemOf(m.brand, m.idx, m.item), mode: "qc" }),
+        })),
+    h("nav", { className: "grid grid-cols-3 border-t border-slate-200 dark:border-neutral-800 pb-[env(safe-area-inset-bottom)] bg-[#ffffff] dark:bg-[#161616]", "aria-label": "Shop screens" },
+      tabs.map(([id, label, icon]) => h("button", {
+        key: id, type: "button", onClick: () => shopStore.set({ mode: id }), "aria-current": mode === id ? "page" : undefined, "data-shop-tab": id,
+        className: `min-h-[64px] flex flex-col items-center justify-center gap-1 text-[13px] font-bold ${mode === id ? "text-sky-700 dark:text-sky-300" : "text-slate-500"}`,
+      }, h(Icon, { name: icon, className: "w-6 h-6" }), label))),
+    settings && h(ShopSettings, { colorData: colorData || {}, onClose: () => setSettings(false) }));
+};
+
 const App = () => {
   useDisplayGamut();
   const [theme, setTheme] = useState("light");
@@ -23169,7 +23602,7 @@ const App = () => {
     deltaEOK = (cA.deltaE(cB, "OK") * 100).toFixed(2);
     deltaE2000 = cA.deltaE(cB, "2000").toFixed(2);
   }
-  return React.createElement(AppUI, {
+  return React.createElement(React.Fragment, null, React.createElement(AppUI, {
     theme,
     setTheme,
     activeTab,
@@ -23375,7 +23808,10 @@ const App = () => {
     spectral,
     tetheringPinId,
     setTetheringPinId,
-  });
+  }), React.createElement(ShopMode, {
+    colorData,
+    onOpenColour: (m) => { const c = shopLabOf(m.item); if (c) handlePointClick([c.L, c.C, c.H, { brand: m.brand, originalIndex: m.idx }]); },
+  }));
 };
 // The working palette already existed, buried inside the Palette Playground
 // panel. Surfacing it as a persistent shelf means colours can be collected from
@@ -27094,6 +27530,7 @@ const AppUI = ({
     { label: "Go to Catalog", icon: "map-pin", keys: "pins", run: () => setActiveTab("pins") },
     { label: "Go to Anchors", icon: "anchor", keys: "names", run: () => setActiveTab("anchors") },
     { label: "Go to Colour groups", icon: "layers", keys: "words families", run: () => setActiveTab("groups") },
+    { label: "Shop scan mode (identify and check with a Nix)", icon: "scan", keys: "shop scan identify qc quality mini", run: () => shopStore.set({ mode: "identify" }) },
     spectroStore.get().host && { label: "Measure with the spectrophotometer", icon: "scan-line", keys: "nix spectro read", run: () => spectroStore.get().conn === "connected" ? spectroStore.measure() : window.dispatchEvent(new CustomEvent("csam-inspector-tab", { detail: "spectrum" })) },
   ].filter(Boolean);
   const libraryItems = [
