@@ -19960,12 +19960,52 @@ const shopLabOf = (item) => {
   return v;
 };
 const shopScanLab = (r) => (Array.isArray(r.lab) && r.lab.length === 3 ? r.lab : spectroLabOf(r) || new Color("oklch", [r.L, r.C, r.H || 0]).to("lab").coords);
+// The SAMI catalogue (the pins) comes first, then the chosen brands, or by
+// default every brand with a measured colour.
+const SHOP_PINS = "__pins";
 const shopBrandsOf = (colorData, chosen) => {
   const all = Object.keys(colorData || {});
-  if (Array.isArray(chosen) && chosen.length) return all.filter((b) => chosen.includes(b));
-  return all.filter((b) => (colorData[b] || []).some((e) => e && spectroSpOk(e.spectral)));
+  const list = Array.isArray(chosen) && chosen.length ? all.filter((b) => chosen.includes(b))
+    : all.filter((b) => b === SHOP_PINS ? (colorData[b] || []).length > 0 : (colorData[b] || []).some((e) => e && spectroSpOk(e.spectral)));
+  return list.sort((a, b) => (a === SHOP_PINS ? -1 : b === SHOP_PINS ? 1 : 0));
 };
-const shopBrandName = (b) => (typeof getBrandDisplayName === "function" ? getBrandDisplayName(b) : b);
+const shopBrandName = (b) => (b === SHOP_PINS ? "SAMI catalogue" : typeof getBrandDisplayName === "function" ? getBrandDisplayName(b) : b);
+// catalogue pins as shop colours: SAMI name and code; a pin uses its source
+// colour's spectrum and range of scans when it has none of its own
+const shopTitle = (t) => String(t || "").toLowerCase().replace(/(^|[\s\-/(])([a-z])/g, (m, a, b) => a + b.toUpperCase());
+const shopPinItems = (savedColors, names, colorData) => {
+  const byKey = new Map();
+  Object.values(savedColors || {}).forEach((sc) => {
+    if (!sc || sc.type !== "pin" || !isFinite(sc.L) || !isFinite(sc.C)) return;
+    const H = isFinite(sc.H) ? sc.H : 0, arr = sc.brand !== undefined && colorData ? colorData[sc.brand] : null;
+    // its source colour: the linked one when it really is this colour, else
+    // the matching colour in that brand (links drift when a brand gains rows)
+    const near = (e) => { const it = e && fastItemLch(e); return it ? fastDeltaEOK(sc.L, sc.C, H, it.L, it.C, it.H) : 99; };
+    let src = arr && sc.originalIndex !== undefined ? arr[sc.originalIndex] : null, si = sc.originalIndex;
+    if (!src || near(src) > 0.5) { src = null; si = -1; let bd = 0.5; (arr || []).forEach((e, i) => { const d = near(e); if (d <= bd) { bd = d; src = e; si = i; } }); }
+    const raw = typeof spacePointLabel === "function" ? spacePointLabel(sc, names || {}) : sc.nameOverride || "";
+    const name = raw && raw !== "Unnamed" ? shopTitle(raw) : sc.erpCode || "Catalogue colour";
+    const hex = sc.color || sc.hex;
+    const key = `${name.toLowerCase()}|${hex}`;
+    const profile = sc.doorProfile ? String(sc.doorProfile).replace(/\s*\(.*$/, "") : "";
+    const prev = byKey.get(key);
+    if (prev) { if (profile && !prev.profiles.includes(profile)) prev.profiles.push(profile); return; }
+    const own = spectroSpOk(sc.spectral), log = Array.isArray(sc.scanLog) && sc.scanLog.length > 1 ? sc.scanLog : null;
+    const useSrc = !own && !log && src && spectroSpOk(src.spectral);
+    byKey.set(key, {
+      pinId: sc.id, name, code: sc.erpCode || "", L: sc.L, C: sc.C, H, hex,
+      spectral: own ? sc.spectral : useSrc ? src.spectral : undefined,
+      scanLog: log || (useSrc && Array.isArray(src.scanLog) && src.scanLog.length > 1 ? src.scanLog : undefined),
+      image: sc.image || (src && src.image) || undefined,
+      material: sc.material || (src && src.material) || "", profiles: profile ? [profile] : [],
+      same: src && src.name ? `Same as ${shopBrandName(sc.brand)} ${src.name}` : "",
+      alias: src ? `${src.name || ""} ${src.code || src.erpCode || ""} ${shopBrandName(sc.brand)}` : "",
+      srcKey: src ? `${sc.brand}|${si}` : "",
+    });
+  });
+  return [...byKey.values()].map((p) => ({ ...p, detail: [p.material, p.profiles.length ? p.profiles.join(", ") : ""].filter(Boolean).join(" · ") }))
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+};
 
 // ── Likelihoods (world space: OkLab scaled per axis, like the 3D view) ──
 const SHOP_W = [SPACE_CW, SPACE_LW, SPACE_CW];
@@ -20199,7 +20239,11 @@ const ShopIdentify = ({ colorData, onOpenColour, onCheck }) => {
           h("span", { className: "text-[12px] font-semibold", style: { color: SHOP_C.muted } }, shown === top ? "Most likely" : "Selected")),
         h("div", { className: "min-w-0 flex-1 flex flex-col justify-center" },
           h("div", { className: "text-[22px] leading-tight font-extrabold break-words", style: { color: SHOP_C.text }, "data-shop-name": "" }, shown.item.name),
-          h("div", { className: "text-[15px] truncate", style: { color: SHOP_C.body } }, [shopBrandName(shown.brand), shown.item.code || shown.item.erpCode].filter((x) => x && !/^https?:/.test(x)).join(" · ")))),
+          shown.brand === SHOP_PINS
+            ? h("div", { className: "text-[15px] leading-snug", style: { color: SHOP_C.body } }, h("span", { className: "font-mono font-extrabold", "data-shop-code": "" }, shown.item.code), shown.item.code ? " · " : "", "SAMI catalogue")
+            : h("div", { className: "text-[15px] leading-snug break-words", style: { color: SHOP_C.body } }, [shopBrandName(shown.brand), shown.item.code || shown.item.erpCode].filter((x) => x && !/^https?:/.test(x)).join(" · ")),
+          shown.item.detail && h("div", { className: "text-[13px] leading-snug", style: { color: SHOP_C.muted } }, shown.item.detail),
+          shown.item.same && h("div", { className: "text-[13px] leading-snug", style: { color: SHOP_C.muted }, "data-shop-same": "" }, shown.item.same))),
       h("div", { className: "flex gap-2" },
         h(ShopMetric, { label: "Confidence", value: cf(shown.conf), sub: shown.rangeN ? `range of ${shown.rangeN} scans` : "measured once", testid: "conf" }),
         h(ShopMetric, { label: "Overlap", value: pc(shown.overlap), sub: `${shown.inCount} of ${n} scan${n > 1 ? "s" : ""} ${shown.rangeN ? "in its range" : "within ΔE00 2"}`, testid: "overlap" }),
@@ -20213,7 +20257,7 @@ const ShopIdentify = ({ colorData, onOpenColour, onCheck }) => {
         h(ShopSwatch, { hex: m.c.hex, image: m.item.image, className: "w-12 h-12" }),
         h("span", { className: "min-w-0 flex-1" },
           h("span", { className: "block text-[16px] font-bold truncate", style: { color: SHOP_C.text } }, m.item.name),
-          h("span", { className: "block text-[13px] truncate", style: { color: SHOP_C.muted } }, `${shopBrandName(m.brand)}${m.rangeN ? ` · range of ${m.rangeN}` : ""}`)),
+          h("span", { className: "block text-[13px] truncate", style: { color: SHOP_C.muted } }, `${shopBrandName(m.brand)}${m.item.code && m.brand === SHOP_PINS ? ` · ${m.item.code}` : ""}${m.rangeN ? ` · range of ${m.rangeN}` : ""}`)),
         h("span", { className: "text-right shrink-0" },
           h("span", { className: "block font-mono text-[17px] font-extrabold", style: { color: SHOP_C.text } }, m.conf < 0.01 ? "<1%" : cf(m.conf)),
           h("span", { className: "block font-mono text-[12px]", style: { color: SHOP_C.muted } }, `${pc(m.overlap)} · ΔEok ${m.deok.toFixed(2)}`))))),
@@ -20276,7 +20320,7 @@ const ShopRefPicker = ({ colorData, brands, onPick, onClose, last }) => {
   const hits = useMemo(() => {
     if (!t) return [];
     const out = [];
-    brands.forEach((b) => (colorData[b] || []).forEach((e, i) => { if (e && out.length < 40 && `${e.name || ""} ${e.code || e.erpCode || ""} ${shopBrandName(b)}`.toLowerCase().includes(t)) out.push({ b, i, e }); }));
+    brands.forEach((b) => (colorData[b] || []).forEach((e, i) => { if (e && out.length < 40 && `${e.name || ""} ${e.code || e.erpCode || ""} ${e.alias || ""} ${shopBrandName(b)}`.toLowerCase().includes(t)) out.push({ b, i, e }); }));
     return out;
   }, [t, colorData, brands]);
   return h("div", { className: "fixed inset-0 z-[520] flex flex-col", style: { background: SHOP_C.bg, color: SHOP_C.text }, role: "dialog", "aria-label": "Choose the reference", "data-shop-picker": "" },
@@ -20298,7 +20342,7 @@ const ShopRefPicker = ({ colorData, brands, onPick, onClose, last }) => {
         h(ShopSwatch, { hex: (shopLabOf(e) || {}).hex || e.hex, image: e.image, className: "w-11 h-11" }),
         h("span", { className: "min-w-0 flex-1" },
           h("span", { className: "block text-[16px] font-bold truncate", style: { color: SHOP_C.text } }, e.name),
-          h("span", { className: "block text-[13px] truncate", style: { color: SHOP_C.muted } }, [shopBrandName(b), Array.isArray(e.scanLog) && e.scanLog.length > 1 ? `range of ${e.scanLog.length} scans` : ""].filter(Boolean).join(" · ")))))));
+          h("span", { className: "block text-[13px] truncate", style: { color: SHOP_C.muted } }, [shopBrandName(b), e.code && b === SHOP_PINS ? e.code : "", e.same || "", Array.isArray(e.scanLog) && e.scanLog.length > 1 ? `range of ${e.scanLog.length} scans` : ""].filter(Boolean).join(" · ")))))));
 };
 const ShopQC = ({ colorData }) => {
   const sh = useShop();
@@ -20378,7 +20422,7 @@ const ShopQC = ({ colorData }) => {
 // ── Settings: which brands to match ──
 const ShopSettings = ({ colorData, onClose }) => {
   const sh = useShop();
-  const all = Object.keys(colorData || {}).filter((b) => (colorData[b] || []).length && !/^(anchors|pins|template|palettes)$/i.test(b)).sort((a, b) => shopBrandName(a).localeCompare(shopBrandName(b)));
+  const all = Object.keys(colorData || {}).filter((b) => (colorData[b] || []).length && !/^(anchors|pins|template|palettes)$/i.test(b)).sort((a, b) => (a === SHOP_PINS ? -1 : b === SHOP_PINS ? 1 : shopBrandName(a).localeCompare(shopBrandName(b))));
   const chosen = shopBrandsOf(colorData, sh.brands);
   const toggle = (b) => { const next = chosen.includes(b) ? chosen.filter((x) => x !== b) : [...chosen, b]; shopStore.set({ brands: next.length ? next : null }); };
   return h("div", { className: "fixed inset-0 z-[520] flex flex-col", style: { background: SHOP_C.bg, color: SHOP_C.text }, role: "dialog", "aria-label": "Brands to match", "data-shop-settings": "" },
@@ -20386,7 +20430,7 @@ const ShopSettings = ({ colorData, onClose }) => {
       h("div", { className: "flex-1 text-[20px] font-extrabold" }, "Brands to match"),
       h(ShopBigButton, { onClick: onClose, className: "min-h-[52px]" }, "Done")),
     h("div", { className: "flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-1.5" },
-      h("button", { type: "button", onClick: () => shopStore.set({ brands: null }), className: "min-h-[48px] text-left text-[15px] font-semibold underline underline-offset-4", style: { color: SHOP_C.body } }, "Reset to brands with measured colours"),
+      h("button", { type: "button", onClick: () => shopStore.set({ brands: null }), className: "min-h-[48px] text-left text-[15px] font-semibold underline underline-offset-4", style: { color: SHOP_C.body } }, "Reset to the SAMI catalogue and brands with measured colours"),
       all.map((b) => h("label", { key: b, className: "min-h-[56px] rounded-2xl px-4 flex items-center gap-3 cursor-pointer", style: { background: SHOP_C.tile } },
         h("input", { type: "checkbox", checked: chosen.includes(b), onChange: () => toggle(b), className: "w-6 h-6 rounded", style: { accentColor: "var(--c-dark)" } }),
         h("span", { className: "flex-1 text-[16px] font-semibold" }, shopBrandName(b)),
@@ -20394,8 +20438,16 @@ const ShopSettings = ({ colorData, onClose }) => {
 };
 
 // ── The screen ──
-const ShopMode = ({ colorData, onOpenColour }) => {
+const ShopMode = ({ colorData: cd, savedColors, names, onOpenColour }) => {
   const sh = useShop();
+  // a pin stands for its source colour, so the source isn't listed a second time
+  const colorData = useMemo(() => {
+    const pins = shopPinItems(savedColors, names, cd);
+    if (!pins.length) return cd || {};
+    const out = { [SHOP_PINS]: pins, ...(cd || {}) };
+    pins.forEach((p) => { if (!p.srcKey) return; const [b, i] = [p.srcKey.slice(0, p.srcKey.lastIndexOf("|")), +p.srcKey.slice(p.srcKey.lastIndexOf("|") + 1)]; if (out[b] && out[b][i]) { if (out[b] === cd[b]) out[b] = out[b].slice(); out[b][i] = null; } });
+    return out;
+  }, [cd, savedColors, names]);
   const [settings, setSettings] = useState(false);
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
   useEffect(() => { const f = () => setNarrow(window.innerWidth < 768); window.addEventListener("resize", f); return () => window.removeEventListener("resize", f); }, []);
@@ -23914,7 +23966,9 @@ const App = () => {
     setTetheringPinId,
   }), React.createElement(ShopMode, {
     colorData,
-    onOpenColour: (m) => { const c = shopLabOf(m.item); if (c) handlePointClick([c.L, c.C, c.H, { brand: m.brand, originalIndex: m.idx }]); },
+    savedColors,
+    names,
+    onOpenColour: (m) => { const c = shopLabOf(m.item); if (!c) return; if (m.item.pinId) handlePointClick([m.item.L, m.item.C, m.item.H, { pinId: m.item.pinId }]); else handlePointClick([c.L, c.C, c.H, { brand: m.brand, originalIndex: m.idx }]); },
   }));
 };
 // The working palette already existed, buried inside the Palette Playground
