@@ -1180,6 +1180,7 @@ const MatchRow = ({ label, match, onSelectColor, setFullscreenImage, fmt }) => {
           label,
           " \xB7 \u0394Eok ",
           fmt(match.d, 2),
+          React.createElement(QualityBadge, { q: colourQualityOf(match) }),
           match.scanX && React.createElement("span", { className: "normal-case tracking-normal", "data-match-scans": "" },
             `· ${match.scanX.n} scans · closest ${fmt(match.scanX.near, 2)}${match.scanX.ov > 0 ? (match.scanX.point ? " · in range" : ` · overlap ${Math.round(match.scanX.ov * 100)}%`) : ""}`),
           (match.url || match.erpCode) && String(match.url || match.erpCode).startsWith("http") &&
@@ -14060,7 +14061,7 @@ const INSPECTOR_TABS = [
   { id: "values", label: "Values", icon: "sliders", titles: ["Conversions"] },
   { id: "spectrum", label: "Spectrum", icon: "activity", titles: ["Spectrophotometer", "Spectral Response"] },
   { id: "palette", label: "Palette", icon: "aperture", titles: ["Harmonies", "Palette Playground", "Gradient", "Delta E Comparisons"] },
-  { id: "notes", label: "Notes", icon: "sticky-note", titles: ["Picture", "Tags", "Anchor Notes"] },
+  { id: "notes", label: "Notes", icon: "sticky-note", titles: ["Names & suppliers", "Picture", "Tags", "Anchor Notes"] },
 ];
 const INSPECTOR_KEY = "csam-inspector-tab";
 const InspectorTabs = ({ children, dots }) => {
@@ -19106,6 +19107,8 @@ const processCSVData = (
           row.Measurement_Device,
         ).trim();
       if (row.Scan_Log) { const lg = scanLogDecode(row.Scan_Log); if (lg) newSavedColors[pinId].scanLog = lg; }
+      if (row.Name_History) { try { const v = JSON.parse(row.Name_History); if (Array.isArray(v)) newSavedColors[pinId].nameHistory = v; } catch (e) {} }
+      if (row.Suppliers) { try { const v = JSON.parse(row.Suppliers); if (Array.isArray(v)) newSavedColors[pinId].suppliers = v; } catch (e) {} }
       if (row.Tags)
         newTags[pinId] = row.Tags.split(",")
           .map((t) => t.trim())
@@ -19926,8 +19929,8 @@ const SHOP_SIG_POINT = 0.006, SHOP_SIG_NOISE = 0.004, SHOP_EPS = 0.04, SHOP_SIG_
 const shopStore = (() => {
   const read = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k) || "null"); return v === null ? d : v; } catch (e) { return d; } };
   const narrow = typeof window !== "undefined" && window.innerWidth < 640;
-  const keys = ["mode", "scans", "history", "checks", "ref", "tol", "brands", "last", "piece"];
-  const defs = { mode: narrow ? "identify" : "off", scans: [], history: [], checks: [], ref: null, tol: 1, brands: null, last: null, piece: [] };
+  const keys = ["mode", "scans", "history", "checks", "ref", "tolManual", "brands", "last", "piece"];
+  const defs = { mode: narrow ? "identify" : "off", scans: [], history: [], checks: [], ref: null, tolManual: null, brands: null, last: null, piece: [] };
   let st = {};
   keys.forEach((k) => (st[k] = read(k === "mode" ? SHOP_KEY : `${SHOP_KEY}-${k}`, defs[k])));
   const subs = new Set();
@@ -19973,34 +19976,49 @@ const shopBrandName = (b) => (b === SHOP_PINS ? "SAMI catalogue" : typeof getBra
 // catalogue pins as shop colours: SAMI name and code; a pin uses its source
 // colour's spectrum and range of scans when it has none of its own
 const shopTitle = (t) => String(t || "").toLowerCase().replace(/(^|[\s\-/(])([a-z])/g, (m, a, b) => a + b.toUpperCase());
+const shopHasLog = (e) => !!(e && Array.isArray(e.scanLog) && e.scanLog.length > 1);
 const shopPinItems = (savedColors, names, colorData) => {
   const byKey = new Map();
   Object.values(savedColors || {}).forEach((sc) => {
     if (!sc || sc.type !== "pin" || !isFinite(sc.L) || !isFinite(sc.C)) return;
-    const H = isFinite(sc.H) ? sc.H : 0, arr = sc.brand !== undefined && colorData ? colorData[sc.brand] : null;
-    // its source colour: the linked one when it really is this colour, else
-    // the matching colour in that brand (links drift when a brand gains rows)
-    const near = (e) => { const it = e && fastItemLch(e); return it ? fastDeltaEOK(sc.L, sc.C, H, it.L, it.C, it.H) : 99; };
-    let src = arr && sc.originalIndex !== undefined ? arr[sc.originalIndex] : null, si = sc.originalIndex;
-    if (!src || near(src) > 0.5) { src = null; si = -1; let bd = 0.5; (arr || []).forEach((e, i) => { const d = near(e); if (d <= bd) { bd = d; src = e; si = i; } }); }
-    const raw = typeof spacePointLabel === "function" ? spacePointLabel(sc, names || {}) : sc.nameOverride || "";
+    const H = isFinite(sc.H) ? sc.H : 0;
+    // its supplier products, found by code and name (the source, failing
+    // that, by colour); a pin not yet migrated falls back to its brand
+    const sups = Array.isArray(sc.suppliers) ? sc.suppliers : sc.brand ? [{ brand: sc.brand, rel: "source" }] : [];
+    const linked = sups.map((x) => ({ s: x, r: pinSupplierItem(colorData, x, sc) })).filter((x) => x.r)
+      .sort((x, y) => (x.s.rel === "source" ? -1 : y.s.rel === "source" ? 1 : 0));
+    const src = linked.find((x) => x.s.rel === "source");
+    // named exactly as the full app names it (override, parent pin, then anchor)
+    const raw = typeof getInheritedPinNames === "function" ? (getInheritedPinNames(sc, savedColors, names || {}) || {}).displayName : typeof spacePointLabel === "function" ? spacePointLabel(sc, names || {}) : sc.nameOverride || "";
     const name = raw && raw !== "Unnamed" ? shopTitle(raw) : sc.erpCode || "Catalogue colour";
     const hex = sc.color || sc.hex;
     const key = `${name.toLowerCase()}|${hex}`;
     const profile = sc.doorProfile ? String(sc.doorProfile).replace(/\s*\(.*$/, "") : "";
     const prev = byKey.get(key);
     if (prev) { if (profile && !prev.profiles.includes(profile)) prev.profiles.push(profile); return; }
-    const own = spectroSpOk(sc.spectral), log = Array.isArray(sc.scanLog) && sc.scanLog.length > 1 ? sc.scanLog : null;
-    const useSrc = !own && !log && src && spectroSpOk(src.spectral);
+    // what a sample of this colour can be: its own measurements, plus each
+    // interchangeable product with data; without its own, every linked product with data
+    const own = spectroSpOk(sc.spectral) || shopHasLog(sc);
+    const withData = linked.filter((x) => spectroSpOk(x.r.item.spectral) || shopHasLog(x.r.item));
+    const members = own
+      ? [{ L: sc.L, C: sc.C, H, spectral: sc.spectral, scanLog: sc.scanLog, measurementDevice: sc.measurementDevice, measurementMethod: sc.measurementMethod, _label: "" },
+        ...withData.filter((x) => x.s.rel !== "source").map((x) => ({ ...x.r.item, _label: `${shopBrandName(x.s.brand)} ${x.r.item.name}` }))]
+      : withData.map((x) => ({ ...x.r.item, _label: `${shopBrandName(x.s.brand)} ${x.r.item.name}` }));
+    const first = members[0] || null;
+    const hist = Array.isArray(sc.nameHistory) ? sc.nameHistory.filter((n) => n && n.name) : [];
     byKey.set(key, {
       pinId: sc.id, name, code: sc.erpCode || "", L: sc.L, C: sc.C, H, hex,
-      spectral: own ? sc.spectral : useSrc ? src.spectral : undefined,
-      scanLog: log || (useSrc && Array.isArray(src.scanLog) && src.scanLog.length > 1 ? src.scanLog : undefined),
-      image: sc.image || (src && src.image) || undefined,
-      material: sc.material || (src && src.material) || "", profiles: profile ? [profile] : [],
-      same: src && src.name ? `Same as ${shopBrandName(sc.brand)} ${src.name}` : "",
-      alias: src ? `${src.name || ""} ${src.code || src.erpCode || ""} ${shopBrandName(sc.brand)}` : "",
-      srcKey: src ? `${sc.brand}|${si}` : "",
+      spectral: first && spectroSpOk(first.spectral) ? first.spectral : undefined,
+      scanLog: first && shopHasLog(first) ? first.scanLog : undefined,
+      measurementDevice: first ? first.measurementDevice : "", measurementMethod: first ? first.measurementMethod : "",
+      members,
+      image: sc.image || (src && src.r.item.image) || undefined,
+      material: sc.material || (src && src.r.item.material) || "", profiles: profile ? [profile] : [],
+      same: src ? `Same as ${shopBrandName(src.s.brand)} ${src.r.item.name}` : "",
+      equiv: linked.filter((x) => x.s.rel !== "source").map((x) => `${shopBrandName(x.s.brand)} ${x.r.item.name}`).join(", "),
+      was: hist.map((n) => (n.collection ? `${n.name} (${n.collection})` : n.name)).join(", "),
+      alias: [...linked.map((x) => `${x.r.item.name || ""} ${pinItemCode(x.r.item)} ${shopBrandName(x.s.brand)}`), ...hist.map((n) => `${n.name} ${n.collection || ""}`)].join(" "),
+      srcKeys: linked.map((x) => `${x.s.brand}|${x.r.index}`),
     });
   });
   return [...byKey.values()].map((p) => ({ ...p, detail: [p.material, p.profiles.length ? p.profiles.join(", ") : ""].filter(Boolean).join(" · ") }))
@@ -20066,13 +20084,28 @@ const shopRank = (scans, colorData, basis, brands) => {
     seen.set(key, cands.length);
     cands.push({ brand, idx, item, c, hasRange });
   }));
-  const PM = shopPointModel(shopPointSig(ses ? ses.mcdm : 0));
+  // each data level trusts a colour measured once a little less (wider zone)
+  const base = shopPointSig(ses ? ses.mcdm : 0), PMq = {};
+  Object.keys(COLOUR_QUALITY).forEach((q) => { PMq[q] = shopPointModel(base + (COLOUR_QUALITY[q].sig || 0)); });
   const scored = cands.map((p) => {
-    const sp = p.hasRange ? scanSpreadOf(p.item.scanLog, basis) : null;
-    const R = sp && spreadRegionOf(sp);
-    let ll = 0;
-    xs.forEach((x) => { ll += shopLogScan(R ? shopLogRange(R, x) : shopLogPoint(p.c.w, x, PM)); });
-    return { ...p, sp, R, ll };
+    // a catalogue colour may be any of its products (source, interchangeable): the scans came from one of them
+    const mem = p.item.members && p.item.members.length ? p.item.members : [p.item];
+    let bestLl = -Infinity, best = null;
+    const lls = mem.map((m) => {
+      const q = colourQualityOf(m);
+      const sp = shopHasLog(m) ? scanSpreadOf(m.scanLog, basis) : null, R = sp && spreadRegionOf(sp);
+      const cm = R ? null : shopLabOf(m);
+      if (!R && !cm) return -Infinity;
+      let ll = 0;
+      xs.forEach((x) => { ll += shopLogScan(R ? shopLogRange(R, x) : shopLogPoint(cm.w, x, PMq[q])); });
+      if (ll > bestLl) { bestLl = ll; best = { m, q, sp, R, cm }; }
+      return ll;
+    });
+    let s2 = 0;
+    lls.forEach((v) => { if (isFinite(v)) s2 += Math.exp(v - bestLl); });
+    // each product counts as a candidate in its own right: the colour's share is the sum of its products'
+    const ll = isFinite(bestLl) ? bestLl + Math.log(s2) : -Infinity;
+    return { ...p, ll, sp: best && best.sp, R: best && best.R, q: best ? best.q : colourQualityOf(p.item), via: best && mem.length > 1 ? best.m._label : "", bestLab: best && best.cm ? best.cm.lab : p.c.lab };
   });
   let top = -Infinity;
   scored.forEach((p) => { if (p.ll > top) top = p.ll; });
@@ -20084,7 +20117,7 @@ const shopRank = (scans, colorData, basis, brands) => {
     const de00 = p.c.lab ? spectroDE00(mlab, p.c.lab) : NaN;
     // in its range (allowing for instrument noise: within ΔE00 1 of one of its scans counts), or within ΔE00 2 of a colour measured once
     const inRange = (i) => p.R.inside(xs[i]) || p.sp.scans.some((q) => q.lab && spectroDE00(slabs[i], q.lab) <= 1);
-    const inCount = scans.reduce((t, r, i) => t + ((p.R ? inRange(i) : p.c.lab && spectroDE00(slabs[i], p.c.lab) <= SHOP_TOL) ? 1 : 0), 0);
+    const inCount = scans.reduce((t, r, i) => t + ((p.R ? inRange(i) : p.bestLab && spectroDE00(slabs[i], p.bestLab) <= SHOP_TOL) ? 1 : 0), 0);
     return { ...p, key: `${p.brand}|${p.idx}`, de00, deok: fastDeltaEOK(mean.L, mean.C, mean.H, p.c.L, p.c.C, p.c.H), inCount, overlap: inCount / scans.length, rangeN: p.sp ? p.sp.n : 0 };
   });
   return { n: scans.length, mean, mcdm: ses ? ses.mcdm : 0, list: shown, possible: scored.filter((p) => p.conf >= 0.01).length, total: scored.length };
@@ -20243,9 +20276,12 @@ const ShopIdentify = ({ colorData, onOpenColour, onCheck }) => {
             ? h("div", { className: "text-[15px] leading-snug", style: { color: SHOP_C.body } }, h("span", { className: "font-mono font-extrabold", "data-shop-code": "" }, shown.item.code), shown.item.code ? " · " : "", "SAMI catalogue")
             : h("div", { className: "text-[15px] leading-snug break-words", style: { color: SHOP_C.body } }, [shopBrandName(shown.brand), shown.item.code || shown.item.erpCode].filter((x) => x && !/^https?:/.test(x)).join(" · ")),
           shown.item.detail && h("div", { className: "text-[13px] leading-snug", style: { color: SHOP_C.muted } }, shown.item.detail),
-          shown.item.same && h("div", { className: "text-[13px] leading-snug", style: { color: SHOP_C.muted }, "data-shop-same": "" }, shown.item.same))),
+          shown.item.same && h("div", { className: "text-[13px] leading-snug", style: { color: SHOP_C.muted }, "data-shop-same": "" }, shown.item.same),
+          shown.item.equiv && h("div", { className: "text-[13px] leading-snug", style: { color: SHOP_C.muted }, "data-shop-equiv": "" }, `Interchangeable: ${shown.item.equiv}`),
+          shown.item.was && h("div", { className: "text-[13px] leading-snug", style: { color: SHOP_C.muted }, "data-shop-was": "" }, `Was ${shown.item.was}`),
+          shown.via && h("div", { className: "text-[13px] leading-snug font-semibold", style: { color: SHOP_C.body } }, `Closest to the ${shown.via} version`))),
       h("div", { className: "flex gap-2" },
-        h(ShopMetric, { label: "Confidence", value: cf(shown.conf), sub: shown.rangeN ? `range of ${shown.rangeN} scans` : "measured once", testid: "conf" }),
+        h(ShopMetric, { label: "Confidence", value: cf(shown.conf), sub: shown.rangeN ? `range of ${shown.rangeN} scans` : (COLOUR_QUALITY[shown.q] || COLOUR_QUALITY.value).label.toLowerCase(), testid: "conf" }),
         h(ShopMetric, { label: "Overlap", value: pc(shown.overlap), sub: `${shown.inCount} of ${n} scan${n > 1 ? "s" : ""} ${shown.rangeN ? "in its range" : "within ΔE00 2"}`, testid: "overlap" }),
         h(ShopMetric, { label: "ΔEok", value: shown.deok.toFixed(2), sub: isFinite(shown.de00) ? `ΔE00 ${shown.de00.toFixed(2)}` : "OKLab ×100", testid: "deok" })),
       h("div", { className: "flex gap-2" },
@@ -20257,7 +20293,7 @@ const ShopIdentify = ({ colorData, onOpenColour, onCheck }) => {
         h(ShopSwatch, { hex: m.c.hex, image: m.item.image, className: "w-12 h-12" }),
         h("span", { className: "min-w-0 flex-1" },
           h("span", { className: "block text-[16px] font-bold truncate", style: { color: SHOP_C.text } }, m.item.name),
-          h("span", { className: "block text-[13px] truncate", style: { color: SHOP_C.muted } }, `${shopBrandName(m.brand)}${m.item.code && m.brand === SHOP_PINS ? ` · ${m.item.code}` : ""}${m.rangeN ? ` · range of ${m.rangeN}` : ""}`)),
+          h("span", { className: "block text-[13px] truncate", style: { color: SHOP_C.muted } }, `${shopBrandName(m.brand)}${m.item.code && m.brand === SHOP_PINS ? ` · ${m.item.code}` : ""} · ${m.rangeN ? `range of ${m.rangeN}` : (COLOUR_QUALITY[m.q] || COLOUR_QUALITY.value).short.toLowerCase()}`)),
         h("span", { className: "text-right shrink-0" },
           h("span", { className: "block font-mono text-[17px] font-extrabold", style: { color: SHOP_C.text } }, m.conf < 0.01 ? "<1%" : cf(m.conf)),
           h("span", { className: "block font-mono text-[12px]", style: { color: SHOP_C.muted } }, `${pc(m.overlap)} · ΔEok ${m.deok.toFixed(2)}`))))),
@@ -20279,7 +20315,8 @@ const ShopIdentify = ({ colorData, onOpenColour, onCheck }) => {
 // ── Quality control ──
 const shopQcItemOf = (brand, idx, item) => {
   const c = shopLabOf(item);
-  return spectroQcItem({ id: `shop-${brand}-${idx}`, name: item.name, brand, L: c.L, C: c.C, H: c.H, hex: c.hex, spectral: spectroSpOk(item.spectral) ? item.spectral : null, lab: c.lab, scanLog: item.scanLog }, item.code || item.erpCode || "Commercial");
+  const it = spectroQcItem({ id: `shop-${brand}-${idx}`, name: item.name, brand, L: c.L, C: c.C, H: c.H, hex: c.hex, spectral: spectroSpOk(item.spectral) ? item.spectral : null, lab: c.lab, scanLog: item.scanLog }, item.code || item.erpCode || "Commercial");
+  return it && { ...it, measurementDevice: item.measurementDevice || "", measurementMethod: item.measurementMethod || "" };
 };
 const shopWords = (res, ref) => {
   const w = [];
@@ -20312,7 +20349,7 @@ const shopResultOf = (ref, kept, tol, basis) => {
   let share = null;
   if (rangeRef) { const A = spreadSideOf(ref, basis); share = A && A.region ? spreadShareIn(kept, A.region) : null; }
   const byRange = share !== null;
-  return { res, tgt, byRange, share, pass: byRange ? share >= 2 / 3 : res.de00 <= tol, words: shopWords(res, ref), mcdm: ses.mcdm };
+  return { res, tgt, byRange, share, pass: res.de00 <= tol, words: shopWords(res, ref), mcdm: ses.mcdm };
 };
 const ShopRefPicker = ({ colorData, brands, onPick, onClose, last }) => {
   const [q, setQ] = useState("");
@@ -20349,7 +20386,11 @@ const ShopQC = ({ colorData }) => {
   const [picking, setPicking] = useState(false);
   const basis = useSpectroBasis();
   const brands = useMemo(() => shopBrandsOf(colorData, sh.brands), [colorData, sh.brands]);
-  const ref = sh.ref, tol = sh.tol, piece = sh.piece || [];
+  const ref = sh.ref, piece = sh.piece || [];
+  const auto = useMemo(() => qcAutoTol(ref, basis), [ref, basis]);
+  const manual = sh.tolManual && ref && sh.tolManual.ref === ref.id ? sh.tolManual.tol : null;
+  const tol = manual !== null ? manual : auto.tol;
+  const setTol = (v) => shopStore.set({ tolManual: { ref: ref.id, tol: Math.max(0.2, Math.min(10, +v.toFixed(1))) } });
   const rangeRef = !!(ref && Array.isArray(ref.scanLog) && ref.scanLog.length > 1);
   const pc = useMemo(() => shopPieceOf(piece), [piece]);
   const result = useMemo(() => shopResultOf(ref, pc.kept, tol, basis), [ref, pc, tol, basis]);
@@ -20379,15 +20420,18 @@ const ShopQC = ({ colorData }) => {
       h("span", { className: "min-w-0 flex-1" },
         h("span", { className: "block text-[12px] uppercase tracking-wider font-bold", style: { color: SHOP_C.muted } }, "Reference"),
         h("span", { className: "block text-[19px] font-extrabold truncate", style: { color: SHOP_C.text }, "data-shop-ref-name": "" }, ref ? ref.name || ref.hex : "Choose the colour to control against"),
-        ref && h("span", { className: "block text-[13px] truncate", style: { color: SHOP_C.muted } }, [shopBrandName(ref.brand), rangeRef ? `range of ${ref.scanLog.length} scans` : ""].filter(Boolean).join(" · "))),
+        ref && h("span", { className: "block text-[13px] truncate", style: { color: SHOP_C.muted } }, [shopBrandName(ref.brand), rangeRef ? `range of ${ref.scanLog.length} scans` : (COLOUR_QUALITY[colourQualityOf(ref)] || {}).label || ""].filter(Boolean).join(" · "))),
       h("span", { className: "text-[15px] font-bold underline underline-offset-4", style: { color: SHOP_C.text } }, ref ? "Change" : "Choose")),
-    ref && (rangeRef
-      ? h("div", { className: "rounded-2xl px-4 py-3 text-[15px] leading-snug", style: SHOP_TONE.info, "data-shop-tol": "range" }, `Judged by its range: a piece passes when at least 2 of every 3 spots fall inside the range of the reference's ${ref.scanLog.length} scans.`)
-      : h("div", { className: "flex items-center gap-3", "data-shop-tol": "" },
+    ref && h("div", { className: "flex flex-col gap-1.5", "data-shop-tol": manual !== null ? "manual" : "auto" },
+      h("div", { className: "flex items-center gap-3" },
         h("span", { className: "text-[16px] font-bold flex-1", style: { color: SHOP_C.body } }, "Tolerance ΔE00"),
-        h("button", { type: "button", onClick: () => shopStore.set({ tol: Math.max(0.2, +(tol - 0.1).toFixed(1)) }), "aria-label": "Lower tolerance", className: "w-14 h-14 rounded-2xl flex items-center justify-center", style: { background: SHOP_C.tile, color: SHOP_C.text } }, h(Icon, { name: "minus", className: "w-6 h-6" })),
+        h("button", { type: "button", onClick: () => setTol(tol - 0.1), "aria-label": "Lower tolerance", className: "w-14 h-14 rounded-2xl flex items-center justify-center", style: { background: SHOP_C.tile, color: SHOP_C.text } }, h(Icon, { name: "minus", className: "w-6 h-6" })),
         h("span", { className: "font-mono text-[24px] font-extrabold w-14 text-center", style: { color: SHOP_C.text }, "data-shop-tol-value": "" }, tol.toFixed(1)),
-        h("button", { type: "button", onClick: () => shopStore.set({ tol: Math.min(10, +(tol + 0.1).toFixed(1)) }), "aria-label": "Raise tolerance", className: "w-14 h-14 rounded-2xl flex items-center justify-center", style: { background: SHOP_C.tile, color: SHOP_C.text } }, h(Icon, { name: "plus", className: "w-6 h-6" })))),
+        h("button", { type: "button", onClick: () => setTol(tol + 0.1), "aria-label": "Raise tolerance", className: "w-14 h-14 rounded-2xl flex items-center justify-center", style: { background: SHOP_C.tile, color: SHOP_C.text } }, h(Icon, { name: "plus", className: "w-6 h-6" }))),
+      h("div", { className: "flex items-center gap-2 text-[14px] leading-snug", style: { color: SHOP_C.muted } },
+        h("span", { className: "flex-1" }, manual !== null ? `Set by hand (automatic: ${auto.tol.toFixed(1)}, ${auto.why})` : `Automatic, ${auto.why}`),
+        manual !== null && h("button", { type: "button", onClick: () => shopStore.set({ tolManual: null }), className: "min-h-[44px] px-2 font-bold underline underline-offset-4", style: { color: SHOP_C.text }, "data-shop": "tol-auto" }, "Use automatic")),
+      ref && colourQualityOf(ref) === "value" && h("div", { className: "text-[14px] rounded-2xl px-3 py-2", style: SHOP_TONE.warn }, "This reference is a colour value only (no measurement): treat results as indicative.")),
     // this piece: progress, then the result
     ref && piece.length > 0 && !result && h("div", { className: "rounded-3xl px-4 py-3.5", style: SHOP_TONE.info, "data-shop-piece": String(need) },
       h("div", { className: "text-[18px] font-extrabold" }, `Scan ${need} more spot${need > 1 ? "s" : ""} on this piece`),
@@ -20398,10 +20442,10 @@ const ShopQC = ({ colorData }) => {
         h(Icon, { name: result.pass ? "check-circle" : "x-circle", className: "w-10 h-10" }),
         h("div", { className: "text-[40px] leading-none font-black tracking-tight" }, result.pass ? "PASS" : "FAIL"),
         h("div", { className: "ml-auto text-right" },
-          h("div", { className: "font-mono text-[30px] leading-none font-extrabold" }, result.byRange ? `${Math.round(result.share * 100)}%` : result.res.de00.toFixed(2)),
-          h("div", { className: "text-[13px] font-semibold opacity-90" }, result.byRange ? "of spots in its range" : `ΔE00 · limit ${tol.toFixed(1)}`))),
+          h("div", { className: "font-mono text-[30px] leading-none font-extrabold" }, result.res.de00.toFixed(2)),
+          h("div", { className: "text-[13px] font-semibold opacity-90" }, `ΔE00 · limit ${tol.toFixed(1)}`))),
       h("div", { className: "text-[16px] font-semibold leading-snug" }, result.words.length ? `On average the piece is ${result.words.join(", ")}.` : "No clear direction: an even, small difference."),
-      h("div", { className: "text-[13px] opacity-90" }, [`${pc.kept.length} spots`, pc.dropped.length ? `${pc.dropped.length} stray left out` : "", result.byRange ? `ΔE00 ${result.res.de00.toFixed(2)}` : "", `ΔEok ${result.res.deok.toFixed(2)}`].filter(Boolean).join(" · "))),
+      h("div", { className: "text-[13px] opacity-90" }, [`${pc.kept.length} spots`, pc.dropped.length ? `${pc.dropped.length} stray left out` : "", result.byRange ? `${Math.round(result.share * 100)}% in its range` : "", `ΔEok ${result.res.deok.toFixed(2)}`].filter(Boolean).join(" · "))),
     checks.length > 0 && h("div", { className: "flex flex-col gap-2", "data-shop-checks": "" },
       h("div", { className: "flex items-center" },
         h("div", { className: "flex-1" }, h(ShopLabel, null, `Pieces · ${passed} of ${checks.length} passed`)),
@@ -20410,13 +20454,13 @@ const ShopQC = ({ colorData }) => {
         h("span", { className: "w-3 h-3 rounded-full", style: { background: c.pass ? "#5f9e4f" : "#b91c1c" } }),
         h(ShopSwatch, { hex: c.hex, className: "w-9 h-9" }),
         h("span", { className: "flex-1 text-[14px]", style: { color: SHOP_C.body } }, `${new Date(c.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · ${c.n} spots${c.dropped ? `, ${c.dropped} left out` : ""}`),
-        h("span", { className: "font-mono text-[17px] font-extrabold", style: { color: c.pass ? SHOP_C.text : "#b91c1c" } }, c.byRange ? `${Math.round(c.share * 100)}%` : c.de00.toFixed(2))))),
+        h("span", { className: "font-mono text-[17px] font-extrabold", style: { color: c.pass ? SHOP_C.text : "#b91c1c" } }, c.de00.toFixed(2))))),
     !ref && h("p", { className: "text-[15px] px-1 leading-snug", style: { color: SHOP_C.muted } }, "Choose the reference colour, then scan each piece in 3 spots. Stray spots (dust, marks) are left out."),
     h(ShopBar, null,
       ref ? h(ShopScanButton, { onScan: scan, label: result ? "Scan another spot" : `Scan spot ${Math.min(spot, SHOP_MIN)} of ${SHOP_MIN}`, sub: result ? "adds to this piece" : "" })
         : h(ShopBigButton, { onClick: () => setPicking(true), className: "w-full min-h-[76px] text-[20px]", testid: "choose-ref" }, h(Icon, { name: "search", className: "w-6 h-6" }), "Choose the reference"),
       ref && piece.length > 0 && h(ShopBigButton, { onClick: nextPiece, tone: result ? "main" : "outline", testid: "next-piece" }, h(Icon, { name: result ? "arrow-right" : "rotate-ccw", className: "w-5 h-5" }), result ? "Next piece" : "Start this piece over")),
-    picking && h(ShopRefPicker, { colorData, brands, last: sh.last, onClose: () => setPicking(false), onPick: (it) => { shopStore.set({ ref: it, piece: [] }); setPicking(false); } }));
+    picking && h(ShopRefPicker, { colorData, brands, last: sh.last, onClose: () => setPicking(false), onPick: (it) => { shopStore.set({ ref: it, piece: [], tolManual: null }); setPicking(false); } }));
 };
 
 // ── Settings: which brands to match ──
@@ -20445,7 +20489,7 @@ const ShopMode = ({ colorData: cd, savedColors, names, onOpenColour }) => {
     const pins = shopPinItems(savedColors, names, cd);
     if (!pins.length) return cd || {};
     const out = { [SHOP_PINS]: pins, ...(cd || {}) };
-    pins.forEach((p) => { if (!p.srcKey) return; const [b, i] = [p.srcKey.slice(0, p.srcKey.lastIndexOf("|")), +p.srcKey.slice(p.srcKey.lastIndexOf("|") + 1)]; if (out[b] && out[b][i]) { if (out[b] === cd[b]) out[b] = out[b].slice(); out[b][i] = null; } });
+    pins.forEach((p) => (p.srcKeys || []).forEach((k) => { const b = k.slice(0, k.lastIndexOf("|")), i = +k.slice(k.lastIndexOf("|") + 1); if (out[b] && out[b][i]) { if (out[b] === cd[b]) out[b] = out[b].slice(); out[b][i] = null; } }));
     return out;
   }, [cd, savedColors, names]);
   const [settings, setSettings] = useState(false);
@@ -20472,7 +20516,7 @@ const ShopMode = ({ colorData: cd, savedColors, names, onOpenColour }) => {
         : h(ShopIdentify, {
           colorData: colorData || {},
           onOpenColour: (m) => { onOpenColour && onOpenColour(m); shopStore.set({ mode: "off" }); },
-          onCheck: (m) => shopStore.set({ ref: shopQcItemOf(m.brand, m.idx, m.item), piece: [], mode: "qc" }),
+          onCheck: (m) => shopStore.set({ ref: shopQcItemOf(m.brand, m.idx, m.item), piece: [], tolManual: null, mode: "qc" }),
         })),
     h("nav", { className: "grid grid-cols-3 pb-[env(safe-area-inset-bottom)]", style: { borderTop: `1px solid ${SHOP_C.border}`, background: SHOP_C.bg }, "aria-label": "Shop screens" },
       tabs.map(([id, label, icon]) => h("button", {
@@ -20481,6 +20525,196 @@ const ShopMode = ({ colorData: cd, savedColors, names, onOpenColour }) => {
         style: { color: mode === id ? SHOP_C.text : SHOP_C.muted },
       }, mode === id && h("span", { className: "absolute top-0 left-1/4 right-1/4 h-1 rounded-b-full", style: { background: SHOP_C.accent } }), h(Icon, { name: icon, className: "w-6 h-6" }), label))),
     settings && h(ShopSettings, { colorData: colorData || {}, onClose: () => setSettings(false) }));
+};
+
+// ── A catalogue colour's identity: its code, its names over time, its products ──
+// A catalogue colour (a pin) is one record however many names and supplier
+// products it has had, instead of several pins on one spot or names in notes:
+//   · its code (ERP) is set once, when it's pinned, and never follows rescans
+//     (scans still update its measured colour, range and matching);
+//   · its names: each name with the collection that used it (Hidden Olive,
+//     Spring 2026 → Fossil, Fall 2026). The pin's own name is the current one;
+//   · its supplier products: the source it was taken from, and products from
+//     other suppliers that are interchangeable with it (they share its name).
+//     Each is kept by brand, product code and name, and found again by those
+//     (failing that, by colour) when a brand's file changes, never by row
+//     number. Matching treats a sample of any of them as this colour.
+const pinIdNorm = (s) => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
+const pinItemCode = (e) => { const c = e && (e.code || e.erpCode || ""); return c && !/^https?:/i.test(c) ? String(c) : ""; };
+const pinSupplierFind = (colorData, s, near) => {
+  const arr = colorData && s && colorData[s.brand];
+  if (!arr) return -1;
+  if (s.code) { const i = arr.findIndex((e) => e && pinIdNorm(pinItemCode(e)) === pinIdNorm(s.code)); if (i >= 0) return i; }
+  if (s.name) { const i = arr.findIndex((e) => e && pinIdNorm(e.name) === pinIdNorm(s.name)); if (i >= 0) return i; }
+  if (near && isFinite(near.L)) {
+    let best = -1, bd = 0.5;
+    arr.forEach((e, i) => { const it = e && fastItemLch(e); if (!it) return; const d = fastDeltaEOK(near.L, near.C, near.H || 0, it.L, it.C, it.H); if (d <= bd) { bd = d; best = i; } });
+    return best;
+  }
+  return -1;
+};
+const pinSupplierOf = (brand, e, rel) => ({ brand, code: pinItemCode(e), name: (e && e.name) || "", rel });
+const pinSupplierItem = (colorData, s, pin) => { const i = pinSupplierFind(colorData, s, s.rel === "source" ? pin : null); return i >= 0 ? { item: colorData[s.brand][i], index: i } : null; };
+// names kept in notes as A.K.A. "Oyster", "Hidden Wheat"
+const pinAkaOf = (notes) => {
+  const m = String(notes || "").match(/a\.?\s*k\.?\s*a\.?([\s\S]*)/i);
+  return m ? [...m[1].matchAll(/["“]([^"”]+)["”]/g)].map((x) => x[1].trim()).filter(Boolean) : [];
+};
+// pins → patches that bring their supplier links and names up to date
+// (first run: from the stored brand and row, checked against the colour, and
+// the A.K.A. names in notes; afterwards only rows that moved)
+const pinLinksReconcile = (savedColors, colorData) => {
+  if (!colorData) return null;
+  const out = {};
+  Object.values(savedColors || {}).forEach((sc) => {
+    if (!sc || sc.type !== "pin") return;
+    const patch = {};
+    let sup = Array.isArray(sc.suppliers) ? sc.suppliers : null;
+    if (!sup && sc.brand && colorData[sc.brand]) {
+      const arr = colorData[sc.brand];
+      const sameColour = (k) => { const it = arr[k] && fastItemLch(arr[k]); return !!it && fastDeltaEOK(sc.L, sc.C, sc.H || 0, it.L, it.C, it.H) <= 0.5; };
+      let i = sc.originalIndex !== undefined && sc.originalIndex !== "" ? +sc.originalIndex : -1;
+      if (!(i >= 0 && sameColour(i))) i = pinSupplierFind(colorData, { brand: sc.brand }, sc);
+      sup = i >= 0 ? [pinSupplierOf(sc.brand, arr[i], "source")] : [];
+      patch.suppliers = sup;
+    }
+    const src = (sup || []).find((s) => s.rel === "source");
+    if (src && colorData[src.brand]) {
+      const i = pinSupplierFind(colorData, src, sc);
+      if (i >= 0 && (sc.brand !== src.brand || +sc.originalIndex !== i)) { patch.brand = src.brand; patch.originalIndex = i; }
+    }
+    if (!Array.isArray(sc.nameHistory) && (sup || !sc.brand)) {
+      const taken = (sup || []).map((s) => pinIdNorm(s.name)).filter(Boolean);
+      patch.nameHistory = pinAkaOf(sc.notes).filter((n) => !taken.some((t) => t.includes(pinIdNorm(n)) || pinIdNorm(n).includes(t))).map((name) => ({ name, collection: "" }));
+    }
+    if (Object.keys(patch).length) out[sc.id] = patch;
+  });
+  return Object.keys(out).length ? out : null;
+};
+// everything a pin is or was called, for search
+const pinAliasText = (sc) => [
+  ...(Array.isArray(sc.nameHistory) ? sc.nameHistory.flatMap((n) => [n.name, n.collection]) : []),
+  ...(Array.isArray(sc.suppliers) ? sc.suppliers.flatMap((s) => [s.name, s.code, typeof getBrandDisplayName === "function" ? getBrandDisplayName(s.brand) : s.brand]) : []),
+].filter(Boolean).join(" ");
+
+// ── How much to trust a colour's numbers ──
+// Scanned range: several scans of the product. Measured: one spectrum from a
+// Nix. Spectrum, source unknown: a spectrum with no device recorded. Colour
+// value only: a hex or L*a*b* with no spectrum (supplier values, web images).
+const COLOUR_QUALITY = {
+  range: { label: "Scanned range", short: "Range", rank: 4, sig: null },
+  measured: { label: "Measured", short: "Measured", rank: 3, sig: 0 },
+  spectrum: { label: "Spectrum, source unknown", short: "Spectrum?", rank: 2, sig: 0.001 },
+  value: { label: "Colour value only", short: "Value only", rank: 1, sig: 0.006 },
+};
+const colourQualityOf = (e) => {
+  if (!e) return "value";
+  if (Array.isArray(e.scanLog) && e.scanLog.length > 1) return "range";
+  if (spectroSpOk(e.spectral)) return /nix|spectro/i.test(`${e.measurementDevice || ""} ${e.measurementMethod || ""}`) || (Array.isArray(e.scanLog) && e.scanLog.length) ? "measured" : "spectrum";
+  return "value";
+};
+const QualityBadge = ({ q, className = "" }) => {
+  const Q = COLOUR_QUALITY[q] || COLOUR_QUALITY.value;
+  return React.createElement("span", {
+    className: `inline-flex items-center px-1 rounded border text-[8px] font-bold uppercase tracking-wider ${Q.rank >= 3 ? "border-slate-400 text-slate-700 dark:text-neutral-200" : "border-dashed border-slate-300 text-slate-500"} ${className}`,
+    title: `Data: ${Q.label}`, "data-quality": q,
+  }, Q.short);
+};
+
+// ── Quality control tolerance from the reference's own spread ──
+// A piece of the same product, scanned in 3 spots, lands within the
+// just-noticeable 1.0 plus the scatter its own average and the reference's
+// average carry: about twice the reference's spread (MCDM) × √(1/3 + 1/n).
+// A reference measured once uses 1.0.
+const qcAutoTol = (ref, basis) => {
+  const sp = ref && Array.isArray(ref.scanLog) && ref.scanLog.length > 1 ? scanSpreadOf(ref.scanLog, basis) : null;
+  if (sp) {
+    const t = 1 + 2 * sp.mcdm * Math.sqrt(1 / 3 + 1 / sp.n);
+    return { tol: Math.round(Math.max(1, t) * 10) / 10, n: sp.n, mcdm: sp.mcdm, why: `from its ${sp.n} scans (spread ΔE00 ${sp.mcdm.toFixed(2)})` };
+  }
+  return { tol: 1, n: ref ? 1 : 0, mcdm: 0, why: ref && colourQualityOf(ref) === "measured" ? "measured once, so the standard 1.0" : "no scans of it yet, so the standard 1.0" };
+};
+
+// ── The editor (Notes tab, for a pin) ──
+const PinIdentityPanel = ({ pin, colorData, currentName, onPatch, onRename }) => {
+  const [nm, setNm] = useState(""), [coll, setColl] = useState(""), [q, setQ] = useState("");
+  const hist = Array.isArray(pin.nameHistory) ? pin.nameHistory : [];
+  const sup = Array.isArray(pin.suppliers) ? pin.suppliers : [];
+  const bn = (b) => (typeof getBrandDisplayName === "function" ? getBrandDisplayName(b) : b);
+  const t = q.trim().toLowerCase();
+  const hits = useMemo(() => {
+    if (t.length < 2) return [];
+    const out = [];
+    Object.entries(colorData || {}).forEach(([b, arr]) => (arr || []).forEach((e) => { if (e && out.length < 8 && `${e.name || ""} ${pinItemCode(e)} ${bn(b)}`.toLowerCase().includes(t)) out.push({ b, e }); }));
+    return out;
+  }, [t, colorData]);
+  const setSup = (next) => {
+    const patch = { suppliers: next };
+    const src = next.find((s) => s.rel === "source");
+    if (src) { const i = pinSupplierFind(colorData, src, pin); if (i >= 0) { patch.brand = src.brand; patch.originalIndex = i; } }
+    onPatch(patch);
+  };
+  const lbl = "text-[9px] uppercase tracking-wider font-bold text-slate-500";
+  const inp = "h-8 px-2 rounded-md border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-[12px] min-w-0";
+  const btn = "h-8 px-2.5 rounded-md text-[11px] font-bold border border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-200 hover:border-slate-400 disabled:opacity-40";
+  const addName = () => { if (!nm.trim()) return; onPatch({ nameHistory: [...hist, { name: nm.trim(), collection: coll.trim() }] }); setNm(""); setColl(""); };
+  return React.createElement("div", { className: "flex flex-col gap-3 text-[12px]", "data-pin-identity": "" },
+    React.createElement("div", { className: "flex items-center gap-2 rounded-lg bg-slate-50 dark:bg-neutral-800/60 px-2.5 py-2" },
+      React.createElement(Icon, { name: "lock", className: "w-3.5 h-3.5 text-slate-500" }),
+      React.createElement("span", { className: "font-mono font-bold text-[13px]", "data-pin-code": "" }, pin.erpCode || "–"),
+      React.createElement("span", { className: "text-[10px] text-slate-500 leading-snug" }, "Code fixed when pinned; rescans update the colour, not the code.")),
+    // names
+    React.createElement("div", { className: "flex flex-col gap-1.5" },
+      React.createElement("span", { className: lbl }, "Names"),
+      React.createElement("div", { className: "flex items-center gap-2" },
+        React.createElement("span", { className: "font-bold text-[14px] text-slate-800 dark:text-neutral-100" }, currentName || "Unnamed"),
+        React.createElement("span", { className: "text-[10px] text-slate-500" }, "current")),
+      hist.length > 0 && React.createElement("ul", { className: "flex flex-col divide-y divide-slate-100 dark:divide-neutral-800", "data-pin-history": "" },
+        hist.map((n, i) => React.createElement("li", { key: i, className: "flex items-center gap-2 py-1" },
+          React.createElement("span", { className: "flex-1 min-w-0 truncate" }, React.createElement("span", { className: "font-semibold" }, n.name), n.collection ? React.createElement("span", { className: "text-slate-500" }, ` · ${n.collection}`) : React.createElement("span", { className: "text-slate-400 italic" }, " · collection not set")),
+          onRename && React.createElement("button", { type: "button", className: "text-[10px] font-semibold text-slate-500 hover:text-slate-800 underline", onClick: () => onRename(n.name), title: "Make this the current name" }, "Use"),
+          React.createElement("button", { type: "button", className: "text-slate-300 hover:text-red-500", "aria-label": `Remove ${n.name}`, onClick: () => onPatch({ nameHistory: hist.filter((_, k) => k !== i) }) }, React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" }))))),
+      React.createElement("div", { className: "flex gap-1.5" },
+        React.createElement("input", { className: `${inp} flex-1`, value: nm, onChange: (e) => setNm(e.target.value), placeholder: "Name", "aria-label": "Name used before or elsewhere", onKeyDown: (e) => e.key === "Enter" && addName() }),
+        React.createElement("input", { className: `${inp} w-28`, value: coll, onChange: (e) => setColl(e.target.value), placeholder: "Collection", "aria-label": "Collection that used it", onKeyDown: (e) => e.key === "Enter" && addName() }),
+        React.createElement("button", { type: "button", className: btn, onClick: addName, disabled: !nm.trim() }, "Add")),
+      React.createElement("span", { className: "text-[10px] text-slate-500 leading-snug" }, "Earlier and other names, each with the collection that used it (e.g. Hidden Olive · Spring 2026). Search finds the colour by any of them.")),
+    // supplier products
+    React.createElement("div", { className: "flex flex-col gap-1.5" },
+      React.createElement("span", { className: lbl }, "Supplier products"),
+      sup.length === 0 && React.createElement("span", { className: "text-slate-400 italic" }, "None linked yet."),
+      sup.length > 0 && React.createElement("ul", { className: "flex flex-col gap-1", "data-pin-suppliers": "" },
+        sup.map((s, i) => {
+          const r = pinSupplierItem(colorData, s, pin), it = r && fastItemLch(r.item);
+          const d = it ? fastDeltaEOK(pin.L, pin.C, pin.H || 0, it.L, it.C, it.H) : NaN;
+          const far = isFinite(d) && d > 2;
+          return React.createElement("li", { key: i, className: "flex items-start gap-2 rounded-md border border-slate-200 dark:border-neutral-700 px-2 py-1.5" },
+            React.createElement("span", { className: "w-6 h-6 mt-0.5 rounded ring-1 ring-black/10 shrink-0", style: { background: (it && it.hex) || "transparent" } }),
+            React.createElement("span", { className: "flex-1 min-w-0 flex flex-col gap-1" },
+              React.createElement("span", { className: "font-semibold break-words leading-snug" }, `${bn(s.brand)} ${s.name || s.code}`),
+              React.createElement("span", { className: `text-[10px] leading-snug ${far ? "text-red-700 dark:text-red-300 font-semibold" : "text-slate-500"}` },
+                [s.code && s.code !== s.name ? s.code : "", r ? `ΔEok ${d.toFixed(2)} from this colour${far && s.rel !== "source" ? ": too far to be interchangeable?" : ""}` : "not found in the brand's file"].filter(Boolean).join(" · ")),
+              React.createElement("span", { className: "flex items-center gap-1.5 flex-wrap" },
+                r && React.createElement(QualityBadge, { q: colourQualityOf(r.item) }),
+                React.createElement("button", {
+                  type: "button", className: `h-6 px-1.5 rounded text-[9px] font-bold uppercase tracking-wider ${s.rel === "source" ? "bg-slate-800 text-white dark:bg-neutral-100 dark:text-neutral-900" : "border border-slate-300 text-slate-600"}`,
+                  title: s.rel === "source" ? "The product this colour was taken from" : "Interchangeable: tap to make it the source instead",
+                  onClick: () => s.rel !== "source" && setSup(sup.map((x, k) => ({ ...x, rel: k === i ? "source" : "equivalent" }))),
+                }, s.rel === "source" ? "Source" : "Interchangeable"))),
+            React.createElement("button", { type: "button", className: "text-slate-300 hover:text-red-500", "aria-label": `Remove ${s.name}`, onClick: () => setSup(sup.filter((_, k) => k !== i)) }, React.createElement(Icon, { name: "x", className: "w-3.5 h-3.5" })));
+        })),
+      React.createElement("div", { className: "relative" },
+        React.createElement("input", { className: `${inp} w-full`, value: q, onChange: (e) => setQ(e.target.value), placeholder: "Add a supplier product (name or code)", "aria-label": "Find a supplier product" }),
+        hits.length > 0 && React.createElement("ul", { className: "absolute z-30 left-0 right-0 top-full mt-1 rounded-lg border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-xl max-h-64 overflow-y-auto" },
+          hits.map(({ b, e }, k) => React.createElement("li", { key: k },
+            React.createElement("button", {
+              type: "button", className: "w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-slate-50 dark:hover:bg-neutral-800", "data-pin-supplier-hit": "",
+              onClick: () => { setSup([...sup, pinSupplierOf(b, e, sup.some((s) => s.rel === "source") ? "equivalent" : "source")]); setQ(""); },
+            },
+              React.createElement("span", { className: "w-5 h-5 rounded ring-1 ring-black/10 shrink-0", style: { background: (fastItemLch(e) || {}).hex || e.hex } }),
+              React.createElement("span", { className: "flex-1 min-w-0 truncate" }, e.name),
+              React.createElement("span", { className: "text-[10px] text-slate-400 truncate max-w-[40%]" }, bn(b))))))),
+      React.createElement("span", { className: "text-[10px] text-slate-500 leading-snug" }, "The source it was taken from, and interchangeable products from other suppliers. They all carry this colour's name, and a sample of any of them identifies as this colour.")));
 };
 
 const App = () => {
@@ -22065,7 +22299,7 @@ const App = () => {
         };
     }
     const exactErpCode = getExactErpCode(scrubL, scrubC, scrubH);
-    const activeErpCode = exactErpCode;
+    const activeErpCode = exactSavedColor && exactSavedColor.type === "pin" && exactSavedColor.erpCode ? exactSavedColor.erpCode : exactErpCode;
     let validatedCommercial = null;
     if (scrubCommercial && colorData) {
       const { brand, originalIndex } = scrubCommercial;
@@ -22260,7 +22494,7 @@ const App = () => {
         : cleanName(names[key] || sc.nameOverride);
       const note = sc.notes || dictNotes[key] || "";
       const tagsStr = (dictTags[sc.id] || dictTags[key] || []).join(" ");
-      const hay = `${name} ${note} ${sc.erpCode || ""} ${tagsStr}`.toLowerCase();
+      const hay = `${name} ${note} ${sc.erpCode || ""} ${tagsStr} ${isPin ? pinAliasText(sc) : ""}`.toLowerCase();
       if (!qWords.every((w) => hay.includes(w))) return;
       const L = sc.type === "nounColumn" ? (sc.minL + sc.maxL) / 2 : sc.L;
       results.push({
@@ -22562,6 +22796,10 @@ const App = () => {
         });
     })();
   }, [colorData]);
+  useEffect(() => {
+    const fix = pinLinksReconcile(savedColors, colorData);
+    if (fix) setSavedColors((prev) => { const n = { ...prev }; Object.entries(fix).forEach(([id, p]) => { if (n[id]) n[id] = { ...n[id], ...p }; }); return n; });
+  }, [colorData, savedColors]);
   const spectroAddTo = (res) => {
     if (!res || !res.compound) return;
     const { target, log, compound: c } = res;
@@ -22923,6 +23161,8 @@ const App = () => {
             Measurement_Date: sc.measurementDate || "",
             Measurement_Device: sc.measurementDevice || "",
             Scan_Log: sc.scanLog ? scanLogEncode(sc.scanLog) : "",
+            Name_History: Array.isArray(sc.nameHistory) && sc.nameHistory.length ? JSON.stringify(sc.nameHistory) : "",
+            Suppliers: Array.isArray(sc.suppliers) && sc.suppliers.length ? JSON.stringify(sc.suppliers) : "",
           });
         });
       if (groupSettings) {
@@ -29225,6 +29465,15 @@ const AppUI = ({
                   }),
               ),
             ),
+            crosshair?.activeSavedColor?.type === "pin" && savedColors[crosshair.activeSavedColor.id] && React.createElement(
+              CollapsiblePanel,
+              { title: "Names & suppliers", icon: "tags", defaultOpen: true },
+              React.createElement(PinIdentityPanel, {
+                pin: savedColors[crosshair.activeSavedColor.id], colorData, currentName: activeName,
+                onPatch: (patch) => { const id = crosshair.activeSavedColor.id; setSavedColors((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], ...patch } } : prev)); },
+                onRename: (n) => onNameChange(n),
+              }),
+            ),
             (() => {
               const ac = crosshair?.activeCommercial;
               const p = crosshair?.activeSavedColor?.type === "pin" ? savedColors[crosshair.activeSavedColor.id] : null;
@@ -31400,7 +31649,7 @@ const AppUI = ({
                       const visual = config.visualTexture ?? (info.visualTexture || null) ?? printLabelVisualTexture;
                       const tactile = config.tactileTexture ?? (info.tactileTexture || null) ?? printLabelTactileTexture;
                       const profile = config.doorProfile ?? (info.doorProfile || null) ?? printLabelDoorProfile;
-                      const code = get7DigitOklch(info.L, info.C, info.H);
+                      const code = (info.pin && info.pin.erpCode) || get7DigitOklch(info.L, info.C, info.H);
                       const ab = (v) => String(v || "").split(" ")[0] || "XX";
                       return { name: info.displayName, hex: info.hex, code, sheen, material, visual, tactile, profile, id: `${code}-${ab(sheen)}-${ab(visual)}-${ab(tactile)}-${ab(profile)}` };
                     });
@@ -31613,7 +31862,7 @@ const AppUI = ({
             const abbrVisual = itemVisualTexture.split(' ')[0] || "XX";
             const abbrTactile = itemTactileTexture.split(' ')[0] || "XX";
             const abbrProfile = itemDoorProfile.split(' ')[0] || "XX";
-            const labelColorCode = get7DigitOklch(info.L, info.C, info.H);
+            const labelColorCode = (info.pin && info.pin.erpCode) || get7DigitOklch(info.L, info.C, info.H);
             const generatedIdStr = `${labelColorCode}-${abbrSheen}-${abbrVisual}-${abbrTactile}-${abbrProfile}`;
 
             return React.createElement(
