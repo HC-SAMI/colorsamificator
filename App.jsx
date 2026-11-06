@@ -15320,7 +15320,11 @@ const scanLogSummary = (log, basis) => {
 const scanLogDate = (t) => { const d = new Date(t); return t && !isNaN(d) ? d.toLocaleString([], { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : t || "Date not recorded"; };
 // Inside the Spectral Response panel: what the curve is built from, and a
 // way to add more scans to it.
-const SpectralScanLog = ({ owner, onAdd }) => {
+const SpectralScanLog = ({ owner, onAdd, onRemove }) => {
+  const [asking, setAsking] = useState(null);   // the scan whose removal is being confirmed
+  const [undo, setUndo] = useState(null);       // { key, log, label } for a few seconds after a removal
+  useEffect(() => { if (!undo) return; const t = setTimeout(() => setUndo(null), 12000); return () => clearTimeout(t); }, [undo]);
+  useEffect(() => { setAsking(null); }, [owner && owner.key]);
   const s = useSpectro();
   const [hi, setHi] = useState(null);
   const log = owner ? scanLogOf(owner.obj) : [];
@@ -15339,6 +15343,9 @@ const SpectralScanLog = ({ owner, onAdd }) => {
       React.createElement("span", { className: "flex-1" }, n === 1 ? (log[0].origin === "original" ? "1 measurement (as recorded)" : "Built from 1 scan") : `Built from ${n} scans`),
       n > 1 && React.createElement("span", { className: "font-mono text-[10px] text-slate-500" }, `MCDM ΔE00 ${sum.ses.mcdm.toFixed(2)}`)),
     React.createElement("div", { className: "flex flex-col gap-3 px-3 pb-3" },
+      undo && undo.key === owner.key && React.createElement("div", { className: "flex items-center gap-2 rounded-md bg-slate-50 dark:bg-neutral-800/60 px-2.5 py-1.5 text-[11px]", role: "status", "data-scan-undo": "" },
+        React.createElement("span", { className: "flex-1" }, `Removed the scan of ${undo.label}; the colour was worked out again from the rest.`),
+        React.createElement("button", { type: "button", className: "h-8 px-2 rounded-md font-bold underline", onClick: () => { onRemove(owner, undo.log); setUndo(null); } }, "Undo")),
       React.createElement("div", { className: "grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]" },
         [["Scans", String(n)], ["Spread (MCDM)", n > 1 ? `ΔE00 ${sum.ses.mcdm.toFixed(2)}` : "–"], ["First", scanLogDate(sum.first)], ["Latest", scanLogDate(sum.last)],
           ["Devices", sum.devices.join(", ") || "Not recorded"], ["Colour from", `${s.basis} · OkLCH D65/2°, CIELAB D50/2°`]].map(([k, v]) =>
@@ -15377,7 +15384,19 @@ const SpectralScanLog = ({ owner, onAdd }) => {
             React.createElement("span", { className: "block text-slate-500 break-words" },
               [r.origin === "original" ? "as recorded" : r.modes && r.modes.length > 1 ? `${r.mode} used (kept ${r.modes.join(", ")})` : r.mode, r.origin === "live" ? "sent live" : "", r.demo ? "demo" : ""].filter(Boolean).join(" · ")),
             r.origin === "original" && r.method && React.createElement("span", { className: "block text-slate-400 truncate" }, r.method)),
-          n > 1 && React.createElement("span", { className: "font-mono text-[10px] text-slate-600 dark:text-neutral-300 text-right shrink-0", title: "CIEDE2000 from the average" }, `ΔE00 ${(sum.ses.dev[i] || 0).toFixed(2)}`)))),
+          n > 1 && React.createElement("span", { className: "font-mono text-[10px] text-slate-600 dark:text-neutral-300 text-right shrink-0", title: "CIEDE2000 from the average" }, `ΔE00 ${(sum.ses.dev[i] || 0).toFixed(2)}`),
+          // remove: asks first; the colour is rebuilt from the scans left
+          onRemove && owner.kind !== "reading" && (asking === r.id
+            ? React.createElement("span", { className: "flex items-center gap-1 shrink-0", "data-scan-confirm": "" },
+              React.createElement("button", { type: "button", className: "h-8 px-2 rounded-md text-[11px] font-bold bg-red-600 text-white", "data-scan-remove-yes": "",
+                onClick: () => { const next = log.filter((e) => e.id !== r.id); setAsking(null); setUndo({ key: owner.key, log, label: scanLogDate(r.at) }); onRemove(owner, next); } }, "Remove"),
+              React.createElement("button", { type: "button", className: "h-8 px-2 rounded-md text-[11px] font-semibold border border-slate-200 dark:border-neutral-700", onClick: () => setAsking(null) }, "Keep"))
+            : React.createElement("button", {
+              type: "button", disabled: n < 2, onClick: () => setAsking(r.id), "data-scan-remove": "",
+              className: "w-8 h-8 -my-1 rounded-md flex items-center justify-center text-slate-400 hover:text-red-600 disabled:opacity-30 shrink-0",
+              title: n < 2 ? "A colour keeps at least one scan" : "Remove this scan from the colour", "aria-label": `Remove the scan of ${scanLogDate(r.at)}`,
+            }, React.createElement(Icon, { name: "trash-2", className: "w-3.5 h-3.5" })))))),
+
       React.createElement("button", {
         type: "button", onClick: () => onAdd && onAdd(owner, log), disabled: adding, "data-scan-add": "",
         className: "h-9 rounded-md text-[12px] font-bold bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900 inline-flex items-center justify-center gap-1.5 disabled:opacity-50",
@@ -28705,6 +28724,14 @@ const AppUI = ({
                     const { obj, ...target } = owner;
                     spectroStore.startAddTo(target, owner.kind === "reading" && !(obj.scanLog && obj.scanLog.length) ? [scanLogEntryOf(obj)] : log);
                     openInspectorPanel("spectrum", "Spectrophotometer");
+                  },
+                  // a scan taken off the colour: its average, range and blob come from the scans left
+                  onRemove: (owner, nextLog) => {
+                    const sum = scanLogSummary(nextLog, spectroStore.get().basis);
+                    if (!sum) return;
+                    const { obj: _obj, ...target } = owner;
+                    const m = sum.ses.mean;
+                    spectroAddTo({ target, log: nextLog, compound: { L: m.L, C: m.C, H: m.H, hex: m.hex, spectral: m.spectral } });
                   },
                 }),
               ),
