@@ -27,13 +27,23 @@ const keyOf = (req) => {
   if (u.hostname === "raw.githubusercontent.com") { u.searchParams.delete("t"); return u.href; }
   return req.url;
 };
+// A kept copy carries the time it was stored (x-csam-stored), and anything
+// served from the cache is marked x-csam-cache, so the app can tell an old copy
+// of the colour data from a fresh one (the GitHub sync merges against it).
+const stamped = async (res, extra) => {
+  if (res.type === "opaque") return res;
+  const h = new Headers(res.headers);
+  Object.entries(extra).forEach(([k, v]) => h.set(k, v));
+  return new Response(await res.blob(), { status: res.status, statusText: res.statusText, headers: h });
+};
 const keep = async (key, res) => {
   if (!res || !(res.ok || res.type === "opaque")) return;
-  try { const c = await caches.open(CACHE); await c.put(key, res); } catch (e) {}
+  try { const c = await caches.open(CACHE); await c.put(key, await stamped(res, { "x-csam-stored": String(Date.now()) })); } catch (e) {}
 };
 const fromCache = async (key, req) => {
   const c = await caches.open(CACHE);
-  return (await c.match(key)) || (await c.match(key, { ignoreSearch: true })) || (req.mode === "navigate" ? (await c.match("./index.html")) || (await c.match("./")) : undefined);
+  const hit = (await c.match(key)) || (await c.match(key, { ignoreSearch: true })) || (req.mode === "navigate" ? (await c.match("./index.html")) || (await c.match("./")) : undefined);
+  return hit ? stamped(hit, { "x-csam-cache": "1" }) : undefined;
 };
 // network first; the cached copy when there's no connection, or when the
 // network is slow and there is a copy (it's refreshed in the background)

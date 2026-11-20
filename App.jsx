@@ -19367,7 +19367,198 @@ const gitBlobSha = async (text) => {
   }
 };
 
-const ghCommitFiles = async (cfg, branch, files, message, onProgress) => {
+// ── Sync base and three-way merge ──
+// A sync used to write this device's whole copy over the repo, so a phone that
+// had opened with an old copy (offline, or from the offline cache) put back
+// colours that had since been changed or deleted elsewhere. Now each device
+// keeps the repo's CSVs as it last loaded or synced them (its "base"), and a
+// sync only sends what changed on this device since then, merged row by row
+// and column by column into what is in the repo now.
+const syncBaseStore = (() => {
+  let dbp = null;
+  const open = () => {
+    if (dbp) return dbp;
+    dbp = new Promise((res, rej) => {
+      try {
+        const rq = indexedDB.open("csam-sync-base", 1);
+        rq.onupgradeneeded = () => rq.result.createObjectStore("files");
+        rq.onsuccess = () => res(rq.result);
+        rq.onerror = () => rej(rq.error);
+      } catch (e) { rej(e); }
+    });
+    return dbp;
+  };
+  const tx = async (mode, fn) => {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const t = db.transaction("files", mode), s = t.objectStore("files");
+      const r = fn(s);
+      t.oncomplete = () => res(r && "result" in r ? r.result : undefined);
+      t.onerror = () => rej(t.error);
+    });
+  };
+  return {
+    // { "pins.csv": { text, at, sha } }; at = when that copy left the repo
+    all: async () => {
+      try {
+        const db = await open();
+        return await new Promise((res, rej) => {
+          const out = {};
+          const t = db.transaction("files", "readonly");
+          const rq = t.objectStore("files").openCursor();
+          rq.onsuccess = () => { const c = rq.result; if (c) { out[c.key] = c.value; c.continue(); } };
+          t.oncomplete = () => res(out);
+          t.onerror = () => rej(t.error);
+        });
+      } catch (e) { return {}; }
+    },
+    putMany: (recs) => tx("readwrite", (s) => { Object.entries(recs).forEach(([k, v]) => s.put(v, k)); }).catch(() => {}),
+  };
+})();
+
+// Columns the app recomputes from others on every export; a difference in
+// them alone is not an edit.
+const CSV_DERIVED = new Set(["Anchor_ID", "RGB_R", "RGB_G", "RGB_B", "RGB", "CMYK_C", "CMYK_M", "CMYK_Y", "CMYK_K", "CMYK", "CIE_L", "CIE_A", "CIE_B", "CIE_LAB"]);
+const csvDerived = (row, f) => CSV_DERIVED.has(f) || (f === "Noun" && String(row.Type || "").toUpperCase().trim() === "PIN");
+// What identifies a row across versions of a file.
+const csvRowKey = (r) => {
+  const t = String(r.Type || "").toUpperCase().trim();
+  if (r.ID) return `${t}|${r.ID}`;
+  if (t === "PALETTE") return `${t}|${r.Tags || r.Noun || ""}`;
+  if (t === "DB") return `${t}|${String(r.Adjective || "").toLowerCase()}|${r.Noun || ""}|${r.ERP_Code || ""}`;
+  return `${t}|${r.Noun || ""}`;
+};
+// Same value, written differently? (numbers to 1e-9, hex in any case)
+const csvSame = (a, b) => {
+  if (a === b) return true;
+  a = a == null ? "" : String(a).trim();
+  b = b == null ? "" : String(b).trim();
+  if (a === b) return true;
+  if (/^[-+.\d]/.test(a) && /^[-+.\d]/.test(b)) {
+    const x = Number(a), y = Number(b);
+    if (isFinite(x) && isFinite(y) && a !== "" && b !== "") return Math.abs(x - y) <= 1e-9 * Math.max(1, Math.abs(x), Math.abs(y));
+  }
+  return a.toLowerCase() === b.toLowerCase() && /^#[0-9a-f]{3,8}$/i.test(a);
+};
+const csvIndex = (text) => {
+  const p = text ? Papa.parse(text, { header: true, skipEmptyLines: true }) : { data: [], meta: { fields: [] } };
+  const map = new Map(), order = [], seen = new Map();
+  (p.data || []).forEach((r) => {
+    if (!r || !String(r.Type || "").trim()) return;
+    let k = csvRowKey(r);
+    const n = (seen.get(k) || 0) + 1;
+    seen.set(k, n);
+    if (n > 1) k += `#${n}`;
+    map.set(k, r);
+    order.push(k);
+  });
+  return { map, order, fields: (p.meta && p.meta.fields) || [] };
+};
+// two CSV texts as one (columns of both)
+const csvJoin = (a, b) => {
+  const x = Papa.parse(a || "", { header: true, skipEmptyLines: true }), y = Papa.parse(b || "", { header: true, skipEmptyLines: true });
+  const fields = [...(x.meta.fields || [])];
+  (y.meta.fields || []).forEach((f) => { if (!fields.includes(f)) fields.push(f); });
+  return Papa.unparse({ fields, data: [...x.data, ...y.data].map((r) => fields.map((f) => r[f] ?? "")) });
+};
+const csvRowsSame = (a, b, fields) => fields.every((f) => a[f] === b[f] || csvDerived(a, f) || csvSame(a[f], b[f]));
+
+// A CSV's header and records as text (a quoted field may span lines).
+const csvRecords = (text) => {
+  const lines = String(text || "").split(/\r?\n/), recs = [];
+  let cur = null, odd = false;
+  for (const ln of lines) {
+    const q = ln.split('"').length - 1;
+    if (cur === null) { cur = ln; odd = q % 2 === 1; } else { cur += "\n" + ln; if (q % 2 === 1) odd = !odd; }
+    if (!odd) { if (cur !== "") recs.push(cur); cur = null; }
+  }
+  if (cur) recs.push(cur);
+  return { header: recs[0] || "", body: recs.slice(1) };
+};
+// Has this device changed anything in the file since the base? Records that are
+// byte for byte the same are skipped; only the others are parsed and compared,
+// so an unchanged catalogue file costs a string split rather than a full parse.
+const csvLocallyChanged = (baseText, localText) => {
+  if (baseText === localText) return false;
+  const B = csvRecords(baseText), L = csvRecords(localText);
+  if (B.header !== L.header) return mergeCsv3(baseText, localText, baseText).localChanged;
+  const inB = new Set(B.body), inL = new Set(L.body);
+  const onlyL = L.body.filter((r) => !inB.has(r)), onlyB = B.body.filter((r) => !inL.has(r));
+  if (!onlyL.length && !onlyB.length) return false;
+  const b = [B.header, ...onlyB].join("\n"), l = [L.header, ...onlyL].join("\n");
+  return mergeCsv3(b, l, b).localChanged;
+};
+
+// base: the file as this device last had it from the repo (null if unknown),
+// local: this device's export now, remote: the repo's file now.
+// Returns the merged text, whether it adds anything to the repo (localChanged)
+// and whether it holds anything from elsewhere this device doesn't have yet
+// (remoteChanged). Edits on this device win over edits elsewhere to the same
+// cell; a row deleted on one side and left alone on the other is deleted; a
+// row deleted on one side and edited on the other is kept.
+const mergeCsv3 = (baseText, localText, remoteText) => {
+  if (localText === remoteText) return { text: remoteText, localChanged: false, remoteChanged: false };
+  if (baseText != null && localText === baseText) return { text: remoteText, localChanged: false, remoteChanged: true };
+  const B = baseText == null ? null : csvIndex(baseText);
+  const L = csvIndex(localText), R = remoteText === baseText && B ? B : csvIndex(remoteText);
+  const fields = [...R.fields];
+  L.fields.forEach((f) => { if (!fields.includes(f)) fields.push(f); });
+  const bRow = (k) => (B ? B.map.get(k) : undefined);
+  let localChanged = false, remoteChanged = false;
+  const out = new Map();
+  const keptR = [];
+  R.order.forEach((k) => {
+    const r = R.map.get(k), l = L.map.get(k), b = bRow(k);
+    if (!l) {
+      // deleted here since the base, and untouched in the repo: delete it
+      if (b && csvRowsSame(r, b, fields)) { localChanged = true; return; }
+      // added in the repo, or edited there after being deleted here: keep it
+      remoteChanged = true;
+      out.set(k, r);
+      keptR.push(k);
+      return;
+    }
+    const m = {};
+    const isPin = String(r.Type || "").toUpperCase().trim() === "PIN";
+    for (let i = 0; i < fields.length; i++) {
+      const f = fields[i];
+      const lv = l[f] == null ? "" : l[f], rv = r[f] == null ? "" : r[f];
+      if (lv === rv) { m[f] = lv; continue; }
+      const bv = b ? (b[f] == null ? "" : b[f]) : undefined;
+      const mine = b ? lv !== bv && !csvSame(lv, bv) : String(lv).trim() !== "";
+      const v = mine ? lv : rv;
+      m[f] = v;
+      if (!CSV_DERIVED.has(f) && !(isPin && f === "Noun")) {
+        if (mine && !csvSame(v, rv)) localChanged = true;
+        if (!mine && !csvSame(v, lv)) remoteChanged = true;
+      }
+    }
+    out.set(k, m);
+    keptR.push(k);
+  });
+  // rows only this device has: new here (kept, next to the row before them),
+  // or deleted in the repo since the base (dropped unless edited here since)
+  const after = new Map();
+  let anchor = "";
+  const keptSet = new Set(keptR);
+  L.order.forEach((k) => {
+    if (keptSet.has(k)) { anchor = k; return; }
+    if (R.map.has(k)) return; // deleted by the merge above
+    const l = L.map.get(k), b = bRow(k);
+    if (b && csvRowsSame(l, b, fields)) { remoteChanged = true; return; }
+    localChanged = true;
+    out.set(k, l);
+    if (!after.has(anchor)) after.set(anchor, []);
+    after.get(anchor).push(k);
+  });
+  const rows = [];
+  const emit = (k) => rows.push(fields.map((f) => { const v = out.get(k)[f]; return v == null ? "" : v; }));
+  (after.get("") || []).forEach(emit);
+  keptR.forEach((k) => { emit(k); (after.get(k) || []).forEach(emit); });
+  return { text: Papa.unparse({ fields, data: rows }), localChanged, remoteChanged };
+};
+
+const ghCommitFiles = async (cfg, branch, files, message, onProgress, prepare) => {
   const repo = `/repos/${cfg.owner}/${cfg.repo}`;
   const report = (m) => onProgress && onProgress(m);
 
@@ -19401,6 +19592,12 @@ const ghCommitFiles = async (cfg, branch, files, message, onProgress) => {
     });
   } catch (e) {
     existing = {};
+  }
+
+  // the caller merges against the repo as it is now, before anything is sent
+  if (prepare) {
+    const readBlob = async (sha) => fromBase64Utf8((await ghJson(cfg, `${repo}/git/blobs/${sha}`, {}, "Reading file")).content);
+    files = { ...files, ...((await prepare(existing, readBlob)) || {}) };
   }
 
   const names = Object.keys(files);
@@ -19463,7 +19660,7 @@ const ghCommitFiles = async (cfg, branch, files, message, onProgress) => {
     {
       method: "POST",
       body: JSON.stringify({
-        message,
+        message: typeof message === "function" ? message(changed) : message,
         tree: newTree.sha,
         parents: [headSha],
       }),
@@ -19480,9 +19677,11 @@ const ghCommitFiles = async (cfg, branch, files, message, onProgress) => {
   });
   if (!res.ok) {
     if (res.status === 422) {
-      throw new Error(
-        `${branch} moved on the remote while syncing — nothing was changed. Reload and try again.`,
+      const err = new Error(
+        `${branch} moved on the remote while syncing — nothing was changed. Try again.`,
       );
+      err.moved = true;
+      throw err;
     }
     throw new Error(`Updating ${branch} failed: ${res.status}`);
   }
@@ -21170,7 +21369,10 @@ const App = () => {
     } catch (e) {}
     liveStore.configure(githubConfig);
   }, [githubConfig]);
+  const dataLoadedRef = useRef(false);
   const loadInitialData = useCallback(async () => {
+    // the sync base as it was before this load (see syncBaseStore)
+    const priorBaseP = syncBaseStore.all();
     let loadedColorData = null;
     if (window.__COLOR_DATA__) {
       loadedColorData = window.__COLOR_DATA__;
@@ -21200,6 +21402,7 @@ const App = () => {
       initialState?.groupSettings || defaultGroupSettings;
     const currentTagLibrary = Array.isArray(initialState?.tagLibrary) ? [...initialState.tagLibrary] : [];
     const rawUrls = {};
+    const rawShas = {}; // the repo's current blob sha of each file, when the host lists them
     const discoverCSVFiles = async () => {
       // a static host can't list a folder; its build writes data/manifest.json instead
       try {
@@ -21256,7 +21459,7 @@ const App = () => {
                 const csvs = data.filter(
                   (f) => f.name && f.type !== "dir" && f.name.toLowerCase().endsWith(".csv"),
                 );
-                csvs.forEach((f) => { if (f.download_url) rawUrls[f.name] = f.download_url; });
+                csvs.forEach((f) => { if (f.download_url) rawUrls[f.name] = f.download_url; if (f.sha) rawShas[f.name] = f.sha; });
                 return csvs.map((f) => f.name);
               }
             }
@@ -21317,25 +21520,61 @@ const App = () => {
       const resolvedPath = file.startsWith("data/") ? file : "data/" + file;
       const resolvedUrl = new URL(resolvedPath, baseForFetch).href;
       const raw = rawUrls[file.replace(/^data\//, "")];
+      // when the copy left the repo: now, or (from the offline cache, which
+      // marks what it serves) when it was cached; 0 if that isn't known
+      const got = async (r) => {
+        const cached = !!r.headers.get("x-csam-cache") || (typeof navigator !== "undefined" && navigator.onLine === false);
+        return { text: await r.text(), at: cached ? Number(r.headers.get("x-csam-stored")) || 0 : Date.now() };
+      };
       if (raw) {
         try {
           const r = await fetch(`${raw}${raw.includes("?") ? "&" : "?"}t=${Date.now()}`, { cache: "no-store" });
-          if (r.ok) return await r.text();
+          if (r.ok) return await got(r);
         } catch (e) {}
       }
       const res = await fetch(resolvedUrl, { cache: "no-store" });
-      return res.ok ? await res.text() : "";
+      return res.ok ? await got(res) : { text: "", at: 0 };
     };
     const pendingTexts = filesToLoad.map((file) => fetchText(file).catch((e) => e));
+    const priorBase = await priorBaseP;
+    const loadedBase = {};
     for (let fi = 0; fi < filesToLoad.length; fi++) {
       const file = filesToLoad[fi];
       try {
         const got = await pendingTexts[fi];
         if (got instanceof Error) throw got;
-        let csvText = got || "";
+        let csvText = (got && got.text) || "";
         if (csvText) {
           const fc = csvText.trimStart().slice(0, 5).toLowerCase();
           if (fc === "<!doc" || fc === "<html") continue;
+          const baseName = file.replace(/^data\//, "");
+          loadedBase[baseName] = { text: csvText, at: got.at };
+          // Pins and anchors this device keeps (in its saved state) were in the
+          // repo the last time it loaded or synced. If this copy of their file
+          // no longer has some, they were deleted elsewhere, or this copy is
+          // older (the offline cache, a site that hasn't redeployed yet).
+          const prior = priorBase[baseName];
+          if (prior && prior.text !== csvText && (baseName === "pins.csv" || baseName === "anchors.csv")) {
+            const now = csvIndex(csvText);
+            const before = csvIndex(prior.ghost ? csvJoin(prior.text, prior.ghost) : prior.text);
+            const goneKeys = before.order.filter((k) => /^(PIN|ANCHOR|NOUN)\|./.test(k) && !now.map.has(k));
+            if (goneKeys.length) {
+              const sha = await gitBlobSha(csvText);
+              if (sha && rawShas[baseName] === sha) {
+                // the repo's current copy: they were deleted there, so drop them here
+                const gone = new Set(goneKeys.map((k) => k.slice(k.indexOf("|") + 1)));
+                Object.keys(currentSavedColors).forEach((k) => {
+                  const sc = currentSavedColors[k];
+                  if (gone.has(k) || (sc && (gone.has(sc.id) || gone.has(sc.anchorId)))) delete currentSavedColors[k];
+                });
+              } else {
+                // can't tell: keep them, and keep them in the base too, so the
+                // next sync deletes them if the repo no longer has them (unless
+                // they were changed here) instead of adding them back as new
+                loadedBase[baseName].ghost = Papa.unparse({ fields: before.fields, data: goneKeys.map((k) => before.fields.map((f) => before.map.get(k)[f] ?? "")) });
+              }
+            }
+          }
           const parsed = parseCSV(csvText);
           if (!parsed.length) continue;
           const processed = processCSVData(
@@ -21380,6 +21619,17 @@ const App = () => {
     setGroupSettings(currentGroupSettings);
     setSavedPalettes(currentSavedPalettes);
     setTagLibrary(currentTagLibrary);
+    // what this session's colours now come from: the next sync merges against it
+    try {
+      const recs = {};
+      for (const [n, rec] of Object.entries(loadedBase)) {
+        const prior = priorBase[n];
+        if (prior && prior.text === rec.text) continue;
+        recs[n] = { ...rec, sha: await gitBlobSha(rec.text) };
+      }
+      if (Object.keys(recs).length) await syncBaseStore.putMany(recs);
+    } catch (e) {}
+    dataLoadedRef.current = true;
   }, [linkedFiles]);
   useEffect(() => {
     loadInitialData();
@@ -23435,6 +23685,68 @@ const App = () => {
       alert("Failed downloading CSVs: " + e.message);
     }
   };
+  // Replace the session's colours, anchors and palettes with these CSVs (by file name).
+  const applyRepoTexts = (files) => {
+    const names = Object.keys(files).sort((a, b) => {
+      const rank = (n) => (n === "anchors.csv" ? 0 : n === "pins.csv" ? 1 : 2);
+      return rank(a) - rank(b);
+    });
+    let cColorData = {};
+    let cSaved = {};
+    let cNames = {};
+    let cNotes = {};
+    let cTags = {};
+    let cGroups = defaultGroupSettings;
+    let cPalettes = [];
+    const cTagLib = [];
+    const log = [];
+    names.forEach((name) => {
+      if (name === "template.csv") return;
+      const parsed = parseCSV(files[name]);
+      if (!parsed.length) {
+        log.push(`${name} — empty, skipped`);
+        return;
+      }
+      const processed = processCSVData(
+        parsed,
+        cColorData,
+        cSaved,
+        cNames,
+        cNotes,
+        cTags,
+        cGroups,
+        cPalettes,
+      );
+      cColorData = processed.newColorData;
+      cSaved = processed.newSavedColors;
+      cNames = processed.newNames;
+      cNotes = processed.newNotes;
+      cTags = processed.newTags;
+      if (processed.groupRowsSeen && (name === "anchors.csv" || !names.includes("anchors.csv")))
+        cGroups = processed.newGroupSettings || cGroups;
+      cPalettes = processed.newSavedPalettes || cPalettes;
+      (processed.newTagLibrary || []).forEach((t) => { if (!cTagLib.some((x) => x.toLowerCase() === t.toLowerCase())) cTagLib.push(t); });
+      log.push(`${name} — ${parsed.length} rows`);
+    });
+    cColorData = mergeBrandCase(cColorData);
+    cSaved = remapPinBrands(cSaved, cColorData);
+    setColorData(Object.keys(cColorData).length > 0 ? cColorData : null);
+    setSavedColors(cSaved);
+    setNames(cNames);
+    setDictNotes(cNotes);
+    setDictTags(cTags);
+    setGroupSettings(cGroups);
+    setSavedPalettes(cPalettes);
+    setTagLibrary(cTagLib);
+    return log;
+  };
+  // The repo's CSVs as this device now has them: the base the next sync merges against.
+  const saveSyncBase = async (dir, files, at) => {
+    if (dir !== "data") return; // the base is kept for the data folder the app loads from
+    const recs = {};
+    for (const [name, text] of Object.entries(files)) recs[name] = { text, at, sha: await gitBlobSha(text) };
+    await syncBaseStore.putMany(recs);
+  };
   const handlePullFromGitHub = async (override) => {
     const cfg = override || githubConfig;
     if (!cfg.token || !cfg.owner || !cfg.repo) {
@@ -23460,52 +23772,9 @@ const App = () => {
       if (names.length === 0) {
         throw new Error(`No CSV files found in ${dir || "the repo root"}.`);
       }
-      let cColorData = {};
-      let cSaved = {};
-      let cNames = {};
-      let cNotes = {};
-      let cTags = {};
-      let cGroups = defaultGroupSettings;
-      let cPalettes = [];
-      const cTagLib = [];
-      const log = [];
-      names.forEach((name) => {
-        const parsed = parseCSV(files[name]);
-        if (!parsed.length) {
-          log.push(`${name} — empty, skipped`);
-          return;
-        }
-        const processed = processCSVData(
-          parsed,
-          cColorData,
-          cSaved,
-          cNames,
-          cNotes,
-          cTags,
-          cGroups,
-          cPalettes,
-        );
-        cColorData = processed.newColorData;
-        cSaved = processed.newSavedColors;
-        cNames = processed.newNames;
-        cNotes = processed.newNotes;
-        cTags = processed.newTags;
-        if (processed.groupRowsSeen && (name === "anchors.csv" || !names.includes("anchors.csv")))
-          cGroups = processed.newGroupSettings || cGroups;
-        cPalettes = processed.newSavedPalettes || cPalettes;
-        (processed.newTagLibrary || []).forEach((t) => { if (!cTagLib.some((x) => x.toLowerCase() === t.toLowerCase())) cTagLib.push(t); });
-        log.push(`${name} — ${parsed.length} rows`);
-      });
-      cColorData = mergeBrandCase(cColorData);
-      cSaved = remapPinBrands(cSaved, cColorData);
-      setColorData(Object.keys(cColorData).length > 0 ? cColorData : null);
-      setSavedColors(cSaved);
-      setNames(cNames);
-      setDictNotes(cNotes);
-      setDictTags(cTags);
-      setGroupSettings(cGroups);
-      setSavedPalettes(cPalettes);
-      setTagLibrary(cTagLib);
+      const log = applyRepoTexts(files);
+      await saveSyncBase(dir, files, Date.now());
+      try { localStorage.removeItem("csam-sync-pending"); } catch (e2) {}
       setSyncStatus({
         state: "done",
         message: `Pulled ${names.length} file${names.length === 1 ? "" : "s"} from ${cfg.owner}/${cfg.repo}@${branch}.`,
@@ -23527,7 +23796,19 @@ const App = () => {
       setSyncStatus({ state: "queued", message: "You're offline. The sync runs by itself as soon as the connection is back; your changes are kept on this device meanwhile.", log: [] });
     };
     if (typeof navigator !== "undefined" && navigator.onLine === false) { queue(); return; }
+    if (!dataLoadedRef.current) {
+      setSyncStatus({ state: "error", message: "The colours are still loading. Try again in a moment.", log: [] });
+      return;
+    }
     setSyncStatus({ state: "running", message: "Checking access...", log: [] });
+    // progress, at most a few times a second (each message redraws the app)
+    let saidAt = 0;
+    const say = (m, force) => {
+      const now = Date.now();
+      if (!force && now - saidAt < 400) return;
+      saidAt = now;
+      setSyncStatus({ state: "running", message: m, log: [] });
+    };
     try {
       const info = await ghVerify(cfg);
       if (info.permissions && info.permissions.push === false) {
@@ -23536,31 +23817,101 @@ const App = () => {
       const branch = (cfg.branch || "").trim() || info.defaultBranch;
       const dir = String(cfg.path || "data").replace(/^\/+|\/+$/g, "");
       // texture maps go next to the data folder (the site's root): textures/
-      setSyncStatus({ state: "running", message: "Gathering texture maps...", log: [] });
+      say("Gathering texture maps...");
       const siteRoot = dir.includes("/") ? dir.slice(0, dir.lastIndexOf("/") + 1) : "";
       const tex = await textureRepoFiles(siteRoot);
-      setSyncStatus({ state: "running", message: "Gathering pictures...", log: [] });
+      say("Gathering pictures...");
       const pics = await pictureRepoFiles(dir, siteRoot);
       const built = buildExportFiles(tex.byKey, pics.byKey);
-      const files = { ...tex.files, ...pics.files };
-      Object.keys(built).forEach((name) => {
-        files[dir ? `${dir}/${name}` : name] = built[name];
-      });
-      const result = await ghCommitFiles(
-        cfg,
-        branch,
-        files,
-        `ColorSAMificator: update ${Object.keys(files).length} data files`,
-        (m) => setSyncStatus({ state: "running", message: m, log: [] }),
-      );
+      const base = dir === "data" ? await syncBaseStore.all() : {};
+      const pathOf = (name) => (dir ? `${dir}/${name}` : name);
+      let result, finals, merged, inRepo = null;
+      // the branch can move while merging; merge again against the new head
+      for (let attempt = 0; ; attempt++) {
+        finals = {};
+        merged = { sent: [], fromElsewhere: [], skipped: [] };
+        const prepare = async (existing, readBlob) => {
+          const out = {};
+          const names = Object.keys(built);
+          for (let i = 0; i < names.length; i++) {
+            const name = names[i], path = pathOf(name), b = base[name], rsha = existing[path];
+            say(`Merging ${name} (${i + 1}/${names.length})...`);
+            if (i % 10 === 0) await new Promise((r) => setTimeout(r, 0));
+            if (!rsha) {
+              // deleted from the repo after this device loaded it: leave it deleted
+              if (b) { merged.skipped.push(`${path} — removed from the repo since; not put back`); continue; }
+              out[path] = built[name];
+              finals[name] = built[name];
+              continue;
+            }
+            const bsha = b ? b.sha || (await gitBlobSha(b.text)) : null;
+            const btext = b ? (b.ghost ? csvJoin(b.text, b.ghost) : b.text) : null;
+            if (b && !csvLocallyChanged(btext, built[name])) {
+              // nothing changed here: the repo's copy stands
+              if (rsha === bsha && !b.ghost) { finals[name] = b.text; continue; }
+              finals[name] = rsha === bsha ? b.text : await readBlob(rsha);
+              merged.fromElsewhere.push(name);
+              continue;
+            }
+            const rtext = b && rsha === bsha ? b.text : await readBlob(rsha);
+            const m = mergeCsv3(btext, built[name], rtext);
+            if (m.localChanged) { out[path] = m.text; finals[name] = m.text; merged.sent.push(name); }
+            else finals[name] = rtext;
+            if (m.remoteChanged) merged.fromElsewhere.push(name);
+          }
+          // the folder's other CSVs (ones this device doesn't write, such as a
+          // second spelling of a brand file) are read too when they changed,
+          // so this device can catch up with them
+          for (const [p, sha] of Object.entries(existing)) {
+            const n = p.slice(dir ? dir.length + 1 : 0);
+            if ((dir && !p.startsWith(dir + "/")) || n.includes("/") || !/\.csv$/i.test(n) || n in built) continue;
+            const b = base[n];
+            if (b && (b.sha || (await gitBlobSha(b.text))) === sha) { finals[n] = b.text; continue; }
+            finals[n] = await readBlob(sha);
+            merged.fromElsewhere.push(n);
+          }
+          inRepo = new Set(Object.keys(existing).map((p) => p.slice(dir ? dir.length + 1 : 0)));
+          return out;
+        };
+        try {
+          result = await ghCommitFiles(
+            cfg,
+            branch,
+            { ...tex.files, ...pics.files },
+            (changed) => `ColorSAMificator: update ${changed.length} data file${changed.length === 1 ? "" : "s"}`,
+            say,
+            prepare,
+          );
+          break;
+        } catch (e) {
+          if (e && e.moved && attempt < 3) continue;
+          throw e;
+        }
+      }
+      const at = Date.now();
+      // this device catches up with what changed elsewhere
+      let applyLog = [];
+      if (merged.fromElsewhere.length) {
+        say("Bringing this device up to date...", true);
+        await new Promise((r) => setTimeout(r, 0));
+        const all = {};
+        Object.entries(base).forEach(([n, rec]) => { if (!inRepo || inRepo.has(n)) all[n] = rec.text; });
+        Object.assign(all, finals);
+        applyLog = applyRepoTexts(all);
+      }
+      // the new base: what the repo now holds (rewritten only where it changed)
+      await saveSyncBase(dir, Object.fromEntries(Object.entries(finals).filter(([n, t]) => !base[n] || base[n].text !== t || base[n].ghost)), at);
       setSyncStatus({
         state: "done",
-        message: result.commit
+        message: (result.commit
           ? `Committed ${result.changed.length} file${result.changed.length === 1 ? "" : "s"} to ${cfg.owner}/${cfg.repo}@${result.branch} (${result.commit.slice(0, 7)}).`
-          : `Everything already matches ${cfg.owner}/${cfg.repo}@${result.branch}.`,
+          : `Nothing new to send to ${cfg.owner}/${cfg.repo}@${result.branch}.`) +
+          (merged.fromElsewhere.length ? ` Changes made elsewhere in ${merged.fromElsewhere.length} file${merged.fromElsewhere.length === 1 ? "" : "s"} were kept and are now on this device.` : ""),
         log: [
           ...result.changed.map((p) => `${p} — committed`),
-          ...result.skipped.map((p) => `${p} — unchanged`),
+          ...merged.fromElsewhere.map((n) => `${pathOf(n)} — merged with changes made elsewhere`),
+          ...merged.skipped,
+          ...applyLog.map((l) => `this device: ${l}`),
         ],
       });
       try { localStorage.removeItem("csam-sync-pending"); } catch (e2) {}
@@ -23577,10 +23928,18 @@ const App = () => {
   syncRef.current = handleSyncToCSV;
   useEffect(() => {
     const pending = () => { try { return localStorage.getItem("csam-sync-pending") === "1"; } catch (e) { return false; } };
-    const resume = () => { if (pending() && navigator.onLine !== false) setTimeout(() => syncRef.current && syncRef.current(), 1500); };
+    let t = null;
+    // wait for the colours to finish loading: syncing a half-loaded session would
+    // compare against nothing
+    const resume = () => {
+      clearTimeout(t);
+      if (!pending() || navigator.onLine === false) return;
+      if (!dataLoadedRef.current) { t = setTimeout(resume, 2000); return; }
+      t = setTimeout(() => syncRef.current && syncRef.current(), 1500);
+    };
     window.addEventListener("online", resume);
     // the app was closed with a sync still waiting: run it once the data has loaded
-    const t = setTimeout(resume, 8000);
+    t = setTimeout(resume, 3000);
     return () => { window.removeEventListener("online", resume); clearTimeout(t); };
   }, []);
   const handleSystemImport = (e) => {
