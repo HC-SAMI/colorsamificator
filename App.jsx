@@ -19323,6 +19323,22 @@ const ghFetch = (cfg, path, options = {}) =>
     },
   });
 
+// GitHub settings as typed, cleaned: phone keyboards add a space after a word
+// (and can slip in invisible characters), which no owner, repository, token or
+// branch name ever contains, and which made GitHub answer 404.
+const GH_INVISIBLE = /[\s\u00a0\u200b-\u200d\u2060\ufeff]+/g;
+const cleanGhConfig = (c) => {
+  if (!c || typeof c !== "object") return c;
+  const strip = (v) => String(v == null ? "" : v).replace(GH_INVISIBLE, "");
+  return {
+    ...c,
+    owner: strip(c.owner),
+    repo: strip(c.repo).replace(/\.git$/i, ""),
+    token: strip(c.token),
+    branch: strip(c.branch),
+    path: String(c.path == null ? "" : c.path).replace(/[\u200b-\u200d\u2060\ufeff]/g, "").trim(),
+  };
+};
 const ghVerify = async (cfg) => {
   const res = await ghFetch(cfg, `/repos/${cfg.owner}/${cfg.repo}`);
   if (res.status === 401) {
@@ -19330,7 +19346,7 @@ const ghVerify = async (cfg) => {
   }
   if (res.status === 404) {
     throw new Error(
-      `${cfg.owner}/${cfg.repo} not found, or this token has no access to it.`,
+      `"${cfg.owner}/${cfg.repo}" not found, or this token has no access to it.`,
     );
   }
   if (!res.ok) throw new Error(`GitHub returned ${res.status}.`);
@@ -19356,6 +19372,10 @@ const ghJson = async (cfg, path, options, what) => {
     } catch (e) {}
     if (res.status === 403) {
       throw new Error(`${what} refused (403) — token likely lacks Contents: write.`);
+    }
+    if (res.status === 404 && what === "Reading branch") {
+      const b = decodeURIComponent((path.match(/\/heads\/(.*)$/) || [])[1] || "");
+      throw new Error(`Branch "${b}" not found in ${cfg.owner}/${cfg.repo}. Check the Branch field (or leave it empty for the repo's default branch).`);
     }
     throw new Error(`${what} failed: ${res.status} ${detail}`);
   }
@@ -21357,18 +21377,22 @@ const App = () => {
   );
   const [showGithubModal, setShowGithubModal] = useState(false);
   const [syncStatus, setSyncStatus] = useState(null);
-  const [githubConfig, setGithubConfig] = useState(() => {
+  const [githubConfig, setGithubConfigRaw] = useState(() => {
     // sessionStorage is unavailable in some sandboxes, so never let it throw.
     try {
       const kept = localStorage.getItem("csam-github-keep");
-      if (kept) return JSON.parse(kept);
+      if (kept) return cleanGhConfig(JSON.parse(kept));
     } catch (e) {}
     try {
       const raw = sessionStorage.getItem("csam-github");
-      if (raw) return JSON.parse(raw);
+      if (raw) return cleanGhConfig(JSON.parse(raw));
     } catch (e) {}
     return { token: "", owner: "", repo: "", branch: "", path: "data", remember: false, keep: false };
   });
+  const setGithubConfig = useCallback(
+    (v) => setGithubConfigRaw((p) => cleanGhConfig(typeof v === "function" ? v(p) : v)),
+    [],
+  );
   useEffect(() => {
     try {
       if (githubConfig.remember || githubConfig.keep) {
@@ -23831,7 +23855,7 @@ const App = () => {
     await syncBaseStore.putMany(recs);
   };
   const handlePullFromGitHub = async (override) => {
-    const cfg = override || githubConfig;
+    const cfg = cleanGhConfig(override || githubConfig);
     if (!cfg.token || !cfg.owner || !cfg.repo) {
       setShowGithubModal(true);
       return;
@@ -23869,7 +23893,7 @@ const App = () => {
     }
   };
   const handleSyncToCSV = async (override) => {
-    const cfg = override || githubConfig;
+    const cfg = cleanGhConfig(override || githubConfig);
     if (!cfg.token || !cfg.owner || !cfg.repo) {
       setShowGithubModal(true);
       return;
