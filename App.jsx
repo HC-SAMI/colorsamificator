@@ -19496,6 +19496,10 @@ const csvJoin = (a, b) => {
   return Papa.unparse({ fields, data: [...x.data, ...y.data].map((r) => fields.map((f) => r[f] ?? "")) });
 };
 const csvRowsSame = (a, b, fields) => fields.every((f) => a[f] === b[f] || csvDerived(a, f) || csvSame(a[f], b[f]));
+// For a row deleted on one side: was it really changed on the other? Tags
+// alone don't count (linked tags copy them between a pin and its colour by
+// themselves), so a deletion wins over a tag-only change.
+const csvRowsSameButTags = (a, b, fields) => csvRowsSame(a, b, fields.filter((f) => f !== "Tags"));
 
 // A CSV's header and records as text (a quoted field may span lines).
 const csvRecords = (text) => {
@@ -19545,7 +19549,7 @@ const mergeCsv3 = (baseText, localText, remoteText) => {
     const r = R.map.get(k), l = L.map.get(k), b = bRow(k);
     if (!l) {
       // deleted here since the base, and untouched in the repo: delete it
-      if (b && csvRowsSame(r, b, fields)) { localChanged = true; return; }
+      if (b && csvRowsSameButTags(r, b, fields)) { localChanged = true; return; }
       // added in the repo, or edited there after being deleted here: keep it
       remoteChanged = true;
       out.set(k, r);
@@ -19579,7 +19583,7 @@ const mergeCsv3 = (baseText, localText, remoteText) => {
     if (keptSet.has(k)) { anchor = k; return; }
     if (R.map.has(k)) return; // deleted by the merge above
     const l = L.map.get(k), b = bRow(k);
-    if (b && csvRowsSame(l, b, fields)) { remoteChanged = true; return; }
+    if (b && csvRowsSameButTags(l, b, fields)) { remoteChanged = true; return; }
     localChanged = true;
     out.set(k, l);
     if (!after.has(anchor)) after.set(anchor, []);
