@@ -21623,6 +21623,9 @@ const App = () => {
     currentSavedColors = remapPinBrands(currentSavedColors, currentColorData);
     const hadPreloaded = !!window.__COLOR_DATA__;
     const gotNewData = Object.keys(currentColorData).length > 0;
+    // new data: linked tags start again from what it holds (both sides combined),
+    // before React renders it
+    tagLinkRef.current = new Map();
     if (!hadPreloaded || gotNewData) {
       setColorData(gotNewData ? currentColorData : null);
     }
@@ -21643,7 +21646,6 @@ const App = () => {
       }
       if (Object.keys(recs).length) await syncBaseStore.putMany(recs);
     } catch (e) {}
-    tagLinkRef.current = new Map();
     dataLoadedRef.current = true;
   }, [linkedFiles]);
   useEffect(() => {
@@ -24041,6 +24043,7 @@ const App = () => {
         groupSettings,
         savedPalettes
       );
+      tagLinkRef.current = new Map();
       if (processed.newGroupSettings) {
         setGroupSettings(processed.newGroupSettings);
       }
