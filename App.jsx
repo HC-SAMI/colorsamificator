@@ -10400,9 +10400,11 @@ const semanticClaim = (tw, s) => {
 // ISCC-NBS names and your examples (surfaces too), are first lifted to the
 // screen chroma that reads the same; names are shown as surfaces.
 // settings.surfaceChroma: the factor at C 0.1 (1 = take screen names as they are).
-const SEMANTIC_SURFACE_K = 1.9, SEMANTIC_SURFACE_G = 0.171, SEMANTIC_SURFACE_MAX = 6;
+// SEMANTIC_SURFACE_K is the fitted factor (it sets the shape of the curve);
+// the app starts at SEMANTIC_SURFACE_DEFAULT unless a value is saved.
+const SEMANTIC_SURFACE_K = 1.9, SEMANTIC_SURFACE_G = 0.171, SEMANTIC_SURFACE_MAX = 6, SEMANTIC_SURFACE_DEFAULT = 2.4;
 const surfaceChromaOf = (s) => {
-  const k = s && isFinite(+s.surfaceChroma) ? +s.surfaceChroma : SEMANTIC_SURFACE_K;
+  const k = s && isFinite(+s.surfaceChroma) ? +s.surfaceChroma : SEMANTIC_SURFACE_DEFAULT;
   return Math.max(1, Math.min(SEMANTIC_SURFACE_MAX, k));
 };
 const surfaceExponent = (k) => (SEMANTIC_SURFACE_G * Math.log(k)) / Math.log(SEMANTIC_SURFACE_K);
@@ -10737,8 +10739,8 @@ const HueFamilyRule = ({ settings, setSettings, cursor, onCursor }) => {
             React.createElement("span", { className: "w-12 text-right text-[11px] font-mono text-slate-700 dark:text-neutral-200" }, `${surfaceChromaOf(settings).toFixed(2)}×`),
             React.createElement(
               "button",
-              { type: "button", onClick: () => setSettings({ ...settings, surfaceChroma: SEMANTIC_SURFACE_K }), className: "text-[10px] text-sky-600 dark:text-sky-400 hover:underline", title: "Back to the fitted value" },
-              "Fitted (1.9×)",
+              { type: "button", onClick: () => setSettings({ ...settings, surfaceChroma: SEMANTIC_SURFACE_DEFAULT }), className: "text-[10px] text-sky-600 dark:text-sky-400 hover:underline", title: "Back to the default (the survey fit alone is 1.9×)" },
+              `Default (${SEMANTIC_SURFACE_DEFAULT}×)`,
             ),
           ),
           React.createElement(
