@@ -21384,6 +21384,7 @@ const App = () => {
     liveStore.configure(githubConfig);
   }, [githubConfig]);
   const dataLoadedRef = useRef(false);
+  const [tagGen, setTagGen] = useState(0); // bumped whenever data is loaded or replaced wholesale (see Linked tags)
   const loadInitialData = useCallback(async () => {
     // the sync base as it was before this load (see syncBaseStore)
     const priorBaseP = syncBaseStore.all();
@@ -21623,9 +21624,8 @@ const App = () => {
     currentSavedColors = remapPinBrands(currentSavedColors, currentColorData);
     const hadPreloaded = !!window.__COLOR_DATA__;
     const gotNewData = Object.keys(currentColorData).length > 0;
-    // new data: linked tags start again from what it holds (both sides combined),
-    // before React renders it
-    tagLinkRef.current = new Map();
+    // new data: linked tags start again from what it holds (both sides combined)
+    setTagGen((g) => g + 1);
     if (!hadPreloaded || gotNewData) {
       setColorData(gotNewData ? currentColorData : null);
     }
@@ -21657,7 +21657,10 @@ const App = () => {
   // a list's selection bar, the tag manager or a batch edit) does the same on
   // the other, and on every other pin made from the same colour. Tags the two
   // sides already disagree on when data loads are combined.
-  const tagLinkRef = useRef(new Map()); // colour key -> { tags (lower case) as last made equal, pins in the group }
+  // colour key -> { tags (lower case) as last made equal, pins in the group },
+  // for data generation `gen`. Loading or replacing data bumps tagGen in the
+  // same update as the data, so the new data is never read against the old memory.
+  const tagLinkRef = useRef({ gen: -1, map: new Map() });
   useEffect(() => {
     if (!colorData || !savedColors) return;
     const lc = (t) => String(t).toLowerCase().trim();
@@ -21678,7 +21681,7 @@ const App = () => {
       const display = new Map();
       sides.forEach((l) => l.forEach((t) => { const k = lc(t); if (k && !display.has(k)) display.set(k, String(t).trim()); }));
       const sets = sides.map((l) => new Set(l.map(lc).filter(Boolean)));
-      const prev = tagLinkRef.current.get(key);
+      const prev = tagLinkRef.current.gen === tagGen ? tagLinkRef.current.map.get(key) : undefined;
       let target;
       if (!prev) {
         target = new Set(display.keys());
@@ -21709,10 +21712,10 @@ const App = () => {
         if (list.length) nextTags[id] = list; else delete nextTags[id];
       });
     });
-    tagLinkRef.current = seen;
+    tagLinkRef.current = { gen: tagGen, map: seen };
     if (nextData) setColorData(nextData);
     if (nextTags) setDictTags(nextTags);
-  }, [colorData, savedColors, dictTags]);
+  }, [colorData, savedColors, dictTags, tagGen]);
   useEffect(() => {
     setSelectedIds([]);
   }, [activeTab]);
@@ -23766,7 +23769,7 @@ const App = () => {
   };
   // Replace the session's colours, anchors and palettes with these CSVs (by file name).
   const applyRepoTexts = (files) => {
-    tagLinkRef.current = new Map();
+    setTagGen((g) => g + 1);
     const names = Object.keys(files).sort((a, b) => {
       const rank = (n) => (n === "anchors.csv" ? 0 : n === "pins.csv" ? 1 : 2);
       return rank(a) - rank(b);
@@ -24043,7 +24046,7 @@ const App = () => {
         groupSettings,
         savedPalettes
       );
-      tagLinkRef.current = new Map();
+      setTagGen((g) => g + 1);
       if (processed.newGroupSettings) {
         setGroupSettings(processed.newGroupSettings);
       }
