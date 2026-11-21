@@ -3161,6 +3161,30 @@ function createSpaceEngine(opts) {
     }
     return cellOf(x, y, z);
   };
+  // The same for painting the sections: the label volume where its eight
+  // corners agree (fast), the exact group on edges and near the grey axis,
+  // where groups (Light grey, White...) can be thinner than one step of the
+  // volume and would otherwise vanish into their neighbours.
+  const REGION_EXACT_C = 0.05;
+  const paintCellOf = (x, y, z) => {
+    if (region && region.keyIdx && region.seedGroup.length === N) {
+      const R = region;
+      const fx = (x - R.x0) / R.dx, fy = (y - R.y0) / R.dy, fz = (z - R.z0) / R.dz;
+      if (fx >= 0 && fy >= 0 && fz >= 0 && fx <= R.nx - 1 && fy <= R.ny - 1 && fz <= R.nz - 1 && Math.hypot(x, z) / SPACE_CW > REGION_EXACT_C) {
+        const ix = Math.min(R.nx - 2, Math.floor(fx)), iy = Math.min(R.ny - 2, Math.floor(fy)), iz = Math.min(R.nz - 2, Math.floor(fz));
+        const g0 = R.labels[(iz * R.ny + iy) * R.nx + ix];
+        let same = true;
+        for (let c = 1; c < 8 && same; c++) {
+          const ox = c & 1, oy = (c >> 1) & 1, oz = (c >> 2) & 1;
+          if (R.labels[((iz + oz) * R.ny + (iy + oy)) * R.nx + (ix + ox)] !== g0) same = false;
+        }
+        const list = same ? R.seedsOf[g0] : null;
+        if (list && list.length) return list[0];
+      }
+      return colourCellOf(x, y, z);
+    }
+    return cellOf(x, y, z);
+  };
   // how far a seed's group reaches along a direction
   const regionRay = (i, dx, dy, dz) => {
     const g = region.seedGroup[i], X = px[i], Y = py[i], Z = pz[i];
@@ -3890,7 +3914,7 @@ function createSpaceEngine(opts) {
   const binHit = [0, 0];
   const binAt = (k, u, w, P) => {
     const t = gamutAt(k, u, w, P);
-    binHit[0] = t >= 0 && ready && N ? cellOf(P[0], P[1], P[2]) : -1;
+    binHit[0] = t >= 0 && ready && N ? paintCellOf(P[0], P[1], P[2]) : -1;
     binHit[1] = Math.max(0, t);
     return binHit;
   };
@@ -3910,7 +3934,7 @@ function createSpaceEngine(opts) {
           if (t >= 0) {
             const [L, C, Hh] = spaceWorldToLCH(P[0], P[1], P[2]);
             dm = (inRangeLCH(L, C, Hh, k) ? 1 : 0.3) * (1 - 0.45 * t);
-            if (bins) id = cellOf(P[0], P[1], P[2]);
+            if (bins) id = paintCellOf(P[0], P[1], P[2]);
             if (gOn) { spaceWorldSrgb(P[0], P[1], P[2], rgb); has = 1; }
           }
         }
@@ -5045,6 +5069,31 @@ const spaceBuildGroupRegion = (gs, cancelled) =>
             return false;
           });
         }
+      });
+      // Groups thinner than a step of the volume (the greys and whites round
+      // the neutral axis, more so with a high chroma compensation) get no
+      // voxels; find them along the axis and give each a bin of its own.
+      const probed = new Map();
+      for (let li = 1; li < 200; li++) {
+        const L = li / 200;
+        for (const C of [0, 0.004, 0.008, 0.012, 0.016, 0.022, 0.03, 0.04])
+          for (let hi = 0; hi < (C ? 12 : 1); hi++) {
+            const H = hi * 30, w = spaceToWorld(L, C, H);
+            if (!spaceInGamutStrict(w[0], w[1], w[2])) continue;
+            const k = getColorGroup(L, C, H, gs);
+            const g = keyIdx.get(k);
+            if (g !== undefined && members[g].length) continue;
+            const e = probed.get(k) || { L: 0, C: 0, a: 0, b: 0, n: 0 };
+            const r = (H * Math.PI) / 180;
+            e.L += L; e.a += C * Math.cos(r); e.b += C * Math.sin(r); e.n++;
+            probed.set(k, e);
+          }
+      }
+      probed.forEach((e, k) => {
+        let g = keyIdx.get(k);
+        if (g === undefined) { g = keys.length; keys.push(k); keyIdx.set(k, g); }
+        const L = e.L / e.n, a = e.a / e.n, b = e.b / e.n, C = Math.hypot(a, b), H = ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360;
+        seeds.push({ L, C, H, hex: spaceHexFor(null, L, C, H), label: k, kind: "anchor", pick: [L, C, H], g });
       });
       resolve({ id: ++spaceRegionId, region: { id: spaceRegionId, nx: n, ny: n, nz: n, x0, y0, z0, dx, dy, dz, labels, keys }, seeds, groups: keys.length });
     };
