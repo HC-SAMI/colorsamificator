@@ -2790,7 +2790,7 @@ function createSpaceEngine(opts) {
       b.mesh.matrix.copy(b.base);
       b.off = [0, 0, 0];
       if (sep) {
-        const j = cellOf(b.center[0], b.center[1], b.center[2]);
+        const j = colourCellOf(b.center[0], b.center[1], b.center[2]);
         b.off = [px[j], py[j], pz[j]];
         const e = b.mesh.matrix.elements;
         e[12] += px[j] * s; e[13] += py[j] * s; e[14] += pz[j] * s;
@@ -3148,6 +3148,19 @@ function createSpaceEngine(opts) {
     }
     return grid.nearest(x, y, z);
   };
+  // The cell a colour belongs to. With colour groups as bins, that's the group
+  // the app names it by (getColorGroup at the colour itself), not the label
+  // volume's majority vote, which is only 40 steps across and so puts colours
+  // near an edge into the neighbouring group.
+  const colourCellOf = (x, y, z, lch) => {
+    if (region && region.keyIdx && region.seedGroup.length === N) {
+      const [L, C, H] = lch || spaceWorldToLCH(x, y, z);
+      const g = region.keyIdx.get(getColorGroup(Math.max(0, Math.min(1, L)), C, H, groupingColourSettings));
+      const list = g !== undefined ? region.seedsOf[g] : null;
+      if (list && list.length) return list[0];
+    }
+    return cellOf(x, y, z);
+  };
   // how far a seed's group reaches along a direction
   const regionRay = (i, dx, dy, dz) => {
     const g = region.seedGroup[i], X = px[i], Y = py[i], Z = pz[i];
@@ -3462,7 +3475,7 @@ function createSpaceEngine(opts) {
     const [L, C, H] = S.cursor, w = spaceToWorld(L, C, H);
     cursorWorld.set(w[0], w[1], w[2]);
     const prev = selIdx;
-    selIdx = ready && N ? cellOf(w[0], w[1], w[2]) : -1;
+    selIdx = ready && N ? colourCellOf(w[0], w[1], w[2], S.cursor) : -1;
     orb.ox = orb.oy = orb.oz = 0;
     placeMarker();
     updatePlanes();
@@ -3499,7 +3512,8 @@ function createSpaceEngine(opts) {
     const n = mOwner.length / 3;
     for (let i = 0; i < n; i++) {
       if (!ready || !N) { mOwner[i * 3] = mOwner[i * 3 + 1] = mOwner[i * 3 + 2] = 0; continue; }
-      const j = cellOf(markerPos[i * 3], markerPos[i * 3 + 1], markerPos[i * 3 + 2]);
+      const m = S.markers && S.markers[i];
+      const j = colourCellOf(markerPos[i * 3], markerPos[i * 3 + 1], markerPos[i * 3 + 2], m && isFinite(m.L) ? [m.L, m.C, m.H] : null);
       mOwner[i * 3] = px[j]; mOwner[i * 3 + 1] = py[j]; mOwner[i * 3 + 2] = pz[j];
     }
     if (dotGeo.attributes.aOwner) dotGeo.attributes.aOwner.needsUpdate = true;
@@ -3510,7 +3524,7 @@ function createSpaceEngine(opts) {
   // Where a world point is drawn once separated: moved with its cell.
   const sepOffset = (x, y, z, out) => {
     const s = S.sep;
-    if (s && ready && N) { const j = cellOf(x, y, z); out[0] = x + px[j] * s; out[1] = y + py[j] * s; out[2] = z + pz[j] * s; }
+    if (s && ready && N) { const j = colourCellOf(x, y, z); out[0] = x + px[j] * s; out[1] = y + py[j] * s; out[2] = z + pz[j] * s; }
     else { out[0] = x; out[1] = y; out[2] = z; }
     return out;
   };
@@ -4678,7 +4692,7 @@ function createSpaceEngine(opts) {
       if (regions) {
         const seedsOf = [];
         regions.seedGroup.forEach((g, i) => { if (g >= 0) (seedsOf[g] = seedsOf[g] || []).push(i); });
-        region = { ...regions, seedsOf };
+        region = { ...regions, seedsOf, keyIdx: regions.keys ? new Map(regions.keys.map((k, g) => [k, g])) : null };
       } else region = null;
       if (sig === anchorSig && N === list.length) return;
       anchorSig = sig;
@@ -4700,7 +4714,7 @@ function createSpaceEngine(opts) {
       const ws = new Float64Array(famT);
       list.forEach((p, i) => { ws[famF[i]] += p.w > 0 ? p.w : 1; });
       famLogW = Array.from(ws, (w) => Math.log(Math.max(w, 1e-9)));
-      famK = gs && isFinite(+gs.surfaceChroma) ? Math.max(1, Math.min(3, +gs.surfaceChroma)) : 1.9;
+      famK = surfaceChromaOf(gs); // the same factor the app groups by
       if (!gs) { S.groups = null; buildGroupLines3D(); scheduleSections(); return; }
       const num = (x, d) => (isFinite(+x) ? +x : d);
       const centres = (gs.hues || [])
@@ -5032,7 +5046,7 @@ const spaceBuildGroupRegion = (gs, cancelled) =>
           });
         }
       });
-      resolve({ id: ++spaceRegionId, region: { id: spaceRegionId, nx: n, ny: n, nz: n, x0, y0, z0, dx, dy, dz, labels }, seeds, groups: keys.length });
+      resolve({ id: ++spaceRegionId, region: { id: spaceRegionId, nx: n, ny: n, nz: n, x0, y0, z0, dx, dy, dz, labels, keys }, seeds, groups: keys.length });
     };
     step();
   });
@@ -10337,10 +10351,10 @@ const semanticClaim = (tw, s) => {
 // ISCC-NBS names and your examples (surfaces too), are first lifted to the
 // screen chroma that reads the same; names are shown as surfaces.
 // settings.surfaceChroma: the factor at C 0.1 (1 = take screen names as they are).
-const SEMANTIC_SURFACE_K = 1.9, SEMANTIC_SURFACE_G = 0.171;
+const SEMANTIC_SURFACE_K = 1.9, SEMANTIC_SURFACE_G = 0.171, SEMANTIC_SURFACE_MAX = 6;
 const surfaceChromaOf = (s) => {
   const k = s && isFinite(+s.surfaceChroma) ? +s.surfaceChroma : SEMANTIC_SURFACE_K;
-  return Math.max(1, Math.min(3, k));
+  return Math.max(1, Math.min(SEMANTIC_SURFACE_MAX, k));
 };
 const surfaceExponent = (k) => (SEMANTIC_SURFACE_G * Math.log(k)) / Math.log(SEMANTIC_SURFACE_K);
 const screenToSurfaceChroma = (C, k) => (!(C > 0) || k <= 1 ? C : (C * Math.pow(C / 0.1, surfaceExponent(k))) / k);
@@ -10667,7 +10681,7 @@ const HueFamilyRule = ({ settings, setSettings, cursor, onCursor }) => {
             { className: "flex items-center gap-3" },
             React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-neutral-300 w-44 shrink-0" }, "Chroma compensation"),
             React.createElement("input", {
-              type: "range", min: 1, max: 3, step: 0.05, value: surfaceChromaOf(settings), "aria-label": "Screen to surface chroma factor",
+              type: "range", min: 1, max: SEMANTIC_SURFACE_MAX, step: 0.05, value: surfaceChromaOf(settings), "aria-label": "Screen to surface chroma factor",
               onChange: (e) => setSettings({ ...settings, surfaceChroma: parseFloat(e.target.value) }),
               className: "flex-1 accent-sky-500 cursor-pointer",
             }),
@@ -21629,11 +21643,74 @@ const App = () => {
       }
       if (Object.keys(recs).length) await syncBaseStore.putMany(recs);
     } catch (e) {}
+    tagLinkRef.current = new Map();
     dataLoadedRef.current = true;
   }, [linkedFiles]);
   useEffect(() => {
     loadInitialData();
   }, [loadInitialData, linkedFiles.length]);
+  // ── Linked tags ──
+  // A pin made from a commercial colour (brand + index) and that colour share
+  // one set of tags: adding or removing a tag on either (from the inspector,
+  // a list's selection bar, the tag manager or a batch edit) does the same on
+  // the other, and on every other pin made from the same colour. Tags the two
+  // sides already disagree on when data loads are combined.
+  const tagLinkRef = useRef(new Map()); // colour key -> { tags (lower case) as last made equal, pins in the group }
+  useEffect(() => {
+    if (!colorData || !savedColors) return;
+    const lc = (t) => String(t).toLowerCase().trim();
+    const groups = new Map();
+    Object.values(savedColors).forEach((sc) => {
+      if (!sc || sc.type !== "pin" || !sc.brand || sc.originalIndex === undefined || sc.originalIndex === null || sc.originalIndex === "") return;
+      const idx = Number(sc.originalIndex);
+      const c = colorData[sc.brand] && colorData[sc.brand][idx];
+      if (!c) return;
+      const key = `${sc.brand}#${idx}`;
+      if (!groups.has(key)) groups.set(key, { brand: sc.brand, idx, c, pins: [] });
+      groups.get(key).pins.push(sc.id);
+    });
+    let nextTags = null, nextData = null;
+    const seen = new Map();
+    groups.forEach((g, key) => {
+      const sides = [g.c.tags || [], ...g.pins.map((id) => dictTags[id] || [])].map((l) => (Array.isArray(l) ? l : []));
+      const display = new Map();
+      sides.forEach((l) => l.forEach((t) => { const k = lc(t); if (k && !display.has(k)) display.set(k, String(t).trim()); }));
+      const sets = sides.map((l) => new Set(l.map(lc).filter(Boolean)));
+      const prev = tagLinkRef.current.get(key);
+      let target;
+      if (!prev) {
+        target = new Set(display.keys());
+      } else {
+        // what any side added since they were last equal, less what a side that
+        // was already linked removed (a pin new to the group only adds)
+        const linked = sets.filter((st, i) => i === 0 || prev.pins.has(g.pins[i - 1]));
+        target = new Set([...prev.tags].filter((k) => linked.every((st) => st.has(k))));
+        sets.forEach((st) => st.forEach((k) => { if (!prev.tags.has(k)) target.add(k); }));
+      }
+      seen.set(key, { tags: target, pins: new Set(g.pins) });
+      const same = (st) => st.size === target.size && [...target].every((k) => st.has(k));
+      // keep each side's own order and spelling, then add the rest
+      const make = (list) => {
+        const kept = list.filter((t) => target.has(lc(t)));
+        const have = new Set(kept.map(lc));
+        return [...kept, ...[...target].filter((k) => !have.has(k)).map((k) => display.get(k) || k)];
+      };
+      if (!same(sets[0])) {
+        if (!nextData) nextData = { ...colorData };
+        if (nextData[g.brand] === colorData[g.brand]) nextData[g.brand] = colorData[g.brand].slice();
+        nextData[g.brand][g.idx] = { ...g.c, tags: make(sides[0]) };
+      }
+      g.pins.forEach((id, i) => {
+        if (same(sets[i + 1])) return;
+        if (!nextTags) nextTags = { ...dictTags };
+        const list = make(sides[i + 1]);
+        if (list.length) nextTags[id] = list; else delete nextTags[id];
+      });
+    });
+    tagLinkRef.current = seen;
+    if (nextData) setColorData(nextData);
+    if (nextTags) setDictTags(nextTags);
+  }, [colorData, savedColors, dictTags]);
   useEffect(() => {
     setSelectedIds([]);
   }, [activeTab]);
@@ -23687,6 +23764,7 @@ const App = () => {
   };
   // Replace the session's colours, anchors and palettes with these CSVs (by file name).
   const applyRepoTexts = (files) => {
+    tagLinkRef.current = new Map();
     const names = Object.keys(files).sort((a, b) => {
       const rank = (n) => (n === "anchors.csv" ? 0 : n === "pins.csv" ? 1 : 2);
       return rank(a) - rank(b);
