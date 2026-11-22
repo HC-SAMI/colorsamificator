@@ -6439,10 +6439,20 @@ const TbGroup = ({ label, enabled = true, why, children, grow }) =>
       children,
     ),
   );
-const TbSeg = ({ options, value, onChange }) =>
+// Phones (under the md breakpoint): the touch layout.
+const useNarrowScreen = () => {
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
+  useEffect(() => {
+    const f = () => setNarrow(window.innerWidth < 768);
+    window.addEventListener("resize", f);
+    return () => window.removeEventListener("resize", f);
+  }, []);
+  return narrow;
+};
+const TbSeg = ({ options, value, onChange, big }) =>
   React.createElement(
     "div",
-    { className: "flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-neutral-800" },
+    { className: `flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-neutral-800 ${big ? "w-full" : ""}` },
     options.map((o) =>
       React.createElement(
         "button",
@@ -6451,14 +6461,14 @@ const TbSeg = ({ options, value, onChange }) =>
           onClick: () => onChange(o.id),
           title: o.label,
           "aria-pressed": value === o.id,
-          className: `${TB_BTN} px-1.5 2xl:px-2 ${
+          className: `${big ? "flex-1 flex items-center justify-center gap-2 h-11 rounded-md text-[14px] font-semibold transition-colors" : `${TB_BTN} px-1.5 2xl:px-2`} ${
             value === o.id
               ? "bg-white dark:bg-neutral-950 text-slate-900 dark:text-white shadow-sm"
               : "text-slate-500 dark:text-neutral-400 hover:text-slate-800 dark:hover:text-neutral-200"
           }`,
         },
-        React.createElement(Icon, { name: o.icon, className: "w-3.5 h-3.5" }),
-        React.createElement("span", { className: "hidden min-[2000px]:inline" }, o.label),
+        React.createElement(Icon, { name: o.icon, className: big ? "w-[18px] h-[18px]" : "w-3.5 h-3.5" }),
+        React.createElement("span", { className: big ? "" : "hidden min-[2000px]:inline" }, o.label),
       ),
     ),
   );
@@ -6543,7 +6553,7 @@ const VisibilityMenu = ({ vis, setVis, brands, brandOn, setBrand, brandLabel, ki
             ref: panelRef,
             "data-visibility-menu": "",
             style: pos ? { position: "fixed", ...pos } : { position: "fixed", left: -9999, top: 0 },
-            className: "z-[200] flex flex-col bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-xl text-xs overflow-hidden",
+            className: "csam-pop z-[200] flex flex-col bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-xl text-xs overflow-hidden",
           },
           kinds &&
             React.createElement(
@@ -6575,7 +6585,89 @@ const VisibilityMenu = ({ vis, setVis, brands, brandOn, setBrand, brandLabel, ki
   );
 };
 
-const TabToolbar = ({ view, layout, visibility, search, zoom, sort, group, fields, filters, print }) =>
+const TabToolbar = (props) => {
+  const narrow = useNarrowScreen();
+  return narrow ? React.createElement(PhoneTabToolbar, props) : React.createElement(DeskTabToolbar, props);
+};
+// Phones: the search across the width and two finger-sized buttons; every
+// other control in a sheet, with labels, and only the ones that apply here.
+const PhoneTabToolbar = ({ view, layout, visibility, search, zoom, sort, group, fields, filters, print }) => {
+  const [open, setOpen] = useState(false);
+  useEscapeKey(open ? () => setOpen(false) : null);
+  const section = (title, body, key) =>
+    React.createElement(
+      "section",
+      { key, className: "flex flex-col gap-2 py-3 border-b border-slate-100 dark:border-neutral-800 last:border-b-0" },
+      React.createElement("h3", { className: "text-[11px] font-bold uppercase tracking-widest text-slate-500" }, title),
+      body,
+    );
+  const row = (...kids) => React.createElement("div", { className: "flex flex-wrap items-center gap-2" }, ...kids);
+  const sections = [
+    view.enabled && section("View", React.createElement(TbSeg, { options: TB_VIEWS, value: view.value, onChange: view.onChange, big: true }), "view"),
+    layout.enabled && section("Layout", React.createElement(TbSeg, { options: TB_LAYOUTS, value: layout.value, onChange: layout.onChange, big: true }), "layout"),
+    zoom.enabled && section(`Swatch size · ${Math.round(zoom.value * 100)}%`,
+      React.createElement("input", {
+        type: "range", min: "0.1", max: "5", step: "0.1", value: zoom.value, "aria-label": "Swatch size",
+        onChange: (e) => zoom.onChange(parseFloat(e.target.value)), className: "w-full h-8 accent-sky-500",
+      }), "zoom"),
+    visibility.enabled && section("Show", row(React.createElement(VisibilityMenu, visibility)), "vis"),
+    sort.enabled && section("Sort", row(
+      React.createElement(SortControl, { fields: sort.fields, sortBy: sort.by, setSortBy: sort.setBy, sortAsc: sort.asc, setSortAsc: sort.setAsc, compact: true }),
+      sort.scope && React.createElement(SortLevelsMenu, { key: sort.scope, scope: sort.scope, fields: sort.fields, by: sort.by, asc: sort.asc, setBy: sort.setBy, setAsc: sort.setAsc })), "sort"),
+    group && group.enabled && section("Group", row(React.createElement(GroupMenu, { scope: group.scope })), "group"),
+    fields && fields.enabled && section("Fields", row(React.createElement(FieldsMenu, { key: `${fields.scope}:${fields.layout}`, scope: fields.scope, layout: fields.layout })), "fields"),
+    print && section("Print", row(React.createElement(PrintButton, print)), "print"),
+  ].filter(Boolean);
+  const big = "shrink-0 relative w-11 h-11 rounded-xl flex items-center justify-center border";
+  return React.createElement(
+    "div",
+    { "data-tab-toolbar": "", className: "px-3 py-2 border-b border-slate-100 dark:border-neutral-800 bg-white dark:bg-neutral-900 flex items-center gap-2 shrink-0 z-20" },
+    search.enabled
+      ? React.createElement(
+        "label",
+        { className: "flex-1 min-w-0 flex items-center gap-2 h-11 px-3 rounded-xl bg-slate-100 dark:bg-neutral-800 border border-transparent focus-within:border-sky-500" },
+        React.createElement(Icon, { name: "search", className: "w-4 h-4 text-slate-400 shrink-0" }),
+        React.createElement("input", {
+          type: "search", value: search.value, onChange: (e) => search.onChange(e.target.value),
+          placeholder: search.placeholder || "Search…", "aria-label": "Search",
+          className: "flex-1 min-w-0 bg-transparent text-[16px] text-slate-900 dark:text-white placeholder:text-slate-400 outline-none",
+        }),
+        search.value && React.createElement("button", { type: "button", onClick: () => search.onChange(""), "aria-label": "Clear search", className: "-mr-2 w-9 h-9 flex items-center justify-center text-slate-400" }, React.createElement(Icon, { name: "x", className: "w-4 h-4" })),
+      )
+      : React.createElement("div", { className: "flex-1" }),
+    sections.length > 0 && React.createElement(
+      "button",
+      { type: "button", onClick: () => setOpen(true), "aria-label": "View options", "aria-expanded": open, "data-view-options": "", className: `${big} border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-200` },
+      React.createElement(Icon, { name: "sliders-horizontal", className: "w-5 h-5" }),
+    ),
+    filters.enabled && React.createElement(
+      "button",
+      { type: "button", onClick: filters.onClick, "aria-label": filters.count ? `Filters (${filters.count})` : "Filters", className: `${big} ${filters.count ? "border-sky-200 bg-sky-50 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400" : "border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-200"}` },
+      React.createElement(Icon, { name: "filter", className: "w-5 h-5" }),
+      filters.count > 0 && React.createElement("span", { className: "absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-sky-500 text-white text-[10px] font-bold leading-[18px] text-center" }, filters.count),
+    ),
+    open && ReactDOM.createPortal(
+      React.createElement(
+        "div",
+        { className: "fixed inset-0 z-[105] flex flex-col justify-end", "data-view-sheet": "" },
+        React.createElement("div", { className: "absolute inset-0 bg-black/40", onClick: () => setOpen(false) }),
+        React.createElement(
+          "div",
+          { role: "dialog", "aria-label": "View options", className: "csam-pop relative bg-white dark:bg-neutral-900 rounded-t-2xl max-h-[85dvh] flex flex-col pb-[env(safe-area-inset-bottom)]" },
+          React.createElement(
+            "div",
+            { className: "flex items-center justify-between pl-5 pr-2 pt-2 border-b border-slate-100 dark:border-neutral-800" },
+            React.createElement("h2", { className: "text-[15px] font-extrabold text-slate-900 dark:text-neutral-100" }, "View options"),
+            React.createElement("button", { type: "button", onClick: () => setOpen(false), className: "h-11 px-4 text-[15px] font-bold text-sky-600 dark:text-sky-400" }, "Done"),
+          ),
+          React.createElement("div", { className: "overflow-y-auto px-5 pb-4" }, ...sections),
+        ),
+      ),
+      document.body,
+    ),
+  );
+};
+const DeskTabToolbar = ({ view, layout, visibility, search, zoom, sort, group, fields, filters, print }) =>
   React.createElement(
     "div",
     {
@@ -8862,7 +8954,7 @@ const GroupMenu = ({ scope }) => {
             ref: panelRef,
             role: "dialog",
             "aria-label": "Group by",
-            className: "fixed z-[110] bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-2xl p-3 flex flex-col gap-2",
+            className: "fixed z-[110] bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-2xl p-3 flex flex-col gap-2 csam-pop",
             style: { left: pos.left, top: pos.top, width: pos.width },
           },
           React.createElement(
@@ -9268,7 +9360,7 @@ const FieldsMenu = ({ scope, layout }) => {
             ref: panelRef,
             role: "dialog",
             "aria-label": "Fields",
-            className: "fixed z-[110] bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-2xl p-3 flex flex-col gap-1",
+            className: "fixed z-[110] bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-2xl p-3 flex flex-col gap-1 csam-pop",
             style: { left: pos.left, top: pos.top, width: pos.width, maxHeight: Math.max(200, pos.maxHeight) },
           },
           React.createElement(
@@ -9467,7 +9559,7 @@ const SortLevelsMenu = ({ scope, fields, by, asc, setBy, setAsc }) => {
           "div",
           {
             ref: panelRef, role: "dialog", "aria-label": "Sort by",
-            className: "fixed z-[110] bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-2xl p-3 flex flex-col gap-2",
+            className: "fixed z-[110] bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl shadow-2xl p-3 flex flex-col gap-2 csam-pop",
             style: { left: pos.left, top: pos.top, width: pos.width },
           },
           React.createElement(
@@ -14544,7 +14636,7 @@ const LibraryMenu = ({ items, dot }) => {
       "button",
       {
         type: "button", onClick: () => setOpen((v) => !v), "aria-expanded": open, "aria-haspopup": "menu", title: "Library: files, import, export, sync, settings", "aria-label": "Library", "data-library-btn": "",
-        className: "relative w-10 h-10 rounded-xl flex items-center justify-center text-slate-600 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-neutral-800 border border-slate-200 dark:border-neutral-700 md:border-transparent",
+        className: "relative w-11 h-11 md:w-10 md:h-10 rounded-xl flex items-center justify-center text-slate-600 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-neutral-800 border border-slate-200 dark:border-neutral-700 md:border-transparent",
       },
       React.createElement(Icon, { name: "menu", className: "w-5 h-5" }),
       dot && React.createElement("span", { className: "absolute top-2 right-2 w-2 h-2 rounded-full", style: { background: dot } }),
@@ -14708,18 +14800,25 @@ const AppTopBar = ({ nav, searchQuery, setSearchQuery, onUndo, onRedo, canUndo, 
     React.createElement("nav", { "aria-label": "Spaces", className: "hidden md:flex items-center gap-0.5 p-0.5 rounded-xl bg-slate-100 dark:bg-neutral-800 shrink-0" }, nav),
     React.createElement(
       "label",
-      { className: "flex-1 min-w-0 md:flex-[3] md:max-w-2xl flex items-center gap-2 h-10 px-3 rounded-xl bg-slate-100 dark:bg-neutral-800 border border-transparent focus-within:border-sky-500 focus-within:bg-white dark:focus-within:bg-neutral-900" },
+      { className: "flex-1 min-w-0 md:flex-[3] md:max-w-2xl flex items-center gap-2 h-11 md:h-10 px-3 rounded-xl bg-slate-100 dark:bg-neutral-800 border border-transparent focus-within:border-sky-500 focus-within:bg-white dark:focus-within:bg-neutral-900" },
       React.createElement(Icon, { name: "search", className: "w-4 h-4 text-slate-400 shrink-0" }),
       React.createElement("input", {
         ref: inputRef, type: "text", value: searchQuery, onChange: (e) => setSearchQuery(e.target.value), "aria-label": "Search or type a command", "data-omnisearch": "",
         placeholder: "Search names, codes, hex — or a command",
-        className: "flex-1 min-w-0 bg-transparent text-sm text-slate-900 dark:text-white placeholder:text-slate-400 outline-none",
+        className: "flex-1 min-w-0 bg-transparent text-[16px] md:text-sm text-slate-900 dark:text-white placeholder:text-slate-400 outline-none",
       }),
       searchQuery
         ? React.createElement("button", { type: "button", onClick: () => setSearchQuery(""), "aria-label": "Clear search", className: "text-slate-400 p-0.5" }, React.createElement(Icon, { name: "x", className: "w-4 h-4" }))
         : React.createElement("span", { className: "hidden md:inline text-[10px] font-mono px-1.5 py-0.5 rounded-md border border-slate-300 dark:border-neutral-600 text-slate-500" }, "⌘K"),
     ),
     React.createElement("div", { className: "hidden md:block flex-1" }),
+    React.createElement(
+      "button",
+      { type: "button", onClick: () => shopStore.set({ mode: "identify" }), "data-shop-enter": "", "aria-label": "Scan mode", title: "Scan mode: identify and check colours with the Nix",
+        className: "md:hidden shrink-0 h-11 pl-3 pr-3.5 rounded-xl inline-flex items-center gap-1.5 text-[14px] font-extrabold", style: { background: "#2B4032", color: "#F2E8DF" } },
+      React.createElement(Icon, { name: "scan", className: "w-[18px] h-[18px]" }),
+      "Scan",
+    ),
     iconBtn("undo", onUndo, "Undo (Ctrl+Z)", !canUndo),
     iconBtn("redo", onRedo, "Redo (Ctrl+Y)", !canRedo),
     React.createElement(SyncPill, { status: syncStatus, onClick: onSync }),
@@ -20804,13 +20903,8 @@ const ShopMode = ({ colorData: cd, savedColors, names, onOpenColour }) => {
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth < 768);
   useEffect(() => { const f = () => setNarrow(window.innerWidth < 768); window.addEventListener("resize", f); return () => window.removeEventListener("resize", f); }, []);
   const mode = sh.mode;
-  if (mode === "off") {
-    return narrow ? h("button", {
-      type: "button", onClick: () => shopStore.set({ mode: "identify" }), "data-shop-enter": "",
-      className: "fixed z-[450] right-4 min-h-[56px] px-5 rounded-full text-[16px] font-extrabold inline-flex items-center gap-2 active:scale-[.97]",
-      style: { bottom: "calc(env(safe-area-inset-bottom) + 88px)", background: SHOP_C.accent, color: SHOP_C.onAccent, boxShadow: "var(--shadow-xl)" },
-    }, h(Icon, { name: "scan", className: "w-5 h-5" }), "Scan mode") : null;
-  }
+  // off: the way in is the Scan button in the phone's top bar
+  if (mode === "off") return null;
   const tabs = [["identify", "Identify", "scan"], ["qc", "Quality control", "check-circle"], ["off", "Full app", "layout-grid"]];
   return h("div", { className: "fixed inset-0 z-[500] flex flex-col", style: { background: SHOP_C.bg, color: SHOP_C.text }, "data-shop-mode": mode },
     h("header", { className: "flex items-center gap-3 px-4 pt-[max(10px,env(safe-area-inset-top))] pb-2.5", style: { borderBottom: `1px solid ${SHOP_C.border}` } },
@@ -30317,12 +30411,14 @@ const AppUI = ({
       ),
       React.createElement(
         "div",
-        { className: "flex-1 relative overflow-hidden p-4" },
+        { className: "flex-1 relative overflow-hidden md:p-4" },
         React.createElement(
           "div",
           {
+            // phones: the view fills the screen; wider: a card with a margin
+            "data-view-frame": "",
             className:
-              "absolute inset-4 rounded-xl border border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 overflow-hidden shadow-sm flex flex-col",
+              "absolute inset-0 md:inset-4 md:rounded-xl md:border border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 overflow-hidden md:shadow-sm flex flex-col",
           },
           (() => {
             const isExplore = ["top", "chroma", "slice", "3d"].includes(activeTab);

@@ -53,7 +53,7 @@ aside [class*="sticky"]{box-shadow:var(--shadow-sm)}
 .fixed.inset-0>[class*="rounded"],
 .fixed.inset-0>div>[class*="rounded"]{box-shadow:var(--shadow-xl)!important}
 [class*="rounded-full"][class*="shadow"]{box-shadow:var(--shadow-lg)!important}
-[class*="inset-4"][class*="rounded-xl"]{box-shadow:var(--shadow-md)!important}
+@media (min-width:768px){[class*="inset-4"][class*="rounded-xl"]{box-shadow:var(--shadow-md)!important}}
 
 /* Text fixes: text-slate-900 maps to surface-card (cream) for bg use,
    but is widely used as text — force it to text-strong everywhere */
@@ -170,3 +170,13 @@ div#root:nth-of-type(1) > div:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-
    screens rather than wrapping; hide the scrollbar without losing the scroll. */
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Phones: the view fills the screen (no card), and menus and sheets get
+   finger-sized rows (44px), readable text and checkboxes you can hit. */
+@media (max-width:767px){
+  [data-view-frame]{box-shadow:none!important}
+  .csam-pop{font-size:14px}
+  .csam-pop button,.csam-pop label,.csam-pop select{min-height:44px}
+  .csam-pop select,.csam-pop input[type=text],.csam-pop input[type=search],.csam-pop input[type=number]{font-size:16px}
+  .csam-pop input[type=checkbox],.csam-pop input[type=radio]{width:20px!important;height:20px!important}
+}
