@@ -28,10 +28,15 @@ const Icon = ({ name, className = "w-4 h-4" }) => {
   const markup = resolveIconMarkup(name, className);
   const ref = useRef(null);
   useEffect(() => {
-    // Covers the case where lucide arrived after this icon first rendered.
-    if (!markup && ref.current) {
+    // Covers the case where lucide arrived after this icon first rendered, or
+    // left it unconverted (a lucide without createIcons' root option converts
+    // the page instead of the scratch element): convert it where it stands.
+    if (ref.current && (!markup || markup.indexOf("<svg") === -1)) {
       const late = resolveIconMarkup(name, className);
-      if (late) ref.current.innerHTML = late;
+      if (late && late.indexOf("<svg") !== -1) ref.current.innerHTML = late;
+      else if (window.lucide && ref.current.querySelector("[data-lucide]")) {
+        try { window.lucide.createIcons({ root: ref.current }); } catch (e) {}
+      }
     }
   }, [markup, name, className]);
   return React.createElement("span", {
@@ -5617,9 +5622,10 @@ const SpaceSlot = ({ info, canvasRef, height, setHeight, narrow, preset, onPrese
         { className: "flex items-center gap-1.5 min-w-0" },
         React.createElement("span", { className: "w-2 h-2 rounded-full shrink-0", style: { background: info.color } }),
         React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400 truncate" }, info.title),
-        !narrow && info.value && React.createElement("span", { className: "text-[10px] font-mono text-slate-400 truncate" }, info.value),
+        info.value && React.createElement("span", { className: "text-[10px] font-mono text-slate-400 truncate" }, info.value),
       ),
-      React.createElement(
+      // phones: the thumbnail itself enlarges the view, whose settings are there
+      !narrow && React.createElement(
         "div",
         { className: "flex items-center gap-0.5 shrink-0" },
         React.createElement(SpacePresets, { value: preset, onChange: onPreset, compact: true }),
@@ -5627,6 +5633,10 @@ const SpaceSlot = ({ info, canvasRef, height, setHeight, narrow, preset, onPrese
         React.createElement(SpaceIconButton, { icon: "maximize-2", title: "Show large", onClick: onMaximize }),
       ),
     ),
+    narrow && React.createElement("button", {
+      type: "button", onClick: onMaximize, "aria-label": `Show ${info.title} large`, title: "Show large",
+      className: "absolute inset-0 z-[1] rounded-lg active:bg-black/5",
+    }),
     settingsOpen && React.createElement(SpacePopover, { anchorRef: headRef, onClose: onCloseSettings }, settings),
     React.createElement("canvas", {
       ref: canvasRef,
@@ -6120,7 +6130,7 @@ const ViewSpaceInner = ({
       // the large view's settings
       React.createElement(
         "div",
-        { "data-no-print": "", className: `absolute top-3 left-3 z-10 ${overlayCard} ${lookOpen ? "w-64 p-3 max-h-[calc(100%-4.5rem)] overflow-y-auto custom-scrollbar" : "p-1"}` },
+        { "data-no-print": "", "data-touch": "", className: `absolute top-3 left-3 z-10 ${overlayCard} ${lookOpen ? `w-64 p-3 max-h-[calc(100%-4.5rem)] overflow-y-auto custom-scrollbar${narrow ? " csam-pop" : ""}` : "p-1"}` },
         React.createElement(
           "button",
           {
@@ -6138,7 +6148,7 @@ const ViewSpaceInner = ({
       // the large view's own bar: its name, looks, reset, and back to 3D
       React.createElement(
         "div",
-        { "data-no-print": "", className: `absolute top-3 right-3 z-10 flex items-center gap-2 px-2 py-1.5 ${overlayCard}` },
+        { "data-no-print": "", "data-touch": "", className: `absolute top-3 right-3 z-10 flex items-center gap-2 px-2 py-1.5 ${overlayCard}` },
         big !== "3d" &&
           React.createElement(
             "span",
@@ -6658,7 +6668,7 @@ const PhoneTabToolbar = ({ view, layout, visibility, search, zoom, sort, group, 
             "div",
             { className: "flex items-center justify-between pl-5 pr-2 pt-2 border-b border-slate-100 dark:border-neutral-800" },
             React.createElement("h2", { className: "text-[15px] font-extrabold text-slate-900 dark:text-neutral-100" }, "View options"),
-            React.createElement("button", { type: "button", onClick: () => setOpen(false), className: "h-11 px-4 text-[15px] font-bold text-sky-600 dark:text-sky-400" }, "Done"),
+            React.createElement("button", { type: "button", onClick: () => setOpen(false), className: "h-11 px-4 text-[15px] font-extrabold text-slate-900 dark:text-neutral-100" }, "Done"),
           ),
           React.createElement("div", { className: "overflow-y-auto px-5 pb-4" }, ...sections),
         ),
@@ -14412,7 +14422,7 @@ const CatChoice = ({ field, value, onPick }) =>
           {
             key: o, type: "button", role: "radio", "aria-checked": on, title: o,
             onClick: () => onPick(on ? "" : o),
-            className: `h-8 px-2.5 rounded-lg border text-xs font-semibold transition-colors ${on ? "bg-sky-500 border-sky-500 text-white" : "bg-white dark:bg-neutral-900 border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-200 hover:border-sky-500"}`,
+            className: `h-10 md:h-8 px-3 md:px-2.5 rounded-lg border text-[13px] md:text-xs font-semibold transition-colors ${on ? "bg-sky-500 border-sky-500 text-white" : "bg-white dark:bg-neutral-900 border-slate-200 dark:border-neutral-700 text-slate-700 dark:text-neutral-200 hover:border-sky-500"}`,
           },
           specWord(o),
         );
@@ -14432,7 +14442,7 @@ const CatalogEditDrawer = ({ item, tags, allTags, onSet, onTags, onClose, onDupl
       "div",
       { className: "sticky -top-4 -mx-4 -mt-4 px-4 pt-4 pb-1 z-10 bg-white dark:bg-neutral-900 flex items-center justify-between rounded-t-2xl" },
       React.createElement("span", { className: "text-[10px] font-bold uppercase tracking-widest text-slate-500" }, "Editing finish"),
-      React.createElement("button", { type: "button", onClick: onClose, "aria-label": "Close", className: "w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-neutral-800" }, React.createElement(Icon, { name: "x", className: "w-4 h-4" })),
+      React.createElement("button", { type: "button", onClick: onClose, "aria-label": "Close", className: "w-11 h-11 md:w-8 md:h-8 rounded-lg flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-neutral-800" }, React.createElement(Icon, { name: "x", className: "w-4 h-4" })),
     ),
     React.createElement(
       "div",
@@ -14536,7 +14546,7 @@ const CatalogByColour = ({ items, selectedIds, setSelectedIds, onPick, onSet, on
               React.createElement("button", {
                 type: "button", role: "checkbox", "aria-checked": allOn, "aria-label": `Select every finish of ${head.displayName}`,
                 onClick: () => toggle(ids, !allOn),
-                className: `mt-1 w-5 h-5 shrink-0 rounded-md border-2 flex items-center justify-center ${allOn ? "bg-sky-500 border-sky-500 text-white" : "border-slate-300 dark:border-neutral-600"}`,
+                className: `relative before:content-[''] before:absolute before:-inset-3 md:before:hidden mt-1 w-5 h-5 shrink-0 rounded-md border-2 flex items-center justify-center ${allOn ? "bg-sky-500 border-sky-500 text-white" : "border-slate-300 dark:border-neutral-600"}`,
               }, allOn && React.createElement(Icon, { name: "check", className: "w-3 h-3" })),
               React.createElement(
                 "div",
@@ -14558,12 +14568,12 @@ const CatalogByColour = ({ items, selectedIds, setSelectedIds, onPick, onSet, on
                   "div",
                   {
                     key: it.id, "data-finish": it.id,
-                    className: `flex items-center gap-2 min-h-[36px] px-1.5 rounded-lg text-[13px] ${it.id === editId ? "bg-slate-100 dark:bg-neutral-800" : "hover:bg-slate-50 dark:hover:bg-neutral-800/60"}`,
+                    className: `flex items-center gap-2 min-h-[44px] md:min-h-[36px] px-1.5 rounded-lg text-[13px] ${it.id === editId ? "bg-slate-100 dark:bg-neutral-800" : "hover:bg-slate-50 dark:hover:bg-neutral-800/60"}`,
                   },
                   React.createElement("button", {
                     type: "button", role: "checkbox", "aria-checked": on, "aria-label": `Select ${it.displayName}, ${specWord(it.doorProfile) || "finish"}`,
                     onClick: () => toggle([it.id], !on),
-                    className: `w-5 h-5 shrink-0 rounded-md border-2 flex items-center justify-center ${on ? "bg-sky-500 border-sky-500 text-white" : "border-slate-300 dark:border-neutral-600"}`,
+                    className: `relative before:content-[''] before:absolute before:-inset-3 md:before:hidden w-5 h-5 shrink-0 rounded-md border-2 flex items-center justify-center ${on ? "bg-sky-500 border-sky-500 text-white" : "border-slate-300 dark:border-neutral-600"}`,
                   }, on && React.createElement(Icon, { name: "check", className: "w-3 h-3" })),
                   React.createElement(
                     "button",
@@ -14605,7 +14615,7 @@ const CatalogLayoutSwitch = () => {
     [["By colour", true], ["Every finish", false]].map(([t, v]) =>
       React.createElement("button", {
         key: t, type: "button", role: "radio", "aria-checked": on === v, onClick: () => catalogByColourStore.set(v),
-        className: `h-8 px-3 rounded-md text-xs font-semibold ${on === v ? "bg-white dark:bg-neutral-900 text-slate-900 dark:text-neutral-100 shadow-sm" : "text-slate-500"}`,
+        className: `h-10 md:h-8 px-3 rounded-md text-[13px] md:text-xs font-semibold ${on === v ? "bg-white dark:bg-neutral-900 text-slate-900 dark:text-neutral-100 shadow-sm" : "text-slate-500"}`,
       }, t),
     ),
   );
@@ -14779,6 +14789,7 @@ const AppTopBar = ({ nav, searchQuery, setSearchQuery, onUndo, onRedo, canUndo, 
     window.addEventListener("keydown", k);
     return () => window.removeEventListener("keydown", k);
   }, []);
+  const narrowTop = useNarrowScreen();
   const iconBtn = (name, onClick, title, disabled) => React.createElement(
     "button",
     { type: "button", onClick, disabled, title, "aria-label": title, className: "hidden md:flex w-10 h-10 rounded-xl items-center justify-center text-slate-600 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-neutral-800 disabled:opacity-30 disabled:hover:bg-transparent" },
@@ -14804,7 +14815,7 @@ const AppTopBar = ({ nav, searchQuery, setSearchQuery, onUndo, onRedo, canUndo, 
       React.createElement(Icon, { name: "search", className: "w-4 h-4 text-slate-400 shrink-0" }),
       React.createElement("input", {
         ref: inputRef, type: "text", value: searchQuery, onChange: (e) => setSearchQuery(e.target.value), "aria-label": "Search or type a command", "data-omnisearch": "",
-        placeholder: "Search names, codes, hex — or a command",
+        placeholder: narrowTop ? "Search or command" : "Search names, codes, hex — or a command",
         className: "flex-1 min-w-0 bg-transparent text-[16px] md:text-sm text-slate-900 dark:text-white placeholder:text-slate-400 outline-none",
       }),
       searchQuery
@@ -17149,15 +17160,15 @@ const ViewPinsInner = ({
       "div",
       {
         className:
-          "flex flex-wrap items-center gap-2 px-4 pb-4 mb-4 border-b border-slate-200 dark:border-neutral-800 flex-shrink-0",
+          "flex flex-wrap items-center gap-2 px-3 md:px-4 pb-2 mb-2 md:pb-4 md:mb-4 border-b border-slate-200 dark:border-neutral-800 flex-shrink-0",
       },
       React.createElement(
         "button",
         {
           onClick: handleSelectAll,
           className:
-            "mr-2 p-1.5 rounded hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors",
-          title: "Select All",
+            "w-11 h-11 -ml-1 flex items-center justify-center md:w-auto md:h-auto md:ml-0 md:mr-2 md:p-1.5 rounded hover:bg-slate-100 dark:hover:bg-neutral-800 text-slate-500 dark:text-neutral-400 transition-colors",
+          title: "Select All", "aria-label": "Select all",
         },
         React.createElement(Icon, {
           name:
@@ -17176,7 +17187,7 @@ const ViewPinsInner = ({
           {
             onClick: () => setIsAdding(!isAdding),
             className:
-              "px-3 py-1.5 bg-sky-500 hover:bg-sky-600 text-white rounded text-[10px] items-center gap-1.5 flex font-bold uppercase tracking-wider transition-colors",
+              "h-11 md:h-auto px-3.5 md:px-3 md:py-1.5 bg-sky-500 hover:bg-sky-600 text-white rounded-lg md:rounded text-[13px] md:text-[10px] items-center gap-1.5 flex font-bold uppercase tracking-wider transition-colors",
           },
           React.createElement(Icon, {
             name: isAdding ? "x" : "plus",
@@ -17209,7 +17220,7 @@ const ViewPinsInner = ({
             className:
               "px-2 py-1 bg-sky-500/10 text-sky-500 rounded text-[10px] font-black uppercase tracking-widest border border-sky-500/20",
           },
-          "Total: ",
+          React.createElement("span", { className: "hidden md:inline" }, "Total: "),
           sortedItems.length,
         ),
         React.createElement(SwatchLegend, { className: "ml-3 hidden md:flex" }),
