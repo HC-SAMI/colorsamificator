@@ -5108,13 +5108,13 @@ const SPACE_BIN_KEY = "csam-bin-source";
 const SpaceBinSource = ({ value, onChange, options, capped, compact }) =>
   React.createElement(
     "label",
-    { className: "flex items-center gap-1.5 shrink-0", title: "What the bins are built around" },
+    { className: `flex items-center gap-1.5 ${compact ? "min-w-0 shrink" : "shrink-0"}`, title: "What the bins are built around" },
     !compact && React.createElement("span", { className: "hidden 2xl:inline text-[9px] font-bold uppercase tracking-widest text-slate-400" }, "Bins from"),
     React.createElement(
       "select",
       {
         value, onChange: (e) => onChange(e.target.value), "aria-label": "Bins from",
-        className: `max-w-[140px] 2xl:max-w-[200px] bg-transparent border rounded-md py-1 pl-1.5 pr-5 text-[10px] font-bold uppercase tracking-wider cursor-pointer focus:outline-none ${
+        className: `${compact ? "w-full min-w-0" : ""} max-w-[140px] 2xl:max-w-[200px] bg-transparent border rounded-md py-1 pl-1.5 pr-5 text-[10px] font-bold uppercase tracking-wider cursor-pointer focus:outline-none ${
           value !== "anchors" ? "border-sky-300 text-sky-700 dark:text-sky-300 dark:border-sky-500/40" : "border-slate-200 dark:border-neutral-800 text-slate-600 dark:text-neutral-300"
         }`,
       },
@@ -6148,7 +6148,7 @@ const ViewSpaceInner = ({
       // the large view's own bar: its name, looks, reset, and back to 3D
       React.createElement(
         "div",
-        { "data-no-print": "", "data-touch": "", className: `absolute top-3 right-3 z-10 flex items-center gap-2 px-2 py-1.5 ${overlayCard}` },
+        { "data-no-print": "", "data-touch": "", className: `absolute top-3 right-3 z-10 flex items-center ${narrow ? "gap-1 px-1 py-1 max-w-[calc(100%-4.5rem)]" : "gap-2 px-2 py-1.5"} ${overlayCard}` },
         big !== "3d" &&
           React.createElement(
             "span",
@@ -6309,6 +6309,105 @@ const AnchorIconButton = ({ icon, title, onClick, danger, active }) =>
     React.createElement(Icon, { name: icon, className: "w-3.5 h-3.5" }),
   );
 
+
+// Phones: anchors as a list of finger-sized rows (swatch, name, L · C · H);
+// the row moves the cursor there, "More" opens a sheet to edit or act on it.
+const ANCHOR_PHONE_ROW_H = 56;
+const AnchorPhoneRow = React.memo(({ r, isHere, checked, act, onMore }) =>
+  React.createElement(
+    "div",
+    {
+      style: { height: ANCHOR_PHONE_ROW_H },
+      className: `flex items-center gap-1 pl-1 pr-1 border-b border-slate-100 dark:border-neutral-800/70 ${isHere ? "bg-slate-100 dark:bg-neutral-800" : ""}`,
+      "data-anchor-row": r.name,
+    },
+    React.createElement("button", {
+      type: "button", role: "checkbox", "aria-checked": checked, "aria-label": `Select ${r.name || "unnamed anchor"}`,
+      onClick: () => act.select(r.id, !checked),
+      className: "w-11 h-11 shrink-0 flex items-center justify-center",
+    }, React.createElement("span", { className: `w-5 h-5 rounded-md border-2 flex items-center justify-center ${checked ? "bg-sky-500 border-sky-500 text-white" : "border-slate-300 dark:border-neutral-600"}` },
+      checked && React.createElement(Icon, { name: "check", className: "w-3 h-3" }))),
+    React.createElement(
+      "button",
+      { type: "button", onClick: () => act.goTo(r), title: "Move the cursor here", className: "flex-1 min-w-0 h-full flex items-center gap-3 text-left" },
+      React.createElement("span", { className: `w-9 h-9 shrink-0 rounded-lg border ${isHere ? "border-slate-800 dark:border-white" : "border-black/10 dark:border-white/10"}`, style: { background: r.hex } }),
+      React.createElement(
+        "span",
+        { className: "min-w-0 flex-1" },
+        React.createElement(
+          "span",
+          { className: "flex items-center gap-1.5 min-w-0" },
+          r.locked && React.createElement(Icon, { name: "lock", className: "w-3.5 h-3.5 text-sky-500 shrink-0" }),
+          React.createElement("span", { className: "text-[14px] font-bold uppercase tracking-wide text-slate-900 dark:text-neutral-100 truncate" }, r.name || "Unnamed"),
+          r.pins > 0 && React.createElement("span", { className: "text-[11px] font-mono text-slate-400 shrink-0" }, `${r.pins} pin${r.pins === 1 ? "" : "s"}`),
+        ),
+        React.createElement("span", { className: "block text-[12px] font-mono tabular-nums text-slate-500 truncate" },
+          `L ${Number(r.L).toFixed(3)} · C ${Number(r.C).toFixed(3)} · H ${Number(r.H).toFixed(0)}°`),
+      ),
+    ),
+    React.createElement("button", {
+      type: "button", onClick: () => onMore(r.id), "aria-label": `More for ${r.name || "this anchor"}`,
+      className: "w-11 h-11 shrink-0 flex items-center justify-center rounded-lg text-slate-500",
+    }, React.createElement(Icon, { name: "more-horizontal", className: "w-5 h-5" })),
+  ),
+);
+const AnchorPhoneSheet = ({ r, act, confirming, onClose }) => {
+  useEscapeKey(onClose);
+  const btn = "h-12 px-4 rounded-xl border border-slate-200 dark:border-neutral-700 text-[15px] font-semibold flex items-center gap-3 text-left text-slate-800 dark:text-neutral-100";
+  const num = (label, key, props) =>
+    React.createElement(
+      "label",
+      { className: "flex flex-col gap-1 rounded-xl border border-slate-200 dark:border-neutral-700 px-3 py-1.5" },
+      React.createElement("span", { className: "text-[11px] font-bold uppercase tracking-widest text-slate-500" }, label),
+      r.locked
+        ? React.createElement("span", { className: "text-[16px] font-mono tabular-nums text-slate-500 py-2" }, Number(r[key]).toFixed(props.digits))
+        : React.createElement(AnchorNumberInput, { ...props, value: r[key], label, onCommit: (v) => act.move(r, { [key]: v }) }),
+    );
+  return ReactDOM.createPortal(
+    React.createElement(
+      "div",
+      { className: "fixed inset-0 z-[105] flex flex-col justify-end", "data-anchor-sheet": "" },
+      React.createElement("div", { className: "absolute inset-0 bg-black/40", onClick: onClose }),
+      React.createElement(
+        "div",
+        { role: "dialog", "aria-label": `Anchor ${r.name || ""}`, className: "csam-pop relative bg-white dark:bg-neutral-900 rounded-t-2xl max-h-[85dvh] overflow-y-auto px-4 pb-[max(16px,env(safe-area-inset-bottom))]" },
+        React.createElement(
+          "div",
+          { className: "sticky top-0 bg-white dark:bg-neutral-900 flex items-center gap-3 pt-3 pb-2" },
+          React.createElement("span", { className: "w-11 h-11 rounded-xl border border-black/10 shrink-0", style: { background: r.hex } }),
+          React.createElement("span", { className: "flex-1 min-w-0 text-[17px] font-extrabold uppercase tracking-wide truncate text-slate-900 dark:text-neutral-100" }, r.name || "Unnamed"),
+          React.createElement("button", { type: "button", onClick: onClose, className: "h-11 px-3 text-[15px] font-extrabold text-slate-900 dark:text-neutral-100" }, "Done"),
+        ),
+        r.locked && React.createElement("p", { className: "text-[13px] text-slate-600 dark:text-neutral-300 mb-3 flex gap-2" }, React.createElement(Icon, { name: "lock", className: "w-4 h-4 text-sky-500 shrink-0 mt-0.5" }), PIN_LOCK_HINT),
+        !r.locked && React.createElement(
+          "label",
+          { className: "flex flex-col gap-1 rounded-xl border border-slate-200 dark:border-neutral-700 px-3 py-1.5 mb-3" },
+          React.createElement("span", { className: "text-[11px] font-bold uppercase tracking-widest text-slate-500" }, "Name"),
+          React.createElement(AnchorNameInput, { value: r.name, onCommit: (v) => act.rename(r, v) }),
+        ),
+        React.createElement(
+          "div",
+          { className: "grid grid-cols-3 gap-2 mb-4" },
+          num("L", "L", { step: 0.001, min: 0, max: 1, digits: 3 }),
+          num("C", "C", { step: 0.001, min: 0, max: 0.4, digits: 3 }),
+          num("H °", "H", { step: 0.1, min: 0, max: 360, digits: 1, wide: true }),
+        ),
+        React.createElement(
+          "div",
+          { className: "flex flex-col gap-2" },
+          React.createElement("button", { type: "button", className: btn, onClick: () => { act.goTo(r); onClose(); } }, React.createElement(Icon, { name: "crosshair", className: "w-5 h-5" }), "Move the cursor here"),
+          !r.locked && React.createElement("button", { type: "button", className: btn, onClick: () => act.moveToCursor(r) }, React.createElement(Icon, { name: "move", className: "w-5 h-5" }), "Move this anchor to the cursor"),
+          React.createElement("button", { type: "button", className: btn, onClick: () => { act.explore(r); onClose(); } }, React.createElement(Icon, { name: "box", className: "w-5 h-5" }), "Show in Explore"),
+          !r.locked && React.createElement("button", {
+            type: "button", onClick: () => act.trash(r),
+            className: `${btn} ${confirming ? "!bg-red-600 !border-red-600 !text-white" : "!text-red-700"}`,
+          }, React.createElement(Icon, { name: "trash-2", className: "w-5 h-5" }), confirming ? "Tap again to delete" : "Delete anchor"),
+        ),
+      ),
+    ),
+    document.body,
+  );
+};
 
 // One table row. Memoised: a row re-renders only when its own data, selection,
 // confirm state or distance to the cursor changes.
@@ -6831,6 +6930,9 @@ const ViewAnchors = ({
   const [confirm, setConfirm] = useState(null); // id or "bulk" awaiting a second click
   const [focusId, setFocusId] = useState(null);
   const scrollRef = useRef(null);
+  const phone = useNarrowScreen();
+  const rowH = phone ? ANCHOR_PHONE_ROW_H : ANCHOR_ROW_H;
+  const [sheetId, setSheetId] = useState(null);
   const [view, setView] = useState({ top: 0, h: 800 });
   const [notice, setNotice] = useState("");
   useEffect(() => { if (!confirm) return undefined; const t = setTimeout(() => setConfirm(null), 3000); return () => clearTimeout(t); }, [confirm]);
@@ -6991,8 +7093,9 @@ const ViewAnchors = ({
     read();
     return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); cancelAnimationFrame(raf); };
   }, [rows.length === 0, layout]);
-  const first = printing ? 0 : Math.max(0, Math.floor(view.top / ANCHOR_ROW_H) - ANCHOR_OVERSCAN);
-  const last = printing ? rowCount : Math.min(rowCount, Math.ceil((view.top + view.h) / ANCHOR_ROW_H) + ANCHOR_OVERSCAN);
+  const first = printing ? 0 : Math.max(0, Math.floor(view.top / rowH) - ANCHOR_OVERSCAN);
+  const last = printing ? rowCount : Math.min(rowCount, Math.ceil((view.top + view.h) / rowH) + ANCHOR_OVERSCAN);
+  const sheetRow = sheetId ? rows.find((x) => x.id === sheetId) : null;
 
   const th = "px-2 py-2 text-left text-[9px] font-bold uppercase tracking-widest text-slate-400 whitespace-nowrap";
   const sortHeader = (id, label, right) =>
@@ -7137,6 +7240,23 @@ const ViewAnchors = ({
             React.createElement("span", { className: "text-[11px] font-bold uppercase tracking-widest text-slate-400" }, "No anchors yet"),
             React.createElement("p", { className: "text-[12px] text-slate-500 max-w-sm" }, "Move the cursor to a colour and press Add at cursor, or import an anchors CSV with Type NOUN rows."),
           )
+        : phone && !printing
+          ? React.createElement(
+              "div",
+              { "data-anchor-list": "" },
+              first > 0 && React.createElement("div", { key: "pad-top", "aria-hidden": true, style: { height: first * rowH } }),
+              (flat ? flat.slice(first, last) : shown.slice(first, last).map((it) => ({ it }))).map((e) => {
+                if (e.h) return React.createElement("div", { key: `gh:${e.h.path}`, style: { height: rowH }, className: "flex items-center px-3 csam-pop" }, grp.header(e, { rowHeight: rowH }));
+                const r = e.it;
+                return React.createElement(AnchorPhoneRow, {
+                  key: r.id, r, act, onMore: setSheetId,
+                  isHere: !!cursorAnchor && cursorAnchor.id === r.id,
+                  checked: !!selected[r.id],
+                });
+              }),
+              last < rowCount && React.createElement("div", { key: "pad-bottom", "aria-hidden": true, style: { height: (rowCount - last) * rowH } }),
+              sheetRow && React.createElement(AnchorPhoneSheet, { r: sheetRow, act, confirming: confirm === sheetRow.id, onClose: () => setSheetId(null) }),
+            )
         : React.createElement(
             "table",
             { className: "w-full border-collapse", "data-fields": "anchors-table" },
@@ -17193,7 +17313,7 @@ const ViewPinsInner = ({
             name: isAdding ? "x" : "plus",
             className: "w-3.5 h-3.5",
           }),
-          isAdding ? "Cancel" : "Add Pin",
+          isAdding ? "Cancel" : React.createElement(React.Fragment, null, React.createElement("span", { className: "md:hidden" }, "Add"), React.createElement("span", { className: "hidden md:inline" }, "Add Pin")),
         ),
         selectedIds.length > 0 &&
           React.createElement(

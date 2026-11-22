@@ -177,7 +177,9 @@ div#root:nth-of-type(1) > div:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-
   [data-view-frame]{box-shadow:none!important}
   .csam-pop{font-size:14px}
   .csam-pop button,.csam-pop label,.csam-pop select{min-height:44px}
+  .csam-pop button{min-width:44px}
   .csam-pop select,.csam-pop input[type=text],.csam-pop input[type=search],.csam-pop input[type=number]{font-size:16px}
+  .csam-pop input[type=text],.csam-pop input[type=number]{min-height:40px}
   .csam-pop input[type=checkbox],.csam-pop input[type=radio]{width:20px!important;height:20px!important}
   [data-touch] button,[data-touch] select{min-height:44px;min-width:44px;justify-content:center}
   [data-touch] select{font-size:14px}
