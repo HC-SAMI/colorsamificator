@@ -24025,8 +24025,11 @@ const App = () => {
         }),
       ];
       files["template.csv"] = Papa.unparse(templateRows);
-      Object.keys(colorData || {}).forEach((brand) => {
-        const brandData = colorData[brand].map((color, listIdx) => {
+      // one file per brand, however a brand was spelled when its colours were
+      // added (the same merge as on load), so no second "envirolak.csv"
+      const exportData = mergeBrandCase(colorData || {});
+      Object.keys(exportData).forEach((brand) => {
+        const brandData = exportData[brand].map((color, listIdx) => {
           const safeName = color.name || `unknown-${listIdx}`;
           const idUrl = color.url || safeName.replace(/\s+/g, "-");
           const customId = `brand-${brand}-${idUrl}`;
