@@ -25234,6 +25234,10 @@ const ViewDatabase = ({
   const matchMode = useMatchMode();
   const [anchorNote, setAnchorNote] = useState("");
   const dataForUpdates = fullColorData || colorData;
+  // the card that is the colour in hand (outlined; on touch screens its
+  // picture and edit buttons show there only)
+  const inHandAt = crosshair && crosshair.activeCommercial;
+  const inHand = (item) => !!inHandAt && item.brand === inHandAt.brand && item.originalIndex === inHandAt.originalIndex;
   // Sort now lives in the global bar; this stays as the fallback for the
   // Database Manager modal, which renders outside that bar.
   const [localSortBy, setLocalSortBy] = useState("brand");
@@ -26271,7 +26275,7 @@ const ViewDatabase = ({
       {
         onClick: () => setShowDbControls(!showDbControls),
         className:
-          "md:hidden w-full flex items-center gap-2 px-4 py-2 border-b border-slate-200 dark:border-neutral-800 text-[11px] font-bold uppercase tracking-widest text-slate-500",
+          "md:hidden w-full min-h-[44px] flex items-center gap-2 px-4 py-2 border-b border-slate-200 dark:border-neutral-800 text-[12px] font-bold uppercase tracking-widest text-slate-500",
       },
       React.createElement(Icon, {
         name: "sliders-horizontal",
@@ -26288,7 +26292,7 @@ const ViewDatabase = ({
       "div",
       {
         className:
-          (showDbControls ? "flex" : "hidden") +
+          "csam-pop " + (showDbControls ? "flex" : "hidden") +
           " md:flex flex-col gap-2 px-4 pb-4 border-b border-slate-200 dark:border-neutral-800 flex-shrink-0",
       },
       React.createElement(
@@ -27106,6 +27110,7 @@ const ViewDatabase = ({
                   }),
                 className:
                   "flex flex-col group cursor-pointer transition-all items-center gap-2",
+                "data-in-hand": inHand(item) ? "" : undefined,
                 style: {
                   width: `${72 * swatchZoom}px`,
                 },
@@ -27113,7 +27118,7 @@ const ViewDatabase = ({
               React.createElement(
                 "div",
                 {
-                  className: `aspect-square relative flex items-center justify-center overflow-hidden transition-all text-[0px] rounded-xl group-hover:scale-[1.05] group-hover:shadow-md`,
+                  className: `aspect-square relative flex items-center justify-center overflow-hidden transition-all text-[0px] rounded-xl group-hover:scale-[1.05] group-hover:shadow-md ${inHand(item) ? "ring-[3px] ring-offset-2 ring-[#2B4032] dark:ring-[#B1BC83] ring-offset-white dark:ring-offset-neutral-900" : ""}`,
                   style: {
                     backgroundColor: DisplayGamut.css(item.L, item.C, item.H, item.hex),
                     width: "100%",
@@ -27174,7 +27179,7 @@ const ViewDatabase = ({
                   "div",
                   {
                     className:
-                      `absolute inset-0 flex items-center justify-center gap-2 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity z-20 backdrop-blur-sm pointer-events-none ${SW_TOUCH_ACTIONS}`,
+                      `absolute inset-0 flex items-center justify-center gap-2 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity z-20 backdrop-blur-sm pointer-events-none ${inHand(item) ? SW_TOUCH_ACTIONS : "[@media(hover:none)]:hidden"}`,
                   },
                   (displayImageOf(item) || item.image || item.note?.startsWith("http")) &&
                     React.createElement(
@@ -29118,7 +29123,7 @@ const AppUI = ({
                 React.createElement(
                   "div",
                   {
-                    className: "absolute top-3.5 right-4 flex gap-1 z-30",
+                    className: "absolute top-2 right-2 md:top-3.5 md:right-4 flex gap-0 md:gap-1 z-30",
                     style: { color: swInk },
                   },
                   React.createElement(
@@ -29133,7 +29138,7 @@ const AppUI = ({
                     },
                     React.createElement(Icon, {
                       name: "anchor",
-                      className: "w-3.5 h-3.5 drop-shadow-sm",
+                      className: "w-5 h-5 md:w-3.5 md:h-3.5 drop-shadow-sm",
                     }),
                   ),
                   React.createElement(
@@ -29148,7 +29153,7 @@ const AppUI = ({
                     },
                     React.createElement(Icon, {
                       name: "map-pin",
-                      className: "w-3.5 h-3.5 drop-shadow-sm",
+                      className: "w-5 h-5 md:w-3.5 md:h-3.5 drop-shadow-sm",
                     }),
                   ),
                   React.createElement(
@@ -29162,7 +29167,7 @@ const AppUI = ({
                     },
                     React.createElement(Icon, {
                       name: "maximize",
-                      className: "w-3.5 h-3.5 drop-shadow-sm",
+                      className: "w-5 h-5 md:w-3.5 md:h-3.5 drop-shadow-sm",
                     }),
                   ),
                   isOutOfGamut &&
