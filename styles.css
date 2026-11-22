@@ -183,4 +183,9 @@ div#root:nth-of-type(1) > div:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-
   .csam-pop input[type=checkbox],.csam-pop input[type=radio]{width:20px!important;height:20px!important}
   [data-touch] button,[data-touch] select{min-height:44px;min-width:44px;justify-content:center}
   [data-touch] select{font-size:14px}
+  /* the colour in hand, when it opens over the screen */
+  .csam-panel button{min-height:40px;min-width:40px}
+  .csam-panel input[type=text],.csam-panel input[type=number],.csam-panel input[type=search]{min-height:36px;font-size:16px}
+  .csam-panel input[type=range]{height:32px}
+  .csam-panel input[type=checkbox]{width:20px;height:20px}
 }

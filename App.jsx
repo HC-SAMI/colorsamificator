@@ -14959,12 +14959,12 @@ const AppTopBar = ({ nav, searchQuery, setSearchQuery, onUndo, onRedo, canUndo, 
 };
 
 // Touch screens can't hover: swatch actions that show on hover sit as round
-// buttons in the swatch's corner there instead, and select ticks stay visible
+// buttons at the swatch's top right there instead (under the spectral dot), and select ticks stay visible
 // with a finger-sized hit area.
-const SW_TOUCH_ACTIONS = "[@media(hover:none)]:opacity-100 [@media(hover:none)]:bg-transparent [@media(hover:none)]:backdrop-blur-none [@media(hover:none)]:inset-auto [@media(hover:none)]:left-1 [@media(hover:none)]:bottom-1 [@media(hover:none)]:gap-1";
+const SW_TOUCH_ACTIONS = "[@media(hover:none)]:opacity-100 [@media(hover:none)]:bg-transparent [@media(hover:none)]:backdrop-blur-none [@media(hover:none)]:inset-auto [@media(hover:none)]:right-1 [@media(hover:none)]:top-3 [@media(hover:none)]:gap-1";
 const SW_TOUCH_BTN = "[@media(hover:none)]:w-9 [@media(hover:none)]:h-9 [@media(hover:none)]:p-0 [@media(hover:none)]:rounded-full [@media(hover:none)]:bg-black/45 [@media(hover:none)]:flex [@media(hover:none)]:items-center [@media(hover:none)]:justify-center";
 const SW_TOUCH_TICK = "[@media(hover:none)]:opacity-100 [@media(hover:none)]:p-2.5 [@media(hover:none)]:-m-1.5";
-const SW_TOUCH_BOX = "[@media(hover:none)]:!w-[22px] [@media(hover:none)]:!h-[22px]";
+const SW_TOUCH_BOX = "[@media(hover:none)]:!w-[22px] [@media(hover:none)]:!h-[22px] [@media(hover:none)]:!opacity-100";
 
 // ── Closeness in words ────────────────────────────────────────────────────
 // ΔE OK ×100 as a 4-bar meter and a word: Twin < 1, Very close < 2,
@@ -28752,7 +28752,7 @@ const AppUI = ({
       "header",
       {
         className:
-          `shrink-0 bg-white dark:bg-neutral-900 border-b border-slate-200 dark:border-neutral-800 relative ${searchQuery ? "z-[98]" : "z-30"} md:border-b-0 ${mobilePanelsOpen ? "" : "hidden md:block"} md:max-h-none md:overflow-visible custom-scrollbar`,
+          `csam-panel shrink-0 bg-white dark:bg-neutral-900 border-b border-slate-200 dark:border-neutral-800 relative ${searchQuery ? "z-[98]" : "z-30"} md:border-b-0 ${mobilePanelsOpen ? "" : "hidden md:block"} md:max-h-none md:overflow-visible custom-scrollbar`,
       },
       React.createElement(
         "div",
@@ -29411,7 +29411,7 @@ const AppUI = ({
       React.createElement(
         "aside",
         {
-          className: `w-full md:w-auto flex-col bg-white dark:bg-neutral-900 z-10 ${
+          className: `csam-panel w-full md:w-auto flex-col bg-white dark:bg-neutral-900 z-10 ${
             mobilePanelsOpen ? "flex flex-none" : "hidden"
           } md:flex md:flex-none md:h-auto overflow-visible`,
         },
