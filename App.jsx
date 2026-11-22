@@ -7119,7 +7119,7 @@ const ViewAnchors = ({
     // ── header: cursor + actions ──
     React.createElement(
       "div",
-      { className: "px-4 py-3 border-b border-slate-100 dark:border-neutral-800 flex flex-wrap items-center gap-x-6 gap-y-3" },
+      { className: "px-3 md:px-4 py-2 md:py-3 border-b border-slate-100 dark:border-neutral-800 flex flex-wrap items-center gap-x-3 md:gap-x-6 gap-y-2 md:gap-y-3" },
       React.createElement(
         "div",
         { className: "flex items-baseline gap-2" },
@@ -7133,7 +7133,7 @@ const ViewAnchors = ({
             title: lockOn
               ? `${lockedCount} anchor${lockedCount === 1 ? "" : "s"} name pins in the Catalog and can't be renamed, moved or deleted; new anchors can't take those pins over. Click to unlock.`
               : "Anchors that name Catalog pins can be edited freely. Click to lock them.",
-            className: `flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full border ${lockOn ? "border-sky-300 dark:border-sky-500/40 bg-sky-50 dark:bg-sky-500/15 text-sky-700 dark:text-sky-300" : "border-slate-200 dark:border-neutral-700 text-slate-400 hover:text-slate-600"}`,
+            className: `flex items-center gap-1 text-[11px] md:text-[9px] font-bold uppercase tracking-widest px-3 md:px-2 min-h-[44px] md:min-h-0 py-0.5 rounded-full border ${lockOn ? "border-sky-300 dark:border-sky-500/40 bg-sky-50 dark:bg-sky-500/15 text-sky-700 dark:text-sky-300" : "border-slate-200 dark:border-neutral-700 text-slate-400 hover:text-slate-600"}`,
           },
           React.createElement(Icon, { name: lockOn ? "lock" : "lock-open", className: "w-3 h-3" }),
           lockOn ? `Pin names locked (${lockedCount})` : "Lock pin names",
@@ -7145,7 +7145,7 @@ const ViewAnchors = ({
             {
               onClick: () => { setSortBy("nn"); setSortAsc(true); },
               title: `Anchors closer than ΔE ${ANCHOR_CLOSE_DE} to another anchor`,
-              className: "text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:bg-amber-500/25",
+              className: "text-[11px] md:text-[9px] font-bold uppercase tracking-widest px-3 md:px-2 min-h-[44px] md:min-h-0 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:bg-amber-500/25",
             },
             `${closePairs} near-duplicate${closePairs === 1 ? "" : "s"}`,
           ),
@@ -7156,7 +7156,7 @@ const ViewAnchors = ({
         { className: "flex items-center gap-3 min-w-0" },
         React.createElement("button", {
           onClick: () => setActiveTab("3d"), title: "Open the cursor in Explore",
-          className: "w-8 h-8 rounded-lg border border-black/10 dark:border-white/10 shrink-0",
+          className: "w-11 h-11 md:w-8 md:h-8 rounded-lg border border-black/10 dark:border-white/10 shrink-0",
           style: { background: cursorHex },
         }),
         React.createElement(
@@ -7181,7 +7181,7 @@ const ViewAnchors = ({
           "button",
           {
             onClick: addAtCursor,
-            className: "ml-1 flex items-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-slate-900 text-white hover:bg-slate-800 transition-colors whitespace-nowrap",
+            className: "ml-1 flex items-center gap-1.5 px-3 py-2 min-h-[44px] md:min-h-0 rounded-lg text-[12px] md:text-[10px] font-bold uppercase tracking-widest bg-slate-900 text-white hover:bg-slate-800 transition-colors whitespace-nowrap",
           },
           React.createElement(Icon, { name: "plus", className: "w-3.5 h-3.5" }),
           "Add at cursor",
@@ -14958,6 +14958,14 @@ const AppTopBar = ({ nav, searchQuery, setSearchQuery, onUndo, onRedo, canUndo, 
   );
 };
 
+// Touch screens can't hover: swatch actions that show on hover sit as round
+// buttons in the swatch's corner there instead, and select ticks stay visible
+// with a finger-sized hit area.
+const SW_TOUCH_ACTIONS = "[@media(hover:none)]:opacity-100 [@media(hover:none)]:bg-transparent [@media(hover:none)]:backdrop-blur-none [@media(hover:none)]:inset-auto [@media(hover:none)]:left-1 [@media(hover:none)]:bottom-1 [@media(hover:none)]:gap-1";
+const SW_TOUCH_BTN = "[@media(hover:none)]:w-9 [@media(hover:none)]:h-9 [@media(hover:none)]:p-0 [@media(hover:none)]:rounded-full [@media(hover:none)]:bg-black/45 [@media(hover:none)]:flex [@media(hover:none)]:items-center [@media(hover:none)]:justify-center";
+const SW_TOUCH_TICK = "[@media(hover:none)]:opacity-100 [@media(hover:none)]:p-2.5 [@media(hover:none)]:-m-1.5";
+const SW_TOUCH_BOX = "[@media(hover:none)]:!w-[22px] [@media(hover:none)]:!h-[22px]";
+
 // ── Closeness in words ────────────────────────────────────────────────────
 // ΔE OK ×100 as a 4-bar meter and a word: Twin < 1, Very close < 2,
 // Close < 3.5, Noticeable < 6, Different beyond.
@@ -16141,7 +16149,7 @@ ${item.erpCode}`,
                             "button",
                             {
                               type: "button", "aria-pressed": selectedIds.includes(item.id), "aria-label": `Select ${item.displayName || item.name || item.erpCode || "colour"}`, "data-sel-tick": "",
-                              className: `absolute top-0.5 left-0.5 z-30 focus:opacity-100 ${selectedIds.includes(item.id) ? "opacity-100" : "opacity-0 group-hover:opacity-100"} transition-opacity`,
+                              className: `absolute top-0.5 left-0.5 z-30 focus:opacity-100 ${selectedIds.includes(item.id) ? "opacity-100" : "opacity-0 group-hover:opacity-100"} transition-opacity ${SW_TOUCH_TICK}`,
                               onClick: (e) => {
                                 e.stopPropagation();
                                 setSelectedIds((prev) =>
@@ -16180,7 +16188,7 @@ ${item.erpCode}`,
                           "div",
                           {
                             className:
-                              "absolute inset-0 flex items-center justify-center gap-2 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity z-20 backdrop-blur-sm rounded",
+                              `absolute inset-0 flex items-center justify-center gap-2 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity z-20 backdrop-blur-sm rounded ${SW_TOUCH_ACTIONS} [@media(hover:none)]:pointer-events-none`,
                           },
                           (displayImageOf(item) || item.image || item.note?.startsWith("http")) &&
                             React.createElement(
@@ -16190,7 +16198,8 @@ ${item.erpCode}`,
                                   e.stopPropagation();
                                   setFullscreenImage(item.image || item.note);
                                 },
-                                className: "text-white hover:text-sky-300 p-1",
+                                "aria-label": "Show the picture",
+                                className: `text-white hover:text-sky-300 p-1 [@media(hover:none)]:pointer-events-auto ${SW_TOUCH_BTN}`,
                               },
                               React.createElement(Icon, {
                                 name: "eye",
@@ -16701,7 +16710,7 @@ ${item.erpCode}`,
                 "button",
                 {
                   type: "button", "aria-pressed": selectedIds.includes(item.id), "aria-label": `Select ${item.displayName || item.name || item.erpCode || "colour"}`, "data-sel-tick": "",
-                  className: `absolute top-1 left-1 z-30 focus:opacity-100 ${selectedIds.includes(item.id) ? "opacity-100" : "opacity-0 group-hover:opacity-100"} transition-opacity`,
+                  className: `absolute top-1 left-1 z-30 focus:opacity-100 ${selectedIds.includes(item.id) ? "opacity-100" : "opacity-0 group-hover:opacity-100"} transition-opacity ${SW_TOUCH_TICK}`,
                   onClick: (e) => {
                     e.stopPropagation();
                     setSelectedIds((prev) =>
@@ -16732,7 +16741,7 @@ ${item.erpCode}`,
               "div",
               {
                 className:
-                  "absolute inset-0 flex items-center justify-center gap-2 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity z-20 backdrop-blur-sm pointer-events-none",
+                  `absolute inset-0 flex items-center justify-center gap-2 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity z-20 backdrop-blur-sm pointer-events-none ${SW_TOUCH_ACTIONS}`,
               },
               (displayImageOf(item) || item.image || item.note?.startsWith("http")) &&
                 React.createElement(
@@ -16742,8 +16751,9 @@ ${item.erpCode}`,
                       e.stopPropagation();
                       setFullscreenImage(item.image || item.note);
                     },
+                    "aria-label": "Show the picture",
                     className:
-                      "text-white hover:text-sky-300 p-1 pointer-events-auto",
+                      `text-white hover:text-sky-300 p-1 pointer-events-auto ${SW_TOUCH_BTN}`,
                   },
                   React.createElement(Icon, {
                     name: "eye",
@@ -27110,7 +27120,7 @@ const ViewDatabase = ({
                   "button",
                   {
                     type: "button", "aria-pressed": !!selectedIds?.includes(item.id), "aria-label": `Select ${item.name || item.erpCode || "colour"}`, "data-sel-tick": "",
-                    className: "absolute top-1 left-1 z-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 rounded",
+                    className: `absolute top-1 left-1 z-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 rounded ${SW_TOUCH_TICK}`,
                     onClick: (e) => {
                       e.stopPropagation();
                       if (selectedIds) {
@@ -27125,7 +27135,7 @@ const ViewDatabase = ({
                   React.createElement(
                     "div",
                     {
-                      className: `w-4 h-4 rounded border flex items-center justify-center transition-colors cursor-pointer ${selectedIds?.includes(item.id) ? "bg-sky-500 border-sky-500 text-white" : "border-white/50 bg-black/20 hover:border-white/80"} ${!selectedIds?.includes(item.id) && "opacity-0 group-hover:opacity-100"}`,
+                      className: `${SW_TOUCH_BOX} w-4 h-4 rounded border flex items-center justify-center transition-colors cursor-pointer ${selectedIds?.includes(item.id) ? "bg-sky-500 border-sky-500 text-white" : "border-white/50 bg-black/20 hover:border-white/80"} ${!selectedIds?.includes(item.id) && "opacity-0 group-hover:opacity-100"}`,
                     },
                     selectedIds?.includes(item.id) &&
                       React.createElement(Icon, {
@@ -27138,7 +27148,7 @@ const ViewDatabase = ({
                   "div",
                   {
                     className:
-                      "absolute inset-0 flex items-center justify-center gap-2 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity z-20 backdrop-blur-sm pointer-events-none",
+                      `absolute inset-0 flex items-center justify-center gap-2 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity z-20 backdrop-blur-sm pointer-events-none ${SW_TOUCH_ACTIONS}`,
                   },
                   (displayImageOf(item) || item.image || item.note?.startsWith("http")) &&
                     React.createElement(
@@ -27148,8 +27158,9 @@ const ViewDatabase = ({
                           e.stopPropagation();
                           setFullscreenImage(item.image || item.note);
                         },
+                        "aria-label": "Show the picture",
                         className:
-                          "text-white hover:text-sky-300 p-1 pointer-events-auto",
+                          `text-white hover:text-sky-300 p-1 pointer-events-auto ${SW_TOUCH_BTN}`,
                       },
                       React.createElement(Icon, {
                         name: "eye",
@@ -27169,8 +27180,9 @@ const ViewDatabase = ({
                             : "",
                         });
                       },
+                      "aria-label": "Edit this colour",
                       className:
-                        "text-white hover:text-sky-300 p-1 pointer-events-auto",
+                        `text-white hover:text-sky-300 p-1 pointer-events-auto ${SW_TOUCH_BTN}`,
                     },
                     React.createElement(Icon, {
                       name: "edit-2",
@@ -27262,7 +27274,7 @@ const ViewDatabase = ({
                           target: "_blank",
                           rel: "noopener noreferrer",
                           className:
-                            "hover:text-sky-500 inline-flex items-center gap-1",
+                            "hover:text-sky-500 inline-flex items-center gap-1 relative before:content-[''] before:absolute before:-inset-x-1 before:-inset-y-3 md:before:hidden",
                           onClick: (e) => e.stopPropagation(),
                         },
                         React.createElement(Icon, {
@@ -30527,7 +30539,7 @@ const AppUI = ({
                   {
                     key: tid,
                     onClick: () => setActiveTab(tid),
-                    className: `px-3 py-1 text-[11px] font-bold uppercase tracking-wider rounded-full whitespace-nowrap transition-colors ${
+                    className: `px-4 md:px-3 h-10 md:h-auto py-1 text-[12px] md:text-[11px] font-bold uppercase tracking-wider rounded-full whitespace-nowrap transition-colors ${
                       on
                         ? "bg-slate-800 text-white dark:bg-neutral-100 dark:text-neutral-900"
                         : "text-slate-500 dark:text-neutral-400 hover:bg-slate-100 dark:hover:bg-neutral-800"
