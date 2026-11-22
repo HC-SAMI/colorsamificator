@@ -14910,6 +14910,26 @@ const AppTopBar = ({ nav, searchQuery, setSearchQuery, onUndo, onRedo, canUndo, 
     return () => window.removeEventListener("keydown", k);
   }, []);
   const narrowTop = useNarrowScreen();
+  // Phones: the bar slides away while a list scrolls down and comes back on
+  // the way up (or at the top), so lists get the room; never while searching.
+  const headRef = useRef(null);
+  const [tucked, setTucked] = useState(false);
+  useEffect(() => {
+    if (!narrowTop) { setTucked(false); return undefined; }
+    const last = new WeakMap();
+    const on = (e) => {
+      const t = e.target && e.target.nodeType === 1 ? e.target : document.scrollingElement;
+      if (!t || t.clientHeight < 300) return;
+      const y = t.scrollTop, prev = last.has(t) ? last.get(t) : y;
+      last.set(t, y);
+      if (y < 24) setTucked(false);
+      else if (y - prev > 6) setTucked(true);
+      else if (prev - y > 6) setTucked(false);
+    };
+    document.addEventListener("scroll", on, { capture: true, passive: true });
+    return () => document.removeEventListener("scroll", on, { capture: true });
+  }, [narrowTop]);
+  const hideTop = narrowTop && tucked && !searchQuery && !(inputRef.current && document.activeElement === inputRef.current);
   const iconBtn = (name, onClick, title, disabled) => React.createElement(
     "button",
     { type: "button", onClick, disabled, title, "aria-label": title, className: "hidden md:flex w-10 h-10 rounded-xl items-center justify-center text-slate-600 dark:text-neutral-300 hover:bg-slate-100 dark:hover:bg-neutral-800 disabled:opacity-30 disabled:hover:bg-transparent" },
@@ -14918,7 +14938,10 @@ const AppTopBar = ({ nav, searchQuery, setSearchQuery, onUndo, onRedo, canUndo, 
   return React.createElement(
     "header",
     {
-      "data-topbar": "",
+      ref: headRef,
+      "data-topbar": "", "data-tucked": hideTop ? "" : undefined,
+      // (sticky would hold it at the top whatever its margin, so not while tucked)
+      style: narrowTop ? { marginTop: hideTop ? -((headRef.current && headRef.current.offsetHeight) || 61) : 0, position: hideTop ? "relative" : undefined, transition: "margin-top .2s ease" } : undefined,
       className: `md:col-span-2 shrink-0 sticky top-0 md:static flex items-center gap-2 md:gap-3 px-3 md:px-4 py-2 border-b border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 relative ${searchQuery ? "z-[98]" : "z-40"}`,
     },
     React.createElement(OfflinePill),
