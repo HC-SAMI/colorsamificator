@@ -6153,9 +6153,9 @@ const ViewSpaceInner = ({
           React.createElement(
             "span",
             { className: "flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-neutral-400" },
-            React.createElement("span", { className: "w-2 h-2 rounded-full", style: { background: INFO[big].color } }),
-            INFO[big].long,
-            React.createElement("span", { className: "font-mono font-normal text-slate-400" }, INFO[big].value),
+            React.createElement("span", { className: "w-2 h-2 rounded-full", style: { background: INFO[big].color }, title: `${INFO[big].long} ${INFO[big].value || ""}` }),
+            !narrow && INFO[big].long,
+            !narrow && React.createElement("span", { className: "font-mono font-normal text-slate-400" }, INFO[big].value),
           ),
         React.createElement(SpaceBinSource, { value: binSource, onChange: setBinSource, options: binOptions, capped: seeds.capped, compact: narrow }),
         React.createElement(SpacePresets, { value: presetOf(big), onChange: (id) => setPreset(big, id), compact: narrow }),
