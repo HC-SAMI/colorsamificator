@@ -14114,6 +14114,194 @@ const SpectroPanel = ({ onGo, onPin, onSave, brands, suggestedName, cursorSpectr
   );
 };
 
+// ── Phones: scanning on its own screen ────────────────────────────────────
+// Taking scans of a sample, full screen: the running average large, how
+// settled it is, the scans one per row, and a big Scan button with Save
+// within thumb's reach. Opens from the Measure button in the tab bar, and by
+// itself when a scan starts or more scans are added to a colour; closing it
+// keeps the scans (the Measure button brings it back). Wider screens keep the
+// Spectrum panel.
+const PhoneScanScreen = ({ onGo, onSave, onAddToSave, brands, suggestedName }) => {
+  const narrow = useNarrowScreen();
+  const s = useSpectro();
+  const [open, setOpen] = useState(false);
+  const [settings, setSettings] = useState(false);
+  const [saving, setSaving] = useState(null);
+  const [tile, setTile] = useState("");
+  useEffect(() => {
+    const on = () => setOpen(true);
+    window.addEventListener("csam-scan-screen", on);
+    return () => window.removeEventListener("csam-scan-screen", on);
+  }, []);
+  // a scan starting, or scans added to a colour, bring it up
+  const prevBusy = useRef(s.busy), prevAdd = useRef(s.addTo);
+  useEffect(() => {
+    if (narrow && s.busy && !prevBusy.current) setOpen(true);
+    if (narrow && s.addTo && s.addTo !== prevAdd.current) setOpen(true);
+    prevBusy.current = s.busy; prevAdd.current = s.addTo;
+  }, [s.busy, s.addTo, narrow]);
+  useEscapeKey(open && narrow ? () => (saving ? setSaving(null) : settings ? setSettings(false) : setOpen(false)) : null);
+  if (!narrow || !open) return null;
+  const h = React.createElement;
+  const ses = s.session;
+  const compound = ses ? spectroStore.compound() : null;
+  const last = !ses && s.readings.length ? s.readings[0] : null;
+  const shown = ses ? ses.mean : last;
+  const connected = s.conn === "connected";
+  const dev = s.device;
+  const n = s.scans.length;
+  const btn = "h-12 px-4 rounded-xl text-[15px] font-bold inline-flex items-center justify-center gap-2";
+  const ghost = `${btn} border border-slate-200 dark:border-neutral-700 text-slate-800 dark:text-neutral-100`;
+  const startSave = (r) => { if (r) setSaving(r); };
+  const doSave = (r, opts) => {
+    onSave(r, opts);
+    setSaving(null);
+    if (compound && r && r.id === compound.id) spectroStore.keepAverage();
+  };
+  const finishAdd = () => {
+    const res = spectroStore.finishAddTo();
+    if (res && res.target.kind !== "reading" && onAddToSave) onAddToSave(res); else if (res && onGo) onGo(res.compound);
+  };
+  const outlier = (d) => isFinite(d) && ses && ses.n >= 3 && d > Math.max(0.5, 2.5 * ses.mcdm);
+  const scanLabel = s.busy ? "Measuring…" : s.avg && n ? `Add scan ${n + 1}` : "Scan";
+  const header = h(
+    "header",
+    { className: "flex items-center gap-2 px-2 pt-[max(8px,env(safe-area-inset-top))] pb-2 border-b border-slate-200 dark:border-neutral-800" },
+    h("button", { type: "button", onClick: () => (saving ? setSaving(null) : setOpen(false)), "aria-label": saving ? "Back to the scans" : "Close (the scans are kept)", className: "w-11 h-11 rounded-xl flex items-center justify-center text-slate-700 dark:text-neutral-200" },
+      h(Icon, { name: saving ? "arrow-left" : "chevron-down", className: "w-6 h-6" })),
+    h("div", { className: "flex-1 min-w-0" },
+      h("div", { className: "text-[17px] font-extrabold tracking-tight truncate text-slate-900 dark:text-neutral-100" },
+        saving ? "Save" : s.addTo ? `Adding to ${s.addTo.name || "this colour"}` : "New reading"),
+      h("div", { className: "text-[12px] text-slate-500 truncate flex items-center gap-1.5" },
+        h("span", { className: "w-2 h-2 rounded-full shrink-0", style: { background: connected ? "#3F7A3A" : "#B4A99E" } }),
+        connected ? `${spectroDeviceLabel(dev)}${dev && dev.battery != null ? ` · ${dev.battery}%` : ""}` : s.host ? "Not connected" : "No device",
+        s.host === "demo" && " · demo")),
+    !saving && h("button", { type: "button", onClick: () => setSettings((v) => !v), "aria-label": "Scan settings", "aria-expanded": settings, className: `w-11 h-11 rounded-xl flex items-center justify-center ${settings ? "bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900" : "text-slate-700 dark:text-neutral-200"}` },
+      h(Icon, { name: "settings-2", className: "w-5 h-5" })),
+  );
+  // settings: what used to sit above the Measure button
+  const settingsBox = settings && h(
+    "div",
+    { className: "csam-pop flex flex-col gap-3 px-4 py-3 border-b border-slate-200 dark:border-neutral-800 bg-slate-50 dark:bg-neutral-900", "data-scan-settings": "" },
+    dev && Array.isArray(dev.modes) && dev.modes.length > 1 && h("div", { className: "flex flex-col gap-1.5" },
+      h("span", { className: "text-[11px] font-bold uppercase tracking-widest text-slate-500" }, "Colour from"),
+      h("div", { className: "grid grid-cols-3 rounded-xl border border-slate-200 dark:border-neutral-700 overflow-hidden", role: "radiogroup" },
+        dev.modes.map((m) => h("button", { key: m, type: "button", role: "radio", "aria-checked": s.basis === m, onClick: () => spectroStore.setBasis(m),
+          className: `h-11 text-[15px] font-bold ${s.basis === m ? "bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900" : "text-slate-700 dark:text-neutral-200"}` }, m))),
+      h("p", { className: "text-[12px] text-slate-500 leading-snug" }, `${s.basis}: ${({ M0: "no UV control (legacy)", M1: "UV included, as the catalogue was measured", M2: "UV excluded (without optical brighteners)" })[s.basis] || ""}. Every scan keeps all the modes.`)),
+    h("label", { className: "flex items-center gap-3 text-[15px] text-slate-800 dark:text-neutral-100" },
+      h("input", { type: "checkbox", checked: !!s.avg, onChange: (e) => spectroStore.setAvg(e.target.checked) }),
+      h("span", null, "Average several scans", h("span", { className: "block text-[12px] text-slate-500" }, "Scan the sample in different spots; they're averaged until you save."))),
+    h("label", { className: "flex items-center gap-3 text-[15px] text-slate-800 dark:text-neutral-100" },
+      h("input", { type: "checkbox", checked: !!s.autoGo, onChange: (e) => spectroStore.setAutoGo(e.target.checked) }),
+      "Move the cursor to each reading"),
+    dev && dev.supportsCal && h("div", { className: "flex flex-col gap-1.5" },
+      h("span", { className: `text-[11px] font-bold uppercase tracking-widest ${dev.calDue ? "text-amber-700" : "text-slate-500"}` }, dev.calDue ? "Field calibration due" : "Field calibration"),
+      h("div", { className: "flex gap-2" },
+        h("input", { type: "text", value: tile, onChange: (e) => setTile(e.target.value), placeholder: "Code on the back of the tile", "aria-label": "Calibration tile code", className: "flex-1 min-w-0 px-3 rounded-xl border border-slate-200 dark:border-neutral-700 bg-white dark:bg-neutral-950 font-mono" }),
+        h("button", { type: "button", className: ghost, disabled: s.busy || !tile.trim(), onClick: () => spectroStore.calibrate(tile).then((ok) => ok && setTile("")) }, "Calibrate")),
+      h("p", { className: "text-[12px] text-slate-500" }, "Put the device on its white calibration tile first.")),
+    s.host === "demo" && h("button", { type: "button", className: `${ghost} self-start`, onClick: () => spectroStore.setSource("auto") }, "Turn the demo device off"),
+    connected && h("button", { type: "button", className: `${ghost} self-start`, onClick: spectroStore.disconnect }, "Disconnect"),
+  );
+  // not connected: connect here
+  const connectBox = !connected && h(
+    "div",
+    { className: "flex flex-col gap-3 rounded-2xl border border-dashed border-slate-300 dark:border-neutral-700 p-4", "data-scan-connect": "" },
+    !s.host
+      ? h(React.Fragment, null,
+        h("p", { className: "text-[15px] text-slate-700 dark:text-neutral-200" }, "Measuring needs the ColorSAMIficator Android app and a Nix device."),
+        h("button", { type: "button", className: ghost, onClick: () => spectroStore.setSource("demo") }, "Practise with the demo device"))
+      : h(React.Fragment, null,
+        s.remembered && h("button", { type: "button", className: `${btn} bg-[#2B4032] text-[#F2E8DF]`, disabled: s.conn === "connecting", onClick: () => spectroStore.connect(s.remembered) },
+          s.conn === "connecting" ? "Connecting…" : `Reconnect ${s.remembered.name}`),
+        h("button", { type: "button", className: s.remembered ? ghost : `${btn} bg-[#2B4032] text-[#F2E8DF]`, disabled: s.conn === "connecting", onClick: s.scanning ? spectroStore.stopScan : spectroStore.scan },
+          s.scanning ? "Stop looking" : "Find devices"),
+        s.devices.map((d) => h("button", { key: d.id, type: "button", className: `${ghost} justify-between`, disabled: s.conn === "connecting", onClick: () => spectroStore.connect(d) },
+          h("span", { className: "truncate" }, d.name || "Nix device"), h("span", { className: "text-[13px] text-sky-700 dark:text-sky-300" }, "Connect"))),
+        !s.scanning && !s.devices.length && h("p", { className: "text-[13px] text-slate-500" }, "Turn the device on and keep it close. It can be connected to one app at a time.")),
+  );
+  // the reading: large swatch and how settled it is
+  const hero = shown && h(
+    "button",
+    { type: "button", onClick: () => onGo && onGo(compound || last), title: "Make this the colour in hand", className: "w-full rounded-2xl overflow-hidden text-left ring-1 ring-black/10 block", "data-scan-hero": "" },
+    h("div", { className: "h-40", style: { background: shown.hex } }),
+    h("div", { className: "flex items-center gap-2 flex-wrap px-4 py-3 bg-white dark:bg-neutral-900" },
+      h("span", { className: "text-[17px] font-extrabold text-slate-900 dark:text-neutral-100", "data-average-count": "" }, ses ? (ses.n === 1 ? "1 scan" : `Average of ${ses.n} scans`) : "Last reading"),
+      ses && ses.n >= 2 && h("span", { className: `text-[12px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${ses.stable ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`, "data-average-state": ses.stable ? "settled" : "moving" },
+        ses.stable ? "Settled" : `${ses.steady} of ${SPECTRO_SETTLE_RUN} steady`),
+      h("span", { className: "basis-full font-mono text-[13px] text-slate-500" }, spectroLabText(shown.lab)),
+      compound && compound.fluor > 0.5 && h("span", { className: "basis-full text-[13px] text-amber-800" }, `Fluoresces: ΔE00 ${compound.fluor} brighter with UV (optical brighteners).`)),
+  );
+  const stats = ses && ses.n >= 2 && h(
+    "div",
+    { className: "grid grid-cols-2 gap-2" },
+    [["Last scan moved it", ses.change, "data-average-change"], ["Spread (MCDM)", ses.mcdm, "data-average-mcdm"]].map(([t, v, k]) =>
+      h("div", { key: t, className: "rounded-xl bg-slate-100 dark:bg-neutral-800 px-3 py-2" },
+        h("div", { className: "text-[11px] font-bold uppercase tracking-wider text-slate-500" }, t),
+        h("div", { className: "font-mono text-[20px] font-bold text-slate-900 dark:text-neutral-100", [k]: "" }, `ΔE00 ${spectroDEText(v)}`))),
+  );
+  const list = ses && h(
+    "ol",
+    { className: "flex flex-col", "data-average-scans": "" },
+    s.scans.map((r, i) => {
+      const st = ses.steps[i], d = ses.dev[i];
+      return h("li", { key: r.id, className: "flex items-center gap-3 min-h-[52px] border-b border-slate-100 dark:border-neutral-800" },
+        h("span", { className: "w-7 text-right font-mono text-[13px] text-slate-500" }, i + 1),
+        h("span", { className: "w-9 h-9 rounded-lg ring-1 ring-black/10 shrink-0", style: { background: r.hex } }),
+        h("span", { className: "flex-1 min-w-0 text-[13px] leading-tight" },
+          h("span", { className: "block text-slate-800 dark:text-neutral-100" }, r.prior ? "Earlier scan" : i === 0 ? "First scan" : `Moved it ΔE00 ${spectroDEText(st && st.change)}`),
+          h("span", { className: `block font-mono ${outlier(d) ? "text-amber-700 font-bold" : "text-slate-500"}` }, `${spectroDEText(d)} from the average${outlier(d) ? " · stray?" : ""}`)),
+        h("button", { type: "button", onClick: () => spectroStore.removeScan(r.id), "aria-label": `Remove scan ${i + 1}`, className: "w-11 h-11 rounded-xl flex items-center justify-center text-slate-400" },
+          h(Icon, { name: "x", className: "w-5 h-5" })));
+    }),
+  );
+  const empty = !shown && connected && h(
+    "div",
+    { className: "flex flex-col items-center gap-3 py-10 text-center" },
+    h(Icon, { name: "scan-line", className: "w-12 h-12 text-slate-400" }),
+    h("p", { className: "text-[17px] font-bold text-slate-800 dark:text-neutral-100" }, "Place the device flat on the sample"),
+    h("p", { className: "text-[14px] text-slate-500 max-w-xs" }, s.avg ? "Then scan. Scan a few spots: each scan is averaged in until you save." : "Then scan."),
+  );
+  // the actions, in thumb's reach
+  const footer = !saving && (connected || ses || last) && h(
+    "footer",
+    { className: "flex flex-col gap-2 px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] border-t border-slate-200 dark:border-neutral-800 bg-white dark:bg-neutral-900" },
+    connected && h("button", { type: "button", onClick: () => spectroStore.measure(), disabled: s.busy, "data-scan-go": "",
+      className: "h-16 rounded-2xl text-[19px] font-extrabold inline-flex items-center justify-center gap-2.5 disabled:opacity-60", style: { background: "#2B4032", color: "#F2E8DF" } },
+      h(Icon, { name: s.busy ? "loader" : "scan-line", className: `w-6 h-6 ${s.busy ? "animate-spin" : ""}` }), scanLabel),
+    ses && s.addTo && h("div", { className: "grid grid-cols-[1fr_auto] gap-2" },
+      h("button", { type: "button", onClick: finishAdd, className: `${btn} bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900 min-w-0`, "data-average-finish": "" },
+        h(Icon, { name: "save", className: "w-5 h-5 shrink-0" }), h("span", { className: "truncate" }, `Save to ${s.addTo.name || "the colour"}`)),
+      h("button", { type: "button", onClick: () => spectroStore.cancelAddTo(), className: ghost }, "Cancel")),
+    ses && !s.addTo && h("div", { className: "grid grid-cols-[1fr_auto_auto] gap-2" },
+      h("button", { type: "button", onClick: () => startSave(compound), className: `${btn} bg-slate-900 text-white dark:bg-neutral-100 dark:text-neutral-900`, "data-average-save": "" },
+        h(Icon, { name: "save", className: "w-5 h-5" }), ses.n > 1 ? "Save average" : "Save"),
+      h("button", { type: "button", onClick: () => spectroStore.keepAverage(), className: ghost, title: "Keep it in the readings and start a new sample" }, "New sample"),
+      h("button", { type: "button", onClick: () => spectroStore.discardScans(), className: `${ghost} w-12 px-0`, "aria-label": "Discard the scans" }, h(Icon, { name: "trash-2", className: "w-5 h-5" }))),
+    !ses && last && h("button", { type: "button", onClick: () => startSave(last), className: ghost, "data-reading-save": "" }, h(Icon, { name: "save", className: "w-5 h-5" }), "Save this reading"),
+  );
+  return ReactDOM.createPortal(
+    h(
+      "div",
+      { className: "fixed inset-0 z-[480] flex flex-col bg-white dark:bg-neutral-950", role: "dialog", "aria-label": "Scanning", "data-scan-screen": "" },
+      header,
+      settingsBox,
+      s.error && h("div", { role: "alert", className: "mx-4 mt-3 flex items-start gap-2 rounded-xl bg-red-50 text-red-700 px-3 py-2 text-[14px]" },
+        h("span", { className: "flex-1" }, s.error), h("button", { type: "button", onClick: spectroStore.clearError, "aria-label": "Dismiss", className: "w-9 h-9 flex items-center justify-center" }, h(Icon, { name: "x", className: "w-4 h-4" }))),
+      h(
+        "main",
+        { className: "flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4" },
+        saving
+          ? h("div", { className: "csam-pop" }, h(SpectroSaveForm, { key: saving.id, reading: saving, brands, suggestedName, onSave: doSave, onCancel: () => setSaving(null) }))
+          : h(React.Fragment, null, connectBox, empty, hero, stats, list),
+      ),
+      footer,
+    ),
+    document.body,
+  );
+};
+
 // ── The colour in hand: tuner, card extras and tabbed details ─────────────
 // A lightness × chroma field at the current hue (drag the ring), a hue strip,
 // and exact L / C / H fields replace the three sliders. The accordion stack
@@ -28753,6 +28941,13 @@ const AppUI = ({
   ];
   const onTopMeasure = () => {
     const st = spectroStore.get();
+    // phones: scanning has its own screen (it opens as the scan starts, or on
+    // the connect step when no device is connected)
+    if (typeof window !== "undefined" && window.innerWidth < 768) {
+      window.dispatchEvent(new CustomEvent("csam-scan-screen"));
+      if (st.conn === "connected" && !st.busy) spectroStore.measure();
+      return;
+    }
     if (st.conn === "connected") {
       spectroStore.measure();
       if (st.avg) { window.dispatchEvent(new CustomEvent("csam-inspector-tab", { detail: "spectrum" })); setMobilePanelsOpen(true); }
@@ -31926,6 +32121,7 @@ const AppUI = ({
           ),
         ),
       ),
+    React.createElement(PhoneScanScreen, { onGo: spectroGo, onSave: spectroSave, onAddToSave: spectroAddTo, brands: Object.keys(colorData || {}) }),
     !mobilePanelsOpen && React.createElement(PhoneColourBar, {
       hex: compactHex, name: activeName || sameGroupLabels.noun, code: crosshair?.activeErpCode, family: colorGroup,
       onOpen: () => setMobilePanelsOpen(true),
